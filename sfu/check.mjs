@@ -40,16 +40,29 @@ class Client {
 
     open() {
         return new Promise((resolve, reject) => {
-            this.socket.onopen = resolve;
-            this.socket.onerror = () => reject(new Error(`não conectou em ${URL_WS}`));
+            const timer = setTimeout(() => reject(new Error(`não abriu o socket em ${URL_WS} em 5s`)), 5000);
+
+            this.socket.onopen = () => {
+                clearTimeout(timer);
+                resolve();
+            };
+            this.socket.onerror = () => {
+                clearTimeout(timer);
+                reject(new Error(`não conectou em ${URL_WS}`));
+            };
         });
     }
 
     call(action, data = {}) {
         const id = this.nextId++;
 
-        return new Promise(resolve => {
-            this.pending.set(id, resolve);
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`sem resposta para "${action}" em 5s`)), 5000);
+
+            this.pending.set(id, reply => {
+                clearTimeout(timer);
+                resolve(reply);
+            });
             this.socket.send(JSON.stringify({ id, action, data }));
         });
     }
@@ -78,7 +91,7 @@ const run = async () => {
     reply = await guest.call('createTransport', {});
     assert.equal(reply.status, 401, 'ação sem sessão deve dar 401');
 
-    const owner = new Client();
+    let owner = new Client();
     await owner.open();
     reply = await owner.call('join', { token: mint({ sub: 'owner-uuid', name: 'Dono', room, role: 'owner' }) });
     assert.equal(reply.ok, true, 'join válido deve passar');
@@ -87,6 +100,13 @@ const run = async () => {
 
     reply = await owner.call('join', { token: mint({ sub: 'owner-uuid', room, role: 'owner' }) });
     assert.equal(reply.ok, false, 'não pode entrar duas vezes no mesmo socket');
+
+    const reconectado = new Client();
+    await reconectado.open();
+    reply = await reconectado.call('join', { token: mint({ sub: 'owner-uuid', name: 'Dono', room, role: 'owner' }) });
+    assert.equal(reply.ok, true, 'a mesma pessoa em outro socket entra e derruba a sessão antiga');
+    owner.close();
+    owner = reconectado;
 
     reply = await owner.call('acaoQueNaoExiste', {});
     assert.equal(reply.status, 404, 'ação desconhecida deve dar 404');

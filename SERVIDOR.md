@@ -79,12 +79,16 @@ para 5 MB. O default gera perda de pacote sob carga.
 `.env` e `storage` moram em `shared/` e sobrevivem ao deploy. Nenhum segredo está no
 repositório — o `SFU_SECRET` fica em `/var/www/projects/sfu/.env` (600).
 
-**Duas armadilhas que já custaram tempo:**
+**Armadilhas que já custaram tempo:**
 
 1. `pnpm install` não baixa o worker do mediasoup (o pnpm 11 ignora
    `onlyBuiltDependencies` e ainda sai com erro). O deploy roda o postinstall na mão.
 2. `pm2 restart <nome> --update-env` relê o ambiente do **shell**, não o
    `ecosystem.config.cjs`. Use `pm2 startOrRestart ecosystem.config.cjs --update-env`.
+3. Entrar de novo com o mesmo usuário **substitui** a sessão anterior em vez de ser
+   recusado — recusar prendia a pessoa fora quando um socket morria sem fechar. A
+   remoção de participante compara o objeto, não o id: fechar o socket antigo não
+   pode derrubar a sessão nova, que carrega o mesmo id.
 
 ---
 

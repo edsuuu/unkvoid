@@ -75,7 +75,7 @@ export class Server {
             return;
         }
 
-        session.room.removePeer(session.peer.id);
+        session.room.removePeer(session.peer);
         this.registry.release(session.room);
     }
 }

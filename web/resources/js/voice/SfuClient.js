@@ -19,6 +19,7 @@ export class SfuClient extends EventTarget {
         this.consumers = new Map();
         this.peerId = null;
         this.role = 'member';
+        this.peers = new Map();
     }
 
     emit(name, detail) {
@@ -43,6 +44,7 @@ export class SfuClient extends EventTarget {
 
     handleMessage(message) {
         if (message.event) {
+            this.trackPeers(message.event, message.data);
             this.emit(message.event, message.data);
 
             return;
@@ -56,6 +58,20 @@ export class SfuClient extends EventTarget {
 
         this.pending.delete(message.id);
         message.ok ? waiting.resolve(message.data) : waiting.reject(new Error(message.error));
+    }
+
+    trackPeers(event, data) {
+        if (event === 'peerJoined') {
+            this.peers.set(data.peerId, { name: data.name, avatar: data.avatar });
+        }
+
+        if (event === 'peerLeft') {
+            this.peers.delete(data.peerId);
+        }
+
+        if (event === 'peerJoined' || event === 'peerLeft') {
+            this.emit('peersChanged', [...this.peers.entries()]);
+        }
     }
 
     request(action, data = {}) {
@@ -72,6 +88,11 @@ export class SfuClient extends EventTarget {
 
         this.peerId = joined.peerId;
         this.role = joined.role;
+        this.peers.set(joined.peerId, { name: joined.name, avatar: null, self: true });
+
+        for (const peer of joined.peers) {
+            this.peers.set(peer.peerId, { name: peer.name, avatar: peer.avatar });
+        }
         this.device = new Device();
         await this.device.load({ routerRtpCapabilities: joined.routerRtpCapabilities });
 

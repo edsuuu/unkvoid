@@ -79,13 +79,16 @@ export class VoiceStage {
         this.client.addEventListener('kicked', () => { this.status('você foi removido da chamada'); this.leave(); });
         this.client.addEventListener('shareEnded', () => this.stopShare());
         this.client.addEventListener('closed', () => this.teardown());
+        this.client.addEventListener('peersChanged', () => this.renderMembers());
+        this.client.addEventListener('replaced', event => this.status(event.detail.reason));
 
         try {
             const joined = await this.client.connect(credentials.url, credentials.token);
 
             this.channelId = channelId;
-            this.showStage(true);
+            this.showStage(true, channelName);
             this.status(`em ${channelName}`);
+            this.renderMembers();
 
             for (const peer of joined.peers) {
                 for (const producer of peer.producers) {
@@ -95,8 +98,8 @@ export class VoiceStage {
 
             this.statsTimer = setInterval(() => this.refreshStats(), 1000);
         } catch (error) {
-            this.status(`não conectou: ${error.message}`);
             this.teardown();
+            this.status(`não conectou: ${error.message}`);
         }
     }
 
@@ -177,8 +180,25 @@ export class VoiceStage {
         grid.style.gridTemplateColumns = count > 1 ? 'repeat(2, minmax(0, 1fr))' : '1fr';
     }
 
-    showStage(visible) {
-        window.dispatchEvent(new CustomEvent('voice-state', { detail: { inCall: visible } }));
+    showStage(visible, channelName = null) {
+        window.dispatchEvent(new CustomEvent('voice-state', { detail: { inCall: visible, channelName } }));
+    }
+
+    renderMembers() {
+        const list = document.querySelector(`[data-voice-members="${this.channelId}"]`);
+
+        if (!list) {
+            return;
+        }
+
+        list.innerHTML = [...this.client.peers.values()].map(peer => `
+            <div class="flex items-center gap-2 rounded px-2 py-1 text-sm text-[#949ba4]">
+                <span class="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#5865f2] text-[10px] font-semibold text-white">
+                    ${peer.avatar ? `<img src="${peer.avatar}" alt="" class="size-6 object-cover">` : peer.name.slice(0, 2).toUpperCase()}
+                </span>
+                <span class="truncate">${peer.name}</span>
+            </div>
+        `).join('');
     }
 
     async share() {
@@ -253,6 +273,13 @@ export class VoiceStage {
 
     teardown() {
         clearInterval(this.statsTimer);
+
+        const list = document.querySelector(`[data-voice-members="${this.channelId}"]`);
+
+        if (list) {
+            list.innerHTML = '';
+        }
+
         this.client = null;
         this.channelId = null;
         this.bytesMark.clear();

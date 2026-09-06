@@ -1,5 +1,5 @@
 import { config } from '../config.js';
-import { NotFoundException, ValidationException } from '../Exceptions/ApiException.js';
+import { NotFoundException } from '../Exceptions/ApiException.js';
 import { Peer } from './Peer.js';
 
 export class Room {
@@ -16,9 +16,18 @@ export class Room {
         return new Room(id, router, webRtcServer);
     }
 
+    /**
+     * A sessão nova sempre vence: entrar de outra aba derruba a anterior, em vez de
+     * ser recusado. Recusar deixava a pessoa presa se um socket morresse sem fechar.
+     */
     addPeer(id, name, socket, options) {
-        if (this.peers.has(id)) {
-            throw new ValidationException('você já está conectado neste canal em outra aba');
+        const previous = this.peers.get(id);
+
+        if (previous) {
+            previous.send('replaced', { reason: 'você entrou neste canal em outra aba' });
+            this.peers.delete(id);
+            previous.close();
+            previous.socket.close();
         }
 
         const peer = new Peer(id, name, socket, options);
@@ -38,16 +47,18 @@ export class Room {
         return peer;
     }
 
-    removePeer(peerId) {
-        const peer = this.peers.get(peerId);
-
-        if (!peer) {
+    /**
+     * Recebe o objeto, não o id: fechar o socket de uma sessão substituída não pode
+     * derrubar a sessão nova, que carrega o mesmo id de participante.
+     */
+    removePeer(peer) {
+        if (this.peers.get(peer.id) !== peer) {
             return;
         }
 
         peer.close();
-        this.peers.delete(peerId);
-        this.broadcast('peerLeft', { peerId }, peerId);
+        this.peers.delete(peer.id);
+        this.broadcast('peerLeft', { peerId: peer.id }, peer.id);
     }
 
     describePeers(exceptPeerId) {
