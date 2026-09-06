@@ -1,3 +1,6 @@
 import { VoiceStage } from './voice/VoiceStage.js';
 
-new VoiceStage().start();
+const voice = new VoiceStage();
+
+window.voice = voice;
+voice.start();

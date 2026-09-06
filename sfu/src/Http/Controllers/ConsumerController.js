@@ -37,6 +37,12 @@ export class ConsumerController {
         return new StatusResource('resumed');
     }
 
+    async pause(request) {
+        await request.peer().getConsumer(request.consumerId()).pause();
+
+        return new StatusResource('paused');
+    }
+
     async setPreferredLayers(request) {
         await request.peer().getConsumer(request.consumerId()).setPreferredLayers({
             spatialLayer: request.spatialLayer(),

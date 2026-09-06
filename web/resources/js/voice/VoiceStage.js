@@ -5,6 +5,9 @@ export class VoiceStage {
         this.client = null;
         this.channelId = null;
         this.statsTimer = null;
+        this.clockTimer = null;
+        this.joinedAt = null;
+        this.focused = null;
         this.bytesMark = new Map();
     }
 
@@ -17,6 +20,14 @@ export class VoiceStage {
         });
 
         document.addEventListener('click', event => {
+            const tileButton = event.target.closest('[data-tile-action]');
+
+            if (tileButton) {
+                this.tileAction(tileButton.dataset.tileAction, tileButton);
+
+                return;
+            }
+
             const action = event.target.closest('[data-action]')?.dataset.action;
 
             if (!action) {
@@ -96,6 +107,7 @@ export class VoiceStage {
                 }
             }
 
+            this.startClock();
             this.statsTimer = setInterval(() => this.refreshStats(), 1000);
         } catch (error) {
             this.teardown();
@@ -130,17 +142,18 @@ export class VoiceStage {
                 return;
             }
 
-            this.addTile(producerId, peerId, name, consumer.track);
+            this.addTile(producerId, peerId, name, consumer.track, consumer.id);
         } catch (error) {
             this.status(`erro ao receber vídeo: ${error.message}`);
         }
     }
 
-    addTile(producerId, peerId, name, track) {
+    addTile(producerId, peerId, name, track, consumerId) {
         const tile = document.createElement('figure');
-        tile.className = 'm-0 flex flex-col overflow-hidden rounded-lg bg-black';
+        tile.className = 'group m-0 flex flex-col overflow-hidden rounded-lg bg-black';
         tile.dataset.tile = producerId;
         tile.dataset.peer = peerId;
+        tile.dataset.consumer = consumerId;
 
         const video = document.createElement('video');
         video.className = 'min-h-0 w-full flex-1 object-contain';
@@ -149,13 +162,57 @@ export class VoiceStage {
         video.playsInline = true;
         video.muted = true;
 
-        const caption = document.createElement('figcaption');
-        caption.className = 'bg-[#232428] px-3 py-1.5 text-xs text-[#b5bac1]';
-        caption.textContent = name;
+        const bar = document.createElement('figcaption');
+        bar.className = 'flex items-center gap-2 bg-[#232428] px-3 py-1.5 text-xs text-[#b5bac1]';
+        bar.innerHTML = `
+            <span class="truncate">${name}</span>
+            <span class="flex-1"></span>
+            <button type="button" data-tile-action="mute" data-peer="${peerId}"
+                title="Mutar o áudio desta transmissão"
+                class="cursor-pointer rounded px-1.5 py-0.5 hover:bg-[#35373c] hover:text-white">🔊</button>
+            <button type="button" data-tile-action="focus" data-tile-id="${producerId}"
+                title="Focar nesta transmissão"
+                class="cursor-pointer rounded px-1.5 py-0.5 hover:bg-[#35373c] hover:text-white">⛶</button>
+            <button type="button" data-tile-action="close" data-tile-id="${producerId}"
+                title="Parar de assistir (libera banda)"
+                class="cursor-pointer rounded px-1.5 py-0.5 hover:bg-[#35373c] hover:text-[#f23f43]">✕</button>
+        `;
 
-        tile.append(video, caption);
+        tile.append(video, bar);
         this.grid()?.appendChild(tile);
         this.layoutGrid();
+    }
+
+    async tileAction(action, button) {
+        if (action === 'mute') {
+            const audio = document.querySelector(`audio[data-peer="${button.dataset.peer}"]`);
+
+            if (!audio) {
+                this.status('esta transmissão não tem áudio');
+
+                return;
+            }
+
+            audio.muted = !audio.muted;
+            button.textContent = audio.muted ? '🔇' : '🔊';
+
+            return;
+        }
+
+        const tile = document.querySelector(`[data-tile="${button.dataset.tileId}"]`);
+
+        if (action === 'focus') {
+            this.focused = this.focused === button.dataset.tileId ? null : button.dataset.tileId;
+            this.layoutGrid();
+
+            return;
+        }
+
+        if (action === 'close' && tile) {
+            await this.client.pauseConsumer(tile.dataset.consumer).catch(() => {});
+            tile.remove();
+            this.layoutGrid();
+        }
     }
 
     removeTile(producerId) {
@@ -175,13 +232,23 @@ export class VoiceStage {
             return;
         }
 
-        const count = grid.querySelectorAll('figure').length;
+        const tiles = [...grid.querySelectorAll('figure')];
 
-        grid.style.gridTemplateColumns = count > 1 ? 'repeat(2, minmax(0, 1fr))' : '1fr';
+        if (this.focused && grid.querySelector(`[data-tile="${this.focused}"]`)) {
+            grid.style.gridTemplateColumns = '1fr';
+            tiles.forEach(tile => tile.classList.toggle('hidden', tile.dataset.tile !== this.focused));
+
+            return;
+        }
+
+        tiles.forEach(tile => tile.classList.remove('hidden'));
+        grid.style.gridTemplateColumns = tiles.length > 1 ? 'repeat(2, minmax(0, 1fr))' : '1fr';
     }
 
     showStage(visible, channelName = null) {
-        window.dispatchEvent(new CustomEvent('voice-state', { detail: { inCall: visible, channelName } }));
+        window.dispatchEvent(new CustomEvent('voice-state', {
+            detail: { inCall: visible, channelName, channelId: visible ? this.channelId : '' },
+        }));
     }
 
     renderMembers() {
@@ -192,13 +259,27 @@ export class VoiceStage {
         }
 
         list.innerHTML = [...this.client.peers.values()].map(peer => `
-            <div class="flex items-center gap-2 rounded px-2 py-1 text-sm text-[#949ba4]">
+            <div class="flex items-center gap-2 rounded px-2 py-1 text-sm ${peer.sharing ? 'text-[#23a55a]' : 'text-[#949ba4]'}">
                 <span class="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#5865f2] text-[10px] font-semibold text-white">
                     ${peer.avatar ? `<img src="${peer.avatar}" alt="" class="size-6 object-cover">` : peer.name.slice(0, 2).toUpperCase()}
                 </span>
                 <span class="truncate">${peer.name}</span>
+                ${peer.sharing ? `<span title="compartilhando a tela" class="ml-auto shrink-0 rounded bg-[#23a55a] px-1 py-0.5 text-[10px] font-bold uppercase text-white">ao vivo</span>` : ''}
             </div>
         `).join('');
+    }
+
+    startClock() {
+        this.joinedAt = Date.now();
+        this.clockTimer = setInterval(() => {
+            const seconds = Math.floor((Date.now() - this.joinedAt) / 1000);
+            const parts = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60];
+            const label = (parts[0] ? parts : parts.slice(1))
+                .map(value => String(value).padStart(2, '0'))
+                .join(':');
+
+            window.dispatchEvent(new CustomEvent('voice-clock', { detail: { label } }));
+        }, 1000);
     }
 
     async share() {
@@ -273,6 +354,8 @@ export class VoiceStage {
 
     teardown() {
         clearInterval(this.statsTimer);
+        clearInterval(this.clockTimer);
+        this.focused = null;
 
         const list = document.querySelector(`[data-voice-members="${this.channelId}"]`);
 

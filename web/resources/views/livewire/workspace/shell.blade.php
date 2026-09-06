@@ -1,6 +1,7 @@
-<div class="flex h-screen w-screen overflow-hidden bg-[#313338] text-[#dbdee1]" x-data="{ invite: false, inCall: false, voiceChannel: '', voiceStatus: '{{ __('Disponível') }}' }"
-     x-on:voice-state.window="inCall = $event.detail.inCall; voiceChannel = $event.detail.channelName ?? voiceChannel"
-     x-on:voice-status.window="voiceStatus = $event.detail.text">
+<div class="flex h-screen w-screen overflow-hidden bg-[#313338] text-[#dbdee1]" x-data="{ invite: false, inCall: false, voiceChannel: '', voiceChannelId: '', voiceClock: '', voiceStatus: '{{ __('Disponível') }}' }"
+     x-on:voice-state.window="inCall = $event.detail.inCall; voiceChannel = $event.detail.channelName ?? voiceChannel; voiceChannelId = $event.detail.channelId ?? ''"
+     x-on:voice-status.window="voiceStatus = $event.detail.text"
+     x-on:voice-clock.window="voiceClock = $event.detail.label">
 
     {{-- Trilha de servidores --}}
     <nav class="flex w-[72px] shrink-0 flex-col items-center gap-2 overflow-y-auto bg-[#1e1f22] py-3">
@@ -79,6 +80,13 @@
                         >
                             <svg class="size-5 shrink-0 text-[#80848e]" fill="currentColor" viewBox="0 0 24 24"><path d="M11.383 3.076A1 1 0 0 1 12 4v16a1 1 0 0 1-1.707.707L5.586 16H3a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1h2.586l4.707-4.707a1 1 0 0 1 1.09-.217zM16.5 7.5a1 1 0 0 1 1.414 0 6 6 0 0 1 0 8.486 1 1 0 1 1-1.414-1.414 4 4 0 0 0 0-5.658 1 1 0 0 1 0-1.414z"/></svg>
                             <span class="truncate">{{ $channel->name }}</span>
+
+                            <span
+                                x-show="inCall && voiceChannelId === '{{ $channel->id }}'"
+                                x-cloak
+                                class="ml-auto shrink-0 font-mono text-xs text-[#23a55a]"
+                                x-text="voiceClock"
+                            ></span>
                         </button>
 
                         <div wire:ignore class="ml-6 space-y-0.5" data-voice-members="{{ $channel->id }}"></div>
@@ -93,7 +101,10 @@
             <div class="flex items-center gap-2 px-2">
                 <span class="size-2 shrink-0 rounded-full bg-[#23a55a]"></span>
                 <div class="min-w-0 flex-1 leading-tight">
-                    <p class="truncate text-sm font-medium text-[#23a55a]">{{ __('Voz conectada') }}</p>
+                    <p class="truncate text-sm font-medium text-[#23a55a]">
+                        {{ __('Voz conectada') }}
+                        <span class="font-mono text-xs text-[#949ba4]" x-text="voiceClock"></span>
+                    </p>
                     <p class="truncate text-xs text-[#949ba4]" x-text="voiceChannel"></p>
                 </div>
 
@@ -107,11 +118,23 @@
                 </button>
             </div>
 
-            <button
-                type="button"
-                data-action="share"
-                class="mt-2 w-full cursor-pointer rounded bg-[#5865f2] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#4752c4]"
-            >{{ __('Compartilhar tela') }}</button>
+            <div class="mt-2 flex gap-2">
+                <select
+                    data-quality
+                    title="{{ __('Qualidade da transmissão') }}"
+                    class="w-[68px] shrink-0 cursor-pointer rounded border-0 bg-[#1e1f22] px-1.5 py-1.5 text-xs text-[#b5bac1] focus:ring-0"
+                >
+                    <option value="720">720p</option>
+                    <option value="1080" selected>1080p</option>
+                    <option value="1440">1440p</option>
+                </select>
+
+                <button
+                    type="button"
+                    data-action="share"
+                    class="flex-1 cursor-pointer whitespace-nowrap rounded bg-[#5865f2] px-2 py-1.5 text-sm font-medium text-white hover:bg-[#4752c4]"
+                >{{ __('Compartilhar') }}</button>
+            </div>
 
             <button
                 type="button"
@@ -179,12 +202,6 @@
             <div data-voice-grid class="grid min-h-0 flex-1 gap-3 overflow-y-auto p-4"></div>
 
             <div class="flex shrink-0 items-center justify-center gap-2 border-t border-[#1f2023] bg-[#232428] px-4 py-3">
-                <select data-quality class="cursor-pointer rounded-lg bg-[#1e1f22] px-3 py-2 text-sm text-[#b5bac1]">
-                    <option value="720">720p</option>
-                    <option value="1080" selected>1080p</option>
-                    <option value="1440">1440p</option>
-                </select>
-
                 <span data-voice-stats class="ml-3 font-mono text-xs text-[#949ba4]"></span>
             </div>
         </section>

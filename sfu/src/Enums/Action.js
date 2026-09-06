@@ -6,6 +6,7 @@ export const Action = Object.freeze({
     CloseProducer: 'closeProducer',
     Consume: 'consume',
     ResumeConsumer: 'resumeConsumer',
+    PauseConsumer: 'pauseConsumer',
     SetPreferredLayers: 'setPreferredLayers',
     StopBroadcast: 'stopBroadcast',
     KickPeer: 'kickPeer',

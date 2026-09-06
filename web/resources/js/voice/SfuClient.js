@@ -62,15 +62,29 @@ export class SfuClient extends EventTarget {
 
     trackPeers(event, data) {
         if (event === 'peerJoined') {
-            this.peers.set(data.peerId, { name: data.name, avatar: data.avatar });
+            this.peers.set(data.peerId, { name: data.name, avatar: data.avatar, sharing: false });
         }
 
         if (event === 'peerLeft') {
             this.peers.delete(data.peerId);
         }
 
-        if (event === 'peerJoined' || event === 'peerLeft') {
-            this.emit('peersChanged', [...this.peers.entries()]);
+        if (event === 'newProducer' && data.source === 'screen') {
+            this.markSharing(data.peerId, true);
+        }
+
+        if (event === 'producerClosed' || event === 'peerProducersClosed') {
+            this.markSharing(data.peerId, false);
+        }
+
+        this.emit('peersChanged', [...this.peers.entries()]);
+    }
+
+    markSharing(peerId, sharing) {
+        const peer = this.peers.get(peerId);
+
+        if (peer) {
+            peer.sharing = sharing;
         }
     }
 
@@ -88,10 +102,14 @@ export class SfuClient extends EventTarget {
 
         this.peerId = joined.peerId;
         this.role = joined.role;
-        this.peers.set(joined.peerId, { name: joined.name, avatar: null, self: true });
+        this.peers.set(joined.peerId, { name: joined.name, avatar: null, self: true, sharing: false });
 
         for (const peer of joined.peers) {
-            this.peers.set(peer.peerId, { name: peer.name, avatar: peer.avatar });
+            this.peers.set(peer.peerId, {
+                name: peer.name,
+                avatar: peer.avatar,
+                sharing: peer.producers.some(producer => producer.source === 'screen'),
+            });
         }
         this.device = new Device();
         await this.device.load({ routerRtpCapabilities: joined.routerRtpCapabilities });
@@ -158,6 +176,8 @@ export class SfuClient extends EventTarget {
         });
 
         this.producers.set('screen', video);
+        this.markSharing(this.peerId, true);
+        this.emit('peersChanged', [...this.peers.entries()]);
 
         const audioTrack = stream.getAudioTracks()[0];
 
@@ -207,6 +227,9 @@ export class SfuClient extends EventTarget {
             await this.request('closeProducer', { producerId: producer.id });
             this.producers.delete(source);
         }
+
+        this.markSharing(this.peerId, false);
+        this.emit('peersChanged', [...this.peers.entries()]);
     }
 
     async toggleMicrophone() {
@@ -250,6 +273,14 @@ export class SfuClient extends EventTarget {
         await this.request('resumeConsumer', { consumerId: consumer.id });
 
         return { consumer, ...params };
+    }
+
+    pauseConsumer(consumerId) {
+        return this.request('pauseConsumer', { consumerId });
+    }
+
+    resumeConsumerById(consumerId) {
+        return this.request('resumeConsumer', { consumerId });
     }
 
     stopBroadcastOf(peerId) {

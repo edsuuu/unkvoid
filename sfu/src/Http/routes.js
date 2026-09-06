@@ -42,6 +42,10 @@ export const routes = controllers => ({
         request: ConsumerRequest,
         handle: request => controllers.consumer.resume(request),
     },
+    [Action.PauseConsumer]: {
+        request: ConsumerRequest,
+        handle: request => controllers.consumer.pause(request),
+    },
     [Action.SetPreferredLayers]: {
         request: ConsumerRequest,
         handle: request => controllers.consumer.setPreferredLayers(request),

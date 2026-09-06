@@ -108,6 +108,9 @@ const run = async () => {
     owner.close();
     owner = reconectado;
 
+    reply = await owner.call('pauseConsumer', { consumerId: 'nao-existe' });
+    assert.equal(reply.status, 404, 'pausar consumer inexistente deve dar 404');
+
     reply = await owner.call('acaoQueNaoExiste', {});
     assert.equal(reply.status, 404, 'ação desconhecida deve dar 404');
 
