@@ -1,0 +1,21 @@
+{
+    "name": "sfu-api",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "main": "src/server.js",
+    "scripts": {
+        "start": "node src/server.js",
+        "check": "node check.mjs"
+    },
+    "dependencies": {
+        "mediasoup": "^3.26.0",
+        "ws": "^8.18.0"
+    },
+    "pnpm": {
+        "onlyBuiltDependencies": [
+            "mediasoup"
+        ]
+    },
+    "description": "API centralizada de m\u00eddia (SFU) do Discord 2.0"
+}

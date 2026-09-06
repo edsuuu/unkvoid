@@ -1,0 +1,17 @@
+node_modules/
+vendor/
+.DS_Store
+.idea/
+
+# segredos nunca vão para o repo
+.env
+.env.testing
+*.env
+!.env.example
+
+web/public/build/
+web/public/storage/
+web/storage/*.key
+web/storage/framework/
+web/storage/logs/
+web/bootstrap/cache/*.php
