@@ -5,7 +5,6 @@
     'items' => [
         'profile.edit' => 'Profile',
         'security.edit' => 'Security',
-        'appearance.edit' => 'Appearance',
     ],
 ])
 

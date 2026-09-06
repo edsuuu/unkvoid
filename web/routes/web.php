@@ -11,8 +11,8 @@ use Illuminate\Support\Facades\Route;
 // A raiz é a porta de entrada: quem está logado vai pro workspace, o resto loga.
 Route::get('/', fn () => redirect()->route(Auth::check() ? 'app' : 'login'))->name('home');
 
-Route::get('auth/google', [GoogleController::class, 'redirect'])->name('google.redirect');
-Route::get('auth/google/callback', [GoogleController::class, 'callback'])->name('google.callback');
+Route::get('oauth2/google', [GoogleController::class, 'redirect'])->name('google.redirect');
+Route::get('oauth2/google/callback', [GoogleController::class, 'callback'])->name('google.callback');
 
 Route::middleware(['auth'])->group(function (): void {
     Route::view('bem-vindo', 'onboarding')->name('onboarding');

@@ -14,16 +14,13 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Livewire\Attributes\Computed;
-use Livewire\Attributes\Url;
 use Livewire\Component;
 use Throwable;
 
 final class Shell extends Component
 {
-    #[Url(as: 'servidor', keep: true)]
     public ?string $serverId = null;
 
-    #[Url(as: 'canal', keep: true)]
     public ?string $channelId = null;
 
     public string $draft = '';
@@ -47,6 +44,7 @@ final class Shell extends Component
         $this->serverId = $serverId;
         $this->channelId = null;
         $this->ensureSelection();
+        $this->syncUrl();
     }
 
     public function selectChannel(string $channelId): void
@@ -59,6 +57,7 @@ final class Shell extends Component
 
         if ($channel->type === 'text') {
             $this->channelId = $channelId;
+            $this->syncUrl();
 
             return;
         }
@@ -142,6 +141,22 @@ final class Shell extends Component
     public function toggleMembers(): void
     {
         $this->showMembers = ! $this->showMembers;
+    }
+
+    /**
+     * Reescreve a URL sem navegar. Navegar derrubaria a chamada de voz, que vive
+     * em JavaScript e não sobrevive a uma troca de página.
+     */
+    private function syncUrl(): void
+    {
+        if (! $this->serverId) {
+            return;
+        }
+
+        $this->dispatch('url-changed', url: route('channel', [
+            'server' => $this->serverId,
+            'channel' => $this->channelId,
+        ], absolute: false));
     }
 
     #[Computed]

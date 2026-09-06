@@ -10,9 +10,10 @@ export class VoiceStage {
 
     start() {
         document.addEventListener('livewire:init', () => {
-            Livewire.on('voice-join', ([payload]) => this.join(payload.channelId, payload.channelName));
-            Livewire.on('voice-stop-broadcast', ([payload]) => this.moderate('stopBroadcastOf', payload.userId));
-            Livewire.on('voice-kick', ([payload]) => this.moderate('kick', payload.userId));
+            Livewire.on('voice-join', payload => this.join(payload.channelId, payload.channelName));
+            Livewire.on('voice-stop-broadcast', payload => this.moderate('stopBroadcastOf', payload.userId));
+            Livewire.on('voice-kick', payload => this.moderate('kick', payload.userId));
+            Livewire.on('url-changed', payload => history.replaceState({}, '', payload.url));
         });
 
         document.addEventListener('click', event => {
@@ -38,11 +39,7 @@ export class VoiceStage {
     }
 
     status(text) {
-        const element = document.querySelector('[data-voice-status]');
-
-        if (element) {
-            element.textContent = text;
-        }
+        window.dispatchEvent(new CustomEvent('voice-status', { detail: { text } }));
     }
 
     async join(channelId, channelName) {
@@ -181,12 +178,7 @@ export class VoiceStage {
     }
 
     showStage(visible) {
-        const stage = this.stage();
-        const text = document.querySelector('[data-text-stage]');
-
-        stage?.classList.toggle('hidden', !visible);
-        stage?.classList.toggle('flex', visible);
-        text?.classList.toggle('hidden', visible);
+        window.dispatchEvent(new CustomEvent('voice-state', { detail: { inCall: visible } }));
     }
 
     async share() {

@@ -3,18 +3,28 @@
 Nosso servidor de mídia. Roda em Node sob pm2 na VPS.
 
 **Nós escrevemos:** protocolo de sinalização, modelo de sala/participante, roteamento,
-política de codec e camadas, ciclo de vida de producer/consumer.
+política de codec e camadas, ciclo de vida de producer/consumer, moderação.
 **O mediasoup faz:** ICE, DTLS, SRTP, RTP/RTCP, NACK, estimativa de banda e seleção de
-camada — o mesmo papel que o Pion faz dentro do LiveKit.
+camada.
+
+A estrutura segue o padrão de API do MoneyClips: rota → Request (validação na
+fronteira, com acessores) → controller magro → Service → retorno sempre via Resource.
 
 ```
-client/SfuClient.js   protocolo + captura + publicação
-client/App.js         interface
-src/SignalingServer.js  WebSocket, despacho de ações, WebRtcServer
-src/Room.js           router do mediasoup, peers, produce/consume
-src/Peer.js           transports, producers, consumers de um participante
-src/config.js         codecs, bitrates, porta de mídia
+src/
+  Enums/          Action, Role
+  Exceptions/     ApiException + 422/401/403/404
+  Http/
+    routes.js       mapa ação → request + handler ('guest' só no join)
+    Kernel.js       despacho e tradução de exceção para status
+    Server.js       WebSocket + /health
+    Requests/       validação e acessores por ação
+    Controllers/    Join, Transport, Producer, Consumer, Moderation
+    Resources/      shape de toda resposta
+  Services/       RoomRegistry, Room, Peer, TokenVerifier
 ```
+
+O cliente vive no app Laravel (`web/resources/js/voice/`).
 
 ## Protocolo
 

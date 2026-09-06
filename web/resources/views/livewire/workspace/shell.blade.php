@@ -1,4 +1,6 @@
-<div class="flex h-screen w-screen overflow-hidden bg-[#313338] text-[#dbdee1]" x-data="{ invite: false }">
+<div class="flex h-screen w-screen overflow-hidden bg-[#313338] text-[#dbdee1]" x-data="{ invite: false, inCall: false, voiceStatus: '{{ __('Disponível') }}' }"
+     x-on:voice-state.window="inCall = $event.detail.inCall"
+     x-on:voice-status.window="voiceStatus = $event.detail.text">
 
     {{-- Trilha de servidores --}}
     <nav class="flex w-[72px] shrink-0 flex-col items-center gap-2 overflow-y-auto bg-[#1e1f22] py-3">
@@ -97,7 +99,7 @@
 
             <div class="min-w-0 flex-1 leading-tight">
                 <p class="truncate text-sm font-medium text-white">{{ auth()->user()->displayName() }}</p>
-                <p class="truncate text-xs text-[#949ba4]" data-voice-status>{{ __('Disponível') }}</p>
+                <p class="truncate text-xs text-[#949ba4]" x-text="voiceStatus"></p>
             </div>
 
             <button type="button" data-action="toggle-mic" class="rounded p-1.5 text-[#b5bac1] hover:bg-[#35373c] hover:text-white" title="{{ __('Microfone') }}">
@@ -132,8 +134,15 @@
             </button>
         </header>
 
-        {{-- Área de voz: some quando não há chamada, some sem ocupar espaço --}}
-        <section data-voice-stage class="hidden min-h-0 flex-1 flex-col bg-[#1e1f22]">
+        {{-- Área de voz. wire:ignore é obrigatório: sem ele o Livewire recria este
+             trecho a cada render e leva junto os <video> da chamada. --}}
+        <section
+            wire:ignore
+            data-voice-stage
+            x-show="inCall"
+            x-cloak
+            class="flex min-h-0 flex-1 flex-col bg-[#1e1f22]"
+        >
             <div data-voice-grid class="grid min-h-0 flex-1 gap-3 overflow-y-auto p-4"></div>
 
             <div class="flex shrink-0 items-center justify-center gap-2 border-t border-[#1f2023] bg-[#232428] px-4 py-3">
@@ -153,7 +162,7 @@
         </section>
 
         {{-- Chat de texto --}}
-        <section data-text-stage class="flex min-h-0 flex-1 flex-col">
+        <section data-text-stage x-show="! inCall" class="flex min-h-0 flex-1 flex-col">
             @if ($this->currentChannel)
                 <div class="flex-1 space-y-4 overflow-y-auto px-4 py-4" x-data x-init="$el.scrollTop = $el.scrollHeight">
                     @forelse ($this->messages as $message)

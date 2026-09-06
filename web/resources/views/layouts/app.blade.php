@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
+<html lang="{{ str_replace('_', '-', app()->getLocale()) }}" class="dark">
     <head>
         <meta charset="utf-8" />
         <meta name="csrf-token" content="{{ csrf_token() }}" />
@@ -15,16 +15,6 @@
 
         @fonts
 
-        <script>
-            (() => {
-                const appearance = localStorage.getItem('appearance') ?? 'system';
-
-                document.documentElement.classList.toggle(
-                    'dark',
-                    appearance === 'dark' || (appearance === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches),
-                );
-            })();
-        </script>
 
         @vite(['resources/css/app.css', 'resources/js/app.js'])
 

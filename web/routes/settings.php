@@ -12,7 +12,6 @@ Route::middleware(['auth'])->group(function (): void {
 });
 
 Route::middleware(['auth', 'verified'])->group(function (): void {
-    Route::view('settings/appearance', 'settings.appearance')->name('appearance.edit');
 
     Route::view('settings/security', 'settings.security')
         ->middleware(
