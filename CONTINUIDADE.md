@@ -47,7 +47,7 @@ cd sfu && pnpm run check   # asserções sobre o contrato inteiro
 mensagens, e os mesmos emissores de token do SFU que o web usa.
 Testes em `web/tests/Feature/Api/DesktopApiTest.php`.
 
-### App desktop (v0.4.0)
+### App desktop (v0.6.0)
 Abre, verifica atualização, exige servidor, pede login (e-mail/senha **ou Google**),
 lista servidores e canais com o design do web, **captura a tela nativamente** e
 **transmite por P2P**.
@@ -70,57 +70,120 @@ como segunda trilha da mesma conexão.
 
 **Um encoder, N conexões:** o quadro é comprimido uma vez e enviado a cada
 espectador. Codificar por espectador derreteria a máquina de quem transmite — o
-custo do P2P é banda de upload, não CPU. Limite de 3 espectadores (`LIMITE_P2P`);
-acima disso o SFU compensa.
+custo do P2P é banda de upload, não CPU.
 
 A sinalização vai pelo WebSocket do SFU (ação `signal`): mesma sala, mesma
-autenticação, nenhum canal novo.
+autenticação, nenhum canal novo. O app não abre socket próprio — duas sessões com o
+mesmo id de participante fazem o SFU derrubar uma delas.
 
 ---
 
-## ⚠️ Só existe build de macOS
+## Quantas pessoas assistindo
 
-**Nenhum `.msi` ou `.deb` foi gerado ou publicado até hoje.** Todas as releases
-(v0.1.0 a v0.5.0) contêm apenas artefatos de macOS, e só para Apple Silicon.
+| Espectadores | Caminho | Custo para quem transmite |
+|---|---|---|
+| 1–3 | direto, máquina a máquina | ~20 ms de latência, upload × N |
+| 4+ | pelo SFU (`producePlain`) | ~139 ms (VPS nos EUA), upload constante |
 
-O workflow do CI (`.github/workflows/desktop.yml`) está configurado para os três
-sistemas e nunca rodou — as releases foram feitas à mão, desta máquina.
+A troca é automática: quem entra como quarto espectador dispara `subirParaOSfu()`, as
+conexões diretas são fechadas e a transmissão passa a subir **uma vez** para o
+servidor. Subir para os dois ao mesmo tempo anularia o ganho.
 
-### Por que não dá para gerar daqui
+**Como o app fala com o SFU sem WebRTC.** É RTP puro sobre UDP no `PlainTransport` do
+mediasoup: sem ICE, sem DTLS. O lado Rust escolhe SSRC, payload type e a chave SRTP e
+anuncia tudo em `producePlain` **antes** do primeiro pacote; `comedia` faz o servidor
+aprender o endereço de origem do primeiro pacote que chega, então o app não precisa
+ser alcançável de fora. `crates/media/src/plain.rs`.
 
-Instalador **não pode ser cross-compilado**: `.msi` exige Windows, `.deb` exige
-Linux. É limitação da ferramenta, não escolha.
+> **SRTP não é opcional aqui.** Sem ele a tela atravessaria a internet em claro. A
+> chave é gerada por transmissão, vive no processo e só sai dentro do WebSocket
+> autenticado.
 
-E mesmo o `cargo check` cruzado para Windows para no `ring` (dependência de
-criptografia do WebRTC), que precisa de um toolchain C do Windows. Num runner nativo
-compila normalmente.
+Isso também fechou um buraco que não era só de escala: **quem usa o web nunca
+conseguiu ver uma transmissão vinda do app**, porque o app só falava P2P. Agora o
+produtor é igual a qualquer outro da sala.
+
+⚠️ **Portas:** `41000-41031/udp` precisam estar liberadas no firewall (8 por worker,
+4 workers). Sem elas o caminho acima de 3 espectadores não recebe nada. As de sempre
+(`40000-40003/udp`) continuam valendo para o WebRTC normal.
+
+**Verificação real, não no papel:**
+
+```bash
+cargo run -p media --example plain -- ws://127.0.0.1:3000/sfu <token>
+```
+
+Entra numa sala, declara a transmissão, manda H.264 sintético e **espera o servidor
+confirmar que está recebendo** (evento `producerActive`). Isso só acontece se SSRC,
+payload type e chave SRTP baterem — um pacote que sai não é um pacote que foi
+entendido.
+
+---
+
+## Chat de voz
+
+O microfone existe nos dois (web e app) e usa o **mesmo código**: o app importa
+`SfuClient` e `MicrophoneGate` de `web/resources/js/voice/` via alias do Vite. Duas
+cópias de um protocolo de reconexão divergem, e a que diverge é sempre a que ninguém
+está olhando.
+
+No app a voz vai pelo **SFU** (que replica para quantas pessoas forem) enquanto a tela
+fica direta — áudio é barato, vídeo não.
+
+`MicrophoneGate` decide quadro a quadro se o áudio sai:
+
+| Modo | Comportamento |
+|---|---|
+| Detecção de voz (padrão) | abre acima do limiar, com janela de 300 ms para não picotar palavra |
+| Apertar para falar | só com a tecla segurada (`event.code`, funciona em qualquer layout) |
+
+Mute é o gate, **nunca** o producer: abrir e fechar producer a cada sílaba renegocia o
+transporte dezenas de vezes por minuto, e refazer `getUserMedia` pisca o indicador de
+microfone do sistema.
+
+```bash
+node web/resources/js/voice/MicrophoneGate.check.mjs
+```
+
+> **Krisp não dá.** É SDK proprietário licenciado comercialmente pelo Discord, sem
+> distribuição pública. A supressão em uso é a nativa do Chrome/WKWebView
+> (`noiseSuppression: true`). Se não bastar, o upgrade real é RNNoise (open source),
+> WASM no web e nativo no Rust.
+
+---
+
+## Builds: os três existem (v0.6.0)
+
+`.msi`, `.deb` e `.dmg` são publicados pelo CI a cada tag `v*`, junto com o
+`latest.json` que o auto-update procura. Instalador **não pode ser cross-compilado**
+(`.msi` exige Windows, `.deb` exige Linux) — por isso o workflow tem três runners.
+
+https://github.com/edsuuu/unkvoid/releases
 
 ### O que foi verificado por plataforma
 
 | Peça | macOS | Windows | Linux |
 |---|---|---|---|
-| `capture` | roda | type-check cruzado | type-check cruzado |
-| `media` (encoder + WebRTC) | roda e medido | **não verificado** | **não verificado** |
-| App Tauri | roda | **não verificado** | **não verificado** |
-| Instalador | `.dmg` publicado | **nunca gerado** | **nunca gerado** |
+| `capture` | roda | compila no runner | compila no runner |
+| `media` (encoder + WebRTC) | roda e medido | compila, **nunca executado** | compila, **nunca executado** |
+| App Tauri | roda | **não executado** | **não executado** |
+| Instalador | `.dmg` publicado | `.msi` publicado | `.deb` publicado |
+| RTP puro para o SFU | verificado ponta a ponta | mesmo código, não executado | idem |
 
-### O que o app faria hoje fora do macOS
+### O que o app faz hoje fora do macOS
 
-Compila e abre, mas **não transmite**: o encoder por hardware só existe no macOS
-(VideoToolbox). Fora dele, `PlatformEncoder::new` devolve `EncoderError::Unsupported`
+Abre, entra em sala e **fala** — o microfone é do webview, funciona nos três. O que
+não funciona é **transmitir a tela**: o encoder por hardware só existe no macOS
+(VideoToolbox). Fora dele `PlatformEncoder::new` devolve `EncoderError::Unsupported`
 e a interface mostra o erro.
 
 O stub existe com a **mesma forma** do encoder real de propósito — sem isso o app nem
-compilaria fora do mac, e aí nem o `.msi` sairia. Antes desta correção o
-`broadcast.rs` usava um campo (`surface`) que só existia no macOS: **o build de
-Windows estava quebrado, não só não testado.**
+compilaria fora do mac, e aí nem o `.msi` sairia.
 
 ### Para destravar
 
-1. Rodar o workflow (`workflow_dispatch` ou uma tag `v*`) e ver o que quebra de
-   verdade num runner nativo.
-2. Encoder no Windows: Media Foundation, espelhando `crates/media/src/macos.rs`.
-3. Captura no Linux: consumir o nó do PipeWire que o portal XDG devolve.
+1. Encoder no Windows: Media Foundation, espelhando `crates/media/src/macos.rs`.
+2. Captura no Linux: consumir o nó do PipeWire que o portal XDG devolve.
 
 ---
 
@@ -128,33 +191,33 @@ Windows estava quebrado, não só não testado.**
 
 | Peça | Situação |
 |---|---|
-| **Microfone** | só o áudio do sistema entra; falta a voz de quem transmite (`cpal`) |
-| Trocar qualidade sem parar | o app web faz; aqui exige reiniciar a transmissão |
-| Fallback para o SFU | acima de 3 espectadores recusa, mas não cai para o SFU sozinho |
-| Encoder no Windows | falta Media Foundation — ver a seção sobre build acima |
-| Chat no desktop | lista mensagens em texto cru, sem enviar |
+| **Reverb** | o chat ainda usa `wire:poll`; o daemon não foi instalado |
+| Encoder no Windows | falta Media Foundation — sem ele o app não transmite lá |
 | Captura no Linux | recusa com erro claro; falta consumir o nó do PipeWire |
 | Áudio de sistema no Windows | precisa de WASAPI loopback, separado do Graphics Capture |
+| Trocar qualidade sem parar | o app web faz; no desktop exige reiniciar a transmissão |
 | Chat no desktop | lista mensagens em texto cru, sem enviar |
+| Nomes em pt-BR no código | o desktop (`ui/`) e partes do Rust ainda têm identificadores em português |
 | SFU em Rust (str0m) | não começou |
 
-**A captura nunca rodou de verdade.** No macOS a permissão de gravação de tela foi
-negada nesta máquina; Windows e Linux só passaram por cross-compile. O encoder e a
-negociação WebRTC **foram testados** e os números estão abaixo — o que não foi testado
-é a ponta a ponta com tela real e duas pessoas.
+**A captura de tela nunca rodou nesta máquina**: a permissão de gravação foi negada
+aqui. O encoder, a negociação WebRTC e o RTP para o SFU **foram testados** — o que
+falta é a ponta a ponta com tela real e duas pessoas.
 
 ---
 
 ## Próximo passo sugerido
 
-O caminho de mídia do app, nesta ordem — cada etapa é verificável sozinha:
+Nesta ordem — cada etapa é verificável sozinha:
 
-1. **Microfone**: capturar com `cpal` e misturar com o áudio de sistema antes do
-   Opus, ou publicar como terceira trilha.
-2. **Cair para o SFU acima de 3**: hoje `broadcast` recusa. A rota do SFU já existe
-   e funciona no app web — falta o app escolher entre as duas.
-3. **Encoder no Windows** (Media Foundation) e captura no Linux (PipeWire).
-4. **Chat no desktop**: a API já envia e lê; falta a interface.
+1. **Reverb** no lugar do `wire:poll` do chat: daemon, porta, proxy no nginx e
+   `Echo` no front. É o único poll que sobrou.
+2. **Encoder no Windows** (Media Foundation). Sem ele o app abre e fala no Windows,
+   mas não transmite a tela — e é justamente lá que está quem joga.
+3. **Captura no Linux** (PipeWire, a partir do nó que o portal XDG devolve).
+4. **Nomes em português no código**: `native/apps/desktop/ui/` é o pior caso.
+   Comentários podem ficar em pt-BR; identificadores e strings, não.
+5. **Chat no desktop**: a API já envia e lê; falta a interface.
 
 ### Perfis de qualidade
 
@@ -195,6 +258,19 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
 
 ## Armadilhas já pagas
 
+**Microfone**
+- **O gate não pode medir a própria saída.** Fechar o portão com `track.enabled = false`
+  zera o medidor junto, o nível nunca mais sobe acima do limiar e o microfone fica mudo
+  o resto da chamada. O que é publicado é um **clone**; o medidor escuta o original.
+  `MicrophoneGate.check.mjs` tem uma asserção só para isso.
+- **Medidor em `setTimeout` não serve.** Em janela em segundo plano o navegador
+  estrangula o timer: 60 ms medidos viraram **1000 ms**. Um AudioWorklet entrega a cada
+  53 ms na mesma janela oculta. Sem isso, minimizar o app corta um segundo do início de
+  cada frase.
+- Apertar-para-falar no navegador **só funciona com a janela em foco** — não existe
+  atalho global. E `blur` tem que soltar o gate: sem isso, largar a tecla fora da janela
+  deixa o microfone aberto para sempre.
+
 **Tauri**
 - **`withGlobalTauri` é obrigatório aqui.** A UI (`native/apps/desktop/ui/`) não passa
   por bundler, então só alcança o Rust por `window.__TAURI__`. Sem essa flag no
@@ -211,6 +287,12 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
   daí `com.unkvoid.desktop` e não `com.unkvoid.app`.
 
 **CI**
+- O `GITHUB_TOKEN` deste repo é read-only por padrão: publicar release volta **403
+  "Resource not accessible by integration"**. Resolve com `permissions: contents: write`
+  no workflow.
+- `cargo test` **compila os examples**. `encoder.rs` linka IOSurface e derrubava a
+  verificação em Linux e Windows. Gatear o example com `cfg(target_os)` conserta clippy,
+  test e qualquer `--all-targets` de uma vez — melhor que remendar cada comando do CI.
 - `if: env.X == ''` num *step* **não enxerga** o `env:` daquele mesmo step, e o contexto
   `secrets` não existe em `if` de step. A secret tem que virar `env` no nível do **job**.
   Enquanto isso estava errado, a condição era sempre verdadeira e **todo instalador saía
@@ -258,6 +340,10 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
 **Rede**
 - O firewall da Contabo tem allowlist por porta. Abertas: 22, 80, 443, 8443,
   30033/tcp, 9987/udp e 40000-40003 (tcp+udp).
+- ⚠️ **Falta abrir `41000-41031/udp`** — é por onde o app desktop entrega a
+  transmissão ao SFU acima de 3 espectadores. Sem isso os pacotes saem e não chegam,
+  e a transmissão fica preta para quem assiste (o caminho direto, até 3, não usa
+  essas portas e continua funcionando).
 
 ---
 
