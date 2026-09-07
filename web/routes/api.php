@@ -10,6 +10,16 @@ use App\Http\Controllers\PresenceTokenController;
 use App\Http\Controllers\VoiceTokenController;
 use Illuminate\Support\Facades\Route;
 
+/**
+ * O app pergunta isto antes de qualquer coisa: sem servidor ele não serve para nada.
+ *
+ * Precisa ser público. Usar uma rota autenticada para isso quebra de um jeito difícil de
+ * enxergar: sem token ela responde 302 para /login, o fetch segue o redirecionamento, e
+ * a página de login não tem cabeçalho CORS — o fetch rejeita e o app conclui que o
+ * servidor caiu. Era exatamente essa a tela "No connection" no Windows.
+ */
+Route::get('health', fn (): array => ['ok' => true])->name('api.health');
+
 Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1')->name('api.login');
 
 // Google for the desktop app: it goes through the system browser and returns via deep link.
