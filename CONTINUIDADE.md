@@ -319,6 +319,14 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
   > confirmar que pegou: mude só um texto do HTML e veja se aparece
   > `Compiling unkvoid-desktop` na saída. Se não aparecer, o app vai sair velho.
 
+**Editar com script**
+- Substituir blocos grandes por Python já **apagou métodos inteiros** três vezes: um
+  `s[inicio:fim]` que engolia o método seguinte, e uma âncora que casou no lugar errado
+  depois de outra edição. Os sintomas foram `this.update is not a function` (tela preta)
+  e um `pickShareSource` ausente que fazia o clique não selecionar nada.
+  > Depois de uma substituição em bloco, confira o que sobrou:
+  > `grep -n "^    [a-zA-Z]*(\|^    async [a-zA-Z]*(" ui/app.js`
+
 **Testar o app**
 - A janela do Tauri **não tem console**: um erro de JavaScript deixa a tela preta e não
   dá pista nenhuma. `native/apps/desktop/harness.html` abre o mesmo bundle num navegador
