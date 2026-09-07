@@ -22,19 +22,18 @@ concurrency:
   cancel-in-progress: ${{ ! startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  # Em push e PR: só Linux. Minuto de macOS custa 10x e o de Windows 2x, entao a matriz
+  # inteira a cada push cobrava ~39 minutos faturados por commit e torrou os 3.000
+  # minutos inclusos do mes num dia de trabalho. Linux pega erro de compilacao, teste
+  # quebrado e fmt — que e o que muda a cada commit. Os outros dois sistemas continuam
+  # rodando onde importa: na tag, antes de gerar instalador.
   verify:
     name: Verify (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            target: windows
-          - os: ubuntu-22.04
-            target: linux
-          - os: macos-latest
-            target: macos
+        include: ${{ fromJSON((startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && '[{"os":"ubuntu-22.04","target":"linux"},{"os":"windows-latest","target":"windows"},{"os":"macos-latest","target":"macos"}]' || '[{"os":"ubuntu-22.04","target":"linux"}]') }}
     steps:
       - uses: actions/checkout@v4
 
