@@ -309,6 +309,38 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
 - A versão do `latest.json` sai do `tauri.conf.json`, não da tag. Se divergirem o cliente
   entra em laço: instala, continua anunciando a versão antiga, e atualiza de novo.
 
+**A pior de todas: build passando com o frontend errado**
+- `generate_context!` embute o `dist/` no binário em **tempo de compilação**, e o cargo
+  não recompilava quando só o frontend mudava. O `tauri build` terminava sem uma linha de
+  aviso e o app saía com a interface de quando o Rust mudou pela última vez — no caso,
+  com o `dist` **vazio** de antes do primeiro build com Vite. Tela preta, nenhum erro.
+  Várias versões foram instaladas assim.
+  > Consertado com `println!("cargo:rerun-if-changed=../dist")` no `build.rs`. Para
+  > confirmar que pegou: mude só um texto do HTML e veja se aparece
+  > `Compiling unkvoid-desktop` na saída. Se não aparecer, o app vai sair velho.
+
+**Testar o app**
+- A janela do Tauri **não tem console**: um erro de JavaScript deixa a tela preta e não
+  dá pista nenhuma. `native/apps/desktop/harness.html` abre o mesmo bundle num navegador
+  comum, com a ponte do Tauri fingida — foi assim que apareceu um
+  `this.update is not a function` que a tela preta escondia.
+
+  ```bash
+  cd native/apps/desktop && npm run build && python3 -m http.server 4599
+  # abra http://localhost:4599/harness.html
+  ```
+
+  O `window.unkvoid` é o app: dá para inspecionar estado e chamar métodos à mão.
+- **Compilar e abrir não é testar.** Várias correções foram dadas como prontas só porque
+  o app subia. Login, canal, chat e voz só provam que funcionam sendo clicados.
+
+**mediasoup**
+- O mediasoup-client escolhe a implementação de WebRTC **farejando o user-agent**, e o
+  WKWebView do Tauri não põe o token `Safari` no dele. A detecção devolve `undefined` e o
+  `load()` estoura com **"device not supported"** — a voz nunca funcionou dentro do app
+  por causa de uma palavra que falta numa string. `SfuClient.handler()` nomeia o handler
+  quando a detecção falha, e tem check próprio.
+
 **Google no app**
 - As rotas do OAuth do desktop viviam em `routes/api.php`, **que não tem sessão**, e o
   Socialite guarda o `state` do OAuth nela: **500 "Session store not set on request"**.

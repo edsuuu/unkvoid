@@ -19,7 +19,7 @@
                 @error('nickname') <p class="mt-1 text-sm text-[#f23f43]">{{ $message }}</p> @enderror
             </div>
 
-            <button type="submit" class="w-full rounded bg-[#5865f2] py-2.5 font-medium text-white hover:bg-[#4752c4]">{{ __('Continuar') }}</button>
+            <button type="submit" class="w-full rounded bg-[#5865f2] py-2.5 font-medium text-white hover:bg-[#4752c4]">{{ __('Continue') }}</button>
         </form>
     </div>
 </div>

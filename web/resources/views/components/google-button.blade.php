@@ -1,7 +1,7 @@
 <div class="space-y-4">
     <div class="flex items-center gap-3">
         <span class="h-px flex-1 bg-zinc-300 dark:bg-zinc-700"></span>
-        <span class="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{{ __('ou') }}</span>
+        <span class="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{{ __('or') }}</span>
         <span class="h-px flex-1 bg-zinc-300 dark:bg-zinc-700"></span>
     </div>
 

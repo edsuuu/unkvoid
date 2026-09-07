@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="pt-BR">
 <head>
 <meta charset="utf-8">
 <title>Unkvoid</title>
@@ -7,123 +7,152 @@
 </head>
 <body>
 
-<!-- Update: runs before anything else, as in Discord -->
-<section class="fullscreen" id="update-screen">
-  <div class="card">
-    <h1>Unkvoid</h1>
-    <p id="update-status">Looking for updates…</p>
-    <div class="notice"><span class="spinner"></span></div>
+<!-- Atualização: roda antes de qualquer coisa, como no Discord -->
+<section class="fixed inset-0 z-50 flex items-center justify-center bg-rail p-6" id="update-screen">
+  <div class="w-full max-w-[380px] rounded-lg bg-content p-8">
+    <h1 class="mb-1 text-[22px] font-semibold text-white">Unkvoid</h1>
+    <p class="mb-6 text-sm text-ink" id="update-status">Procurando atualizações…</p>
+    <div class="flex items-center gap-2 text-[13px] text-ink-soft">
+      <span class="size-[18px] animate-spin rounded-full border-2 border-white/25 border-t-white"></span>
+    </div>
   </div>
 </section>
 
-<!-- Without a server the app is useless: block instead of pretending it works -->
-<section class="fullscreen" id="offline-screen" hidden>
-  <div class="card">
-    <h1>No connection</h1>
-    <p>Unkvoid needs the server to work. Reconnecting…</p>
-    <div class="notice"><span class="spinner"></span><span id="offline-attempt"></span></div>
+<!-- Sem servidor o app não serve para nada: bloqueia em vez de fingir que funciona -->
+<section class="fixed inset-0 z-50 flex items-center justify-center bg-rail p-6" id="offline-screen" hidden>
+  <div class="w-full max-w-[380px] rounded-lg bg-content p-8">
+    <h1 class="mb-1 text-[22px] font-semibold text-white">Sem conexão</h1>
+    <p class="mb-6 text-sm text-ink">Reconectando…</p>
+    <div class="flex items-center gap-2 text-[13px] text-ink-soft">
+      <span class="size-[18px] animate-spin rounded-full border-2 border-white/25 border-t-white"></span>
+      <span id="offline-attempt"></span>
+    </div>
   </div>
 </section>
 
-<section class="fullscreen" id="login-screen" hidden>
-  <div class="card">
-    <h1>Sign in to your account</h1>
-    <p>Use the same login as discord.unkvoid.com</p>
+<section class="fixed inset-0 z-50 flex items-center justify-center bg-rail p-6" id="login-screen" hidden>
+  <div class="w-full max-w-[380px] rounded-lg bg-content p-8">
+    <h1 class="mb-1 text-[22px] font-semibold text-white">Entrar na sua conta</h1>
+    <p class="mb-6 text-sm text-ink">Use o mesmo login do discord.unkvoid.com</p>
 
     <form id="login-form">
-      <div class="field">
-        <label for="email">Email address</label>
-        <input id="email" type="email" autocomplete="username" required>
+      <div class="mb-[18px]">
+        <label class="mb-2 block text-xs font-bold uppercase tracking-wide text-ink" for="email">Endereço de e-mail</label>
+        <input class="w-full rounded border-0 bg-rail px-3 py-2.5 text-white outline-none focus:ring-2 focus:ring-brand" id="email" type="email" autocomplete="username" required>
       </div>
 
-      <div class="field">
-        <label for="password">Password</label>
-        <input id="password" type="password" autocomplete="current-password" required>
+      <div class="mb-[18px]">
+        <label class="mb-2 block text-xs font-bold uppercase tracking-wide text-ink" for="password">Senha</label>
+        <input class="w-full rounded border-0 bg-rail px-3 py-2.5 text-white outline-none focus:ring-2 focus:ring-brand" id="password" type="password" autocomplete="current-password" required>
       </div>
 
-      <button type="submit" class="button" id="sign-in-button">Sign in</button>
+      <button class="w-full cursor-pointer rounded bg-brand px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-brand-dark disabled:cursor-not-allowed disabled:opacity-50" type="submit" id="sign-in-button">Entrar</button>
 
-      <div style="display:flex;align-items:center;gap:12px;margin:20px 0 16px">
-        <span style="flex:1;height:1px;background:#3f4147"></span>
-        <span style="font-size:12px;color:#949ba4;text-transform:uppercase">or</span>
-        <span style="flex:1;height:1px;background:#3f4147"></span>
+      <div class="my-5 flex items-center gap-3">
+        <span class="h-px flex-1 bg-line"></span>
+        <span class="text-xs uppercase text-ink-soft">ou</span>
+        <span class="h-px flex-1 bg-line"></span>
       </div>
 
-      <button type="button" class="button neutral" id="google-button" style="width:100%">
-        Continue with Google
+      <button class="w-full cursor-pointer rounded bg-[#4e5058] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#6d6f78]" type="button" id="google-button">
+        Continuar com o Google
       </button>
 
-      <p class="error" id="login-error"></p>
+      <p class="mt-3 text-[13px] text-danger" id="login-error"></p>
     </form>
   </div>
 </section>
 
-<nav class="server-rail" id="server-rail"></nav>
+<nav class="flex w-[68px] shrink-0 flex-col items-center gap-2 overflow-y-auto rounded-lg bg-rail py-3" id="server-rail"></nav>
 
-<aside class="channels">
-  <header class="header"><span id="server-name">Home</span></header>
+<aside class="flex w-60 shrink-0 flex-col overflow-hidden rounded-lg bg-column">
+  <header class="flex h-12 shrink-0 items-center border-b border-row px-4 font-semibold text-white">
+    <span class="truncate" id="server-name">Início</span>
+  </header>
 
-  <div class="list" id="channel-list"></div>
+  <div class="flex-1 overflow-y-auto px-2 py-3" id="channel-list"></div>
 
-  <div class="voice" id="voice-bar" hidden>
-    <div class="voice-top">
-      <span class="avatar" style="background:var(--verde);width:8px;height:8px"></span>
-      <div class="voice-title">
-        Voice connected <span class="voice-channel" id="voice-clock"></span>
-        <div class="voice-channel" id="voice-channel"></div>
+  <div class="shrink-0 border-t border-row bg-panel px-2 py-2" id="voice-bar" hidden>
+    <div class="flex items-center gap-2 px-2">
+      <span class="size-2 shrink-0 rounded-full bg-online"></span>
+      <div class="min-w-0 flex-1 leading-tight">
+        <p class="truncate text-sm font-medium text-online">
+          Voz conectada <span class="font-mono text-xs text-ink-soft" id="voice-clock"></span>
+        </p>
+        <p class="truncate text-xs text-ink-soft" id="voice-channel"></p>
       </div>
-      <button class="button neutral" id="mute" style="flex:0;padding:6px 10px">Mute</button>
-      <button class="button neutral" id="mic-settings" style="flex:0;padding:6px 10px" title="Microphone settings">Mic</button>
-      <button class="button neutral" id="leave-voice" style="flex:0;padding:6px 10px">Leave</button>
+
+      <button class="shrink-0 cursor-pointer rounded bg-[#4e5058] px-2.5 py-1.5 text-xs font-medium text-white hover:bg-[#6d6f78]" id="mute">Silenciar</button>
+      <button class="shrink-0 cursor-pointer rounded bg-[#4e5058] px-2.5 py-1.5 text-xs font-medium text-white hover:bg-[#6d6f78]" id="mic-settings" title="Configurações do microfone">Microfone</button>
+      <button class="shrink-0 cursor-pointer rounded bg-[#4e5058] px-2.5 py-1.5 text-xs font-medium text-white hover:bg-[#6d6f78]" id="leave-voice">Sair</button>
     </div>
 
-    <div class="actions">
-      <select class="quality" id="quality">
+    <div class="mt-2 flex gap-2">
+      <select class="w-[68px] shrink-0 cursor-pointer rounded border-0 bg-rail px-1.5 py-1.5 text-xs text-ink focus:ring-0" id="quality">
         <option value="720">720p</option>
         <option value="1080" selected>1080p</option>
         <option value="1440">1440p</option>
       </select>
-      <button class="button" id="share">Share</button>
-      <button class="button danger" id="stop" hidden>Stop</button>
+      <button class="flex-1 cursor-pointer whitespace-nowrap rounded bg-brand px-2 py-1.5 text-sm font-medium text-white hover:bg-brand-dark" id="share">Compartilhar</button>
+      <button class="flex-1 cursor-pointer whitespace-nowrap rounded bg-danger px-2 py-1.5 text-sm font-medium text-white hover:bg-danger-dark" id="stop" hidden>Parar</button>
     </div>
 
-    <div class="meter"><span data-meter></span></div>
+    <div class="mt-2 h-1 overflow-hidden rounded-sm bg-rail">
+      <span class="block h-full w-0 bg-[#4e5058] transition-[width] duration-75" data-meter></span>
+    </div>
 
-    <div class="mic-panel" id="mic-panel" hidden>
-      <label class="row"><input type="radio" name="mic-mode" value="voice"> Voice activity</label>
-      <label class="row"><input type="radio" name="mic-mode" value="ptt"> Push to talk</label>
+    <div class="mt-2.5 flex flex-col gap-1.5 rounded-md bg-rail p-2.5 text-[13px]" id="mic-panel" hidden>
+      <label class="flex cursor-pointer items-center gap-2"><input class="accent-brand" type="radio" name="mic-mode" value="voice"> Detecção de voz</label>
+      <label class="flex cursor-pointer items-center gap-2"><input class="accent-brand" type="radio" name="mic-mode" value="ptt"> Apertar para falar</label>
 
       <div id="mic-voice">
-        <p class="section">Input sensitivity</p>
-        <input type="range" id="mic-threshold" min="-100" max="0" step="1">
+        <p class="mt-1 mb-1 text-xs font-bold uppercase tracking-wide text-ink-soft">Sensibilidade de entrada</p>
+        <input class="w-full accent-brand" type="range" id="mic-threshold" min="-100" max="0" step="1">
       </div>
 
       <div id="mic-key" hidden>
-        <p class="section">Key</p>
-        <button class="button neutral" id="mic-shortcut"></button>
+        <p class="mt-1 mb-1 text-xs font-bold uppercase tracking-wide text-ink-soft">Tecla</p>
+        <button class="w-full cursor-pointer rounded bg-[#4e5058] px-3 py-1.5 text-left text-white hover:bg-[#6d6f78]" id="mic-shortcut"></button>
       </div>
 
-      <label class="row"><input type="checkbox" id="mic-noise"> Noise suppression</label>
+      <label class="flex cursor-pointer items-center gap-2"><input class="accent-brand" type="checkbox" id="mic-noise"> Supressão de ruído</label>
 
-      <p class="section">This machine</p>
-      <label class="row"><input type="checkbox" id="autostart"> Start with the system</label>
-      <p class="hint">It opens in the tray, without a window in your face.</p>
+      <p class="mt-1 mb-1 text-xs font-bold uppercase tracking-wide text-ink-soft">Esta máquina</p>
+      <label class="flex cursor-pointer items-center gap-2"><input class="accent-brand" type="checkbox" id="autostart"> Iniciar com o sistema</label>
+      <p class="ml-[22px] text-xs text-ink-soft">Abre na bandeja, sem jogar uma janela na sua cara.</p>
     </div>
   </div>
 
-  <div class="user">
-    <span class="avatar large" id="my-avatar"></span>
-    <div style="flex:1;min-width:0">
-      <div class="name" id="my-name"></div>
-      <div class="state" id="my-state">Available</div>
+  <div class="flex h-[52px] shrink-0 items-center gap-2 bg-panel px-2">
+    <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand text-xs font-semibold text-white" id="my-avatar"></span>
+    <div class="min-w-0 flex-1 leading-tight">
+      <div class="truncate text-sm font-medium text-white" id="my-name"></div>
+      <div class="truncate text-xs text-ink-soft" id="my-state">Disponível</div>
     </div>
   </div>
 </aside>
 
-<main class="content">
-  <header class="header"><span id="channel-title">Select a channel</span></header>
-  <div class="stage" id="stage" hidden></div>
-  <div class="empty" id="empty">Choose a server to get started</div>
+<main class="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-content">
+  <header class="flex h-12 shrink-0 items-center border-b border-[#3a3c41] px-4 font-semibold text-white">
+    <span class="truncate" id="channel-title">Selecione um canal</span>
+  </header>
+  <div class="grid min-h-0 flex-1 gap-3 overflow-y-auto p-4" id="stage" hidden></div>
+
+  <section class="flex min-h-0 flex-1 flex-col" id="chat" hidden>
+    <div class="flex-1 space-y-4 overflow-y-auto px-4 py-4" id="messages"></div>
+
+    <form class="shrink-0 px-4 pb-5" id="message-form">
+      <input
+        class="w-full rounded-lg border-0 bg-[#383a40] px-4 py-3 text-ink placeholder-ink-dim outline-none focus:ring-0"
+        id="draft"
+        type="text"
+        maxlength="2000"
+        autocomplete="off"
+      >
+    </form>
+  </section>
+
+  <div class="flex flex-1 items-center justify-center text-sm text-ink-soft" id="empty">Escolha um servidor para começar</div>
 </main>
 
 <script type="module" src="app.js"></script>
