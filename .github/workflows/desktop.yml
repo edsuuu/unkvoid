@@ -178,7 +178,11 @@ jobs:
             native/target/release/bundle/dmg/*.dmg
             updater/bundle/*
           draft: false
-          prerelease: true
+          # NÃO marcar como pré-lançamento: o endpoint do auto-update é
+          # /releases/latest/download/latest.json, e o "latest" do GitHub IGNORA
+          # pré-lançamentos. Com todas marcadas assim, essa URL responde 404 e o app
+          # nunca acha atualização nenhuma — foi o que aconteceu da v0.2.0 à v0.7.0.
+          prerelease: false
           fail_on_unmatched_files: false
 
   # The app only updates itself if it finds this manifest, so it is published last:
@@ -242,4 +246,4 @@ jobs:
         with:
           files: latest.json
           draft: false
-          prerelease: true
+          prerelease: false
