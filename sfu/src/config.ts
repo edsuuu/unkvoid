@@ -1,3 +1,5 @@
+import type { RouterRtpCodecCapability, WorkerLogTag } from 'mediasoup/types';
+
 export const config = {
     listenHost: process.env.SFU_HOST ?? '127.0.0.1',
     listenPort: Number(process.env.SFU_PORT ?? 3000),
@@ -11,15 +13,31 @@ export const config = {
     mediaPort: Number(process.env.SFU_MEDIA_PORT ?? 40000),
 
     worker: {
-        logLevel: 'warn',
-        logTags: ['info', 'ice', 'dtls', 'rtp', 'srtp', 'rtcp', 'bwe', 'score', 'simulcast', 'svc'],
+        logLevel: 'warn' as const,
+        logTags: ['info', 'ice', 'dtls', 'rtp', 'srtp', 'rtcp', 'bwe', 'score', 'simulcast', 'svc'] as WorkerLogTag[],
     },
 
     router: {
         mediaCodecs: [
-            { kind: 'audio', mimeType: 'audio/opus', clockRate: 48000, channels: 2, parameters: { useinbandfec: 1, usedtx: 1 } },
-            { kind: 'video', mimeType: 'video/VP8', clockRate: 90000, parameters: { 'x-google-start-bitrate': 1000 } },
-            { kind: 'video', mimeType: 'video/VP9', clockRate: 90000, parameters: { 'profile-id': 2, 'x-google-start-bitrate': 1000 } },
+            {
+                kind: 'audio',
+                mimeType: 'audio/opus',
+                clockRate: 48000,
+                channels: 2,
+                parameters: { useinbandfec: 1, usedtx: 1 },
+            },
+            {
+                kind: 'video',
+                mimeType: 'video/VP8',
+                clockRate: 90000,
+                parameters: { 'x-google-start-bitrate': 1000 },
+            },
+            {
+                kind: 'video',
+                mimeType: 'video/VP9',
+                clockRate: 90000,
+                parameters: { 'profile-id': 2, 'x-google-start-bitrate': 1000 },
+            },
             {
                 kind: 'video',
                 mimeType: 'video/H264',
@@ -31,7 +49,7 @@ export const config = {
                     'x-google-start-bitrate': 1000,
                 },
             },
-        ],
+        ] as RouterRtpCodecCapability[],
     },
 
     transport: {
@@ -41,4 +59,4 @@ export const config = {
         initialAvailableOutgoingBitrate: 10_000_000,
         maxIncomingBitrate: 12_000_000,
     },
-};
+} as const;

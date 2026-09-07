@@ -85,7 +85,9 @@ repositório — o `SFU_SECRET` fica em `/var/www/projects/sfu/.env` (600).
    `onlyBuiltDependencies` e ainda sai com erro). O deploy roda o postinstall na mão.
 2. `pm2 restart <nome> --update-env` relê o ambiente do **shell**, não o
    `ecosystem.config.cjs`. Use `pm2 startOrRestart ecosystem.config.cjs --update-env`.
-3. Entrar de novo com o mesmo usuário **substitui** a sessão anterior em vez de ser
+3. `pm2 startOrRestart` **não** troca o caminho do script de um app já registrado —
+   o deploy faz `pm2 delete` + `pm2 start` para mudanças no ecosystem valerem.
+4. Entrar de novo com o mesmo usuário **substitui** a sessão anterior em vez de ser
    recusado — recusar prendia a pessoa fora quando um socket morria sem fechar. A
    remoção de participante compara o objeto, não o id: fechar o socket antigo não
    pode derrubar a sessão nova, que carrega o mesmo id.
@@ -94,8 +96,9 @@ repositório — o `SFU_SECRET` fica em `/var/www/projects/sfu/.env` (600).
 
 ## A API de mídia
 
-Escrita por nós, na estrutura do MoneyClips: rota → Request (validação na fronteira,
-com acessores) → controller magro → Service → **retorno sempre via Resource**.
+Escrita por nós em **TypeScript** (strict), na estrutura do MoneyClips: rota → Request
+(validação na fronteira, com acessores) → controller magro → Service → **retorno
+sempre via Resource**. Compila para `dist/`, e o pm2 roda `dist/server.js`.
 
 ```
 src/
@@ -115,7 +118,9 @@ O mediasoup entra só como motor de transporte (ICE, DTLS, SRTP, RTP, estimativa
 banda) — o mesmo papel que o Pion faz dentro do LiveKit.
 
 ```bash
-cd sfu && pnpm run check   # 14 asserções sobre o contrato da API
+cd sfu && pnpm run build       # tsc
+cd sfu && pnpm run typecheck   # tsc --noEmit
+cd sfu && pnpm run check       # asserções sobre o contrato da API
 ```
 
 O check já pegou um bug real: o `SFU_SECRET` não estava chegando na VPS.
@@ -130,8 +135,15 @@ O check já pegou um bug real: o `SFU_SECRET` não estava chegando na VPS.
 - **Só entra em servidor por link de convite** (`/convite/{code}`) e **só logado**
 - Papéis por servidor: `owner`, `admin`, `member`
 
-O dono/admin pode **encerrar a transmissão** de alguém e **expulsar da chamada**. Isso
-é verificado nos dois lados: no Laravel (quem pode disparar) e no SFU (o papel vem
+Moderação em três níveis, propositalmente separados:
+
+| Ação | Onde | Efeito |
+|---|---|---|
+| Encerrar transmissão | SFU | para de publicar; **continua na chamada e no chat** |
+| Tirar da chamada | SFU | sai da voz; **continua membro e no chat** |
+| Remover do servidor | Laravel | perde acesso a tudo — única destrutiva |
+
+Verificado nos dois lados: no Laravel (quem pode disparar) e no SFU (o papel vem
 assinado dentro do token, o cliente não escolhe).
 
 **Token de voz:** `POST /api/voz/{channel}/token` verifica canal de voz → membro do

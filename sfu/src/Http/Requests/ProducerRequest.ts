@@ -1,11 +1,11 @@
 import { Request } from './Request.js';
 
 export class ProducerRequest extends Request {
-    validate() {
+    protected override validate(): void {
         this.string('producerId');
     }
 
-    producerId() {
+    producerId(): string {
         return this.string('producerId');
     }
 }

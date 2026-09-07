@@ -1,11 +1,11 @@
 import { Request } from './Request.js';
 
 export class JoinRequest extends Request {
-    validate() {
+    protected override validate(): void {
         this.string('token');
     }
 
-    token() {
+    token(): string {
         return this.string('token');
     }
 }

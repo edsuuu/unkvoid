@@ -1,8 +1,10 @@
+import type { ProduceRequest } from '../Requests/ProduceRequest.js';
+import type { ProducerRequest } from '../Requests/ProducerRequest.js';
 import { ProducerResource } from '../Resources/ProducerResource.js';
 import { StatusResource } from '../Resources/StatusResource.js';
 
 export class ProducerController {
-    async store(request) {
+    async store(request: ProduceRequest): Promise<ProducerResource> {
         const peer = request.peer();
         const room = request.room();
 
@@ -26,7 +28,7 @@ export class ProducerController {
         return new ProducerResource(producer);
     }
 
-    destroy(request) {
+    destroy(request: ProducerRequest): StatusResource {
         const peer = request.peer();
         const producer = peer.producers.get(request.producerId());
 

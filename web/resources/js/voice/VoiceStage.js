@@ -15,8 +15,14 @@ export class VoiceStage {
         document.addEventListener('livewire:init', () => {
             Livewire.on('voice-join', payload => this.join(payload.channelId, payload.channelName));
             Livewire.on('voice-stop-broadcast', payload => this.moderate('stopBroadcastOf', payload.userId));
-            Livewire.on('voice-kick', payload => this.moderate('kick', payload.userId));
+            Livewire.on('voice-disconnect', payload => this.moderate('disconnectPeer', payload.userId));
             Livewire.on('url-changed', payload => history.replaceState({}, '', payload.url));
+        });
+
+        document.addEventListener('change', event => {
+            if (event.target.matches('[data-quality]')) {
+                this.applyQuality(event.target.value);
+            }
         });
 
         document.addEventListener('click', event => {
@@ -87,7 +93,10 @@ export class VoiceStage {
         this.client.addEventListener('producerClosed', event => this.removeTile(event.detail.producerId));
         this.client.addEventListener('peerProducersClosed', event => this.removePeerTiles(event.detail.peerId));
         this.client.addEventListener('broadcastStopped', event => this.status(`${event.detail.by} encerrou sua transmissão`));
-        this.client.addEventListener('kicked', () => { this.status('você foi removido da chamada'); this.leave(); });
+        this.client.addEventListener('disconnected', event => {
+            this.status(`${event.detail.by} tirou você da chamada`);
+            this.leave();
+        });
         this.client.addEventListener('shareEnded', () => this.stopShare());
         this.client.addEventListener('closed', () => this.teardown());
         this.client.addEventListener('peersChanged', () => this.renderMembers());
@@ -171,7 +180,10 @@ export class VoiceStage {
                 title="Mutar o áudio desta transmissão"
                 class="cursor-pointer rounded px-1.5 py-0.5 hover:bg-[#35373c] hover:text-white">🔊</button>
             <button type="button" data-tile-action="focus" data-tile-id="${producerId}"
-                title="Focar nesta transmissão"
+                title="Ver só esta (esconde as outras)"
+                class="cursor-pointer rounded px-1.5 py-0.5 hover:bg-[#35373c] hover:text-white">◱</button>
+            <button type="button" data-tile-action="fullscreen" data-tile-id="${producerId}"
+                title="Tela cheia"
                 class="cursor-pointer rounded px-1.5 py-0.5 hover:bg-[#35373c] hover:text-white">⛶</button>
             <button type="button" data-tile-action="close" data-tile-id="${producerId}"
                 title="Parar de assistir (libera banda)"
@@ -181,6 +193,19 @@ export class VoiceStage {
         tile.append(video, bar);
         this.grid()?.appendChild(tile);
         this.layoutGrid();
+    }
+
+    async applyQuality(profile) {
+        if (! this.client?.producers.has('screen')) {
+            return;
+        }
+
+        try {
+            await this.client.changeQuality(profile);
+            this.status(`qualidade em ${profile}p`);
+        } catch (error) {
+            this.status(`não trocou a qualidade: ${error.message}`);
+        }
     }
 
     async tileAction(action, button) {
@@ -204,6 +229,18 @@ export class VoiceStage {
         if (action === 'focus') {
             this.focused = this.focused === button.dataset.tileId ? null : button.dataset.tileId;
             this.layoutGrid();
+
+            return;
+        }
+
+        if (action === 'fullscreen' && tile) {
+            if (document.fullscreenElement) {
+                await document.exitFullscreen();
+
+                return;
+            }
+
+            await tile.requestFullscreen().catch(error => this.status(`tela cheia recusada: ${error.message}`));
 
             return;
         }
@@ -237,12 +274,23 @@ export class VoiceStage {
         if (this.focused && grid.querySelector(`[data-tile="${this.focused}"]`)) {
             grid.style.gridTemplateColumns = '1fr';
             tiles.forEach(tile => tile.classList.toggle('hidden', tile.dataset.tile !== this.focused));
+            document.querySelector('[data-voice-empty]')?.style.setProperty('display', 'none');
 
             return;
         }
 
         tiles.forEach(tile => tile.classList.remove('hidden'));
-        grid.style.gridTemplateColumns = tiles.length > 1 ? 'repeat(2, minmax(0, 1fr))' : '1fr';
+
+        const columns = tiles.length <= 1 ? 1 : tiles.length <= 4 ? 2 : 3;
+
+        grid.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
+        grid.style.gridAutoRows = tiles.length <= 2 ? '1fr' : 'minmax(0, 1fr)';
+
+        const empty = document.querySelector('[data-voice-empty]');
+
+        if (empty) {
+            empty.style.display = tiles.length ? 'none' : '';
+        }
     }
 
     showStage(visible, channelName = null) {

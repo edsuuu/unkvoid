@@ -20,7 +20,7 @@ module.exports = {
     apps: [
         {
             name: 'sfu',
-            script: 'src/server.js',
+            script: 'dist/server.js',
             cwd: '/var/www/projects/sfu',
             instances: 1,
             autorestart: true,

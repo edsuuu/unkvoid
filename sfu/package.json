@@ -5,8 +5,10 @@
     "type": "module",
     "main": "src/server.js",
     "scripts": {
-        "start": "node src/server.js",
-        "check": "node check.mjs"
+        "build": "tsc",
+        "start": "node dist/server.js",
+        "check": "node check.mjs",
+        "typecheck": "tsc --noEmit"
     },
     "dependencies": {
         "mediasoup": "^3.26.0",
@@ -17,5 +19,10 @@
             "mediasoup"
         ]
     },
-    "description": "API centralizada de m\u00eddia (SFU) do Discord 2.0"
+    "description": "API centralizada de m\u00eddia (SFU) do Discord 2.0",
+    "devDependencies": {
+        "typescript": "^5.9.0",
+        "@types/node": "^24.0.0",
+        "@types/ws": "^8.18.0"
+    }
 }

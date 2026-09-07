@@ -1,13 +1,12 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import { UnauthorizedException } from '../Exceptions/ApiException.js';
+import type { TokenClaims } from '../types.js';
 
 export class TokenVerifier {
-    constructor(secret) {
-        this.secret = secret;
-    }
+    constructor(private readonly secret: string) {}
 
-    verify(token) {
+    verify(token: string): TokenClaims {
         if (! this.secret) {
             throw new UnauthorizedException('o SFU está sem SFU_SECRET configurado');
         }
@@ -18,7 +17,7 @@ export class TokenVerifier {
             throw new UnauthorizedException('token malformado');
         }
 
-        const [header, body, signature] = parts;
+        const [header, body, signature] = parts as [string, string, string];
         const expected = createHmac('sha256', this.secret).update(`${header}.${body}`).digest();
         const received = Buffer.from(signature, 'base64url');
 
@@ -26,7 +25,7 @@ export class TokenVerifier {
             throw new UnauthorizedException('assinatura inválida');
         }
 
-        const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+        const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as Partial<TokenClaims>;
 
         if (typeof claims.exp !== 'number' || claims.exp < Math.floor(Date.now() / 1000)) {
             throw new UnauthorizedException('token expirado');
@@ -36,6 +35,6 @@ export class TokenVerifier {
             throw new UnauthorizedException('token sem identidade ou sala');
         }
 
-        return claims;
+        return claims as TokenClaims;
     }
 }

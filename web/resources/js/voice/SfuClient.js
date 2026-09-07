@@ -193,6 +193,42 @@ export class SfuClient extends EventTarget {
         return { hasAudio: Boolean(audioTrack), track: videoTrack };
     }
 
+    /**
+     * Troca a qualidade sem parar de compartilhar: reconfigura a captura e o encoder
+     * no lugar, sem republicar o track (republicar faria a tela piscar para todo mundo).
+     */
+    async changeQuality(profile) {
+        const producer = this.producers.get('screen');
+        const preset = PROFILES[profile];
+
+        if (!producer || !preset) {
+            return false;
+        }
+
+        await producer.track.applyConstraints({
+            width: { ideal: preset.width },
+            height: { ideal: preset.height },
+            frameRate: { ideal: preset.frameRate },
+        });
+
+        const sender = producer.rtpSender;
+
+        if (!sender) {
+            return true;
+        }
+
+        const parameters = sender.getParameters();
+
+        for (const encoding of parameters.encodings ?? []) {
+            encoding.maxBitrate = preset.bitrate;
+            encoding.maxFramerate = preset.frameRate;
+        }
+
+        await sender.setParameters(parameters);
+
+        return true;
+    }
+
     buildEncodings(preset, codec, simulcast) {
         if (codec === 'vp9' || codec === 'av1') {
             return [{ maxBitrate: preset.bitrate, scalabilityMode: 'L3T3_KEY' }];
@@ -287,8 +323,8 @@ export class SfuClient extends EventTarget {
         return this.request('stopBroadcast', { peerId });
     }
 
-    kick(peerId) {
-        return this.request('kickPeer', { peerId });
+    disconnectPeer(peerId) {
+        return this.request('disconnectPeer', { peerId });
     }
 
     async outboundStats() {

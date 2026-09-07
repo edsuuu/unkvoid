@@ -1,21 +1,23 @@
+import type { RtpCapabilities } from 'mediasoup/types';
+
 import { Request } from './Request.js';
 
 export class ConsumeRequest extends Request {
-    validate() {
+    protected override validate(): void {
         this.string('transportId');
         this.string('producerId');
         this.object('rtpCapabilities');
     }
 
-    transportId() {
+    transportId(): string {
         return this.string('transportId');
     }
 
-    producerId() {
+    producerId(): string {
         return this.string('producerId');
     }
 
-    rtpCapabilities() {
-        return this.object('rtpCapabilities');
+    rtpCapabilities(): RtpCapabilities {
+        return this.object<RtpCapabilities>('rtpCapabilities');
     }
 }

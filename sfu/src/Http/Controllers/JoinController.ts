@@ -1,13 +1,13 @@
 import { ValidationException } from '../../Exceptions/ApiException.js';
+import type { RoomRegistry } from '../../Services/RoomRegistry.js';
+import type { TokenVerifier } from '../../Services/TokenVerifier.js';
 import { JoinResource } from '../Resources/JoinResource.js';
+import type { JoinRequest } from '../Requests/JoinRequest.js';
 
 export class JoinController {
-    constructor(registry, tokens) {
-        this.registry = registry;
-        this.tokens = tokens;
-    }
+    constructor(private readonly registry: RoomRegistry, private readonly tokens: TokenVerifier) {}
 
-    async __invoke(request) {
+    async handle(request: JoinRequest): Promise<JoinResource> {
         // Sem esta guarda, rejoinar no mesmo socket faria a substituição de sessão
         // fechar o próprio socket antes de responder.
         if (request.session.peer) {

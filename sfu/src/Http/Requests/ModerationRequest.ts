@@ -1,11 +1,11 @@
 import { Request } from './Request.js';
 
 export class ModerationRequest extends Request {
-    validate() {
+    protected override validate(): void {
         this.string('peerId');
     }
 
-    targetPeerId() {
+    targetPeerId(): string {
         return this.string('peerId');
     }
 }

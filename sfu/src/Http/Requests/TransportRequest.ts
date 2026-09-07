@@ -1,16 +1,18 @@
+import type { DtlsParameters } from 'mediasoup/types';
+
 import { Request } from './Request.js';
 
 export class TransportRequest extends Request {
-    validate() {
+    protected override validate(): void {
         this.string('transportId');
         this.object('dtlsParameters');
     }
 
-    transportId() {
+    transportId(): string {
         return this.string('transportId');
     }
 
-    dtlsParameters() {
-        return this.object('dtlsParameters');
+    dtlsParameters(): DtlsParameters {
+        return this.object<DtlsParameters>('dtlsParameters');
     }
 }

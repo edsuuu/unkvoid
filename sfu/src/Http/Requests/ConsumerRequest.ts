@@ -1,19 +1,19 @@
 import { Request } from './Request.js';
 
 export class ConsumerRequest extends Request {
-    validate() {
+    protected override validate(): void {
         this.string('consumerId');
     }
 
-    consumerId() {
+    consumerId(): string {
         return this.string('consumerId');
     }
 
-    spatialLayer() {
-        return this.integerOrNull('spatialLayer');
+    spatialLayer(): number {
+        return this.integerOrNull('spatialLayer') ?? 2;
     }
 
-    temporalLayer() {
+    temporalLayer(): number | undefined {
         return this.integerOrNull('temporalLayer');
     }
 }

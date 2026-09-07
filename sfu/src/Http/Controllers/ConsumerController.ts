@@ -1,9 +1,11 @@
 import { ValidationException } from '../../Exceptions/ApiException.js';
+import type { ConsumeRequest } from '../Requests/ConsumeRequest.js';
+import type { ConsumerRequest } from '../Requests/ConsumerRequest.js';
 import { ConsumerResource } from '../Resources/ConsumerResource.js';
 import { StatusResource } from '../Resources/StatusResource.js';
 
 export class ConsumerController {
-    async store(request) {
+    async store(request: ConsumeRequest): Promise<ConsumerResource> {
         const room = request.room();
         const peer = request.peer();
 
@@ -31,19 +33,19 @@ export class ConsumerController {
         return new ConsumerResource(consumer, owner);
     }
 
-    async resume(request) {
+    async resume(request: ConsumerRequest): Promise<StatusResource> {
         await request.peer().getConsumer(request.consumerId()).resume();
 
         return new StatusResource('resumed');
     }
 
-    async pause(request) {
+    async pause(request: ConsumerRequest): Promise<StatusResource> {
         await request.peer().getConsumer(request.consumerId()).pause();
 
         return new StatusResource('paused');
     }
 
-    async setPreferredLayers(request) {
+    async setPreferredLayers(request: ConsumerRequest): Promise<StatusResource> {
         await request.peer().getConsumer(request.consumerId()).setPreferredLayers({
             spatialLayer: request.spatialLayer(),
             temporalLayer: request.temporalLayer(),

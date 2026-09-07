@@ -1,12 +1,12 @@
 export class ApiException extends Error {
-    constructor(message, status = 400) {
+    constructor(message: string, public readonly status: number = 400) {
         super(message);
-        this.status = status;
+        this.name = new.target.name;
     }
 }
 
 export class ValidationException extends ApiException {
-    constructor(message) {
+    constructor(message: string) {
         super(message, 422);
     }
 }

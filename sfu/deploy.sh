@@ -6,9 +6,12 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 REMOTE="${1:-vps}"
 TARGET="/var/www/projects/sfu"
 
+echo "[INFO] compilando TypeScript"
+pnpm run build
+
 echo "[INFO] enviando para $REMOTE:$TARGET"
 rsync -az --exclude node_modules \
-    ./src ./check.mjs ./.env.example ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ./ecosystem.config.cjs \
+    ./dist ./check.mjs ./.env.example ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ./ecosystem.config.cjs \
     "$REMOTE:$TARGET/"
 
 # ponytail: o pnpm 11 ignora onlyBuiltDependencies e ainda SAI COM ERRO por isso,
@@ -25,7 +28,8 @@ ssh "$REMOTE" "set -e
         echo '[ERRO] worker do mediasoup nao foi instalado' >&2
         exit 1
     fi
-    pm2 startOrRestart ecosystem.config.cjs --update-env
+    pm2 delete sfu > /dev/null 2>&1 || true
+    pm2 start ecosystem.config.cjs --update-env
     pm2 save
     sleep 2
     curl -sf http://127.0.0.1:3000/health && echo"

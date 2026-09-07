@@ -1,8 +1,14 @@
 import { ForbiddenException } from '../../Exceptions/ApiException.js';
+import type { Peer } from '../../Services/Peer.js';
+import type { ModerationRequest } from '../Requests/ModerationRequest.js';
 import { StatusResource } from '../Resources/StatusResource.js';
 
 export class ModerationController {
-    stopBroadcast(request) {
+    /**
+     * Encerra a transmissão sem tirar a pessoa da sala: ela continua na chamada e no
+     * chat, só para de publicar. Expulsar do servidor é outra coisa, e mora no Laravel.
+     */
+    stopBroadcast(request: ModerationRequest): StatusResource {
         const target = this.authorize(request);
 
         target.closeProducers();
@@ -12,16 +18,19 @@ export class ModerationController {
         return new StatusResource('broadcast-stopped');
     }
 
-    kick(request) {
+    /**
+     * Tira da chamada de voz. A pessoa segue membro do servidor e do chat.
+     */
+    disconnect(request: ModerationRequest): StatusResource {
         const target = this.authorize(request);
 
-        target.send('kicked', { by: request.peer().name });
+        target.send('disconnected', { by: request.peer().name });
         target.socket.close();
 
-        return new StatusResource('kicked');
+        return new StatusResource('disconnected');
     }
 
-    authorize(request) {
+    private authorize(request: ModerationRequest): Peer {
         const actor = request.peer();
 
         if (! actor.canModerate()) {

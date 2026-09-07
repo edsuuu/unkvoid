@@ -31,6 +31,10 @@ final class Shell extends Component
 
     public bool $creatingServer = false;
 
+    public bool $editingServer = false;
+
+    public string $serverName = '';
+
     public function mount(?string $server = null, ?string $channel = null): void
     {
         $this->serverId = $server ?? $this->serverId;
@@ -58,6 +62,7 @@ final class Shell extends Component
         if ($channel->type === 'text') {
             $this->channelId = $channelId;
             $this->syncUrl();
+            $this->dispatch('stage-changed', stage: 'text');
 
             return;
         }
@@ -109,7 +114,34 @@ final class Shell extends Component
         unset($this->messages);
     }
 
-    public function kickMember(string $memberId): void
+    /**
+     * Encerra a transmissão. A pessoa continua na chamada e no chat.
+     */
+    public function stopBroadcast(string $userId): void
+    {
+        if (! $this->viewerMember?->canModerate()) {
+            return;
+        }
+
+        $this->dispatch('voice-stop-broadcast', userId: $userId);
+    }
+
+    /**
+     * Tira da chamada de voz. Continua membro do servidor e do chat.
+     */
+    public function disconnectFromVoice(string $userId): void
+    {
+        if (! $this->viewerMember?->canModerate()) {
+            return;
+        }
+
+        $this->dispatch('voice-disconnect', userId: $userId);
+    }
+
+    /**
+     * Remove do servidor. Esta é a única ação destrutiva das três.
+     */
+    public function removeMember(string $memberId): void
     {
         if (! $this->viewerMember?->canModerate()) {
             return;
@@ -125,17 +157,58 @@ final class Shell extends Component
         $member->delete();
 
         unset($this->members);
-        $this->dispatch('voice-kick', userId: $userId);
+        $this->dispatch('voice-disconnect', userId: $userId);
         $this->dispatch('toast', variant: 'success', text: __('Membro removido do servidor.'));
     }
 
-    public function stopBroadcast(string $userId): void
+    public function openServerSettings(): void
     {
-        if (! $this->viewerMember?->canModerate()) {
+        $this->serverName = $this->currentServer?->name ?? '';
+        $this->editingServer = true;
+    }
+
+    public function updateServer(): void
+    {
+        if ($this->viewerMember?->role !== 'owner') {
             return;
         }
 
-        $this->dispatch('voice-stop-broadcast', userId: $userId);
+        $validated = $this->validate(['serverName' => ['required', 'string', 'min:2', 'max:60']]);
+
+        try {
+            $this->currentServer->update(['name' => $validated['serverName']]);
+        } catch (Throwable $exception) {
+            Log::channel('servers')->error('[ERRO] falha ao renomear servidor', ['exception' => $exception]);
+            $this->dispatch('toast', variant: 'error', text: __('Não foi possível renomear.'));
+
+            return;
+        }
+
+        unset($this->servers, $this->currentServer);
+        $this->editingServer = false;
+        $this->dispatch('toast', variant: 'success', text: __('Servidor renomeado.'));
+    }
+
+    public function deleteServer(): void
+    {
+        if ($this->viewerMember?->role !== 'owner') {
+            return;
+        }
+
+        try {
+            $this->currentServer->delete();
+        } catch (Throwable $exception) {
+            Log::channel('servers')->error('[ERRO] falha ao excluir servidor', ['exception' => $exception]);
+            $this->dispatch('toast', variant: 'error', text: __('Não foi possível excluir.'));
+
+            return;
+        }
+
+        $this->editingServer = false;
+        $this->serverId = null;
+        $this->channelId = null;
+        $this->ensureSelection();
+        $this->dispatch('toast', variant: 'success', text: __('Servidor excluído.'));
     }
 
     public function toggleMembers(): void

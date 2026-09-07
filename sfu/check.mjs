@@ -122,20 +122,20 @@ const run = async () => {
     await member.open();
     await member.call('join', { token: mint({ sub: 'member-uuid', name: 'Membro', room, role: 'member' }) });
 
-    reply = await member.call('kickPeer', { peerId: 'owner-uuid' });
-    assert.equal(reply.status, 403, 'membro comum não pode expulsar');
+    reply = await member.call('disconnectPeer', { peerId: 'owner-uuid' });
+    assert.equal(reply.status, 403, 'membro comum não pode desconectar ninguém');
 
-    reply = await owner.call('kickPeer', { peerId: 'owner-uuid' });
+    reply = await owner.call('disconnectPeer', { peerId: 'owner-uuid' });
     assert.equal(reply.status, 403, 'ninguém modera a si mesmo');
 
     reply = await owner.call('stopBroadcast', { peerId: 'member-uuid' });
     assert.equal(reply.ok, true, 'dono pode encerrar transmissão de membro');
 
-    reply = await owner.call('kickPeer', { peerId: 'nao-existe' });
+    reply = await owner.call('disconnectPeer', { peerId: 'nao-existe' });
     assert.equal(reply.status, 404, 'alvo inexistente deve dar 404');
 
-    reply = await owner.call('kickPeer', { peerId: 'member-uuid' });
-    assert.equal(reply.ok, true, 'dono pode expulsar membro');
+    reply = await owner.call('disconnectPeer', { peerId: 'member-uuid' });
+    assert.equal(reply.ok, true, 'dono pode desconectar membro da chamada');
 
     guest.close();
     owner.close();

@@ -1,16 +1,17 @@
 import * as mediasoup from 'mediasoup';
+import type { WebRtcServer, Worker } from 'mediasoup/types';
 
 import { config } from '../config.js';
 import { Room } from './Room.js';
 
 export class RoomRegistry {
-    constructor() {
-        this.worker = null;
-        this.webRtcServer = null;
-        this.rooms = new Map();
-    }
+    private worker: Worker | null = null;
 
-    async boot() {
+    private webRtcServer: WebRtcServer | null = null;
+
+    private readonly rooms = new Map<string, Room>();
+
+    async boot(): Promise<void> {
         this.worker = await mediasoup.createWorker(config.worker);
 
         this.worker.on('died', () => {
@@ -26,11 +27,15 @@ export class RoomRegistry {
         });
     }
 
-    async findOrCreate(roomId) {
+    async findOrCreate(roomId: string): Promise<Room> {
         const existing = this.rooms.get(roomId);
 
         if (existing) {
             return existing;
+        }
+
+        if (!this.worker || !this.webRtcServer) {
+            throw new Error('o registro de salas não foi inicializado');
         }
 
         const room = await Room.create(this.worker, this.webRtcServer, roomId);
@@ -40,7 +45,7 @@ export class RoomRegistry {
         return room;
     }
 
-    release(room) {
+    release(room: Room): void {
         if (! room.isEmpty()) {
             return;
         }
@@ -49,7 +54,7 @@ export class RoomRegistry {
         this.rooms.delete(room.id);
     }
 
-    stats() {
+    stats(): { rooms: number; peers: number } {
         return {
             rooms: this.rooms.size,
             peers: [...this.rooms.values()].reduce((total, room) => total + room.peers.size, 0),

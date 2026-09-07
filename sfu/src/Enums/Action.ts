@@ -1,4 +1,4 @@
-export const Action = Object.freeze({
+export const Action = {
     Join: 'join',
     CreateTransport: 'createTransport',
     ConnectTransport: 'connectTransport',
@@ -9,5 +9,7 @@ export const Action = Object.freeze({
     PauseConsumer: 'pauseConsumer',
     SetPreferredLayers: 'setPreferredLayers',
     StopBroadcast: 'stopBroadcast',
-    KickPeer: 'kickPeer',
-});
+    DisconnectPeer: 'disconnectPeer',
+} as const;
+
+export type ActionName = (typeof Action)[keyof typeof Action];
