@@ -3,7 +3,9 @@
  * sends it to the reconnect screen instead of letting the interface show stale data.
  */
 export class Api {
-    static BASE = localStorage.getItem('api:base') ?? 'https://discord.unkvoid.com';
+    // VITE_API_BASE points a local build at a local stack; the localStorage override
+    // stays for poking at a shipped build without rebuilding it.
+    static BASE = import.meta.env.VITE_API_BASE ?? localStorage.getItem('api:base') ?? 'https://discord.unkvoid.com';
 
     constructor(onOffline) {
         this.token = localStorage.getItem('api:token');

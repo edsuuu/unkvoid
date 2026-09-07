@@ -1,5 +1,3 @@
-import { Signaling } from './signaling.js';
-
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -12,35 +10,34 @@ const STUN = ['stun:stun.l.google.com:19302'];
  * bar. The receiver uses the webview's WebRTC — it handles video well, so there
  * is no need to decode or render in Rust.
  *
- * Above 3 viewers, the broadcaster's upload multiplies (4 people at 1080p
- * ≈ 28 Mbps upstream), and the SFU becomes worthwhile again.
+ * It rides on the SfuClient's socket instead of opening its own. Two sockets would
+ * be two sessions with the same participant id, and the SFU replaces the older one:
+ * joining would knock out the voice that had just connected.
+ *
+ * Above 3 viewers the broadcaster's upload multiplies (4 people at 1080p ≈ 28 Mbps
+ * upstream), and the SFU becomes worthwhile again.
  */
 export class P2P {
     static LIMITE_P2P = 3;
 
-    constructor(aoReceberTela) {
-        this.sinal = new Signaling();
+    constructor(sfu, aoReceberTela) {
+        this.sfu = sfu;
         this.recebendo = new Map();
         this.transmitindo = false;
         this.aoReceberTela = aoReceberTela;
     }
 
-    async join(url, token) {
-        this.sinal.addEventListener('signal', evento => this.tratarSinal(evento.detail));
-        this.sinal.addEventListener('peerLeft', evento => this.encerrarRecepcao(evento.detail.peerId));
-
-        const entrada = await this.sinal.connect(url, token);
-
-        this.sinal.addEventListener('peerJoined', evento => this.oferecerA(evento.detail.peerId));
+    async attach() {
+        this.sfu.addEventListener('signal', evento => this.tratarSinal(evento.detail));
+        this.sfu.addEventListener('peerLeft', evento => this.encerrarRecepcao(evento.detail.peerId));
+        this.sfu.addEventListener('peerJoined', evento => this.oferecerA(evento.detail.peerId));
 
         // Each Rust-side connection sends its own, already-addressed candidates.
         await listen('p2p:signal', evento => {
             const [destino, candidato] = evento.payload;
 
-            void this.sinal.signal(destino, 'candidate', { candidate: candidato });
+            void this.sfu.signal(destino, 'candidate', { candidate: candidato });
         });
-
-        return entrada;
     }
 
     /**
@@ -63,14 +60,14 @@ export class P2P {
 
     /** One connection per viewer — including those who join after it starts. */
     async oferecerA(peerId) {
-        if (! this.transmitindo || peerId === this.sinal.peerId) {
+        if (! this.transmitindo || peerId === this.sfu.peerId) {
             return;
         }
 
         try {
             const sdp = await invoke('offer_to', { peerId });
 
-            await this.sinal.signal(peerId, 'offer', { sdp });
+            await this.sfu.signal(peerId, 'offer', { sdp });
         } catch (falha) {
             console.warn(`could not offer to ${peerId}:`, falha);
         }
@@ -114,7 +111,7 @@ export class P2P {
 
         conexao.onicecandidate = evento => {
             if (evento.candidate) {
-                void this.sinal.signal(de, 'candidate', { candidate: JSON.stringify(evento.candidate.toJSON()) });
+                void this.sfu.signal(de, 'candidate', { candidate: JSON.stringify(evento.candidate.toJSON()) });
             }
         };
 
@@ -125,7 +122,7 @@ export class P2P {
         const resposta = await conexao.createAnswer();
 
         await conexao.setLocalDescription(resposta);
-        await this.sinal.signal(de, 'answer', { sdp: resposta.sdp });
+        await this.sfu.signal(de, 'answer', { sdp: resposta.sdp });
     }
 
     async adicionarCandidato(de, json) {
@@ -158,7 +155,5 @@ export class P2P {
         for (const de of [...this.recebendo.keys()]) {
             this.encerrarRecepcao(de);
         }
-
-        this.sinal.close();
     }
 }

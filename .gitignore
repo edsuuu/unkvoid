@@ -18,3 +18,4 @@ web/bootstrap/cache/*.php
 
 native/target/
 native/apps/desktop/node_modules/
+native/apps/desktop/dist/

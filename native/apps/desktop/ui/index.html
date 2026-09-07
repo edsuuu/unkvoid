@@ -72,6 +72,8 @@
         Voice connected <span class="voz-canal" id="voz-relogio"></span>
         <div class="voz-canal" id="voz-canal"></div>
       </div>
+      <button class="botao neutro" id="mudo" style="flex:0;padding:6px 10px">Mute</button>
+      <button class="botao neutro" id="config-mic" style="flex:0;padding:6px 10px" title="Microphone settings">Mic</button>
       <button class="botao neutro" id="sair-voz" style="flex:0;padding:6px 10px">Leave</button>
     </div>
 
@@ -83,6 +85,25 @@
       </select>
       <button class="botao" id="compartilhar">Share</button>
       <button class="botao perigo" id="parar" hidden>Stop</button>
+    </div>
+
+    <div class="medidor"><span data-medidor></span></div>
+
+    <div class="painel-mic" id="painel-mic" hidden>
+      <label class="linha"><input type="radio" name="modo-mic" value="voice"> Voice activity</label>
+      <label class="linha"><input type="radio" name="modo-mic" value="ptt"> Push to talk</label>
+
+      <div id="mic-voz">
+        <p class="secao">Input sensitivity</p>
+        <input type="range" id="mic-limiar" min="-100" max="0" step="1">
+      </div>
+
+      <div id="mic-tecla" hidden>
+        <p class="secao">Key</p>
+        <button class="botao neutro" id="mic-atalho"></button>
+      </div>
+
+      <label class="linha"><input type="checkbox" id="mic-ruido"> Noise suppression</label>
     </div>
   </div>
 

@@ -284,8 +284,12 @@
             </div>
             </button>
 
-            <button type="button" data-action="toggle-mic" class="cursor-pointer rounded p-1.5 text-[#b5bac1] transition-colors hover:bg-[#35373c] hover:text-white" title="{{ __('Microfone') }}">
+            <button type="button" data-action="toggle-mic" class="cursor-pointer rounded p-1.5 text-[#b5bac1] transition-colors hover:bg-[#35373c] hover:text-white" title="{{ __('Mute microphone') }}">
                 <svg class="size-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M18 11a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.917V19H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.083A6 6 0 0 0 18 11z"/></svg>
+            </button>
+
+            <button type="button" data-action="mic-settings" class="cursor-pointer rounded p-1.5 text-[#b5bac1] transition-colors hover:bg-[#35373c] hover:text-white" title="{{ __('Microphone settings') }}">
+                <svg class="size-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" d="M4 8h9M17 8h3M4 16h3M11 16h9"/><circle cx="15" cy="8" r="2"/><circle cx="9" cy="16" r="2"/></svg>
             </button>
 
             <a href="{{ route('profile.edit') }}" wire:navigate class="cursor-pointer rounded p-1.5 text-[#b5bac1] transition-colors hover:bg-[#35373c] hover:text-white" title="{{ __('Settings') }}">
