@@ -16,6 +16,144 @@ Para **o que cada peça faz e por quê**, veja [ARQUITETURA.md](ARQUITETURA.md).
 
 ---
 
+# ▶ Continuando pelo Windows — 07/09/2026
+
+**O Windows é a plataforma principal daqui em diante.** É onde o app vai ser usado, e
+é o alvo que nunca foi executado: nem na máquina de ninguém, nem no CI. Tudo abaixo é
+o que você precisa para pegar o trabalho lá.
+
+## Comece por aqui
+
+```bash
+git clone git@github.com:edsuuu/unkvoid.git
+cd unkvoid\native\apps\desktop
+npm ci
+npx tauri build
+```
+
+Sai em `native\target\release\bundle\msi\Unkvoid_0.0.2_x64_en-US.msi`.
+
+Precisa ter antes: **Rust** (rustup, toolchain MSVC), **Node 22**, e **Visual Studio
+Build Tools** com a carga "Desenvolvimento para desktop com C++". O WiX o próprio Tauri
+baixa. WebView2 já vem no Windows 10/11 recentes.
+
+Para publicar a release com o instalador que acabou de sair:
+
+```bash
+node release.mjs --dry-run    # confere o que achou
+node release.mjs              # cria/atualiza a release e o latest.json
+```
+
+O `release.mjs` existe porque **instalador não cross-compila**: `.msi` só sai no
+Windows, `.dmg` só no macOS. Ele lê o `latest.json` já publicado e mescla, então subir
+o Windows depois do macOS não deixa os Macs instalados sem para onde atualizar.
+
+## Três coisas pendentes, em ordem
+
+### 1. Revogar o token de produção (antes de abrir o repositório)
+
+`harness.html` tinha um Bearer Sanctum **válido** hard-coded. Tirei do arquivo, mas ele
+segue em todos os commits antigos — e o repositório vai virar público. Enquanto não for
+revogado, **não abra o repositório**: qualquer um autentica como aquele usuário na API.
+
+```bash
+ssh root@144.126.133.10
+cd /var/www/projects/discord/current
+php artisan tinker --execute="Laravel\Sanctum\PersonalAccessToken::find(6)?->delete(); echo 'revogado';"
+```
+
+Depois disso: `gh repo edit edsuuu/unkvoid --visibility public --accept-visibility-change-consequences`.
+
+### 2. A chave de assinatura do updater
+
+**Foi trocada.** A antiga só existia no secret do GitHub (que não se lê de volta), então
+gerei um par novo. A pública já está no `tauri.conf.json`; a privada está em
+`~/.tauri/unkvoid.key` **no Mac** e precisa ir para o Windows e para o CI:
+
+```bash
+gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/unkvoid.key
+```
+
+No Windows, antes do `npx tauri build`:
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $HOME\.tauri\unkvoid.key -Raw
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+```
+
+Sem isso o `.msi` sai, mas **sem `.sig`** — e sem `.sig` ninguém se atualiza sozinho.
+
+Consequência da troca: o Unkvoid 0.0.1 instalado no Mac não se auto-atualiza mais.
+Reinstalar por cima resolve. Nenhum Windows tinha o app ainda, então lá não custa nada.
+
+### 3. Custo do CI
+
+Os 3.000 minutos inclusos do mês acabaram em um dia (reseta em ~24 dias), e é por isso
+que nenhum job roda: cota esgotada com limite de gasto em $0 — **não houve cobrança**,
+o GitHub para em vez de cobrar.
+
+Minuto de macOS conta **10x** e o de Windows **2x**. Uma release completa custava ~$15,
+sendo ~$14.40 só de macOS. Já cortei o `verify` para rodar **só no Linux** em push (era
+~39 minutos faturados por commit, virou ~3); Windows e macOS continuam sendo verificados
+na tag e no `workflow_dispatch`, antes de gerar instalador.
+
+**Com o repositório público isso tudo vira zero** — Actions são gratuitas e ilimitadas
+em repo público. É o motivo real de abrir o repositório.
+
+## O que o app faz no Windows hoje
+
+Nada disso foi executado. É leitura de código, não observação:
+
+| | Estado |
+|---|---|
+| Login, chat, canais | Deve funcionar — é o mesmo webview |
+| Chat de voz | Deve funcionar — mic e Opus são do navegador |
+| **Compartilhar tela** | **Não funciona.** Falta o encoder Media Foundation |
+| Bandeja, autostart, deep link | Plugins do Tauri, devem funcionar |
+| Firewall | O app não pede exceção; o Windows vai perguntar na primeira conexão |
+
+O `native/crates/capture` tem `macos.rs` implementado e Windows/Linux vazios. Enquanto
+isso não for escrito, `start_broadcast` falha no Windows — e agora a falha **aparece na
+tela**, embaixo do seu nome, em vez de sumir calada.
+
+## O que mudou hoje (07/09), tudo já na `main`
+
+- **Chat ia para o meio da tela ao entrar na chamada.** `#chat` e `#stage` dividiam o
+  mesmo `flex-1`. Agora um `showPane()` manda em qual painel aparece, e o palco só toma
+  a tela quando alguém transmite de fato.
+- **"Parar de compartilhar" nunca aparecia.** Nascia com a classe `hidden` do Tailwind e
+  era revelado pelo atributo `hidden` — classe vence atributo. Quem compartilhava via o
+  botão sumir e nada no lugar. Junto veio o aviso "Você está transmitindo".
+- **Flag "ao vivo" apagava sozinha em segundos.** Morava no mapa de peers do SFU, que é
+  reescrito a cada evento da sala. Agora sai de `this.sharing` e viaja num sinal `state`,
+  repetido para quem entra depois.
+- Coluna dos canais 240 → 288px ("Voz conectada" cortava), microfone **entra mudo**,
+  ícones de mic/fone cortados ao lado do nome, relógio da call com hora (64 minutos
+  viravam "64:00" — `check-clock.mjs` fixa isso).
+- **Auto-update também com o app aberto**: reconsulta a cada 6h, baixa e instala, e
+  reinicia — a não ser que você esteja numa chamada, aí espera. O download agora reporta
+  progresso; antes a tela ficava parada e parecia travada.
+- Versão para **0.0.2**. A tag `v0.0.2` ainda **não foi criada**.
+
+PRs de hoje: [#2](https://github.com/edsuuu/unkvoid/pull/2) (updater),
+[#3](https://github.com/edsuuu/unkvoid/pull/3) (custo do CI),
+[#4](https://github.com/edsuuu/unkvoid/pull/4) (token e `release.mjs`).
+
+## Não repita estes erros
+
+- **`npm run check` antes de qualquer commit no desktop.** Três vezes um script de
+  substituição em bloco apagou um método inteiro do `app.js` (`update()`, `askForLogin()`,
+  `pickShareSource()`). O sintoma é tela preta ou clique que não faz nada.
+- **`hidden` do Tailwind é classe, não atributo.** Alternar o atributo num elemento que
+  tem a classe não faz nada. Já custou dois bugs.
+- **Teste no `harness.html`, não na janela do app.** A janela do Tauri não tem console:
+  um erro de JS vira tela preta sem pista. O harness roda o mesmo bundle no navegador.
+- **`build.rs` tem `cargo:rerun-if-changed=../dist`.** Sem isso o cargo não recompila
+  quando só o frontend muda, e o app sai com a interface da última vez que o Rust mudou.
+  Não remova.
+
+---
+
 ## As três partes
 
 ```
@@ -529,7 +667,10 @@ Se ela for perdida, nenhuma versão futura consegue atualizar as já instaladas.
 ## Decisões que valem entender antes de mudar
 
 - **Sem Redis.** Cache, fila e sessão em banco.
-- **Sem Reverb.** Chat por `wire:poll`; presença por WebSocket do próprio SFU.
+- **Com Reverb.** O chat deixou de ser `wire:poll` e vai por WebSocket (porta 8081 na
+  VPS — a 8080 já era do `filebrowser` —, atrás do nginx em `/app`). O evento é
+  `ShouldBroadcastNow`: com `ShouldBroadcast` ele entra na fila e não há worker, então
+  nada chegava. Presença continua pelo WebSocket do próprio SFU.
 - **Sem navegação de página no workspace.** Trocar de canal é estado Livewire — é o
   que impede a chamada de cair. A URL é reescrita com `history.replaceState`.
 - **Tema escuro fixo.** O alternador do template causava texto escuro sobre fundo

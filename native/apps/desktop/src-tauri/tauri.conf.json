@@ -66,7 +66,7 @@
   "plugins": {
     "updater": {
       "active": true,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFEMkFFRDNFNEI5QzgwQTQKUldTa2dKeExQdTBxSGFyYjJLazd1RmNvWFFCdDY5cUYvZmt6MXY2M0ZCb3F2RXorL0U2enowRTYK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEIxQkFCMjU3NzA4OTBFQkEKUldTNkRvbHdWN0s2c1JFQTcxM01wMkNoOCtQekphNGNscFkxWjlrMUV6bjlOUlV3STZ5L3JLTncK",
       "endpoints": [
         "https://github.com/edsuuu/unkvoid/releases/latest/download/latest.json"
       ],
