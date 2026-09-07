@@ -189,6 +189,8 @@ jobs:
     needs: installers
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           pattern: updater-*
@@ -207,6 +209,15 @@ jobs:
           tag = os.environ['TAG']
           base = f"https://github.com/{os.environ['REPO']}/releases/download/{tag}"
 
+          # The version the built app reports. A manifest announcing a different one
+          # sends every client into an update loop: it installs, still reports the old
+          # version, and updates again.
+          config = json.loads(pathlib.Path('native/apps/desktop/src-tauri/tauri.conf.json').read_text())
+          version = config['version']
+
+          if version != tag.lstrip('v'):
+              raise SystemExit(f'tag {tag} does not match the app version {version}')
+
           platforms = {
               signature.stem: {
                   'signature': signature.read_text().strip(),
@@ -219,7 +230,7 @@ jobs:
               raise SystemExit('no platform was signed — latest.json would be useless')
 
           pathlib.Path('latest.json').write_text(json.dumps({
-              'version': tag.lstrip('v'),
+              'version': version,
               'notes': f'Unkvoid {tag}',
               'pub_date': datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z'),
               'platforms': platforms,
