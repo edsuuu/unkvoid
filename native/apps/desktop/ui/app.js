@@ -36,6 +36,7 @@ if (! window.__TAURI__?.core) {
 }
 
 const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
 const { openUrl } = window.__TAURI__.opener;
 const { onOpenUrl } = window.__TAURI__.deepLink;
 const initials = name => (name ?? '?').slice(0, 2).toUpperCase();
@@ -55,6 +56,9 @@ const badge = (mark, icon) => `<span class="hidden shrink-0 items-center text-da
     + `<svg class="size-4" fill="currentColor" viewBox="0 0 24 24">${icon}</svg></span>`;
 
 class App {
+    /** De quanto em quanto tempo procurar versão nova com o app já aberto. */
+    static UPDATE_EVERY_MS = 6 * 60 * 60 * 1000;
+
     constructor() {
         this.api = new Api(() => this.showOffline());
 
@@ -105,10 +109,13 @@ class App {
         // offline, login, já dentro. Registrar isto dentro da tela de login fazia o
         // token se perder em qualquer outro estado.
         this.listenForDeepLink();
+        this.showDownloadProgress();
 
         await this.update();
 
         el('update-screen').hidden = true;
+
+        setInterval(() => void this.update(), App.UPDATE_EVERY_MS);
 
         if (! await this.serverAnswered()) {
             return;
@@ -117,12 +124,42 @@ class App {
         await this.enter();
     }
 
+    /**
+     * Quanto já baixou, na tela.
+     *
+     * Sem isto a tela fica parada em "Procurando atualizações…" durante todo o download.
+     * O app já chegou às suas mãos assim uma vez, e a leitura correta foi "travou".
+     */
+    showDownloadProgress() {
+        void listen('update:progress', ({ payload: [baixado, total] }) => {
+            el('update-status').textContent = total
+                ? `Baixando a atualização… ${Math.round((baixado / total) * 100)}%`
+                : `Baixando a atualização… ${(baixado / 1024 / 1024).toFixed(1)} MB`;
+        });
+    }
+
+    /**
+     * Procura, baixa e instala a versão nova — sem perguntar nada.
+     *
+     * Roda na abertura e de tempos em tempos: o app inicia com o sistema e fica semanas
+     * aberto na bandeja, então só olhar na abertura significava esperar o próximo
+     * reinício da máquina para ver uma versão publicada hoje.
+     */
     async update() {
         try {
             const version = await invoke('check_update');
 
             if (version) {
                 el('update-status').textContent = `Instalando a versão ${version}…`;
+
+                // Reiniciar no meio de uma chamada derruba a pessoa da call. A versão já
+                // está instalada no disco; ela passa a valer no próximo reinício.
+                if (this.voiceChannel) {
+                    el('my-state').textContent = `versão ${version} pronta — reinicie o app`;
+
+                    return;
+                }
+
                 await invoke('restart');
             }
         } catch (failure) {
