@@ -109,18 +109,23 @@ export class P2P {
 
         this.onSfu = true;
 
+        // Vídeo e áudio caem no mesmo transport do servidor, então o endereço é um só —
+        // e é por isso que o `use_sfu` vem depois dos dois: mandar RTP antes de declarar
+        // o áudio faria o servidor receber pacotes de um SSRC que ele ainda não conhece
+        // e descartá-los em silêncio.
+        let target = null;
+
         for (const kind of ['video', 'audio']) {
             const offer = await invoke('sfu_offer', { kind });
-            const target = await this.sfu.request('producePlain', {
+
+            target = await this.sfu.request('producePlain', {
                 kind,
                 source: kind === 'video' ? 'screen' : 'screenAudio',
                 ...offer,
             });
-
-            if (kind === 'video') {
-                await invoke('use_sfu', { address: `${target.ip}:${target.port}` });
-            }
         }
+
+        await invoke('use_sfu', { address: `${target.ip}:${target.port}` });
 
         this.viewers.clear();
     }

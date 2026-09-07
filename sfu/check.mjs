@@ -307,6 +307,22 @@ const run = async () => {
 
     assert.equal(consumo.ok, true, `a plain producer must be consumable: ${JSON.stringify(consumo)}`);
 
+    // Áudio da mesma transmissão: mesmo transport, mesma porta. Um transport por mídia
+    // gastava o dobro de portas UDP, e cada porta a mais é uma regra de firewall a mais.
+    const plainAudio = await nativo.call('producePlain', {
+        kind: 'audio',
+        source: 'screenAudio',
+        srtpParameters: { cryptoSuite: 'AES_CM_128_HMAC_SHA1_80', keyBase64: Buffer.alloc(30, 7).toString('base64') },
+        rtpParameters: {
+            codecs: [{ mimeType: 'audio/opus', payloadType: 111, clockRate: 48000, channels: 2, rtcpFeedback: [] }],
+            encodings: [{ ssrc: 0x22345679 }],
+        },
+    });
+
+    assert.equal(plainAudio.ok, true, `plain audio should be accepted: ${JSON.stringify(plainAudio)}`);
+    assert.equal(plainAudio.data.port, plain.data.port, 'áudio e vídeo da mesma transmissão dividem a porta');
+    assert.notEqual(plainAudio.data.producerId, plain.data.producerId, 'mas são produtores diferentes');
+
     assistindo.close();
     nativo.close();
     voltou.close();

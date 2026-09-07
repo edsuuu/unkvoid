@@ -37,7 +37,7 @@ export class ProducerController {
     async storePlain(request: ProducePlainRequest): Promise<PlainProducerResource> {
         const peer = request.peer();
         const room = request.room();
-        const transport = await room.createPlainTransport(peer, request.srtpParameters());
+        const transport = await room.plainTransportFor(peer, request.srtpParameters());
 
         const producer = await transport.produce({
             kind: request.kind(),
