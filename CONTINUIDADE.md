@@ -35,6 +35,13 @@ Login por e-mail/senha e Google, servidores com convite, canais de texto e voz,
 chat, voz com compartilhamento de tela pelo SFU, presença por WebSocket, moderação
 em três níveis, reconexão que sobrevive a queda de rede e a deploy do SFU.
 
+### Chat em tempo real (produção)
+Laravel Reverb sob pm2 na porta **8081** (a 8080 já é do filebrowser desta VPS), atrás do
+nginx em `/app`. Mensagem de outra pessoa aparece sem F5.
+
+Não havia poll para eliminar — **havia nada**: quem estava com o canal aberto só via a
+mensagem trocando de canal ou recarregando.
+
 ### SFU (produção, 4 workers)
 API em TypeScript no padrão do MoneyClips: rota → Request → controller → Service →
 Resource. Cobre retomada de sessão, presença, moderação e **relay de sinalização P2P**
@@ -49,7 +56,7 @@ cd sfu && pnpm run check   # asserções sobre o contrato inteiro
 mensagens, e os mesmos emissores de token do SFU que o web usa.
 Testes em `web/tests/Feature/Api/DesktopApiTest.php`.
 
-### App desktop (v0.6.0)
+### App desktop (v0.7.0)
 Abre, verifica atualização, exige servidor, pede login (e-mail/senha **ou Google**),
 lista servidores e canais com o design do web, **captura a tela nativamente** e
 **transmite por P2P**.
@@ -154,7 +161,7 @@ node web/resources/js/voice/MicrophoneGate.check.mjs
 
 ---
 
-## Builds: os três existem (v0.6.0)
+## Builds: os três existem (v0.7.0)
 
 `.msi`, `.deb` e `.dmg` são publicados pelo CI a cada tag `v*`, junto com o
 `latest.json` que o auto-update procura. Instalador **não pode ser cross-compilado**
@@ -193,13 +200,11 @@ compilaria fora do mac, e aí nem o `.msi` sairia.
 
 | Peça | Situação |
 |---|---|
-| **Reverb** | o chat ainda usa `wire:poll`; o daemon não foi instalado |
 | Encoder no Windows | falta Media Foundation — sem ele o app não transmite lá |
 | Captura no Linux | recusa com erro claro; falta consumir o nó do PipeWire |
 | Áudio de sistema no Windows | precisa de WASAPI loopback, separado do Graphics Capture |
 | Trocar qualidade sem parar | o app web faz; no desktop exige reiniciar a transmissão |
 | Chat no desktop | lista mensagens em texto cru, sem enviar |
-| Nomes em pt-BR no código | o desktop (`ui/`) e partes do Rust ainda têm identificadores em português |
 | SFU em Rust (str0m) | não começou |
 
 **A captura de tela nunca rodou nesta máquina**: a permissão de gravação foi negada
@@ -212,14 +217,12 @@ falta é a ponta a ponta com tela real e duas pessoas.
 
 Nesta ordem — cada etapa é verificável sozinha:
 
-1. **Reverb** no lugar do `wire:poll` do chat: daemon, porta, proxy no nginx e
-   `Echo` no front. É o único poll que sobrou.
-2. **Encoder no Windows** (Media Foundation). Sem ele o app abre e fala no Windows,
-   mas não transmite a tela — e é justamente lá que está quem joga.
-3. **Captura no Linux** (PipeWire, a partir do nó que o portal XDG devolve).
-4. **Nomes em português no código**: `native/apps/desktop/ui/` é o pior caso.
-   Comentários podem ficar em pt-BR; identificadores e strings, não.
-5. **Chat no desktop**: a API já envia e lê; falta a interface.
+1. **Encoder no Windows** (Media Foundation). Sem ele o app abre e fala no Windows,
+   mas não transmite a tela — e é justamente lá que está quem joga. Espelhar
+   `crates/media/src/macos.rs`, que já tem a forma certa.
+2. **Captura no Linux** (PipeWire, a partir do nó que o portal XDG devolve).
+3. **Chat no desktop**: a API já envia e lê; falta a interface.
+4. **Trocar qualidade sem parar a transmissão** no desktop — o web já faz.
 
 ### Perfis de qualidade
 
@@ -237,11 +240,20 @@ captura **e** o bitrate do encoder:
 ### Verificações que existem
 
 ```bash
+# Rust
+cargo test --workspace                 # blocos Opus de 20 ms, pacotização e SRTP em socket real
 cargo run -p media --example encoder   # encoder por hardware, ms/quadro
 cargo run -p media --example peer      # oferta com H.264 + ICE
 cargo run -p media --example p2p       # negociação completa entre dois lados
+cargo run -p media --example plain -- ws://127.0.0.1:3000/sfu <token>
+                                       # o SFU CONFIRMANDO que recebe o RTP puro
 cargo run -p capture --example spike   # captura (exige permissão de tela)
-cargo test --workspace                 # inclui o empacotamento de blocos Opus
+
+# Web e SFU
+cd web  && php artisan test            # 43 testes, com a autorização do broadcast
+cd web  && node resources/js/voice/MicrophoneGate.check.mjs
+cd sfu  && pnpm run check              # o contrato inteiro, com o RTP puro
+cd native/apps/desktop && npm run check # nenhum id ou classe apontando para o vazio
 ```
 
 ### Números já medidos do encoder
@@ -287,6 +299,28 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
   endpoint aceita a conexão e não responde. São 10 s em `check_update`.
 - Identificador terminado em `.app` conflita com a extensão de bundle do macOS —
   daí `com.unkvoid.desktop` e não `com.unkvoid.app`.
+
+**Reverb**
+- `ShouldBroadcast` **enfileira**. Sem worker (esta VPS não tem), a mensagem salva e
+  simplesmente não chega. É `ShouldBroadcastNow`, e tem teste só para isso.
+- O Livewire fixa os listeners no **mount**. Um canal escolhido depois nunca se inscreve
+  — por isso a inscrição está em `ChatSocket.js`, não num listener Echo do componente.
+- A configuração vai no **HTML**, não no bundle: os assets são compilados na máquina de
+  quem desenvolve, então `VITE_REVERB_HOST` viraria "localhost" em produção.
+- São **dois endereços** para o mesmo serviço: Laravel → Reverb usa a porta interna;
+  navegador → Reverb passa pelo nginx em 443/wss. Confundir os dois é o erro que faz o
+  chat tentar conectar em localhost.
+- `NullBroadcaster` autoriza **qualquer** canal. Um teste de permissão contra ele passa
+  sem provar nada — daí `BROADCAST_CONNECTION=reverb` no `phpunit.xml`.
+
+**Renomear**
+- HTML, CSS e JS da UI do desktop compartilham ids e classes. Renomear só o JS quebra a
+  tela em silêncio: o navegador não reclama de classe que não existe. `npm run check`
+  em `native/apps/desktop` confere que todo id procurado existe.
+- Um id pode ter hífen; um nome de variável não. `trilha` era os dois, e virou
+  `const server-rail = …`, que não compila.
+- Detectar comentário por `^\s*\*` confunde `*ativo` (deref em Rust) com a continuação
+  de um `/** */`.
 
 **CI**
 - O `GITHUB_TOKEN` deste repo é read-only por padrão: publicar release volta **403
