@@ -40,6 +40,20 @@ const { openUrl } = window.__TAURI__.opener;
 const { onOpenUrl } = window.__TAURI__.deepLink;
 const initials = name => (name ?? '?').slice(0, 2).toUpperCase();
 
+/**
+ * Segundos em relógio. A hora só aparece depois que ela existe, como no Discord —
+ * mas precisa aparecer: sem ela uma call de uma hora virava "64:12".
+ */
+const clock = seconds => {
+    const partes = [Math.floor(seconds / 60) % 60, seconds % 60].map(n => String(n).padStart(2, '0'));
+
+    return seconds >= 3600 ? [Math.floor(seconds / 3600), ...partes].join(':') : partes.join(':');
+};
+
+/** Marcador vermelho ao lado do nome de quem está com microfone ou áudio mudo. */
+const badge = (mark, icon) => `<span class="hidden shrink-0 items-center text-danger" data-${mark}>`
+    + `<svg class="size-4" fill="currentColor" viewBox="0 0 24 24">${icon}</svg></span>`;
+
 class App {
     constructor() {
         this.api = new Api(() => this.showOffline());
@@ -66,6 +80,17 @@ class App {
         this.watchers = new Map();
 
         this.shareSource = null;
+
+        /**
+         * Transmitindo agora. Mora aqui, e não no mapa de peers do SFU: aquele mapa é
+         * reescrito a cada evento da sala, e a flag "ao vivo" apagava sozinha segundos
+         * depois de começar a transmissão.
+         */
+        this.sharing = false;
+
+        /** Último `muted` já contado para a sala — o medidor pinta 20x por segundo. */
+        this.mutedShown = null;
+
         this.clock = null;
         this.attempt = 0;
     }
@@ -254,8 +279,7 @@ class App {
             this.channel = null;
             el('channel-list').innerHTML = '';
             el('server-rail').innerHTML = '';
-            el('chat').hidden = true;
-            el('empty').hidden = false;
+            this.showPane('empty');
             this.askForLogin();
         };
 
@@ -269,6 +293,7 @@ class App {
         el('voice-mute').onclick = () => this.toggleMicrophone();
         el('deafen').onclick = () => this.toggleDeafen();
         el('deafen-icon').innerHTML = HEAD_ON;
+        el('voice-mute-icon').innerHTML = MIC_ON;
         el('mic-settings').onclick = () => this.toggleMicPanel();
 
         el('message-form').onsubmit = async event => {
@@ -378,19 +403,23 @@ class App {
             linha.className = `flex items-center gap-2 rounded px-2 py-1 text-sm ${person.connecting ? 'text-ink-dim italic' : 'text-ink-soft'}`;
             linha.dataset.participant = person.id ?? '';
             linha.innerHTML = '<span class="flex size-6 shrink-0 items-center justify-center rounded-full bg-brand text-[10px] font-semibold text-white ring-2 ring-transparent transition-[box-shadow]" data-avatar></span>'
-                + '<span class="truncate"></span>'
-                + '<span class="ml-auto hidden shrink-0 items-center gap-1 rounded bg-danger px-1.5 py-0.5 text-[10px] font-bold uppercase leading-none text-white" data-live>'
+                + `<span class="truncate" data-name></span><span class="ml-auto"></span>${badge('muted', MIC_OFF)}${badge('deafened', HEAD_OFF)}`
+                + '<span class="hidden shrink-0 items-center gap-1 rounded bg-danger px-1.5 py-0.5 text-[10px] font-bold uppercase leading-none text-white" data-live>'
                 + '<span class="size-1.5 rounded-full bg-white"></span>ao vivo</span>';
 
-            const [avatar, nome] = linha.querySelectorAll('span');
-
-            avatar.textContent = initials(person.name);
-            nome.textContent = person.connecting ? `${person.name} · conectando…` : person.name;
+            linha.querySelector('[data-avatar]').textContent = initials(person.name);
+            linha.querySelector('[data-name]').textContent = person.connecting
+                ? `${person.name} · conectando…`
+                : person.name;
 
             // `hidden` do Tailwind é uma classe, não o atributo: alternar as duas
             // deixaria o elemento visível com display:none.
-            linha.querySelector('[data-live]').classList.toggle('hidden', ! person.sharing);
-            linha.querySelector('[data-live]').classList.toggle('flex', Boolean(person.sharing));
+            for (const [marca, ligado] of [['live', person.sharing], ['muted', person.muted], ['deafened', person.deafened]]) {
+                const marcador = linha.querySelector(`[data-${marca}]`);
+
+                marcador.classList.toggle('hidden', ! ligado);
+                marcador.classList.toggle('flex', Boolean(ligado));
+            }
 
             lista.appendChild(linha);
         }
@@ -410,11 +439,19 @@ class App {
 
         const sala = [...(this.sfu?.peers?.entries() ?? [])];
 
+        // O seu estado vem daqui, não do mapa do SFU: aquele mapa é reescrito a cada
+        // evento da sala e apagava a sua flag de "ao vivo" sozinho.
+        const eu = { muted: this.mic.muted, deafened: this.deafened, sharing: this.sharing };
+
         this.drawParticipants(
             this.voiceChannel.id,
             sala.length
-                ? sala.map(([id, peer]) => ({ id, name: peer.name, sharing: peer.sharing }))
-                : [{ name: this.me }],
+                ? sala.map(([id, peer]) => ({
+                    ...peer,
+                    ...(id === this.sfu?.peerId ? eu : {}),
+                    id,
+                }))
+                : [{ name: this.me, ...eu }],
         );
 
         // Redesenhar apaga as bordas: quem estava falando volta a acender no próximo
@@ -553,6 +590,18 @@ class App {
         }
     }
 
+    /**
+     * O miolo mostra um painel de cada vez.
+     *
+     * Os três dividem o mesmo `flex-1`: deixar dois visíveis não empilha, espreme — era
+     * por isso que entrar na chamada jogava as mensagens para o meio da tela.
+     */
+    showPane(name) {
+        for (const pane of ['chat', 'stage', 'empty']) {
+            el(pane).hidden = pane !== name;
+        }
+    }
+
     async openChannel(channel) {
         this.channel = channel;
         el('channel-title').textContent = `# ${channel.name}`;
@@ -560,9 +609,7 @@ class App {
         this.drawChannels();
         this.refreshParticipants();
 
-        el('stage').hidden = true;
-        el('empty').hidden = true;
-        el('chat').hidden = false;
+        this.showPane('chat');
 
         this.drawMessages(await this.api.messages(channel.id));
     }
@@ -693,15 +740,17 @@ class App {
         el('voice-channel').textContent = channel.name;
         el('my-state').textContent = `em ${channel.name}`;
         this.refreshParticipants();
-        el('stage').hidden = false;
-        el('empty').hidden = true;
+
+        // Estar em chamada não tira o texto da frente: o palco só toma a tela quando
+        // alguém transmite de fato, senão a conversa dá lugar a um vazio.
+        this.showPane(this.channel ? 'chat' : 'stage');
 
         const startedAt = Date.now();
 
         clearInterval(this.clock);
         this.clock = setInterval(() => {
             const seconds = Math.floor((Date.now() - startedAt) / 1000);
-            const label = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+            const label = clock(seconds);
 
             const channelClock = document.querySelector(`[data-clock="${channel.id}"]`);
 
@@ -717,6 +766,10 @@ class App {
 
         if (! stream) {
             existing?.remove();
+
+            if (! el('stage').childElementCount) {
+                this.showPane(this.channel ? 'chat' : 'empty');
+            }
 
             return;
         }
@@ -737,6 +790,8 @@ class App {
         const total = el('stage').childElementCount;
 
         el('stage').style.gridTemplateColumns = `repeat(${total > 1 ? 2 : 1}, minmax(0, 1fr))`;
+
+        this.showPane('stage');
     }
 
     /**
@@ -749,7 +804,10 @@ class App {
             const micTrack = await this.mic.open();
 
             await this.sfu.publishMicrophone(micTrack);
-            this.paintMicrophone({ db: MicrophoneGate.FLOOR_DB, transmitting: false, muted: false });
+
+            // Entra mudo. Abrir o microfone junto com a chamada joga na sala o que
+            // estava acontecendo no quarto de quem entrou, antes de ela perceber.
+            this.mic.setMuted(true);
         } catch (failure) {
             this.micDenied = true;
             el('my-state').textContent = `microfone indisponível: ${failure.message}`;
@@ -808,6 +866,9 @@ class App {
         el('deafen-icon').innerHTML = this.deafened ? HEAD_OFF : HEAD_ON;
         el('deafen').classList.toggle('text-danger', this.deafened);
         el('deafen').title = this.deafened ? 'Ouvir a sala de novo' : 'Silenciar o áudio da sala';
+
+        this.p2p?.announceState({ deafened: this.deafened });
+        this.refreshParticipants();
     }
 
     /** Mute é o portão, nunca o producer: a chamada mantém o caminho do áudio quente. */
@@ -839,6 +900,14 @@ class App {
 
         if (this.sfu?.peerId) {
             this.paintSpeaking(this.sfu.peerId, ! muted && transmitting);
+        }
+
+        // Só quando muda de verdade: isto aqui roda a cada quadro de áudio, vinte vezes
+        // por segundo, e redesenhar a sala nesse ritmo é um piscar constante.
+        if (muted !== this.mutedShown) {
+            this.mutedShown = muted;
+            this.p2p?.announceState({ muted });
+            this.refreshParticipants();
         }
 
         const meter = document.querySelector('[data-meter]');
@@ -877,6 +946,7 @@ class App {
         await this.stopSharing();
         this.mic.close();
         this.micDenied = false;
+        this.mutedShown = null;
         await this.sfu?.leaveRoom();
         this.sfu?.disconnect();
         this.p2p?.close();
@@ -885,8 +955,8 @@ class App {
         this.voice = null;
         document.querySelectorAll('audio[data-remote]').forEach(elemento => elemento.remove());
         el('voice-bar').hidden = true;
-        el('stage').hidden = true;
-        el('empty').hidden = false;
+        el('stage').innerHTML = '';
+        this.showPane(this.channel ? 'chat' : 'empty');
         el('my-state').textContent = 'Disponível';
     }
 
@@ -1040,21 +1110,35 @@ class App {
 
         try {
             await this.p2p.broadcast(el('quality').value, this.shareSource, this.participants);
-            el('share').hidden = true;
-            el('stop').hidden = false;
+
+            this.paintSharing(true);
             el('my-state').textContent = this.participants.length
                 ? `transmitindo para ${this.participants.length}`
                 : 'transmitindo (ninguém assistindo ainda)';
         } catch (failure) {
-            el('my-state').textContent = failure.message ?? String(failure);
+            // Falhar calado deixava a barra sem botão nenhum: quem tentou compartilhar
+            // via o modal fechar e mais nada.
+            this.paintSharing(false);
+            el('my-state').textContent = `não deu para transmitir: ${failure.message ?? failure}`;
         }
+    }
+
+    /** Barra de voz e lista da sala concordando sobre você estar ao vivo ou não. */
+    paintSharing(on) {
+        this.sharing = on;
+
+        el('share').hidden = on;
+        el('stop').hidden = ! on;
+        el('live-note').hidden = ! on;
+
+        this.p2p?.announceState({ sharing: on });
+        this.refreshParticipants();
     }
 
     async stopSharing() {
         const frames = await this.p2p?.stop().catch(() => 0);
 
-        el('share').hidden = false;
-        el('stop').hidden = true;
+        this.paintSharing(false);
 
         if (frames) {
             el('my-state').textContent = `${frames} quadros transmitidos`;

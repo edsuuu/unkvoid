@@ -27,12 +27,18 @@ export class P2P {
         this.broadcasting = false;
         this.onSfu = false;
         this.onScreen = onScreen;
+
+        /** O que a sala precisa saber sobre você, repetido para quem chega depois. */
+        this.state = { sharing: false, muted: false, deafened: false };
     }
 
     async attach() {
         this.sfu.addEventListener('signal', event => this.handleSignal(event.detail));
         this.sfu.addEventListener('peerLeft', event => this.endReception(event.detail.peerId));
-        this.sfu.addEventListener('peerJoined', event => this.offerTo(event.detail.peerId));
+        this.sfu.addEventListener('peerJoined', event => {
+            this.tellState(event.detail.peerId);
+            void this.offerTo(event.detail.peerId);
+        });
 
         // Each Rust-side connection sends its own, already-addressed candidates.
         await listen('p2p:signal', event => {
@@ -52,7 +58,7 @@ export class P2P {
         await invoke('start_broadcast', { quality, source, iceServers: STUN });
 
         this.broadcasting = true;
-        this.announceSharing(true);
+        this.announceState({ sharing: true });
 
         if (viewers.length > P2P.LIMITE_P2P) {
             await this.moveToSfu();
@@ -66,24 +72,32 @@ export class P2P {
     }
 
     /**
-     * Conta à sala que a transmissão começou (ou parou).
+     * Conta à sala o que mudou em você: transmitindo, microfone mudo, áudio mudo.
      *
-     * Pelo SFU isso é automático: publicar um producer já marca quem compartilha. O
-     * caminho direto não publica nada no servidor, então ninguém ficava sabendo e a
-     * flag "ao vivo" nunca acendia para os outros.
+     * Transmitir pelo SFU já se anuncia sozinho — publicar um producer marca quem
+     * compartilha. O caminho direto não publica nada no servidor, e mudo não viaja nem
+     * por um caminho nem pelo outro: sem isto os ícones ao lado do nome nunca acendem
+     * para os outros.
      */
-    announceSharing(on) {
+    announceState(patch) {
+        Object.assign(this.state, patch);
+
         const eu = this.sfu.peers?.get(this.sfu.peerId);
 
         if (eu) {
-            eu.sharing = on;
+            Object.assign(eu, this.state);
             this.sfu.emit('peersChanged', [...this.sfu.peers.entries()]);
         }
 
         for (const peerId of this.sfu.peers?.keys() ?? []) {
-            if (peerId !== this.sfu.peerId) {
-                void this.sfu.signal(peerId, 'sharing', { on }).catch(() => {});
-            }
+            this.tellState(peerId);
+        }
+    }
+
+    /** Quem chega depois não viu os avisos anteriores; recebe o estado inteiro. */
+    tellState(peerId) {
+        if (peerId !== this.sfu.peerId) {
+            void this.sfu.signal(peerId, 'state', this.state).catch(() => {});
         }
     }
 
@@ -161,7 +175,7 @@ export class P2P {
         this.broadcasting = false;
         this.onSfu = false;
         this.viewers.clear();
-        this.announceSharing(false);
+        this.announceState({ sharing: false });
 
         return invoke('stop_broadcast');
     }
@@ -179,11 +193,11 @@ export class P2P {
             return;
         }
 
-        if (kind === 'sharing') {
+        if (kind === 'state') {
             const peer = this.sfu.peers?.get(from);
 
             if (peer) {
-                peer.sharing = Boolean(payload.on);
+                Object.assign(peer, payload);
                 this.sfu.emit('peersChanged', [...this.sfu.peers.entries()]);
             }
 
