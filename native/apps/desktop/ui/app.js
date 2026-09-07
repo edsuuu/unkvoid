@@ -167,12 +167,45 @@ class App {
         el('mute').onclick = () => this.toggleMicrophone();
         el('mic-settings').onclick = () => this.toggleMicPanel();
         this.wireMicPanel();
+        void this.wireMachineSettings();
     }
 
     /**
      * The panel is static markup wired once. The settings live in the gate, which is
      * what actually decides frame by frame whether the audio leaves this machine.
      */
+    /**
+     * O que é desta máquina fica nesta máquina.
+     *
+     * Bind de teclado e iniciar com o sistema não fazem sentido viajando entre
+     * computadores — o servidor guarda quem é a pessoa, o SQLite guarda como este
+     * computador se comporta.
+     */
+    async wireMachineSettings() {
+        const autostart = el('autostart');
+
+        autostart.checked = await invoke('autostart_enabled').catch(() => false);
+
+        autostart.onchange = async () => {
+            try {
+                await invoke('set_autostart', { enabled: autostart.checked });
+                await invoke('set_setting', { key: 'autostart', value: String(autostart.checked) });
+            } catch (failure) {
+                // Reverter o visual: um checkbox marcado que não valeu mente para quem clicou.
+                autostart.checked = ! autostart.checked;
+                el('my-state').textContent = `could not change autostart: ${failure}`;
+            }
+        };
+
+        // O gate guarda as preferências no localStorage do webview, que some se o app
+        // for reinstalado. O banco é a cópia que sobrevive.
+        for (const [key, value] of await invoke('all_settings').catch(() => [])) {
+            if (key.startsWith('mic:')) {
+                this.mic.save({ [key.slice(4)]: JSON.parse(value) });
+            }
+        }
+    }
+
     wireMicPanel() {
         const { mode, threshold, pushKey, noiseSuppression } = this.mic.settings;
 
@@ -183,7 +216,7 @@ class App {
         for (const option of document.querySelectorAll('input[name="mic-mode"]')) {
             option.checked = option.value === mode;
             option.onchange = () => {
-                this.mic.save({ mode: option.value });
+                this.rememberMic({ mode: option.value });
                 el('mic-voice').hidden = option.value !== 'voice';
                 el('mic-key').hidden = option.value !== 'ptt';
             };
@@ -192,8 +225,8 @@ class App {
         el('mic-voice').hidden = mode !== 'voice';
         el('mic-key').hidden = mode !== 'ptt';
 
-        el('mic-threshold').oninput = event => this.mic.save({ threshold: Number(event.target.value) });
-        el('mic-noise').onchange = event => this.mic.save({ noiseSuppression: event.target.checked });
+        el('mic-threshold').oninput = event => this.rememberMic({ threshold: Number(event.target.value) });
+        el('mic-noise').onchange = event => this.rememberMic({ noiseSuppression: event.target.checked });
 
         el('mic-shortcut').onclick = () => {
             el('mic-shortcut').textContent = 'press a key…';
@@ -201,10 +234,19 @@ class App {
             // `once` matters: without it every later keypress would keep rebinding.
             window.addEventListener('keydown', event => {
                 event.preventDefault();
-                this.mic.save({ pushKey: event.code });
+                this.rememberMic({ pushKey: event.code });
                 el('mic-shortcut').textContent = event.code;
             }, { once: true, capture: true });
         };
+    }
+
+    /** Aplica no gate e guarda no banco, para sobreviver a uma reinstalação. */
+    rememberMic(changes) {
+        this.mic.save(changes);
+
+        for (const [key, value] of Object.entries(changes)) {
+            void invoke('set_setting', { key: `mic:${key}`, value: JSON.stringify(value) }).catch(() => {});
+        }
     }
 
     toggleMicPanel() {

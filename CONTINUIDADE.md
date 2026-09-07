@@ -309,6 +309,18 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
 - A versão do `latest.json` sai do `tauri.conf.json`, não da tag. Se divergirem o cliente
   entra em laço: instala, continua anunciando a versão antiga, e atualiza de novo.
 
+**Google no app**
+- As rotas do OAuth do desktop viviam em `routes/api.php`, **que não tem sessão**, e o
+  Socialite guarda o `state` do OAuth nela: **500 "Session store not set on request"**.
+  Agora elas usam o grupo `web`. `stateless()` seria trocar o erro por um buraco de CSRF.
+- ⚠️ **`https://discord.unkvoid.com/api/desktop/google/callback` precisa estar nos URIs
+  de redirecionamento autorizados** do cliente OAuth no Google Cloud. É um caminho
+  diferente do web, e sem ele o Google recusa com `redirect_uri_mismatch`.
+- Um 302 para `discord2://` é **bloqueado sem aviso** por vários navegadores: eles
+  impedem redirecionamento automático para esquema externo. O callback devolve uma
+  **página** com o link clicável — é o clique que faz o navegador perguntar "abrir o
+  Unkvoid?", que é a permissão de que o fluxo depende.
+
 **Windows**
 - Testar o servidor com uma rota **autenticada** quebra de um jeito difícil de enxergar:
   sem token ela responde 302 para `/login`, o fetch segue o redirecionamento, e a página
@@ -320,8 +332,11 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
   conecta. Sair não precisa de permissão, então o caminho pelo SFU funciona de qualquer
   jeito. A regra entra pelo instalador (`src-tauri/wix/windows.wxs`) com
   `Return="ignore"` — instalação que quebra por causa de rede seria pior.
-- O template WiX do Tauri só cria o atalho do **menu Iniciar**. O da área de trabalho
-  vem do mesmo fragmento.
+- O template WiX do Tauri **já cria o atalho da área de trabalho**
+  (`ApplicationDesktopShortcut`, dentro de `ShortcutsFeature`). Declarar `DesktopFolder`
+  outra vez num fragmento duplica o símbolo e o `light` falha **sem imprimir o erro** —
+  foi o que derrubou a v0.8.0. Para saber o que o template já tem, inspecione um MSI
+  pronto: `msiinfo export <app>.msi Directory`.
 
 **Reverb**
 - `ShouldBroadcast` **enfileira**. Sem worker (esta VPS não tem), a mensagem salva e

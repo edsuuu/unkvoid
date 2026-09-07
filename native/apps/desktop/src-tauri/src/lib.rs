@@ -6,10 +6,12 @@
 use std::sync::Mutex;
 
 mod broadcast;
+mod settings;
 
 use broadcast::Broadcast;
 use capture::{CaptureConfig, CaptureEvent, PlatformCapturer, Quality};
 use serde::Serialize;
+use settings::Settings;
 use tauri::{Emitter, State};
 
 #[derive(Default)]
@@ -322,6 +324,48 @@ fn restart(app: tauri::AppHandle) {
     app.restart();
 }
 
+/// Configurações desta máquina: atalho, monitor, iniciar com o sistema.
+#[tauri::command]
+fn get_setting(settings: State<'_, Settings>, key: String) -> Result<Option<String>, String> {
+    settings.get(&key).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_setting(settings: State<'_, Settings>, key: String, value: String) -> Result<(), String> {
+    settings
+        .set(&key, &value)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn all_settings(settings: State<'_, Settings>) -> Result<Vec<(String, String)>, String> {
+    settings.all().map_err(|error| error.to_string())
+}
+
+/// Iniciar com o sistema. No Windows isto é a chave `Run` do registro; no macOS um
+/// LaunchAgent; no Linux um `.desktop` no autostart. O plugin cuida de cada um.
+#[tauri::command]
+fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+
+    let manager = app.autolaunch();
+
+    if enabled {
+        manager.enable().map_err(|error| error.to_string())
+    } else {
+        manager.disable().map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+fn autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|error| error.to_string())
+}
+
 /// Ícone na bandeja, como o Discord: fechar a janela esconde o app em vez de matá-lo.
 ///
 /// Sair de verdade é uma escolha explícita no menu do botão direito. Um app de voz que
@@ -377,6 +421,12 @@ pub fn run() {
     tracing_subscriber::fmt().with_env_filter("info").init();
 
     tauri::Builder::default()
+        // `--minimized` é o que o autostart passa: subir com o sistema não pode jogar
+        // uma janela na cara de quem acabou de ligar o computador.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--minimized"]),
+        ))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
@@ -399,10 +449,29 @@ pub fn run() {
             broadcast_stats,
             sfu_offer,
             use_sfu,
-            stop_broadcast
+            stop_broadcast,
+            get_setting,
+            set_setting,
+            all_settings,
+            set_autostart,
+            autostart_enabled
         ])
         .setup(|app| {
+            use tauri::Manager;
+
+            let banco = app.path().app_data_dir()?.join("settings.db");
+
+            app.manage(Settings::open(banco)?);
+
             build_tray(app)?;
+
+            // Iniciado pelo sistema: fica só na bandeja. Quem abriu no clique quer ver
+            // a janela; quem acabou de ligar o computador, não.
+            if std::env::args().any(|argument| argument == "--minimized")
+                && let Some(window) = app.get_webview_window("main")
+            {
+                let _ = window.hide();
+            }
 
             Ok(())
         })

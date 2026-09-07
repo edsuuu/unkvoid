@@ -255,3 +255,10 @@ button, select { cursor: pointer; font: inherit; }
     width: 100%;
     accent-color: var(--roxo, #5865f2);
 }
+
+/* Explicação curta debaixo de uma opção. */
+.hint {
+    margin: -2px 0 0 22px;
+    font-size: 12px;
+    color: #949ba4;
+}
