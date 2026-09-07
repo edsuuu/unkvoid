@@ -35,7 +35,6 @@ Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1
  */
 Route::middleware('web')->group(function (): void {
     Route::get('desktop/google', [DesktopAuthController::class, 'redirect'])->name('api.desktop.google');
-    Route::get('desktop/google/callback', [DesktopAuthController::class, 'callback'])->name('api.desktop.google.callback');
 });
 
 Route::middleware('auth:sanctum')->group(function (): void {

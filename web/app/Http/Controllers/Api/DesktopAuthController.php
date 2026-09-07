@@ -4,58 +4,27 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api;
 
-use App\Actions\Auth\ResolveGoogleUser;
+use App\Http\Controllers\Auth\GoogleController;
 use App\Http\Controllers\Controller;
-use Illuminate\Contracts\View\View;
-use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
 use Symfony\Component\HttpFoundation\RedirectResponse as SymfonyRedirect;
-use Throwable;
 
 /**
- * Desktop app login through Google.
+ * Entrada do login pelo Google vindo do app.
  *
- * The app has no browser session, so the flow is: open the system browser,
- * the user signs in with Google, and the callback returns the token via deep link
- * (`discord2://auth?token=...`). The token never passes through the app window.
+ * Marca a sessão e manda para o **mesmo** fluxo do navegador. O callback é o do
+ * `GoogleController`, já autorizado no Google Cloud: uma URL só, uma configuração a
+ * menos para alguém esquecer de cadastrar.
  *
- * O callback devolve uma **página**, não um 302 para o deep link: redirecionamento
- * automático para esquema externo é bloqueado sem aviso por vários navegadores. Quem
- * dispara o link é um clique da pessoa, e é aí que o navegador pergunta "abrir o
- * Unkvoid?" — a permissão de que o fluxo depende.
+ * O app abre isto no navegador do sistema e recebe o token de volta por deep link
+ * (`discord2://auth?token=...`). A senha nunca passa pela janela do app.
  */
 final class DesktopAuthController extends Controller
 {
     public function redirect(): SymfonyRedirect
     {
-        return Socialite::driver('google')
-            ->redirectUrl(route('api.desktop.google.callback'))
-            ->redirect();
-    }
+        session()->put(GoogleController::DESKTOP, true);
 
-    public function callback(ResolveGoogleUser $resolveGoogleUser): View
-    {
-        try {
-            $googleUser = Socialite::driver('google')
-                ->redirectUrl(route('api.desktop.google.callback'))
-                ->user();
-        } catch (Throwable $exception) {
-            Log::channel('servers')->error('[ERROR] desktop Google login failed', ['exception' => $exception]);
-
-            $mensagem = __('Unable to sign in with Google.');
-
-            return view('desktop-handoff', [
-                'erro' => $mensagem,
-                'link' => 'discord2://auth?erro='.urlencode($mensagem),
-            ]);
-        }
-
-        $user = $resolveGoogleUser->handle($googleUser);
-        $token = $user->createToken('desktop-google')->plainTextToken;
-
-        return view('desktop-handoff', [
-            'erro' => null,
-            'link' => 'discord2://auth?token='.urlencode($token),
-        ]);
+        return Socialite::driver('google')->redirect();
     }
 }
