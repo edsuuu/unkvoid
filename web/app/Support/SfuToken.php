@@ -18,6 +18,23 @@ final class SfuToken
             'name' => $member->nickname ?? $member->user->displayName(),
             'avatar' => $member->user->avatar_url,
             'room' => $channel->id,
+            'server' => $channel->server_id,
+            'role' => $member->role,
+            'iat' => time(),
+            'exp' => time() + self::TTL_SECONDS,
+        ]);
+    }
+
+    /**
+     * Token só de presença: deixa acompanhar quem está nos canais de voz do
+     * servidor sem entrar em nenhum deles.
+     */
+    public function issuePresence(ServerMember $member): string
+    {
+        return $this->sign([
+            'sub' => $member->user_id,
+            'name' => $member->nickname ?? $member->user->displayName(),
+            'server' => $member->server_id,
             'role' => $member->role,
             'iat' => time(),
             'exp' => time() + self::TTL_SECONDS,

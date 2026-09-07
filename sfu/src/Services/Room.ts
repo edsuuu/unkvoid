@@ -23,6 +23,9 @@ export class Room {
     /** Avisado quando a carência de um órfão estoura, para a sala poder ser liberada. */
     public onEvicted: ((room: Room) => void) | null = null;
 
+    /** Avisado quando alguém sai de verdade, para a presença do servidor atualizar. */
+    public onPeerGone: ((roomId: string, peerId: string) => void) | null = null;
+
     private readonly evictions = new Map<string, NodeJS.Timeout>();
 
     constructor(
@@ -41,10 +44,15 @@ export class Room {
      * Três caminhos: retomar uma sessão órfã (mídia intacta), derrubar uma sessão
      * viva de outra aba, ou criar do zero.
      */
-    addPeer(id: string, name: string, socket: WebSocket, options: { role?: Peer['role']; avatar?: string | null }): JoinOutcome {
+    addPeer(
+        id: string,
+        name: string,
+        socket: WebSocket,
+        options: { role?: Peer['role']; avatar?: string | null; resume?: boolean },
+    ): JoinOutcome {
         const previous = this.peers.get(id);
 
-        if (previous?.isOrphaned()) {
+        if (previous?.isOrphaned() && options.resume) {
             this.cancelEviction(id);
             previous.attachSocket(socket);
 
@@ -52,6 +60,7 @@ export class Room {
         }
 
         if (previous) {
+            this.cancelEviction(id);
             previous.send('replaced', { reason: 'você entrou neste canal em outra aba' });
             this.peers.delete(id);
             previous.close();
@@ -122,6 +131,7 @@ export class Room {
         peer.close();
         this.peers.delete(peer.id);
         this.broadcast('peerLeft', { peerId: peer.id }, peer.id);
+        this.onPeerGone?.(this.id, peer.id);
     }
 
     describePeers(exceptPeerId?: string): PeerDescription[] {

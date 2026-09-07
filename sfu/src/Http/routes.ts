@@ -2,6 +2,8 @@ import { Action, type ActionName } from '../Enums/Action.js';
 import type { Resource, Session } from '../types.js';
 import type { ConsumerController } from './Controllers/ConsumerController.js';
 import type { JoinController } from './Controllers/JoinController.js';
+import type { LeaveController } from './Controllers/LeaveController.js';
+import type { PresenceController } from './Controllers/PresenceController.js';
 import type { ModerationController } from './Controllers/ModerationController.js';
 import type { ProducerController } from './Controllers/ProducerController.js';
 import type { TransportController } from './Controllers/TransportController.js';
@@ -16,6 +18,8 @@ import { TransportRequest } from './Requests/TransportRequest.js';
 
 export type Controllers = {
     join: JoinController;
+    leave: LeaveController;
+    presence: PresenceController;
     transport: TransportController;
     producer: ProducerController;
     consumer: ConsumerController;
@@ -37,6 +41,15 @@ export const routes = (controllers: Controllers): Record<ActionName, Route> => (
         guest: true,
         build: (data, session) => new JoinRequest(data, session),
         handle: request => controllers.join.handle(request),
+    },
+    [Action.Leave]: {
+        build: (data, session) => new Request(data, session),
+        handle: request => controllers.leave.handle(request),
+    },
+    [Action.WatchServer]: {
+        guest: true,
+        build: (data, session) => new JoinRequest(data, session),
+        handle: request => controllers.presence.watch(request),
     },
     [Action.CreateTransport]: {
         build: (data, session) => new Request(data, session),

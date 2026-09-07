@@ -31,8 +31,8 @@ export class TokenVerifier {
             throw new UnauthorizedException('token expirado');
         }
 
-        if (! claims.sub || ! claims.room) {
-            throw new UnauthorizedException('token sem identidade ou sala');
+        if (! claims.sub || (! claims.room && ! claims.server)) {
+            throw new UnauthorizedException('token sem identidade ou destino');
         }
 
         return claims as TokenClaims;

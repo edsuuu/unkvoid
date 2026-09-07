@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Auth\GoogleController;
 use App\Http\Controllers\InviteController;
+use App\Http\Controllers\PresenceTokenController;
 use App\Http\Controllers\VoiceTokenController;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
@@ -24,6 +25,7 @@ Route::middleware(['auth', 'nickname'])->group(function (): void {
 
     Route::get('convite/{code}', InviteController::class)->name('invite');
     Route::post('api/voz/{channel}/token', VoiceTokenController::class)->name('voice.token');
+    Route::post('api/servidores/{server}/presenca', PresenceTokenController::class)->name('presence.token');
 });
 
 require __DIR__.'/settings.php';

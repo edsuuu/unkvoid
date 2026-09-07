@@ -154,13 +154,24 @@ const run = async () => {
 
     const voltou = new Client();
     await voltou.open();
-    reply = await voltou.call('join', { token: mint({ sub: 'soluco-uuid', name: 'Soluço', room, role: 'member' }) });
+    reply = await voltou.call('join', { token: mint({ sub: 'soluco-uuid', name: 'Soluço', room, role: 'member' }), resume: true });
     assert.equal(reply.ok, true, 'reconexão dentro da carência deve entrar');
-    assert.equal(reply.data.resumed, true, 'deve RETOMAR a sessão, não criar outra');
+    assert.equal(reply.data.resumed, true, 'com resume:true deve RETOMAR a sessão');
 
     reply = await voltou.call('connectTransport', { transportId: transportAntes, dtlsParameters: { fingerprints: [], role: 'client' } });
     assert.notEqual(reply.status, 404, 'o transport de antes da queda ainda deve existir');
 
+    // Sem pedir retomada (caso do F5: cliente novo, sem transports), tem que nascer sessão limpa.
+    voltou.socket.close();
+    await new Promise(resolve => setTimeout(resolve, 600));
+
+    const depoisDoF5 = new Client();
+    await depoisDoF5.open();
+    reply = await depoisDoF5.call('join', { token: mint({ sub: 'soluco-uuid', name: 'Soluço', room, role: 'member' }) });
+    assert.equal(reply.ok, true, 'entrar sem pedir retomada deve funcionar');
+    assert.equal(reply.data.resumed, false, 'sem resume:true NÃO pode retomar — o cliente não tem transports');
+
+    depoisDoF5.close();
     voltou.close();
     guest.close();
     owner.close();

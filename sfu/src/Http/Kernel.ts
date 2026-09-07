@@ -1,9 +1,12 @@
 import type { ActionName } from '../Enums/Action.js';
 import { ApiException, NotFoundException, UnauthorizedException } from '../Exceptions/ApiException.js';
+import type { PresenceRegistry } from '../Services/PresenceRegistry.js';
 import type { RoomRegistry } from '../Services/RoomRegistry.js';
 import type { TokenVerifier } from '../Services/TokenVerifier.js';
 import { ConsumerController } from './Controllers/ConsumerController.js';
 import { JoinController } from './Controllers/JoinController.js';
+import { LeaveController } from './Controllers/LeaveController.js';
+import { PresenceController } from './Controllers/PresenceController.js';
 import { ModerationController } from './Controllers/ModerationController.js';
 import { ProducerController } from './Controllers/ProducerController.js';
 import { TransportController } from './Controllers/TransportController.js';
@@ -13,9 +16,11 @@ import type { Session } from '../types.js';
 export class Kernel {
     private readonly routes: ReturnType<typeof routes>;
 
-    constructor(registry: RoomRegistry, tokens: TokenVerifier) {
+    constructor(registry: RoomRegistry, tokens: TokenVerifier, presence: PresenceRegistry) {
         this.routes = routes({
-            join: new JoinController(registry, tokens),
+            join: new JoinController(registry, tokens, presence),
+            leave: new LeaveController((roomId, peerId) => presence.leave(roomId, peerId)),
+            presence: new PresenceController(presence, tokens),
             transport: new TransportController(),
             producer: new ProducerController(),
             consumer: new ConsumerController(),

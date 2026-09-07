@@ -31,6 +31,9 @@ module.exports = {
                 SFU_PORT: '3000',
                 SFU_ANNOUNCED_ADDRESS: '144.126.133.10',
                 SFU_MEDIA_PORT: '40000',
+                // Cada worker usa uma porta a partir da SFU_MEDIA_PORT. Hoje só a 40000
+                // está liberada no firewall da Contabo; abrir 40001-40003 permite 4.
+                SFU_WORKERS: '1',
                 ...fromFile,
             },
         },

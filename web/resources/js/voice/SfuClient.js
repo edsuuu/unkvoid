@@ -155,7 +155,12 @@ export class SfuClient extends EventTarget {
     }
 
     async setup() {
-        const joined = await this.request('join', { token: await this.tokenProvider() });
+        // Só pede retomada se os transports desta aba ainda estiverem vivos. Depois
+        // de um F5 eles não existem, então a sessão precisa nascer limpa.
+        const joined = await this.request('join', {
+            token: await this.tokenProvider(),
+            resume: Boolean(this.sendTransport && this.recvTransport),
+        });
 
         this.peerId = joined.peerId;
         this.role = joined.role;
@@ -459,6 +464,11 @@ export class SfuClient extends EventTarget {
         });
 
         return rows;
+    }
+
+    /** Saída explícita: sem isto o servidor trata como queda e a pessoa fica fantasma. */
+    async leaveRoom() {
+        await this.request('leave').catch(() => {});
     }
 
     disconnect() {

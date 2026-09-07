@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 
 import { config } from '../config.js';
+import { PresenceRegistry } from '../Services/PresenceRegistry.js';
 import { RoomRegistry } from '../Services/RoomRegistry.js';
 import { TokenVerifier } from '../Services/TokenVerifier.js';
 import type { Session } from '../types.js';
@@ -13,12 +14,14 @@ type Payload = { id?: number; action?: string; data?: Record<string, unknown> };
 export class Server {
     private readonly registry = new RoomRegistry();
 
+    private readonly presence = new PresenceRegistry();
+
     private readonly kernel: Kernel;
 
     private readonly sessions = new Map<WebSocket, Session>();
 
     constructor() {
-        this.kernel = new Kernel(this.registry, new TokenVerifier(config.tokenSecret));
+        this.kernel = new Kernel(this.registry, new TokenVerifier(config.tokenSecret), this.presence);
     }
 
     async start(): Promise<void> {
@@ -43,7 +46,7 @@ export class Server {
     }
 
     private accept(socket: WebSocket): void {
-        const session: Session = { socket, room: null, peer: null };
+        const session: Session = { socket, room: null, peer: null, watching: null };
 
         this.sessions.set(socket, session);
 
@@ -79,6 +82,10 @@ export class Server {
     private release(session: Session): void {
         this.sessions.delete(session.socket);
 
+        if (session.watching) {
+            this.presence.unwatch(session.socket, session.watching);
+        }
+
         if (! session.room || ! session.peer) {
             return;
         }
@@ -86,6 +93,7 @@ export class Server {
         // Não destrói na hora: a mídia continua viva e a pessoa tem uma janela para
         // reconectar a sinalização sem cair da chamada.
         session.room.onEvicted = room => this.registry.release(room);
+        session.room.onPeerGone = (roomId, peerId) => this.presence.leave(roomId, peerId);
         session.room.orphanPeer(session.peer);
     }
 }

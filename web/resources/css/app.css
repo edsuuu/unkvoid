@@ -47,3 +47,46 @@
 [x-cloak] {
     display: none !important;
 }
+
+/* Barra de rolagem fina, como a do Discord: aparece sobre o fundo escuro sem
+   ocupar espaço nem chamar atenção. */
+@layer base {
+    [x-cloak] {
+        display: none !important;
+    }
+
+    .dark ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+
+    .dark ::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    .dark ::-webkit-scrollbar-thumb {
+        background: #1a1b1e;
+        border-radius: 4px;
+    }
+
+    .dark ::-webkit-scrollbar-thumb:hover {
+        background: #111214;
+    }
+
+    .dark * {
+        scrollbar-width: thin;
+        scrollbar-color: #1a1b1e transparent;
+    }
+
+    /* O anel de foco padrão do Tailwind some no tema escuro do Discord. */
+    .dark :focus-visible {
+        outline: 2px solid #5865f2;
+        outline-offset: 1px;
+    }
+
+    /* Evita seleção acidental de texto ao clicar rápido em canais e botões. */
+    button,
+    [role='button'] {
+        user-select: none;
+    }
+}

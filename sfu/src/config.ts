@@ -1,3 +1,5 @@
+import { availableParallelism } from 'node:os';
+
 import type { RouterRtpCodecCapability, WorkerLogTag } from 'mediasoup/types';
 
 export const config = {
@@ -11,6 +13,9 @@ export const config = {
     // O mediasoup é ICE Lite: nunca inicia conexão, só responde. Atrás de firewall
     // stateful isso significa que a porta PRECISA estar liberada para entrada.
     mediaPort: Number(process.env.SFU_MEDIA_PORT ?? 40000),
+
+    // Um worker por núcleo. Cada um ocupa uma porta a partir de mediaPort.
+    workerCount: Number(process.env.SFU_WORKERS ?? availableParallelism()),
 
     worker: {
         logLevel: 'warn' as const,

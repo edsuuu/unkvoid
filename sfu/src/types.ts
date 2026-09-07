@@ -8,11 +8,13 @@ export type Session = {
     socket: WebSocket;
     room: Room | null;
     peer: Peer | null;
+    watching: string | null;
 };
 
 export type TokenClaims = {
     sub: string;
     room: string;
+    server?: string;
     role: RoleName;
     name?: string;
     avatar?: string | null;
