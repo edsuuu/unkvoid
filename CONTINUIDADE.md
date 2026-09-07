@@ -419,10 +419,19 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
 **Rede**
 - O firewall da Contabo tem allowlist por porta. Abertas: 22, 80, 443, 8443,
   30033/tcp, 9987/udp e 40000-40003 (tcp+udp).
-- ⚠️ **`41000-41003/udp`** é por onde o app desktop entrega a transmissão ao SFU acima
-  de 3 espectadores. Sem isso os pacotes saem e não chegam, e a transmissão fica preta
-  para quem assiste — o caminho direto, até 3, não usa essas portas e continua
-  funcionando.
+- **`41000-41003/udp`** é por onde o app desktop entrega a transmissão ao SFU acima de 3
+  espectadores. **Aberto e verificado ponta a ponta** em 07/09/2026: o exemplo `plain`
+  mandou H.264 para o IP público e o mediasoup confirmou o recebimento. Sem essas portas
+  os pacotes saem e não chegam, e a transmissão fica preta para quem assiste — o caminho
+  direto, até 3, não usa essas portas e continua funcionando.
+- O id do pm2 **muda a cada deploy**. `pm2 env 0` pegava o processo errado e devolvia
+  segredo vazio, e o token saía com "invalid signature". Leia pelo nome:
+
+  ```bash
+  pm2 jlist | python3 -c "import json,sys; print(next(p['pm2_env']['SFU_SECRET'] for p in json.load(sys.stdin) if p['name']=='sfu'))"
+  ```
+- Duas capturas de `tcpdump` rodando ao mesmo tempo se atrapalham e uma vê zero pacotes.
+  Se o resultado contradisser um teste anterior, é isso — mate as anteriores e refaça.
 - **Como saber se a porta está aberta de verdade**, sem depender do painel da Contabo:
 
   ```bash
