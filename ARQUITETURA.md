@@ -207,6 +207,7 @@ nem compilaria em Windows e Linux, e aí nem o `.msi` sairia.
 | Arquivo | Papel |
 |---|---|
 | `src-tauri/src/lib.rs` | os comandos que a interface chama: transmitir, ofertar, aceitar resposta, subir para o SFU, atualizar |
+| `src-tauri/wix/windows.wxs` | o que o instalador padrão não faz: atalho na área de trabalho e regra de firewall |
 | `src-tauri/src/broadcast.rs` | junta captura, encoder e transporte: **um encoder alimenta N conexões** |
 | `ui/app.js` | a aplicação: login, servidores, canais, voz, microfone |
 | `ui/p2p.js` | as conexões diretas e a troca automática para o SFU |

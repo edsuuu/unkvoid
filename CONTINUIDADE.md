@@ -56,7 +56,7 @@ cd sfu && pnpm run check   # asserções sobre o contrato inteiro
 mensagens, e os mesmos emissores de token do SFU que o web usa.
 Testes em `web/tests/Feature/Api/DesktopApiTest.php`.
 
-### App desktop (v0.7.0)
+### App desktop (v0.8.0)
 Abre, verifica atualização, exige servidor, pede login (e-mail/senha **ou Google**),
 lista servidores e canais com o design do web, **captura a tela nativamente** e
 **transmite por P2P**.
@@ -161,7 +161,7 @@ node web/resources/js/voice/MicrophoneGate.check.mjs
 
 ---
 
-## Builds: os três existem (v0.7.0)
+## Builds: os três existem (v0.8.0)
 
 `.msi`, `.deb` e `.dmg` são publicados pelo CI a cada tag `v*`, junto com o
 `latest.json` que o auto-update procura. Instalador **não pode ser cross-compilado**
@@ -299,6 +299,20 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
   endpoint aceita a conexão e não responde. São 10 s em `check_update`.
 - Identificador terminado em `.app` conflita com a extensão de bundle do macOS —
   daí `com.unkvoid.desktop` e não `com.unkvoid.app`.
+
+**Windows**
+- Testar o servidor com uma rota **autenticada** quebra de um jeito difícil de enxergar:
+  sem token ela responde 302 para `/login`, o fetch segue o redirecionamento, e a página
+  de login não tem cabeçalho CORS — o fetch rejeita e o app conclui que o servidor caiu.
+  Era exatamente a tela "No connection" num app recém-instalado. Por isso existe
+  `/api/health`, pública.
+- O Windows bloqueia conexão de **entrada** por padrão, e o WebRTC precisa receber para
+  o ICE fechar: sem regra de firewall a transmissão direta entre duas máquinas não
+  conecta. Sair não precisa de permissão, então o caminho pelo SFU funciona de qualquer
+  jeito. A regra entra pelo instalador (`src-tauri/wix/windows.wxs`) com
+  `Return="ignore"` — instalação que quebra por causa de rede seria pior.
+- O template WiX do Tauri só cria o atalho do **menu Iniciar**. O da área de trabalho
+  vem do mesmo fragmento.
 
 **Reverb**
 - `ShouldBroadcast` **enfileira**. Sem worker (esta VPS não tem), a mensagem salva e
