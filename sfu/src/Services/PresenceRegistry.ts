@@ -2,6 +2,11 @@ import type { WebSocket } from 'ws';
 
 type Watcher = { socket: WebSocket; serverId: string };
 
+type ChannelPresence = {
+    members: { peerId: string; name: string; avatar: string | null; joinedAt: number }[];
+    startedAt: number;
+};
+
 /**
  * Quem está em qual canal de voz, empurrado por WebSocket para todo mundo do
  * servidor — inclusive quem não entrou em canal nenhum. Sem isto só dava para
@@ -12,7 +17,7 @@ export class PresenceRegistry {
 
     private readonly channelServer = new Map<string, string>();
 
-    private readonly channels = new Map<string, Map<string, { name: string; avatar: string | null }>>();
+    private readonly channels = new Map<string, Map<string, { name: string; avatar: string | null; joinedAt: number }>>();
 
     link(channelId: string, serverId: string | undefined): void {
         if (serverId) {
@@ -51,7 +56,11 @@ export class PresenceRegistry {
     enter(channelId: string, peerId: string, name: string, avatar: string | null): void {
         const members = this.channels.get(channelId) ?? new Map();
 
-        members.set(peerId, { name, avatar });
+        // Preserva o horário de entrada numa reconexão: o cronômetro que os outros
+        // veem não pode zerar porque a sinalização caiu.
+        const joinedAt = members.get(peerId)?.joinedAt ?? Date.now();
+
+        members.set(peerId, { name, avatar, joinedAt });
         this.channels.set(channelId, members);
         this.publish(channelId);
     }
@@ -72,15 +81,22 @@ export class PresenceRegistry {
         this.publish(channelId);
     }
 
-    snapshot(serverId: string): Record<string, { peerId: string; name: string; avatar: string | null }[]> {
-        const result: Record<string, { peerId: string; name: string; avatar: string | null }[]> = {};
+    snapshot(serverId: string): Record<string, ChannelPresence> {
+        const result: Record<string, ChannelPresence> = {};
 
         for (const [channelId, members] of this.channels) {
             if (this.channelServer.get(channelId) !== serverId) {
                 continue;
             }
 
-            result[channelId] = [...members].map(([peerId, member]) => ({ peerId, ...member }));
+            const lista = [...members].map(([peerId, member]) => ({ peerId, ...member }));
+
+            result[channelId] = {
+                members: lista,
+                // Quem não está no canal também precisa ver há quanto tempo a
+                // conversa rola: o relógio local de quem entrou não serve para isso.
+                startedAt: Math.min(...lista.map(member => member.joinedAt)),
+            };
         }
 
         return result;

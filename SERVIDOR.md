@@ -56,9 +56,16 @@ curl 127.0.0.1:3000/health
 |---|---|---|---|
 | 80 / 443 | TCP | nginx | sim |
 | 3000 | TCP | API de mídia (só 127.0.0.1) | não precisa |
-| **40000** | **UDP** | **mídia WebRTC** | **sim — sem isso nada conecta** |
-| 40000 | TCP | fallback de mídia | sim |
+| **40000-40003** | **UDP** | **mídia WebRTC — uma porta por worker** | **sim** |
+| 40000-40003 | TCP | fallback de mídia | sim |
 
+> **Por que são quatro portas:** o worker do mediasoup é um processo C++ separado e
+> single-thread — satura um núcleo e para. Threads no Node não ajudariam, porque a
+> mídia nunca passa pelo JavaScript, só a sinalização. Escalar é ter **um worker por
+> núcleo** (a VPS tem 4), e cada um precisa da própria porta, porque o `WebRtcServer`
+> não é compartilhável entre processos. Salas novas vão para o worker menos carregado;
+> o `/health` mostra a distribuição.
+>
 > **Por que a porta UDP precisa estar liberada:** o mediasoup é **ICE Lite** — ele só
 > responde a checagens ICE, nunca inicia. Num firewall stateful isso significa que a
 > porta tem que aceitar entrada não solicitada. Foi medido: com um listener na porta,

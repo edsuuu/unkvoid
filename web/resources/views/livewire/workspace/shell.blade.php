@@ -173,10 +173,9 @@
                             <span class="truncate">{{ $channel->name }}</span>
 
                             <span
-                                x-show="inCall && voiceChannelId === '{{ $channel->id }}'"
-                                x-cloak
+                                wire:ignore
+                                data-channel-clock="{{ $channel->id }}"
                                 class="ml-auto shrink-0 font-mono text-xs text-[#23a55a]"
-                                x-text="voiceClock"
                             ></span>
                         </button>
 

@@ -20,6 +20,7 @@ export class VoiceStage {
         this.channelName = '';
         this.focused = null;
         this.bytesMark = new Map();
+        this.presenceState = null;
         this.escapeHandler = event => {
             if (event.key !== 'Escape') {
                 return;
@@ -34,7 +35,11 @@ export class VoiceStage {
 
     remember(channelId, channelName) {
         try {
-            const serverId = document.querySelector('[data-server-id]')?.dataset.serverId ?? null;
+            // Não sobrescreve com nulo: ao restaurar, a página ainda está no painel
+            // inicial e o servidor não está no DOM — o valor salvo é o que vale.
+            const anterior = JSON.parse(localStorage.getItem(VoiceStage.STORAGE_KEY) ?? 'null');
+            const serverId = document.querySelector('[data-server-id]')?.dataset.serverId
+                ?? (anterior?.channelId === channelId ? anterior.serverId : null);
 
             localStorage.setItem(VoiceStage.STORAGE_KEY, JSON.stringify({ channelId, channelName, serverId }));
         } catch {
@@ -81,8 +86,10 @@ export class VoiceStage {
      * inclusive para quem não entrou em canal nenhum.
      */
     renderPresence(channels) {
+        this.presenceState = channels;
+
         document.querySelectorAll('[data-voice-members]').forEach(list => {
-            const members = channels[list.dataset.voiceMembers] ?? [];
+            const members = channels[list.dataset.voiceMembers]?.members ?? [];
 
             list.innerHTML = members.map(member => `
                 <div class="flex items-center gap-2 rounded px-2 py-1 text-sm text-[#949ba4]">
@@ -92,6 +99,31 @@ export class VoiceStage {
                     <span class="truncate">${member.name}</span>
                 </div>
             `).join('');
+        });
+
+        this.renderChannelClocks();
+    }
+
+    /**
+     * O tempo ao lado do canal vem do servidor, então quem NÃO está na chamada
+     * também vê há quanto tempo ela rola.
+     */
+    renderChannelClocks() {
+        document.querySelectorAll('[data-channel-clock]').forEach(element => {
+            const presence = this.presenceState?.[element.dataset.channelClock];
+
+            if (! presence?.members.length) {
+                element.textContent = '';
+
+                return;
+            }
+
+            const seconds = Math.max(0, Math.floor((Date.now() - presence.startedAt) / 1000));
+            const parts = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60];
+
+            element.textContent = (parts[0] ? parts : parts.slice(1))
+                .map(value => String(value).padStart(2, '0'))
+                .join(':');
         });
     }
 
@@ -135,6 +167,7 @@ export class VoiceStage {
             Livewire.on('url-changed', payload => history.replaceState({}, '', payload.url));
 
             this.presence.addEventListener('presence', event => this.renderPresence(event.detail));
+            setInterval(() => this.renderChannelClocks(), 1000);
             this.watchCurrentServer();
 
             // Observar o atributo é mais confiável que hook do Livewire: funciona
