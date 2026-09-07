@@ -39,7 +39,7 @@ final class CreateServer
                 return $server;
             });
         } catch (Throwable $exception) {
-            Log::channel('servers')->error('[ERRO] falha ao criar servidor', [
+            Log::channel('servers')->error('[ERROR] failed to create server', [
                 'owner' => $owner->id,
                 'exception' => $exception,
             ]);

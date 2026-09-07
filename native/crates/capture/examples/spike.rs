@@ -1,10 +1,10 @@
-//! Spike da captura nativa.
+//! Native capture spike.
 //!
-//! Mesma lógica do spike da web: provar o pedaço mais arriscado antes de construir
-//! em cima. Aqui a pergunta é se a captura nativa entrega quadros e áudio de sistema
-//! de forma estável, sem barra do navegador e sem o limite do WKWebView.
+//! Same logic as the web spike: prove the riskiest part before building on it.
+//! The question here is whether native capture reliably provides frames and system
+//! audio without a browser bar or WKWebView's limit.
 //!
-//! Roda com: cargo run -p capture --example spike -- [720|1080|1440] [segundos]
+//! Run with: cargo run -p capture --example spike -- [720|1080|1440] [seconds]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -26,13 +26,13 @@ fn main() -> anyhow::Result<()> {
         .and_then(|value| value.parse().ok())
         .unwrap_or(10);
 
-    println!("telas disponíveis:");
+    println!("available screens:");
     for display in PlatformCapturer::displays()? {
         println!("  #{} — {}x{}", display.id, display.width, display.height);
     }
 
     let (width, height) = quality.dimensions();
-    println!("\ncapturando {width}x{height} por {seconds}s (áudio de sistema ligado)\n");
+    println!("\ncapturing {width}x{height} for {seconds}s (system audio enabled)\n");
 
     let video_frames = Arc::new(AtomicU64::new(0));
     let audio_chunks = Arc::new(AtomicU64::new(0));
@@ -74,7 +74,7 @@ fn main() -> anyhow::Result<()> {
         let total = video_frames.load(Ordering::Relaxed);
 
         println!(
-            "{segundo:>3}s  {:>3} fps  {}x{}  áudio: {} blocos",
+            "{segundo:>3}s  {:>3} fps  {}x{}  audio: {} chunks",
             total - anterior,
             last_width.load(Ordering::Relaxed),
             last_height.load(Ordering::Relaxed),
@@ -91,17 +91,17 @@ fn main() -> anyhow::Result<()> {
     let audio = audio_chunks.load(Ordering::Relaxed);
 
     println!("\n--- resultado ---");
-    println!("quadros: {total} · média {media:.1} fps");
+    println!("frames: {total} · average {media:.1} fps");
     println!(
-        "áudio de sistema: {}",
+        "system audio: {}",
         if audio > 0 {
-            format!("{audio} blocos — FUNCIONA")
+            format!("{audio} chunks — WORKING")
         } else {
-            "NENHUM BLOCO — não veio".into()
+            "NO CHUNKS — none received".into()
         }
     );
     println!(
-        "resolução entregue: {}x{}",
+        "delivered resolution: {}x{}",
         last_width.load(Ordering::Relaxed),
         last_height.load(Ordering::Relaxed)
     );

@@ -7,50 +7,50 @@
 </head>
 <body>
 
-<!-- Atualização: roda antes de qualquer coisa, como no Discord -->
+<!-- Update: runs before anything else, as in Discord -->
 <section class="tela-cheia" id="tela-update">
   <div class="cartao">
     <h1>Discord 2.0</h1>
-    <p id="update-status">Procurando atualizações…</p>
+    <p id="update-status">Looking for updates…</p>
     <div class="aviso"><span class="girando"></span></div>
   </div>
 </section>
 
-<!-- Sem servidor o app não serve para nada: bloqueia em vez de fingir que funciona -->
+<!-- Without a server the app is useless: block instead of pretending it works -->
 <section class="tela-cheia" id="tela-offline" hidden>
   <div class="cartao">
-    <h1>Sem conexão</h1>
-    <p>O Discord 2.0 precisa do servidor para funcionar. Reconectando…</p>
+    <h1>No connection</h1>
+    <p>Discord 2.0 needs the server to work. Reconnecting…</p>
     <div class="aviso"><span class="girando"></span><span id="offline-tentativa"></span></div>
   </div>
 </section>
 
 <section class="tela-cheia" id="tela-login" hidden>
   <div class="cartao">
-    <h1>Entrar na sua conta</h1>
-    <p>Use o mesmo login do discord.unkvoid.com</p>
+    <h1>Sign in to your account</h1>
+    <p>Use the same login as discord.unkvoid.com</p>
 
     <form id="form-login">
       <div class="campo">
-        <label for="email">Endereço de e-mail</label>
+        <label for="email">Email address</label>
         <input id="email" type="email" autocomplete="username" required>
       </div>
 
       <div class="campo">
-        <label for="senha">Senha</label>
+        <label for="senha">Password</label>
         <input id="senha" type="password" autocomplete="current-password" required>
       </div>
 
-      <button type="submit" class="botao" id="botao-entrar">Entrar</button>
+      <button type="submit" class="botao" id="botao-entrar">Sign in</button>
 
       <div style="display:flex;align-items:center;gap:12px;margin:20px 0 16px">
         <span style="flex:1;height:1px;background:#3f4147"></span>
-        <span style="font-size:12px;color:#949ba4;text-transform:uppercase">ou</span>
+        <span style="font-size:12px;color:#949ba4;text-transform:uppercase">or</span>
         <span style="flex:1;height:1px;background:#3f4147"></span>
       </div>
 
       <button type="button" class="botao neutro" id="botao-google" style="width:100%">
-        Continuar com o Google
+        Continue with Google
       </button>
 
       <p class="erro" id="erro-login"></p>
@@ -61,7 +61,7 @@
 <nav class="trilha" id="trilha"></nav>
 
 <aside class="canais">
-  <header class="cabecalho"><span id="nome-servidor">Início</span></header>
+  <header class="cabecalho"><span id="nome-servidor">Home</span></header>
 
   <div class="lista" id="lista-canais"></div>
 
@@ -69,10 +69,10 @@
     <div class="voz-topo">
       <span class="avatar" style="background:var(--verde);width:8px;height:8px"></span>
       <div class="voz-titulo">
-        Voz conectada <span class="voz-canal" id="voz-relogio"></span>
+        Voice connected <span class="voz-canal" id="voz-relogio"></span>
         <div class="voz-canal" id="voz-canal"></div>
       </div>
-      <button class="botao neutro" id="sair-voz" style="flex:0;padding:6px 10px">Sair</button>
+      <button class="botao neutro" id="sair-voz" style="flex:0;padding:6px 10px">Leave</button>
     </div>
 
     <div class="acoes">
@@ -81,8 +81,8 @@
         <option value="1080" selected>1080p</option>
         <option value="1440">1440p</option>
       </select>
-      <button class="botao" id="compartilhar">Compartilhar</button>
-      <button class="botao perigo" id="parar" hidden>Parar</button>
+      <button class="botao" id="compartilhar">Share</button>
+      <button class="botao perigo" id="parar" hidden>Stop</button>
     </div>
   </div>
 
@@ -90,15 +90,15 @@
     <span class="avatar grande" id="meu-avatar"></span>
     <div style="flex:1;min-width:0">
       <div class="nome" id="meu-nome"></div>
-      <div class="estado" id="meu-estado">Disponível</div>
+      <div class="estado" id="meu-estado">Available</div>
     </div>
   </div>
 </aside>
 
 <main class="conteudo">
-  <header class="cabecalho"><span id="titulo-canal">Selecione um canal</span></header>
+  <header class="cabecalho"><span id="titulo-canal">Select a channel</span></header>
   <div class="palco" id="palco" hidden></div>
-  <div class="vazio" id="vazio">Escolha um servidor para começar</div>
+  <div class="vazio" id="vazio">Choose a server to get started</div>
 </main>
 
 <script type="module" src="app.js"></script>

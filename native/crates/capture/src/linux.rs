@@ -1,17 +1,17 @@
 use crate::{CaptureConfig, CaptureError, CaptureEvent, Display, Window};
 
-/// Captura no Linux passa pelo portal XDG (`org.freedesktop.portal.ScreenCast`),
-/// que devolve um nó do PipeWire. É o único caminho que funciona sob Wayland.
+/// Linux capture goes through the XDG portal (`org.freedesktop.portal.ScreenCast`),
+/// which returns a PipeWire node. It is the only path that works under Wayland.
 ///
-/// Estado: o diálogo do portal e a listagem já respondem, mas o consumo dos quadros
-/// do PipeWire ainda não está ligado — por isso `start` recusa em vez de fingir que
-/// capturou. Quem usa Linux vê um erro claro, não uma tela preta.
+/// Status: the portal dialog and listing respond, but consuming PipeWire frames is
+/// not connected yet — so `start` refuses instead of pretending to capture. Linux
+/// users see a clear error, not a black screen.
 pub struct LinuxCapturer;
 
 impl LinuxCapturer {
     pub fn displays() -> Result<Vec<Display>, CaptureError> {
-        // O portal não expõe a lista antes do usuário escolher: é ele quem mostra o
-        // seletor. Devolver vazio faz a interface pular direto para o diálogo.
+        // The portal does not expose the list before the user chooses: it displays
+        // the selector. Returning an empty list lets the interface open the dialog.
         Ok(Vec::new())
     }
 
@@ -24,7 +24,7 @@ impl LinuxCapturer {
         F: Fn(CaptureEvent) + Send + Sync + 'static,
     {
         Err(CaptureError::Platform(
-            "captura no Linux ainda não implementada — falta consumir o nó do PipeWire".into(),
+            "Linux capture is not implemented yet — PipeWire node consumption is missing".into(),
         ))
     }
 

@@ -1,7 +1,7 @@
-//! Ponte entre a interface e a captura nativa.
+//! Bridge between the interface and native capture.
 //!
-//! A interface nunca fala com o sistema operacional: ela chama estes comandos, e a
-//! crate `capture` cuida do que muda por plataforma.
+//! The interface never talks to the operating system: it calls these commands, and
+//! the `capture` crate handles what varies by platform.
 
 use std::sync::Mutex;
 
@@ -80,8 +80,8 @@ fn list_windows() -> Result<Vec<WindowInfo>, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Começa a transmitir. A captura e o encoder sobem aqui; as conexões nascem uma
-/// por espectador em `offer_to`.
+/// Starts broadcasting. Capture and the encoder start here; connections are created
+/// one per viewer in `offer_to`.
 #[tauri::command]
 async fn start_broadcast(
     app: tauri::AppHandle,
@@ -92,7 +92,7 @@ async fn start_broadcast(
     let mut ativo = state.0.lock().await;
 
     if ativo.is_some() {
-        return Err("já existe uma transmissão em andamento".into());
+        return Err("a stream is already in progress".into());
     }
 
     let (transmissao, mut sinais) =
@@ -111,14 +111,14 @@ async fn start_broadcast(
     Ok(())
 }
 
-/// Oferta para um espectador específico. Uma conexão por pessoa, um encoder só.
+/// Offer for a specific viewer. One connection per person, one encoder only.
 #[tauri::command]
 async fn offer_to(state: State<'_, ActiveBroadcast>, peer_id: String) -> Result<String, String> {
     let ativo = state.0.lock().await;
 
     ativo
         .as_ref()
-        .ok_or_else(|| "nenhuma transmissão ativa".to_string())?
+        .ok_or_else(|| "no active stream".to_string())?
         .offer_to(peer_id)
         .await
         .map_err(|erro| erro.to_string())
@@ -134,7 +134,7 @@ async fn accept_answer(
 
     ativo
         .as_ref()
-        .ok_or_else(|| "nenhuma transmissão ativa".to_string())?
+        .ok_or_else(|| "no active stream".to_string())?
         .accept_answer(&peer_id, sdp)
         .await
         .map_err(|erro| erro.to_string())
@@ -150,7 +150,7 @@ async fn add_candidate(
 
     ativo
         .as_ref()
-        .ok_or_else(|| "nenhuma transmissão ativa".to_string())?
+        .ok_or_else(|| "no active stream".to_string())?
         .add_candidate(&peer_id, candidate)
         .await
         .map_err(|erro| erro.to_string())
@@ -201,10 +201,10 @@ fn start_capture(
     let mut active = state
         .0
         .lock()
-        .map_err(|_| "estado de captura corrompido".to_string())?;
+        .map_err(|_| "corrupted capture state".to_string())?;
 
     if active.is_some() {
-        return Err("já existe uma captura em andamento".into());
+        return Err("a capture is already in progress".into());
     }
 
     let config = CaptureConfig {
@@ -219,8 +219,8 @@ fn start_capture(
     let handle = app.clone();
 
     let capturer = PlatformCapturer::start(&config, move |event| {
-        // Por enquanto a interface só precisa saber que está vivo. O caminho de
-        // mídia (encoder + WebRTC) entra depois deste ponto.
+        // For now the interface only needs to know that it is alive. The media
+        // path (encoder + WebRTC) is added after this point.
         if let CaptureEvent::Video(frame) = event {
             let _ = handle.emit("capture:frame", (frame.width, frame.height));
         }
@@ -250,7 +250,7 @@ fn stop_capture(state: State<'_, ActiveCapture>) -> Result<(), String> {
     let mut active = state
         .0
         .lock()
-        .map_err(|_| "estado de captura corrompido".to_string())?;
+        .map_err(|_| "corrupted capture state".to_string())?;
 
     if let Some(mut capturer) = active.take() {
         capturer.stop().map_err(|error| error.to_string())?;
@@ -259,9 +259,9 @@ fn stop_capture(state: State<'_, ActiveCapture>) -> Result<(), String> {
     Ok(())
 }
 
-/// Procura, baixa e instala atualização antes de liberar o app — do jeito que o
-/// Discord faz. Falha de rede não trava a abertura: sem servidor a pessoa não vai
-/// conseguir usar mesmo, mas travar na tela de update seria pior que entrar e avisar.
+/// Checks for, downloads, and installs updates before opening the app — as Discord
+/// does. A network failure does not block startup: without a server the user cannot
+/// use the app anyway, but blocking on the update screen would be worse than warning them.
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_updater::UpdaterExt;
@@ -315,5 +315,5 @@ pub fn run() {
             stop_broadcast
         ])
         .run(tauri::generate_context!())
-        .expect("erro ao subir o app");
+        .expect("error starting the app");
 }

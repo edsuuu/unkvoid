@@ -13,16 +13,16 @@ export class JoinController {
     ) {}
 
     async handle(request: JoinRequest): Promise<JoinResource> {
-        // Sem esta guarda, rejoinar no mesmo socket faria a substituição de sessão
-        // fechar o próprio socket antes de responder.
+        // Without this guard, rejoining on the same socket would make session replacement
+        // close its own socket before responding.
         if (request.session.peer) {
-            throw new ValidationException('este socket já entrou em uma sala');
+            throw new ValidationException('this socket has already joined a room');
         }
 
         const claims = this.tokens.verify(request.token());
         const room = await this.registry.findOrCreate(claims.room);
 
-        const { peer, resumed } = room.addPeer(claims.sub, claims.name ?? 'anônimo', request.session.socket, {
+        const { peer, resumed } = room.addPeer(claims.sub, claims.name ?? 'anonymous', request.session.socket, {
             role: claims.role,
             avatar: claims.avatar ?? null,
             resume: request.wantsResume(),
@@ -35,7 +35,7 @@ export class JoinController {
         this.presence.enter(room.id, peer.id, peer.name, peer.avatar);
         this.presence.setReconnecting(room.id, peer.id, false);
 
-        // Retomada não é novidade para a sala: ninguém saiu, a sinalização só voltou.
+        // A resume is not new to the room: nobody left; signaling simply returned.
         if (! resumed) {
             room.broadcast('peerJoined', {
                 peerId: peer.id,

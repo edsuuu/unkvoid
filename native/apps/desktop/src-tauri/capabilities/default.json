@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissões do app: atualização automática e reinício após instalar.",
+  "description": "App permissions: automatic updates and restart after installation.",
   "windows": [
     "main"
   ],

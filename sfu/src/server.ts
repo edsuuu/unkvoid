@@ -1,6 +1,6 @@
 import { Server } from './Http/Server.js';
 
 new Server().start().catch((exception: unknown) => {
-    console.error('[ERRO] falha ao subir o SFU', exception);
+    console.error('[ERROR] failed to start the SFU', exception);
     process.exit(1);
 });

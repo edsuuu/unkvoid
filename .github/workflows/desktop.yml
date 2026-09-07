@@ -1,7 +1,7 @@
 name: App desktop
 
-# Instaladores só saem em runner nativo: .msi precisa de Windows, .deb de Linux e
-# .dmg de macOS. Não dá para gerar os três de uma máquina só.
+# Installers are built only on native runners: .msi requires Windows, .deb requires Linux,
+# and .dmg requires macOS. The three cannot be built from a single machine.
 on:
   push:
     tags: ['v*']
@@ -12,19 +12,19 @@ on:
   workflow_dispatch:
 
 jobs:
-  verificar:
-    name: Verificar (${{ matrix.alvo }})
+  verify:
+    name: Verify (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
-            alvo: windows
+            target: windows
           - os: ubuntu-22.04
-            alvo: linux
+            target: linux
           - os: macos-latest
-            alvo: macos
+            target: macos
     steps:
       - uses: actions/checkout@v4
 
@@ -36,42 +36,42 @@ jobs:
         with:
           workspaces: native
 
-      - name: Dependências do sistema (Linux)
-        if: matrix.alvo == 'linux'
+      - name: System dependencies (Linux)
+        if: matrix.target == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
 
-      - name: Formatação
+      - name: Formatting
         working-directory: native
         run: cargo fmt --all --check
 
       - name: Clippy
         working-directory: native
-        # Fora do macOS o código nunca foi executado: tratar aviso como erro aqui
-        # bloquearia o instalador por algo que não temos como verificar localmente.
-        run: cargo clippy --workspace --all-targets ${{ matrix.alvo == 'macos' && '-- -D warnings' || '' }}
+        # Outside macOS this code has never been executed: treating warnings as errors
+        # here would block installers for something we cannot verify locally.
+        run: cargo clippy --workspace --all-targets ${{ matrix.target == 'macos' && '-- -D warnings' || '' }}
 
-      - name: Testes
+      - name: Tests
         working-directory: native
         run: cargo test --workspace
 
-  instaladores:
-    name: Instalador (${{ matrix.alvo }})
+  installers:
+    name: Installer (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
-            alvo: windows
-            artefato: msi
+            target: windows
+            artifact: msi
           - os: ubuntu-22.04
-            alvo: linux
-            artefato: deb
+            target: linux
+            artifact: deb
           - os: macos-latest
-            alvo: macos
-            artefato: dmg
+            target: macos
+            artifact: dmg
     steps:
       - uses: actions/checkout@v4
 
@@ -81,16 +81,16 @@ jobs:
         with:
           workspaces: native
 
-      - name: Dependências do sistema (Linux)
-        if: matrix.alvo == 'linux'
+      - name: System dependencies (Linux)
+        if: matrix.target == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
 
-      # Sem a chave de assinatura o build falha ao gerar os artefatos de update.
-      # Desligá-los quando o secret não existe deixa o instalador sair mesmo assim —
-      # perde-se só a atualização automática naquela plataforma.
-      - name: Desligar artefatos de update sem chave
+      # Without the signing key, the build fails when generating update artifacts.
+      # Disabling them when the secret is missing still lets the installer build —
+      # only automatic updates are disabled for that platform.
+      - name: Disable update artifacts without a signing key
         if: env.TAURI_SIGNING_PRIVATE_KEY == ''
         shell: bash
         working-directory: native/apps/desktop/src-tauri
@@ -102,12 +102,12 @@ jobs:
           d['bundle']['createUpdaterArtifacts'] = False
           d.get('plugins', {}).pop('updater', None)
           p.write_text(json.dumps(d, indent=2) + '\n')
-          print('updater desligado: sem TAURI_SIGNING_PRIVATE_KEY nos secrets')
+          print('Updater disabled: TAURI_SIGNING_PRIVATE_KEY is missing from secrets')
           EOF
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 
-      - name: Gerar instalador
+      - name: Build installer
         working-directory: native/apps/desktop
         run: npm install --no-save @tauri-apps/cli@^2 && npx tauri build
         env:
@@ -116,7 +116,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: discord2-${{ matrix.alvo }}
+          name: discord2-${{ matrix.target }}
           path: |
             native/target/release/bundle/msi/*.msi
             native/target/release/bundle/deb/*.deb
@@ -124,9 +124,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # Em tag, o instalador vai direto para a Release — binário não entra no repo,
-      # senão o histórico incha a cada versão.
-      - name: Publicar na Release
+      # On a tag, the installer goes directly to the Release — binaries do not enter
+      # the repository, otherwise the history grows with every version.
+      - name: Publish to Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:

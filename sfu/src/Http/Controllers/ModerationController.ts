@@ -7,8 +7,8 @@ export class ModerationController {
     constructor(private readonly onBroadcastStopped: (roomId: string, peerId: string) => void) {}
 
     /**
-     * Encerra a transmissão sem tirar a pessoa da sala: ela continua na chamada e no
-     * chat, só para de publicar. Expulsar do servidor é outra coisa, e mora no Laravel.
+     * Stops the broadcast without removing the person from the room: they remain in the call and
+     * chat, but stop publishing. Removing someone from the server is separate and belongs in Laravel.
      */
     stopBroadcast(request: ModerationRequest): StatusResource {
         const target = this.authorize(request);
@@ -22,7 +22,7 @@ export class ModerationController {
     }
 
     /**
-     * Tira da chamada de voz. A pessoa segue membro do servidor e do chat.
+     * Removes the person from the voice call. They remain a server and chat member.
      */
     disconnect(request: ModerationRequest): StatusResource {
         const target = this.authorize(request);
@@ -37,16 +37,16 @@ export class ModerationController {
         const actor = request.peer();
 
         if (! actor.canModerate()) {
-            throw new ForbiddenException('você não modera esta sala');
+            throw new ForbiddenException('you do not moderate this room');
         }
 
         const target = request.room().findPeer(request.targetPeerId());
 
         if (target.id === actor.id) {
-            throw new ForbiddenException('não dá para moderar você mesmo');
+            throw new ForbiddenException('you cannot moderate yourself');
         }
 
-        console.log(`[INFO] ${actor.name} moderou ${target.name} na sala ${request.room().id}`);
+        console.log(`[INFO] ${actor.name} moderated ${target.name} in room ${request.room().id}`);
 
         return target;
     }

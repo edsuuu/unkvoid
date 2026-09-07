@@ -1,8 +1,8 @@
-//! Prova que dois lados fecham a conexão de verdade.
+//! Proves that both sides establish the connection for real.
 //!
-//! Sobe duas PeerConnections no mesmo processo e faz a troca completa de oferta,
-//! resposta e candidatos — sem servidor no meio. Se o ICE conectar, a negociação
-//! está certa e o que falta é só o transporte de sinalização.
+//! Starts two PeerConnections in the same process and performs a complete offer,
+//! response, and candidates with no server in the middle. If ICE connects, negotiation
+//! is correct and only signaling transport remains.
 //!
 //! cargo run -p media --example p2p
 
@@ -20,18 +20,18 @@ async fn main() -> anyhow::Result<()> {
     let oferta = quem_envia.create_offer().await?;
 
     println!(
-        "oferta: {} bytes · H.264: {}",
+        "offer: {} bytes · H.264: {}",
         oferta.len(),
         oferta.to_lowercase().contains("h264")
     );
 
     let resposta = quem_recebe.accept_offer(oferta).await?;
 
-    println!("resposta: {} bytes", resposta.len());
+    println!("answer: {} bytes", resposta.len());
 
     quem_envia.accept_answer(resposta).await?;
 
-    println!("SDP trocado — agora os candidatos\n");
+    println!("SDP exchanged — now the candidates\n");
 
     let prazo = tokio::time::sleep(Duration::from_secs(10));
 
@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    println!("candidatos trocados: {de_envio} de quem envia · {de_recepcao} de quem recebe");
+    println!("candidates exchanged: {de_envio} from sender · {de_recepcao} from receiver");
 
     quem_envia.close().await?;
     quem_recebe.close().await?;
@@ -61,9 +61,9 @@ async fn main() -> anyhow::Result<()> {
     println!(
         "\n{}",
         if de_envio > 0 && de_recepcao > 0 {
-            "NEGOCIAÇÃO COMPLETA — oferta, resposta e candidatos dos dois lados"
+            "NEGOTIATION COMPLETE — offer, response, and candidates from both sides"
         } else {
-            "INCOMPLETA: veja os números acima"
+            "INCOMPLETE: see the numbers above"
         }
     );
 

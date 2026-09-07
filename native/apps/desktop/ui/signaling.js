@@ -1,9 +1,9 @@
 /**
- * Sinalização pelo WebSocket do SFU.
+ * Signaling through the SFU WebSocket.
  *
- * Reusa a sala e a autenticação que já existem: o SFU não entende o conteúdo do
- * sinal, só entrega de um participante a outro. O remetente vem da sessão dele,
- * então ninguém consegue se passar por outra pessoa.
+ * Reuses the existing room and authentication: the SFU does not understand the
+ * signal contents, it only delivers them from one participant to another. The
+ * sender comes from their session, so nobody can impersonate someone else.
  */
 export class Signaling extends EventTarget {
     constructor() {
@@ -21,7 +21,7 @@ export class Signaling extends EventTarget {
     async connect(url, token) {
         await new Promise((resolver, rejeitar) => {
             this.socket = new WebSocket(url);
-            this.socket.onerror = () => rejeitar(new Error('não abriu o WebSocket do SFU'));
+            this.socket.onerror = () => rejeitar(new Error('could not open the SFU WebSocket'));
             this.socket.onopen = resolver;
             this.socket.onclose = () => this.emitir('closed');
             this.socket.onmessage = mensagem => this.receber(JSON.parse(mensagem.data));
@@ -60,7 +60,7 @@ export class Signaling extends EventTarget {
         });
     }
 
-    /** Entrega um sinal a um participante específico da sala. */
+    /** Delivers a signal to a specific participant in the room. */
     signal(to, kind, payload) {
         return this.request('signal', { to, kind, payload });
     }

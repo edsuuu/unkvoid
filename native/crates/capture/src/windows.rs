@@ -15,7 +15,7 @@ use crate::{CaptureConfig, CaptureError, CaptureEvent, Display, VideoFrame, Wind
 
 type EventSink = Arc<dyn Fn(CaptureEvent) + Send + Sync>;
 
-/// Captura via Windows Graphics Capture. Exige Windows 10 1903 ou mais novo.
+/// Capture via Windows Graphics Capture. Requires Windows 10 1903 or newer.
 pub struct WindowsCapturer {
     control: Option<windows_capture::capture::CaptureControl<Sink, CaptureFailure>>,
     frames: Arc<AtomicU64>,
@@ -66,8 +66,8 @@ impl GraphicsCaptureApiHandler for Sink {
             width: frame.width(),
             height: frame.height(),
             timestamp_ns: self.started_at.elapsed().as_nanos() as u64,
-            // Sem encoder por hardware no Windows ainda: o quadro é contado, não
-            // codificado. Falta o caminho por Media Foundation.
+            // No hardware encoder on Windows yet: the frame is counted, not
+            // encoded. The Media Foundation path is still missing.
             surface: None,
         }));
 
@@ -149,8 +149,8 @@ impl WindowsCapturer {
         self.frames.load(Ordering::Relaxed)
     }
 
-    /// Áudio de sistema no Windows sai por WASAPI em loopback, não pelo Graphics
-    /// Capture. Entra junto com o caminho de mídia.
+    /// System audio on Windows comes through WASAPI loopback, not Graphics Capture.
+    /// It joins the media path.
     pub fn audio_chunks_captured(&self) -> u64 {
         0
     }

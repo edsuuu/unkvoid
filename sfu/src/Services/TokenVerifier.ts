@@ -8,7 +8,7 @@ export class TokenVerifier {
 
     verify(token: string): TokenClaims {
         if (! this.secret) {
-            throw new UnauthorizedException('o SFU está sem SFU_SECRET configurado');
+            throw new UnauthorizedException('SFU_SECRET is not configured for the SFU');
         }
 
         const parts = token.split('.');
@@ -22,7 +22,7 @@ export class TokenVerifier {
         const received = Buffer.from(signature, 'base64url');
 
         if (received.length !== expected.length || ! timingSafeEqual(received, expected)) {
-            throw new UnauthorizedException('assinatura inválida');
+            throw new UnauthorizedException('invalid signature');
         }
 
         const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as Partial<TokenClaims>;
@@ -32,7 +32,7 @@ export class TokenVerifier {
         }
 
         if (! claims.sub || (! claims.room && ! claims.server)) {
-            throw new UnauthorizedException('token sem identidade ou destino');
+            throw new UnauthorizedException('token has no identity or destination');
         }
 
         return claims as TokenClaims;

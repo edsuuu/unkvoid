@@ -9,7 +9,7 @@ use App\Http\Controllers\VoiceTokenController;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 
-// A raiz é a porta de entrada: quem está logado vai pro workspace, o resto loga.
+// The root is the entry point: logged-in users go to the workspace; everyone else signs in.
 Route::get('/', fn () => redirect()->route(Auth::check() ? 'app' : 'login'))->name('home');
 
 Route::get('oauth2/google', [GoogleController::class, 'redirect'])->name('google.redirect');

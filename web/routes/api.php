@@ -12,7 +12,7 @@ use Illuminate\Support\Facades\Route;
 
 Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1')->name('api.login');
 
-// Google para o app desktop: sai pelo navegador do sistema e volta por deep link.
+// Google for the desktop app: it goes through the system browser and returns via deep link.
 Route::get('desktop/google', [DesktopAuthController::class, 'redirect'])->name('api.desktop.google');
 Route::get('desktop/google/callback', [DesktopAuthController::class, 'callback'])->name('api.desktop.google.callback');
 
@@ -29,7 +29,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('channels/{channel}/messages', [MessageController::class, 'index'])->name('api.messages.index');
     Route::post('channels/{channel}/messages', [MessageController::class, 'store'])->name('api.messages.store');
 
-    // Mesmos emissores do app web: o token do SFU não muda por ser desktop.
+    // Same issuers as the web app: the SFU token does not change for desktop.
     Route::post('voice/{channel}/token', VoiceTokenController::class)->name('api.voice.token');
     Route::post('servers/{server}/presence', PresenceTokenController::class)->name('api.presence.token');
 });

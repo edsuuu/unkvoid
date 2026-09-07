@@ -1,7 +1,7 @@
 const { existsSync, readFileSync } = require('node:fs');
 const { join } = require('node:path');
 
-// Segredos moram no .env ao lado (fora do repo), não neste arquivo versionado.
+// Secrets live in the adjacent .env (outside the repo), not in this versioned file.
 const envPath = join(__dirname, '.env');
 const fromFile = existsSync(envPath)
     ? Object.fromEntries(
@@ -31,8 +31,8 @@ module.exports = {
                 SFU_PORT: '3000',
                 SFU_ANNOUNCED_ADDRESS: '144.126.133.10',
                 SFU_MEDIA_PORT: '40000',
-                // Um worker por núcleo (a VPS tem 4). Cada um usa uma porta a partir
-                // da SFU_MEDIA_PORT: 40000-40003, todas liberadas no firewall.
+                // One worker per core (the VPS has 4). Each one uses a port starting
+                // from SFU_MEDIA_PORT: 40000-40003, all allowed through the firewall.
                 SFU_WORKERS: '4',
                 ...fromFile,
             },

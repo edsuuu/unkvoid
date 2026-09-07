@@ -52,7 +52,7 @@ final class ServerController extends Controller
     public function destroy(Request $request, Server $server): JsonResponse
     {
         if ($server->owner_id !== $request->user()->id) {
-            throw new AccessDeniedHttpException(__('Só o dono exclui o servidor.'));
+            throw new AccessDeniedHttpException(__('Only the owner can delete the server.'));
         }
 
         $server->delete();
@@ -63,7 +63,7 @@ final class ServerController extends Controller
     private function ensureMember(Request $request, Server $server): void
     {
         if (! $server->memberFor($request->user())) {
-            throw new AccessDeniedHttpException(__('Você não é membro deste servidor.'));
+            throw new AccessDeniedHttpException(__('You are not a member of this server.'));
         }
     }
 }

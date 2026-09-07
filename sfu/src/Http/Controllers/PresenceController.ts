@@ -11,7 +11,7 @@ export class PresenceController {
         const claims = this.tokens.verify(request.token());
 
         if (! claims.server) {
-            throw new ValidationException('este token não é de presença de servidor');
+            throw new ValidationException('this token is not for server presence');
         }
 
         if (request.session.watching) {

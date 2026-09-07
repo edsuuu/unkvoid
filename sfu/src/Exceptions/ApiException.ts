@@ -12,19 +12,19 @@ export class ValidationException extends ApiException {
 }
 
 export class UnauthorizedException extends ApiException {
-    constructor(message = 'não autenticado') {
+    constructor(message = 'not authenticated') {
         super(message, 401);
     }
 }
 
 export class ForbiddenException extends ApiException {
-    constructor(message = 'sem permissão para esta ação') {
+    constructor(message = 'not authorized for this action') {
         super(message, 403);
     }
 }
 
 export class NotFoundException extends ApiException {
-    constructor(message = 'não encontrado') {
+    constructor(message = 'not found') {
         super(message, 404);
     }
 }

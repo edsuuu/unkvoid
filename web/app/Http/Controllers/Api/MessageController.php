@@ -40,7 +40,7 @@ final class MessageController extends Controller
                 'content' => $request->content(),
             ]);
         } catch (Throwable $exception) {
-            Log::channel('servers')->error('[ERRO] falha ao gravar mensagem pela api', ['exception' => $exception]);
+            Log::channel('servers')->error('[ERROR] failed to save the message through the API', ['exception' => $exception]);
 
             throw $exception;
         }
@@ -51,7 +51,7 @@ final class MessageController extends Controller
     private function ensureMember(Request $request, Channel $channel): void
     {
         if (! $channel->server->memberFor($request->user())) {
-            throw new AccessDeniedHttpException(__('Você não é membro deste servidor.'));
+            throw new AccessDeniedHttpException(__('You are not a member of this server.'));
         }
     }
 }

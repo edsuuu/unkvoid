@@ -15,13 +15,13 @@ final class VoiceTokenController extends Controller
     public function __invoke(Channel $channel, SfuToken $sfuToken): JsonResponse
     {
         if (! $channel->isVoice()) {
-            throw new AccessDeniedHttpException(__('Este canal não é de voz.'));
+            throw new AccessDeniedHttpException(__('This is not a voice channel.'));
         }
 
         $member = $channel->server->memberFor(Auth::user());
 
         if (! $member) {
-            throw new AccessDeniedHttpException(__('Você não é membro deste servidor.'));
+            throw new AccessDeniedHttpException(__('You are not a member of this server.'));
         }
 
         return response()->json([

@@ -9,7 +9,7 @@ use App\Models\User;
 use function Pest\Laravel\getJson;
 use function Pest\Laravel\postJson;
 
-/** Cria um usuário com senha conhecida e devolve o token do app desktop. */
+/** Creates a user with a known password and returns the desktop app token. */
 function tokenFor(User $user): string
 {
     return postJson('/api/login', [
@@ -27,7 +27,7 @@ beforeEach(function (): void {
     ]);
 });
 
-it('recusa login com senha errada', function (): void {
+it('rejects login with an incorrect password', function (): void {
     postJson('/api/login', [
         'email' => $this->user->email,
         'password' => 'errada',
@@ -35,7 +35,7 @@ it('recusa login com senha errada', function (): void {
     ])->assertStatus(422);
 });
 
-it('devolve token e usuário no login válido', function (): void {
+it('returns a token and user on valid login', function (): void {
     $resposta = postJson('/api/login', [
         'email' => $this->user->email,
         'password' => 'senha12345',
@@ -46,12 +46,12 @@ it('devolve token e usuário no login válido', function (): void {
     expect($resposta->json('user.id'))->toBe($this->user->id);
 });
 
-it('bloqueia as rotas sem token', function (): void {
+it('blocks routes without a token', function (): void {
     getJson('/api/servers')->assertStatus(401);
     getJson('/api/me')->assertStatus(401);
 });
 
-it('lista os servidores do usuário com os canais', function (): void {
+it('lists the user’s servers with channels', function (): void {
     app(CreateServer::class)->handle($this->user, 'Meu Servidor');
 
     $resposta = getJson('/api/servers', ['Authorization' => 'Bearer '.tokenFor($this->user)])->assertOk();
@@ -60,7 +60,7 @@ it('lista os servidores do usuário com os canais', function (): void {
     expect($resposta->json('data.0.channels'))->toHaveCount(2);
 });
 
-it('não deixa ver servidor de que não se é membro', function (): void {
+it('does not allow viewing a server the user is not a member of', function (): void {
     $outro = User::factory()->create();
     $server = app(CreateServer::class)->handle($outro, 'Alheio');
 
@@ -68,7 +68,7 @@ it('não deixa ver servidor de que não se é membro', function (): void {
         ->assertStatus(403);
 });
 
-it('entra em servidor pelo convite', function (): void {
+it('joins a server through an invite', function (): void {
     $dono = User::factory()->create();
     $server = app(CreateServer::class)->handle($dono, 'Com Convite');
 
@@ -79,12 +79,12 @@ it('entra em servidor pelo convite', function (): void {
     expect(Server::find($server->id)->memberFor($this->user))->not->toBeNull();
 });
 
-it('envia e lê mensagem pelo canal de texto', function (): void {
+it('sends and reads a message through the text channel', function (): void {
     $server = app(CreateServer::class)->handle($this->user, 'Com Chat');
     $canal = $server->channels()->where('type', 'text')->first();
     $cabecalho = ['Authorization' => 'Bearer '.tokenFor($this->user)];
 
-    // 201: o Laravel detecta o model recém-criado e devolve Created no Resource.
+    // 201: Laravel detects the newly created model and returns Created in the Resource.
     postJson("/api/channels/{$canal->id}/messages", ['content' => 'olá do desktop'], $cabecalho)
         ->assertCreated()
         ->assertJsonPath('data.content', 'olá do desktop');
@@ -94,7 +94,7 @@ it('envia e lê mensagem pelo canal de texto', function (): void {
         ->assertJsonPath('data.0.content', 'olá do desktop');
 });
 
-it('emite token de voz só para canal de voz e membro', function (): void {
+it('issues a voice token only for voice channels and members', function (): void {
     $server = app(CreateServer::class)->handle($this->user, 'Com Voz');
     $voz = $server->channels()->where('type', 'voice')->first();
     $texto = $server->channels()->where('type', 'text')->first();

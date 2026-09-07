@@ -22,9 +22,9 @@ class App {
     }
 
     /**
-     * Ordem de abertura, igual ao Discord: atualiza primeiro, exige servidor depois,
-     * e só então pede login. Entrar num app desatualizado ou sem servidor só geraria
-     * erro mais adiante.
+     * Startup order, like Discord: update first, require the server next, and only
+     * then ask for login. Entering an outdated app or one without a server would
+     * only produce an error later.
      */
     async start() {
         await this.atualizar();
@@ -43,12 +43,12 @@ class App {
             const versao = await invoke('check_update');
 
             if (versao) {
-                el('update-status').textContent = `Instalando a versão ${versao}…`;
+                el('update-status').textContent = `Installing version ${versao}…`;
                 await invoke('restart');
             }
         } catch (falha) {
-            // Falha de update não pode impedir de abrir: o app segue na versão atual.
-            console.warn('update indisponível:', falha);
+            // An update failure must not prevent startup: the app continues on its current version.
+            console.warn('update unavailable:', falha);
         }
     }
 
@@ -69,7 +69,7 @@ class App {
         el('tela-login').hidden = true;
 
         this.tentativa += 1;
-        el('offline-tentativa').textContent = `tentativa ${this.tentativa}`;
+        el('offline-tentativa').textContent = `attempt ${this.tentativa}`;
 
         clearTimeout(this.reconectar);
         this.reconectar = setTimeout(async () => {
@@ -84,8 +84,8 @@ class App {
     pedirLogin() {
         el('tela-login').hidden = false;
 
-        // O Google não abre dentro do app: vai para o navegador do sistema e volta
-        // por deep link. Assim a senha nunca passa pela janela do Discord 2.0.
+        // Google does not open inside the app: it opens in the system browser and
+        // returns through a deep link. The password never passes through Discord 2.0.
         el('botao-google').onclick = () => openUrl(`${Api.BASE}/api/desktop/google`);
 
         onOpenUrl(async ([url]) => {
@@ -171,7 +171,7 @@ class App {
     }
 
     async criarServidor() {
-        const nome = prompt('Nome do servidor');
+        const nome = prompt('Server name');
 
         if (! nome?.trim()) {
             return;
@@ -213,7 +213,7 @@ class App {
             const titulo = document.createElement('p');
 
             titulo.className = 'secao';
-            titulo.textContent = tipo === 'text' ? 'Canais de texto' : 'Canais de voz';
+            titulo.textContent = tipo === 'text' ? 'Text channels' : 'Voice channels';
             lista.appendChild(titulo);
 
             for (const canal of canais) {
@@ -247,11 +247,11 @@ class App {
         el('vazio').hidden = false;
         el('vazio').textContent = mensagens.length
             ? mensagens.map(mensagem => `${mensagem.author.name}: ${mensagem.content}`).join('\n')
-            : 'Nenhuma mensagem ainda.';
+            : 'No messages yet.';
     }
 
     async entrarNaVoz(canal) {
-        el('meu-estado').textContent = 'conectando…';
+        el('meu-estado').textContent = 'connecting…';
 
         try {
             this.voz = await this.api.voiceToken(canal.id);
@@ -268,7 +268,7 @@ class App {
 
             this.participantes = entrada.peers.map(peer => peer.peerId);
         } catch (falha) {
-            el('meu-estado').textContent = `não entrou na sala: ${falha.message}`;
+            el('meu-estado').textContent = `could not join the room: ${falha.message}`;
             this.p2p = null;
 
             return;
@@ -276,7 +276,7 @@ class App {
 
         el('faixa-voz').hidden = false;
         el('voz-canal').textContent = canal.name;
-        el('meu-estado').textContent = `em ${canal.name}`;
+        el('meu-estado').textContent = `in ${canal.name}`;
         el('palco').hidden = false;
         el('vazio').hidden = true;
 
@@ -297,7 +297,7 @@ class App {
         }, 1000);
     }
 
-    /** Desenha (ou remove) a tela de quem está transmitindo. */
+    /** Draws (or removes) the screen of someone who is broadcasting. */
     mostrarTela(de, stream) {
         const existente = document.querySelector(`[data-tela="${de}"]`);
 
@@ -313,7 +313,7 @@ class App {
         quadro.dataset.tela = de;
         quadro.innerHTML = '<video autoplay playsinline></video><figcaption></figcaption>';
         quadro.querySelector('video').srcObject = stream;
-        quadro.querySelector('figcaption').textContent = 'transmitindo';
+        quadro.querySelector('figcaption').textContent = 'broadcasting';
 
         if (! existente) {
             el('palco').appendChild(quadro);
@@ -333,12 +333,12 @@ class App {
         el('faixa-voz').hidden = true;
         el('palco').hidden = true;
         el('vazio').hidden = false;
-        el('meu-estado').textContent = 'Disponível';
+        el('meu-estado').textContent = 'Available';
     }
 
     async compartilhar() {
         if (! this.p2p) {
-            el('meu-estado').textContent = 'entre num canal de voz primeiro';
+            el('meu-estado').textContent = 'join a voice channel first';
 
             return;
         }
@@ -348,8 +348,8 @@ class App {
             el('compartilhar').hidden = true;
             el('parar').hidden = false;
             el('meu-estado').textContent = this.participantes.length
-                ? `transmitindo para ${this.participantes.length}`
-                : 'transmitindo (ninguém assistindo ainda)';
+                ? `broadcasting to ${this.participantes.length}`
+                : 'broadcasting (no one watching yet)';
         } catch (falha) {
             el('meu-estado').textContent = falha.message ?? String(falha);
         }
@@ -362,7 +362,7 @@ class App {
         el('parar').hidden = true;
 
         if (quadros) {
-            el('meu-estado').textContent = `${quadros} quadros transmitidos`;
+            el('meu-estado').textContent = `${quadros} frames broadcast`;
         }
     }
 }

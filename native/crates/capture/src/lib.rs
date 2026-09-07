@@ -1,8 +1,8 @@
-//! Captura de tela e áudio do sistema.
+//! Screen and system audio capture.
 //!
-//! O motivo de existir: no navegador o compartilhamento sempre carrega a barra do
-//! Chrome, e no macOS o WKWebView nem oferece `getDisplayMedia`. Aqui a captura é
-//! nativa, então não há barra nenhuma e o áudio do sistema funciona em qualquer OS.
+//! The reason this exists: browser sharing always includes Chrome's bar, and on macOS
+//! WKWebView does not even provide `getDisplayMedia`. Capture is native here, so
+//! there is no bar and system audio works on every OS.
 
 use std::fmt;
 
@@ -24,7 +24,7 @@ pub use windows::WindowsCapturer as PlatformCapturer;
 #[cfg(target_os = "linux")]
 pub use linux::LinuxCapturer as PlatformCapturer;
 
-/// Uma tela inteira disponível para captura.
+/// A full screen available for capture.
 #[derive(Debug, Clone)]
 pub struct Display {
     pub id: u32,
@@ -32,7 +32,7 @@ pub struct Display {
     pub height: u32,
 }
 
-/// Uma janela específica. Compartilhar janela evita mostrar o que não devia.
+/// A specific window. Sharing a window avoids showing what should remain private.
 #[derive(Debug, Clone)]
 pub struct Window {
     pub id: u32,
@@ -40,7 +40,7 @@ pub struct Window {
     pub application: String,
 }
 
-/// Buffer de GPU específico da plataforma.
+/// Platform-specific GPU buffer.
 #[cfg(target_os = "macos")]
 pub type GpuSurface = apple_cf::iosurface::IOSurface;
 
@@ -67,19 +67,19 @@ impl Quality {
 #[derive(Debug, Clone)]
 pub struct CaptureConfig {
     pub quality: Quality,
-    /// Teto de quadros. O piso real é responsabilidade do encoder e do transporte.
+    /// Frame-rate ceiling. The actual floor is the encoder and transport's responsibility.
     pub frame_rate: u32,
     pub capture_audio: bool,
     pub show_cursor: bool,
 }
 
 impl CaptureConfig {
-    /// O que sai do nosso próprio app **nunca** entra na captura.
+    /// Output from our own app **never** enters the capture.
     ///
-    /// Sem isso, compartilhar áudio do sistema capturaria a voz de quem está na
-    /// chamada e devolveria para eles — o clássico loop de realimentação. Quem
-    /// resolve é o sistema operacional, filtrando por processo: mais confiável que
-    /// tentar adivinhar no nosso código de onde o som veio.
+    /// Without this, sharing system audio would capture the voice of someone in
+    /// the call and send it back to them — the classic feedback loop. The
+    /// operating system handles this by filtering per process, more reliably
+    /// than trying to guess in our code where the sound came from.
     pub const EXCLUI_AUDIO_DO_APP: bool = true;
 }
 
@@ -94,8 +94,8 @@ impl Default for CaptureConfig {
     }
 }
 
-/// O que sai da captura. Vídeo e áudio chegam separados de propósito: o encoder de
-/// vídeo e o de áudio são independentes, e misturar aqui só atrapalharia.
+/// Output from capture. Video and audio are intentionally separate: their
+/// encoders are independent, and combining them here would only get in the way.
 pub enum CaptureEvent {
     Video(VideoFrame),
     Audio(AudioChunk),
@@ -104,14 +104,14 @@ pub enum CaptureEvent {
 pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
-    /// Nanossegundos desde o início da captura.
+    /// Nanoseconds since capture began.
     pub timestamp_ns: u64,
 
-    /// Buffer da GPU com o quadro. Vai direto para o encoder por hardware, sem
-    /// cópia para a CPU — é o que permite 1440p60 sem derreter a máquina.
+    /// GPU buffer containing the frame. It goes directly to the hardware encoder
+    /// without a CPU copy — this is what makes 1440p60 possible without overload.
     ///
-    /// O campo existe em toda plataforma para o app compilar em todas; só o tipo
-    /// dentro dele muda. Fora do macOS ainda vem sempre vazio.
+    /// This field exists on every platform so the app compiles everywhere; only
+    /// the type inside it changes. Outside macOS it is always empty for now.
     pub surface: Option<GpuSurface>,
 }
 
@@ -140,13 +140,13 @@ impl fmt::Debug for VideoFrame {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CaptureError {
-    #[error("nenhuma tela disponível para capturar")]
+    #[error("no screen available to capture")]
     NoDisplay,
 
-    #[error("permissão de gravação de tela negada — libere em Ajustes do Sistema")]
+    #[error("screen recording permission denied — enable it in System Settings")]
     PermissionDenied,
 
-    #[error("falha na captura: {0}")]
+    #[error("capture failed: {0}")]
     Platform(String),
 }
 
@@ -163,8 +163,8 @@ mod tests {
 
     #[test]
     fn padrao_captura_audio_do_sistema() {
-        // É o motivo de existir do app nativo: no navegador isso depende de OS e
-        // versão. Se alguém desligar por engano, o teste acusa.
+        // This is why the native app exists: in a browser this depends on the OS
+        // and version. If someone disables it accidentally, the test reports it.
         let config = CaptureConfig::default();
 
         assert!(config.capture_audio);

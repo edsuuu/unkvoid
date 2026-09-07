@@ -1,8 +1,8 @@
-//! Liga captura, encoder e transporte.
+//! Connects capture, encoding, and transport.
 //!
-//! Um encoder alimenta N conexões: o quadro é comprimido **uma vez** e enviado a
-//! cada espectador. Codificar por espectador derreteria a máquina de quem
-//! transmite — o custo do P2P é banda de upload, não CPU.
+//! One encoder feeds N connections: the frame is compressed **once** and sent to
+//! every viewer. Encoding per viewer would overwhelm the broadcaster's machine —
+//! P2P costs upload bandwidth, not CPU.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,8 +11,8 @@ use capture::{CaptureConfig, CaptureEvent, PlatformCapturer, Quality};
 use media::{AudioEncoder, EncodedFrame, EncoderConfig, PeerLink, PlatformEncoder, Signal};
 use tokio::sync::{Mutex, mpsc};
 
-/// Acima disso o upload de quem transmite multiplica: 4 espectadores em 1080p já
-/// pedem ~28 Mbps de subida. Passou daqui, o SFU compensa.
+/// Above this limit, the broadcaster's upload multiplies: 4 viewers at 1080p
+/// already need ~28 Mbps upstream. Beyond this, the SFU is more efficient.
 pub const LIMITE_P2P: usize = 3;
 
 type Peers = Arc<Mutex<HashMap<String, PeerLink>>>;
@@ -26,7 +26,7 @@ pub struct Broadcast {
 }
 
 impl Broadcast {
-    /// Sobe a captura e o encoder. As conexões nascem depois, uma por espectador.
+    /// Starts capture and the encoder. Connections are created afterward, one per viewer.
     pub fn start(
         quality: Quality,
         ice_servers: Vec<String>,
@@ -34,8 +34,8 @@ impl Broadcast {
         let encoder_config = EncoderConfig::for_quality(quality);
         let peers: Peers = Arc::new(Mutex::new(HashMap::new()));
 
-        // O callback da captura é Fn: o encoder guarda estado entre quadros e
-        // precisa de mutabilidade interior.
+        // The capture callback is Fn: the encoder keeps state between frames and
+        // needs interior mutability.
         let encoder = std::sync::Mutex::new(PlatformEncoder::new(&encoder_config)?);
         let audio = std::sync::Mutex::new(AudioEncoder::new(96_000)?);
         let destino = Arc::clone(&peers);
@@ -107,12 +107,12 @@ impl Broadcast {
         ))
     }
 
-    /// Cria a conexão para um espectador e devolve a oferta que ele precisa receber.
+    /// Creates a viewer connection and returns the offer they need to receive.
     pub async fn offer_to(&self, peer_id: String) -> anyhow::Result<String> {
         let mut peers = self.peers.lock().await;
 
         if peers.len() >= LIMITE_P2P {
-            anyhow::bail!("P2P só até {LIMITE_P2P} espectadores — acima disso use o SFU");
+            anyhow::bail!("P2P supports only {LIMITE_P2P} viewers — use the SFU above that limit");
         }
 
         let (peer, mut sinais) =
@@ -121,7 +121,7 @@ impl Broadcast {
 
         peers.insert(peer_id.clone(), peer);
 
-        // Cada conexão tem seus candidatos, e cada um vai só para o dono dela.
+        // Each connection has its own candidates, and each goes only to its owner.
         let saida = self.signals.clone();
 
         tokio::spawn(async move {
@@ -140,7 +140,7 @@ impl Broadcast {
 
         peers
             .get_mut(peer_id)
-            .ok_or_else(|| anyhow::anyhow!("não há conexão com {peer_id}"))?
+            .ok_or_else(|| anyhow::anyhow!("no connection for {peer_id}"))?
             .accept_answer(sdp)
             .await
     }
@@ -150,7 +150,7 @@ impl Broadcast {
 
         peers
             .get(peer_id)
-            .ok_or_else(|| anyhow::anyhow!("não há conexão com {peer_id}"))?
+            .ok_or_else(|| anyhow::anyhow!("no connection for {peer_id}"))?
             .add_candidate(json)
             .await
     }
@@ -180,7 +180,7 @@ impl Broadcast {
     }
 }
 
-/// Mesmo quadro para todos. Falha em um espectador não derruba os outros.
+/// The same frame goes to everyone. A failure for one viewer does not affect the others.
 async fn difundir(peers: &Peers, quadro: EncodedFrame) {
     let peers = peers.lock().await;
 
@@ -189,7 +189,7 @@ async fn difundir(peers: &Peers, quadro: EncodedFrame) {
     }
 }
 
-/// O áudio segue o mesmo caminho: comprimido uma vez, enviado a todos.
+/// Audio follows the same path: compressed once and sent to everyone.
 async fn difundir_audio(peers: &Peers, pacotes: Vec<Vec<u8>>) {
     let peers = peers.lock().await;
 

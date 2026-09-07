@@ -35,8 +35,8 @@
       "icons/icon.png"
     ],
     "category": "SocialNetworking",
-    "shortDescription": "Voz, vídeo e compartilhamento de tela",
-    "longDescription": "Cliente desktop com captura de tela nativa, sem a barra do navegador e com áudio de sistema.",
+    "shortDescription": "Voice, video, and screen sharing",
+    "longDescription": "Desktop client with native screen capture, no browser bar, and system audio.",
     "macOS": {
       "minimumSystemVersion": "13.0"
     },

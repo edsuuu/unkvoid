@@ -89,8 +89,8 @@ final class Shell extends Component
             return;
         }
 
-        // A URL guarda o servidor: assim o F5 já abre no lugar certo, sem precisar
-        // reconstruir a navegação pelo JavaScript.
+        // The URL stores the server, so F5 opens in the right place without needing
+        // to rebuild navigation in JavaScript.
         $this->syncUrl();
         $this->dispatch('voice-join', channelId: $channelId, channelName: $channel->name);
     }
@@ -102,8 +102,8 @@ final class Shell extends Component
         try {
             $server = app(CreateServer::class)->handle(Auth::user(), $validated['newServerName']);
         } catch (Throwable $exception) {
-            Log::channel('servers')->error('[ERRO] criação de servidor falhou', ['exception' => $exception]);
-            $this->dispatch('toast', variant: 'error', text: __('Não foi possível criar o servidor.'));
+            Log::channel('servers')->error('[ERROR] server creation failed', ['exception' => $exception]);
+            $this->dispatch('toast', variant: 'error', text: __('Unable to create the server.'));
 
             return;
         }
@@ -129,8 +129,8 @@ final class Shell extends Component
                 'content' => $validated['draft'],
             ]);
         } catch (Throwable $exception) {
-            Log::channel('servers')->error('[ERRO] falha ao gravar mensagem', ['exception' => $exception]);
-            $this->dispatch('toast', variant: 'error', text: __('Mensagem não enviada.'));
+            Log::channel('servers')->error('[ERROR] failed to save the message', ['exception' => $exception]);
+            $this->dispatch('toast', variant: 'error', text: __('Message not sent.'));
 
             return;
         }
@@ -140,7 +140,7 @@ final class Shell extends Component
     }
 
     /**
-     * Encerra a transmissão. A pessoa continua na chamada e no chat.
+     * Stops the broadcast. The person remains in the call and chat.
      */
     public function stopBroadcast(string $userId): void
     {
@@ -152,7 +152,7 @@ final class Shell extends Component
     }
 
     /**
-     * Tira da chamada de voz. Continua membro do servidor e do chat.
+     * Removes the person from the voice call. They remain a server and chat member.
      */
     public function disconnectFromVoice(string $userId): void
     {
@@ -164,7 +164,7 @@ final class Shell extends Component
     }
 
     /**
-     * Remove do servidor. Esta é a única ação destrutiva das três.
+     * Removes someone from the server. This is the only destructive action of the three.
      */
     public function removeMember(string $memberId): void
     {
@@ -183,7 +183,7 @@ final class Shell extends Component
 
         unset($this->members);
         $this->dispatch('voice-disconnect', userId: $userId);
-        $this->dispatch('toast', variant: 'success', text: __('Membro removido do servidor.'));
+        $this->dispatch('toast', variant: 'success', text: __('Member removed from the server.'));
     }
 
     public function startChannel(string $type): void
@@ -217,8 +217,8 @@ final class Shell extends Component
                 'position' => $this->channels->where('type', $type)->count(),
             ]);
         } catch (Throwable $exception) {
-            Log::channel('servers')->error('[ERRO] falha ao criar canal', ['exception' => $exception]);
-            $this->dispatch('toast', variant: 'error', text: __('Não foi possível criar o canal.'));
+            Log::channel('servers')->error('[ERROR] failed to create channel', ['exception' => $exception]);
+            $this->dispatch('toast', variant: 'error', text: __('Unable to create the channel.'));
 
             return;
         }
@@ -254,7 +254,7 @@ final class Shell extends Component
             $this->ensureSelection();
         }
 
-        $this->dispatch('toast', variant: 'success', text: __('Canal excluído.'));
+        $this->dispatch('toast', variant: 'success', text: __('Channel deleted.'));
     }
 
     public function startRenameChannel(string $channelId): void
@@ -314,8 +314,8 @@ final class Shell extends Component
         try {
             $this->currentServer->update(['name' => $validated['serverName']]);
         } catch (Throwable $exception) {
-            Log::channel('servers')->error('[ERRO] falha ao renomear servidor', ['exception' => $exception]);
-            $this->dispatch('toast', variant: 'error', text: __('Não foi possível renomear.'));
+            Log::channel('servers')->error('[ERROR] failed to rename server', ['exception' => $exception]);
+            $this->dispatch('toast', variant: 'error', text: __('Unable to rename.'));
 
             return;
         }
@@ -334,8 +334,8 @@ final class Shell extends Component
         try {
             $this->currentServer->delete();
         } catch (Throwable $exception) {
-            Log::channel('servers')->error('[ERRO] falha ao excluir servidor', ['exception' => $exception]);
-            $this->dispatch('toast', variant: 'error', text: __('Não foi possível excluir.'));
+            Log::channel('servers')->error('[ERROR] failed to delete server', ['exception' => $exception]);
+            $this->dispatch('toast', variant: 'error', text: __('Unable to delete.'));
 
             return;
         }
@@ -344,7 +344,7 @@ final class Shell extends Component
         $this->serverId = null;
         $this->channelId = null;
         $this->ensureSelection();
-        $this->dispatch('toast', variant: 'success', text: __('Servidor excluído.'));
+        $this->dispatch('toast', variant: 'success', text: __('Server deleted.'));
     }
 
     public function toggleMembers(): void
@@ -376,8 +376,8 @@ final class Shell extends Component
     }
 
     /**
-     * Reescreve a URL sem navegar. Navegar derrubaria a chamada de voz, que vive
-     * em JavaScript e não sobrevive a uma troca de página.
+     * Rewrites the URL without navigating. Navigating would drop the voice call, which lives
+     * in JavaScript and does not survive a page change.
      */
     private function syncUrl(): void
     {
@@ -457,8 +457,8 @@ final class Shell extends Component
     }
 
     /**
-     * Não escolhe servidor sozinho: /canais é o painel inicial. Só garante que, com
-     * um servidor selecionado, exista um canal de texto aberto.
+     * Does not choose a server automatically: /channels is the initial panel. It only ensures that, with
+     * a selected server, and an open text channel.
      */
     private function ensureSelection(): void
     {

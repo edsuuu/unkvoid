@@ -6,14 +6,14 @@ const { listen } = window.__TAURI__.event;
 const STUN = ['stun:stun.l.google.com:19302'];
 
 /**
- * Une os dois lados da transmissão.
+ * Connects the two sides of the broadcast.
  *
- * Quem envia usa o Rust: captura nativa e encoder por hardware, sem barra do
- * navegador. Quem recebe usa o WebRTC do próprio webview — receber vídeo ele faz
- * bem, e assim não é preciso decodificar nem desenhar em Rust.
+ * The sender uses Rust: native capture and hardware encoding, without a browser
+ * bar. The receiver uses the webview's WebRTC — it handles video well, so there
+ * is no need to decode or render in Rust.
  *
- * Acima de 3 espectadores o upload de quem transmite multiplica (4 pessoas em 1080p
- * ≈ 28 Mbps de subida) e o SFU volta a compensar.
+ * Above 3 viewers, the broadcaster's upload multiplies (4 people at 1080p
+ * ≈ 28 Mbps upstream), and the SFU becomes worthwhile again.
  */
 export class P2P {
     static LIMITE_P2P = 3;
@@ -33,7 +33,7 @@ export class P2P {
 
         this.sinal.addEventListener('peerJoined', evento => this.oferecerA(evento.detail.peerId));
 
-        // Cada conexão do lado Rust manda os próprios candidatos, já endereçados.
+        // Each Rust-side connection sends its own, already-addressed candidates.
         await listen('p2p:signal', evento => {
             const [destino, candidato] = evento.payload;
 
@@ -44,12 +44,12 @@ export class P2P {
     }
 
     /**
-     * Começa a transmitir para os participantes informados. Uma oferta por
-     * espectador: no P2P cada um precisa da própria conexão.
+     * Starts broadcasting to the specified participants. One offer per viewer:
+     * in P2P, each needs its own connection.
      */
     async broadcast(quality, espectadores) {
         if (espectadores.length > P2P.LIMITE_P2P) {
-            throw new Error(`P2P vai até ${P2P.LIMITE_P2P} espectadores — acima disso o upload multiplica`);
+            throw new Error(`P2P supports up to ${P2P.LIMITE_P2P} viewers — upload multiplies above that`);
         }
 
         await invoke('start_broadcast', { quality, iceServers: STUN });
@@ -61,7 +61,7 @@ export class P2P {
         }
     }
 
-    /** Uma conexão por espectador — inclusive quem chega depois de começar. */
+    /** One connection per viewer — including those who join after it starts. */
     async oferecerA(peerId) {
         if (! this.transmitindo || peerId === this.sinal.peerId) {
             return;
@@ -72,7 +72,7 @@ export class P2P {
 
             await this.sinal.signal(peerId, 'offer', { sdp });
         } catch (falha) {
-            console.warn(`não ofereceu para ${peerId}:`, falha);
+            console.warn(`could not offer to ${peerId}:`, falha);
         }
     }
 
@@ -104,7 +104,7 @@ export class P2P {
         }
     }
 
-    /** Lado de quem assiste: o webview monta a conexão e entrega o vídeo pronto. */
+    /** Viewer side: the webview builds the connection and delivers ready-to-play video. */
     async receberOferta(de, sdp) {
         this.encerrarRecepcao(de);
 
@@ -131,7 +131,7 @@ export class P2P {
     async adicionarCandidato(de, json) {
         const conexao = this.recebendo.get(de);
 
-        // Sem conexão de recepção, o candidato é para o lado que transmite.
+        // Without a receiving connection, the candidate is for the broadcasting side.
         if (! conexao) {
             await invoke('add_candidate', { peerId: de, candidate: json }).catch(() => {});
 
@@ -150,7 +150,7 @@ export class P2P {
             this.aoReceberTela(de, null);
         }
 
-        // Quem saiu também deixa de ser espectador da minha transmissão.
+        // Someone who left is no longer a viewer of my broadcast.
         void invoke('drop_viewer', { peerId: de }).catch(() => {});
     }
 

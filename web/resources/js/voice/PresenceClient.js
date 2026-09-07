@@ -14,8 +14,8 @@ export class PresenceClient extends EventTarget {
     }
 
     /**
-     * Idempotente: o chamador dispara a cada mudança de DOM, então repetir para o
-     * mesmo servidor (mesmo com a conexão ainda abrindo) não pode reiniciar nada.
+     * Idempotent: the caller fires on every DOM change, so repeating for the
+     * same server (even while the connection is opening) must not restart anything.
      */
     async watch(serverId) {
         const jaConectado = this.serverId === serverId
@@ -46,14 +46,14 @@ export class PresenceClient extends EventTarget {
         });
 
         if (!response.ok) {
-            throw new Error(`presença recusada (${response.status})`);
+            throw new Error(`presence rejected (${response.status})`);
         }
 
         const { url, token } = await response.json();
 
         await new Promise((resolve, reject) => {
             this.socket = new WebSocket(url);
-            this.socket.onerror = () => reject(new Error('socket de presença falhou'));
+            this.socket.onerror = () => reject(new Error('presence socket failed'));
             this.socket.onclose = () => this.reopen();
             this.socket.onmessage = message => {
                 const payload = JSON.parse(message.data);

@@ -10,9 +10,9 @@ type ChannelPresence = {
 };
 
 /**
- * Quem está em qual canal de voz, empurrado por WebSocket para todo mundo do
- * servidor — inclusive quem não entrou em canal nenhum. Sem isto só dava para
- * saber quem está na sala entrando nela.
+ * Who is in which voice channel, pushed over WebSocket to everyone on the
+ * server — including those who joined no channel. Without this, we could only
+ * know who was in the room by entering it.
  */
 export class PresenceRegistry {
     private readonly watchers = new Map<string, Set<Watcher>>();
@@ -58,8 +58,8 @@ export class PresenceRegistry {
     enter(channelId: string, peerId: string, name: string, avatar: string | null): void {
         const members = this.channels.get(channelId) ?? new Map();
 
-        // Preserva o horário de entrada numa reconexão: o cronômetro que os outros
-        // veem não pode zerar porque a sinalização caiu.
+        // Preserve the join time on reconnection: the timer that others
+        // see must not reset because signaling dropped.
         const joinedAt = members.get(peerId)?.joinedAt ?? Date.now();
 
         const anterior = members.get(peerId);
@@ -76,7 +76,7 @@ export class PresenceRegistry {
         this.publish(channelId);
     }
 
-    /** Quem não está no canal também precisa ver que alguém está transmitindo. */
+    /** Those outside the channel also need to see that someone is broadcasting. */
     setSharing(channelId: string, peerId: string, sharing: boolean, screenProducerId: string | null = null): void {
         const member = this.channels.get(channelId)?.get(peerId);
 
@@ -85,7 +85,7 @@ export class PresenceRegistry {
         }
 
         member.sharing = sharing;
-        // O id do producer vai junto para quem fechou a transmissão poder reabrir.
+        // The producer ID is included so someone who closed the broadcast can reopen it.
         member.screenProducerId = sharing ? screenProducerId : null;
         this.publish(channelId);
     }
@@ -129,8 +129,8 @@ export class PresenceRegistry {
 
             result[channelId] = {
                 members: lista,
-                // Quem não está no canal também precisa ver há quanto tempo a
-                // conversa rola: o relógio local de quem entrou não serve para isso.
+                // Those outside the channel also need to see how long the
+                // conversation has been going: the local clock of someone who joined is not enough.
                 startedAt: Math.min(...lista.map(member => member.joinedAt)),
             };
         }

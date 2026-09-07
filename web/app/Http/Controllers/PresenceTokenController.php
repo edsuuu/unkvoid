@@ -17,7 +17,7 @@ final class PresenceTokenController extends Controller
         $member = $server->memberFor(Auth::user());
 
         if (! $member) {
-            throw new AccessDeniedHttpException(__('Você não é membro deste servidor.'));
+            throw new AccessDeniedHttpException(__('You are not a member of this server.'));
         }
 
         return response()->json([

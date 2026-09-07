@@ -3,7 +3,7 @@ name = "media"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Codificação de vídeo por hardware e transporte WebRTC"
+description = "Hardware video encoding and WebRTC transport"
 
 [dependencies]
 anyhow.workspace = true

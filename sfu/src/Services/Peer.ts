@@ -13,7 +13,7 @@ type PeerOptions = {
 export class Peer {
     public socket: WebSocket;
 
-    /** Momento em que o socket caiu. Nulo enquanto a sinalização está viva. */
+    /** Time when the socket dropped. Null while signaling is alive. */
     public orphanedAt: number | null = null;
 
     public readonly transports = new Map<string, WebRtcTransport>();
@@ -38,8 +38,8 @@ export class Peer {
     }
 
     /**
-     * Troca a sinalização sem tocar na mídia: transports, producers e consumers
-     * continuam vivos, então a tela de quem estava assistindo nem pisca.
+     * Switches signaling without touching media: transports, producers, and consumers
+     * remain alive, so the viewer’s screen does not flicker.
      */
     attachSocket(socket: WebSocket): void {
         this.socket = socket;
@@ -58,7 +58,7 @@ export class Peer {
         const transport = this.transports.get(transportId);
 
         if (!transport) {
-            throw new NotFoundException(`transport ${transportId} não existe neste participante`);
+            throw new NotFoundException(`transport ${transportId} does not exist for this participant`);
         }
 
         return transport;
@@ -68,7 +68,7 @@ export class Peer {
         const consumer = this.consumers.get(consumerId);
 
         if (!consumer) {
-            throw new NotFoundException(`consumer ${consumerId} não existe neste participante`);
+            throw new NotFoundException(`consumer ${consumerId} does not exist for this participant`);
         }
 
         return consumer;

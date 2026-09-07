@@ -1,4 +1,4 @@
-/* Mesma paleta do app web: as cores são a identidade, não podem divergir. */
+/* Same palette as the web app: these colors are the identity and must not diverge. */
 :root {
     color-scheme: dark;
     --fundo: #151619;
@@ -154,7 +154,7 @@ button, select { cursor: pointer; font: inherit; }
 }
 .aovivo::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #fff; }
 
-/* Faixa de voz e painel do usuário */
+/* Voice bar and user panel */
 .voz {
     flex-shrink: 0;
     padding: 8px;
@@ -184,7 +184,7 @@ button, select { cursor: pointer; font: inherit; }
 .usuario .nome { font-size: 14px; font-weight: 500; color: #fff; }
 .usuario .estado { font-size: 12px; color: var(--texto-fraco); }
 
-/* Conteúdo */
+/* Content */
 .conteudo { flex: 1; min-width: 0; display: flex; flex-direction: column; border-radius: 8px; background: var(--conteudo); overflow: hidden; }
 .palco { flex: 1; min-height: 0; display: grid; gap: 12px; padding: 16px; overflow-y: auto; background: var(--trilha); }
 .vazio { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 14px; color: var(--texto-fraco); }
@@ -192,7 +192,7 @@ button, select { cursor: pointer; font: inherit; }
 .tile video { flex: 1; min-height: 0; width: 100%; object-fit: contain; }
 .tile figcaption { padding: 6px 12px; background: var(--painel); font-size: 12px; color: #b5bac1; }
 
-/* Login e bloqueio de conexão */
+/* Login and connection block */
 .tela-cheia {
     position: fixed;
     inset: 0;

@@ -5,8 +5,8 @@ export class LeaveController {
     constructor(private readonly onPeerGone: (roomId: string, peerId: string) => void) {}
 
     /**
-     * Saída de propósito. Sem isto o servidor tratava como queda e a pessoa ficava
-     * fantasma na lista pelos 45 s de carência.
+     * Intentional departure. Without this, the server would treat it as a drop and the person would remain
+     * a ghost in the list for the 45-second grace period.
      */
     handle(request: Request): StatusResource {
         const room = request.room();

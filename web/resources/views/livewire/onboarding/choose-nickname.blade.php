@@ -1,11 +1,11 @@
 <div class="flex min-h-screen items-center justify-center bg-[#313338] px-4">
     <div class="w-full max-w-md rounded-lg bg-[#2b2d31] p-8">
-        <h1 class="text-2xl font-semibold text-white">{{ __('Quase lá') }}</h1>
-        <p class="mt-1 text-sm text-[#b5bac1]">{{ __('Escolha como você aparece para os outros.') }}</p>
+        <h1 class="text-2xl font-semibold text-white">{{ __('Almost there') }}</h1>
+        <p class="mt-1 text-sm text-[#b5bac1]">{{ __('Choose how you appear to others.') }}</p>
 
         <form wire:submit="save" class="mt-6 space-y-5">
             <div>
-                <label class="text-xs font-bold uppercase tracking-wide text-[#b5bac1]">{{ __('Nome') }}</label>
+                <label class="text-xs font-bold uppercase tracking-wide text-[#b5bac1]">{{ __('Name') }}</label>
                 <input wire:model="name" type="text" class="mt-2 w-full rounded border-0 bg-[#1e1f22] px-3 py-2.5 text-white focus:ring-0">
                 @error('name') <p class="mt-1 text-sm text-[#f23f43]">{{ $message }}</p> @enderror
             </div>

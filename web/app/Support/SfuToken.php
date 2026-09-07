@@ -26,8 +26,8 @@ final class SfuToken
     }
 
     /**
-     * Token só de presença: deixa acompanhar quem está nos canais de voz do
-     * servidor sem entrar em nenhum deles.
+     * Presence-only token: lets you track who is in the voice channels of the
+     * server without joining any of them.
      */
     public function issuePresence(ServerMember $member): string
     {

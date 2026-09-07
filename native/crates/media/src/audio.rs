@@ -3,20 +3,20 @@ use opus::{Application, Channels, Encoder};
 
 use crate::EncoderError;
 
-/// Opus a 48 kHz estéreo — o que o WebRTC espera e o que a captura entrega.
+/// Opus at 48 kHz stereo — what WebRTC expects and capture provides.
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: u16 = 2;
 
-/// 20 ms por pacote: o padrão do WebRTC. Menor gera overhead de cabeçalho, maior
-/// aumenta a latência percebida na conversa.
+/// 20 ms per packet: WebRTC's standard. Smaller adds header overhead; larger
+/// increases perceived conversation latency.
 pub const FRAME_MS: u32 = 20;
 const FRAME_SAMPLES: usize = (SAMPLE_RATE as usize / 1000) * FRAME_MS as usize * CHANNELS as usize;
 
-/// Comprime o áudio do sistema em Opus.
+/// Compresses system audio into Opus.
 ///
-/// A captura já entrega o som **sem o que sai do nosso próprio app** — quem filtra é
-/// o sistema operacional, por processo. Sem isso, compartilhar áudio devolveria a
-/// voz de quem está na chamada e criaria realimentação.
+/// Capture already provides audio **without our own app's output** — the operating
+/// system filters it per process. Without this, sharing audio would send back a
+/// caller's voice and create feedback.
 pub struct AudioEncoder {
     encoder: Encoder,
     pendente: Vec<f32>,
@@ -37,8 +37,8 @@ impl AudioEncoder {
         })
     }
 
-    /// O Opus só aceita blocos de duração fixa, mas a captura entrega pedaços de
-    /// tamanho variável. Sobra fica guardada para o próximo bloco.
+    /// Opus accepts only fixed-duration blocks, but capture provides variable-sized
+    /// chunks. Remainders are saved for the next block.
     pub fn push(&mut self, chunk: &AudioChunk) -> Result<Vec<Vec<u8>>, EncoderError> {
         self.pendente.extend_from_slice(&chunk.samples);
 
@@ -69,7 +69,7 @@ mod tests {
     fn acumula_ate_fechar_um_bloco_de_20ms() {
         let mut encoder = AudioEncoder::new(64_000).expect("encoder");
 
-        // Meio bloco não produz pacote: o Opus exige duração exata.
+        // Half a block produces no packet: Opus requires an exact duration.
         let metade = AudioChunk {
             sample_rate: SAMPLE_RATE,
             channels: CHANNELS,
@@ -78,7 +78,7 @@ mod tests {
 
         assert!(encoder.push(&metade).expect("push").is_empty());
 
-        // A outra metade fecha o bloco e sai um pacote.
+        // The other half completes the block and produces a packet.
         assert_eq!(encoder.push(&metade).expect("push").len(), 1);
     }
 

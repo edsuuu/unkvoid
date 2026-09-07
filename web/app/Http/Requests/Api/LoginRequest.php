@@ -30,7 +30,7 @@ final class LoginRequest extends FormRequest
         return (string) $this->input('password');
     }
 
-    /** Nome do aparelho: aparece na lista de sessões e permite revogar uma só. */
+    /** Device name: shown in the session list and allows revoking one session. */
     public function device(): string
     {
         return (string) $this->input('device');

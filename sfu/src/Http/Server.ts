@@ -42,7 +42,7 @@ export class Server {
             .on('connection', socket => this.accept(socket));
 
         http.listen(config.listenPort, config.listenHost, () =>
-            console.log(`[INFO] SFU em ${config.listenHost}:${config.listenPort}${config.path} · mídia na porta ${config.mediaPort}`));
+            console.log(`[INFO] SFU em ${config.listenHost}:${config.listenPort}${config.path} · media on port ${config.mediaPort}`));
     }
 
     private accept(socket: WebSocket): void {
@@ -52,7 +52,7 @@ export class Server {
 
         socket.on('message', raw => void this.handle(session, raw));
         socket.on('close', () => this.release(session));
-        socket.on('error', error => console.error('[ERRO] socket', error.message));
+        socket.on('error', error => console.error('[ERROR] socket', error.message));
     }
 
     private async handle(session: Session, raw: RawData): Promise<void> {
@@ -61,7 +61,7 @@ export class Server {
         try {
             payload = JSON.parse(raw.toString()) as Payload;
         } catch {
-            console.error('[WARN] mensagem inválida descartada');
+            console.error('[WARN] discarded invalid message');
 
             return;
         }
@@ -72,9 +72,9 @@ export class Server {
             session.socket.send(JSON.stringify({ id: payload.id, ok: true, data }));
         } catch (exception) {
             const status = Kernel.statusOf(exception);
-            const message = exception instanceof Error ? exception.message : 'erro inesperado';
+            const message = exception instanceof Error ? exception.message : 'unexpected error';
 
-            console.error(`[ERRO] ${payload.action} (${status}): ${message}`);
+            console.error(`[ERROR] ${payload.action} (${status}): ${message}`);
             session.socket.send(JSON.stringify({ id: payload.id, ok: false, status, error: message }));
         }
     }
@@ -90,8 +90,8 @@ export class Server {
             return;
         }
 
-        // Não destrói na hora: a mídia continua viva e a pessoa tem uma janela para
-        // reconectar a sinalização sem cair da chamada.
+        // Do not destroy immediately: media remains alive and the person has a window to
+        // reconnect signaling without dropping from the call.
         session.room.onEvicted = room => this.registry.release(room);
         session.room.onPeerGone = (roomId, peerId) => this.presence.leave(roomId, peerId);
         session.room.onPeerOrphaned = (roomId, peerId) => this.presence.setReconnecting(roomId, peerId, true);

@@ -1,10 +1,10 @@
-//! Prova que o encoder por hardware funciona, sem depender da captura.
+//! Proves that the hardware encoder works without depending on capture.
 //!
-//! Cria uma IOSurface, codifica N quadros e reporta bytes, keyframes e tempo por
-//! quadro. Se `ms/quadro` ficar bem abaixo do intervalo do FPS alvo, sobra folga —
-//! sinal de que está no chip de mídia e não na CPU.
+//! Creates an IOSurface, encodes N frames, and reports bytes, keyframes, and time
+//! per frame. If `ms/frame` is well below the target FPS interval, there is headroom —
+//! a sign that it runs on the media chip rather than the CPU.
 //!
-//! cargo run -p media --example encoder -- [720|1080|1440] [quadros]
+//! cargo run -p media --example encoder -- [720|1080|1440] [frames]
 
 use std::time::Instant;
 
@@ -40,7 +40,7 @@ fn main() -> anyhow::Result<()> {
         u32::from_be_bytes(*b"BGRA"),
         4,
     )
-    .ok_or_else(|| anyhow::anyhow!("não consegui alocar a IOSurface"))?;
+    .ok_or_else(|| anyhow::anyhow!("could not allocate the IOSurface"))?;
 
     let mut encoder = PlatformEncoder::new(&config)?;
 
@@ -63,23 +63,23 @@ fn main() -> anyhow::Result<()> {
     let media_ms = decorrido * 1000.0 / total as f64;
     let orcamento = 1000.0 / config.frame_rate;
 
-    println!("quadros codificados: {total}");
+    println!("encoded frames: {total}");
     println!("keyframes: {keyframes}");
-    println!("saída: {:.1} KB", bytes as f64 / 1024.0);
-    println!("média: {media_ms:.2} ms/quadro · pior caso: {pior_ms:.2} ms");
+    println!("output: {:.1} KB", bytes as f64 / 1024.0);
+    println!("average: {media_ms:.2} ms/frame · worst case: {pior_ms:.2} ms");
     println!(
-        "orçamento a {} fps: {orcamento:.2} ms/quadro",
+        "budget at {} fps: {orcamento:.2} ms/frame",
         config.frame_rate
     );
     println!(
         "\n{}",
         if media_ms < orcamento {
             format!(
-                "FOLGA: usa {:.0}% do orçamento por quadro",
+                "HEADROOM: uses {:.0}% of the per-frame budget",
                 media_ms / orcamento * 100.0
             )
         } else {
-            "APERTADO: o encoder não acompanha o FPS alvo".into()
+            "TIGHT: the encoder cannot keep up with the target FPS".into()
         }
     );
 

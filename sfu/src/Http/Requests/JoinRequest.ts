@@ -10,9 +10,9 @@ export class JoinRequest extends Request {
     }
 
     /**
-     * Só o cliente sabe se ainda tem os transports vivos. Depois de um F5 ele é
-     * novo em folha, então pede sessão limpa mesmo que o servidor ainda guarde a
-     * antiga — retomar ali deixaria o cliente sem transport nenhum.
+     * Only the client knows whether its transports are still alive. After F5 it is
+     * brand new, so it requests a clean session even if the server still retains the
+     * old one — resuming it would leave the client without any transports.
      */
     wantsResume(): boolean {
         return this.data.resume === true;

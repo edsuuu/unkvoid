@@ -31,23 +31,23 @@ export class VoiceStage {
         };
     }
 
-    /** Chave onde fica o canal ativo, para o F5 não derrubar a pessoa da chamada. */
+    /** Key holding the active channel so F5 does not remove the person from the call. */
     static STORAGE_KEY = 'voice:channel';
 
-    /** Quanto o espectador espera a transmissão voltar antes de fechar o quadro. */
+    /** How long the viewer waits for the broadcast to return before closing the frame. */
     static RECONNECT_GRACE_MS = 20_000;
 
     remember(channelId, channelName) {
         try {
-            // Não sobrescreve com nulo: ao restaurar, a página ainda está no painel
-            // inicial e o servidor não está no DOM — o valor salvo é o que vale.
+            // Do not overwrite with null: during restoration, the page is still on the
+            // initial panel and the server is not in the DOM — the saved value wins.
             const anterior = JSON.parse(localStorage.getItem(VoiceStage.STORAGE_KEY) ?? 'null');
             const serverId = document.querySelector('[data-server-id]')?.dataset.serverId
                 ?? (anterior?.channelId === channelId ? anterior.serverId : null);
 
             localStorage.setItem(VoiceStage.STORAGE_KEY, JSON.stringify({ channelId, channelName, serverId }));
         } catch {
-            // Navegador sem storage: perde só a reconexão automática após recarregar.
+            // Browser without storage: only automatic reconnection after reload is lost.
         }
     }
 
@@ -86,8 +86,8 @@ export class VoiceStage {
     }
 
     /**
-     * Desenha quem está em cada canal de voz a partir do que o servidor empurra —
-     * inclusive para quem não entrou em canal nenhum.
+     * Renders who is in each voice channel from what the server pushes —
+     * including for those who joined no channel.
      */
     renderPresence(channels) {
         this.presenceState = channels;
@@ -102,9 +102,9 @@ export class VoiceStage {
                     </span>
                     <span class="truncate">${member.name}</span>
                     ${member.sharing ? `<button type="button" data-watch="${member.screenProducerId ?? ''}"
-                        title="Assistir a transmissão"
+                        title="Watch broadcast"
                         class="ml-auto flex shrink-0 cursor-pointer items-center gap-1 rounded bg-[#f23f43] px-1.5 py-0.5 text-[10px] font-bold uppercase leading-none text-white transition hover:bg-[#a12828]">
-                        <span class="size-1.5 rounded-full bg-white"></span>ao vivo
+                        <span class="size-1.5 rounded-full bg-white"></span>live
                     </button>` : ''}
                 </div>
             `).join('');
@@ -114,8 +114,8 @@ export class VoiceStage {
     }
 
     /**
-     * O tempo ao lado do canal vem do servidor, então quem NÃO está na chamada
-     * também vê há quanto tempo ela rola.
+     * The time beside the channel comes from the server, so those NOT in the call
+     * also see how long it has been going.
      */
     renderChannelClocks() {
         document.querySelectorAll('[data-channel-clock]').forEach(element => {
@@ -140,14 +140,14 @@ export class VoiceStage {
         const root = document.querySelector('[data-me]');
 
         return {
-            name: root?.dataset.me ?? 'você',
+            name: root?.dataset.me ?? 'you',
             avatar: root?.dataset.meAvatar || null,
         };
     }
 
     /**
-     * Coloca você embaixo do canal antes do handshake terminar. Sem isso o clique
-     * parece não ter feito nada durante os segundos de conexão.
+     * Places you under the channel before the handshake finishes. Without this, clicking
+     * appears to do nothing during the connection seconds.
      */
     showSelfPending(channelId) {
         const list = document.querySelector(`[data-voice-members="${channelId}"]`);
@@ -180,8 +180,8 @@ export class VoiceStage {
             setInterval(() => this.renderChannelClocks(), 1000);
             this.watchCurrentServer();
 
-            // Observar o atributo é mais confiável que hook do Livewire: funciona
-            // independente de quando o morph termina e de mudanças de versão.
+            // Observing the attribute is more reliable than a Livewire hook: it works
+            // regardless of when morphing finishes and across version changes.
             new MutationObserver(() => this.watchCurrentServer()).observe(document.body, {
                 subtree: true,
                 attributes: true,
@@ -190,8 +190,8 @@ export class VoiceStage {
 
         });
 
-        // restore() só depois dos componentes existirem: no 'livewire:init' um
-        // Livewire.dispatch se perde, porque ninguém está escutando ainda.
+        // restore() only after components exist: on 'livewire:init' a
+        // Livewire.dispatch is lost because nothing is listening yet.
         document.addEventListener('livewire:initialized', () => this.restore());
 
         document.addEventListener('change', event => {
@@ -277,7 +277,7 @@ export class VoiceStage {
             });
 
             if (!response.ok) {
-                throw new Error(`servidor recusou (${response.status})`);
+                throw new Error(`server rejected (${response.status})`);
             }
 
             return response.json();
@@ -288,7 +288,7 @@ export class VoiceStage {
         try {
             credentials = await fetchCredentials();
         } catch (error) {
-            this.status(`erro: ${error.message}`);
+            this.status(`error: ${error.message}`);
 
             return;
         }
@@ -300,9 +300,9 @@ export class VoiceStage {
         this.client.addEventListener('peerLeft', event => this.removePeerTiles(event.detail.peerId));
         this.client.addEventListener('peerConnectionLost', event => this.markTilesReconnecting(event.detail.peerId, true));
         this.client.addEventListener('peerReconnected', event => this.markTilesReconnecting(event.detail.peerId, false));
-        this.client.addEventListener('broadcastStopped', event => this.status(`${event.detail.by} encerrou sua transmissão`));
+        this.client.addEventListener('broadcastStopped', event => this.status(`${event.detail.by} stopped their broadcast`));
         this.client.addEventListener('disconnected', event => {
-            this.status(`${event.detail.by} tirou você da chamada`);
+            this.status(`${event.detail.by} removed you from the call`);
             this.leave();
         });
         this.client.addEventListener('shareEnded', () => this.stopShare());
@@ -342,7 +342,7 @@ export class VoiceStage {
             this.statsTimer = setInterval(() => this.refreshStats(), 1000);
         } catch (error) {
             this.teardown();
-            this.status(`não conectou: ${error.message}`);
+            this.status(`failed to connect: ${error.message}`);
         }
     }
 
@@ -354,7 +354,7 @@ export class VoiceStage {
         try {
             await this.client[method](targetPeerId);
         } catch (error) {
-            this.status(`ação recusada: ${error.message}`);
+            this.status(`action rejected: ${error.message}`);
         }
     }
 
@@ -379,7 +379,7 @@ export class VoiceStage {
 
             this.addTile(producerId, peerId, name, consumer.track, consumer.id);
         } catch (error) {
-            this.status(`erro ao receber vídeo: ${error.message}`);
+            this.status(`error receiving video: ${error.message}`);
         }
     }
 
@@ -408,13 +408,13 @@ export class VoiceStage {
         bar.innerHTML = `
             <span class="truncate">${name}</span>
             <span class="flex-1"></span>
-            ${button('mute', 'Mutar o áudio desta transmissão', ICONS.audioOn)}
+            ${button('mute', 'Mute this broadcast’s audio', ICONS.audioOn)}
             <input type="range" min="0" max="100" value="100" data-tile-volume="${peerId}"
-                title="Volume desta transmissão"
+                title="Broadcast volume"
                 class="h-1 w-16 cursor-pointer appearance-none rounded-full bg-[#4e5058] accent-[#5865f2]">
-            ${button('focus', 'Ver só esta (esconde as outras)', ICONS.focus)}
-            ${button('fullscreen', 'Tela cheia', ICONS.fullscreen)}
-            ${button('close', 'Parar de assistir (libera banda)', ICONS.close, true)}
+            ${button('focus', 'View only this one (hide the others)', ICONS.focus)}
+            ${button('fullscreen', 'Fullscreen', ICONS.fullscreen)}
+            ${button('close', 'Stop watching (free bandwidth)', ICONS.close, true)}
         `;
 
         tile.append(video, bar);
@@ -423,9 +423,9 @@ export class VoiceStage {
     }
 
     /**
-     * Tenta a tela cheia nativa; se o navegador recusar (exige gesto do usuário e
-     * nem todo contexto permite), cai para um modo expandido em CSS, que sempre
-     * funciona. Esc sai dos dois.
+     * Tries native fullscreen; if the browser refuses (it requires a user gesture and
+     * not every context permits), falls back to an expanded CSS mode that always
+     * works. Escape exits both.
      */
     isFullscreen(element) {
         return document.fullscreenElement === element || element?.dataset.expanded === 'true';
@@ -479,8 +479,8 @@ export class VoiceStage {
     }
 
     /**
-     * Reabre uma transmissão que você fechou. Fechar pausa o consumer no servidor,
-     * então voltar a assistir é retomar aquele consumer ou criar um novo.
+     * Reopens a broadcast you closed. Closing pauses the consumer on the server,
+     * so watching again resumes that consumer or creates a new one.
      */
     async watchAgain(producerId) {
         if (! producerId || ! this.client?.recvTransport) {
@@ -496,7 +496,7 @@ export class VoiceStage {
         try {
             if (existente) {
                 await this.client.resumeConsumerById(existente.id);
-                const peer = this.client.peers.get(this.ownerOf(producerId)) ?? { name: 'transmissão' };
+                const peer = this.client.peers.get(this.ownerOf(producerId)) ?? { name: 'broadcast' };
 
                 this.addTile(producerId, this.ownerOf(producerId), peer.name, existente.track, existente.id);
 
@@ -505,7 +505,7 @@ export class VoiceStage {
 
             await this.consume({ producerId, name: '' });
         } catch (error) {
-            this.status(`não deu para reabrir: ${error.message}`);
+            this.status(`could not reopen: ${error.message}`);
         }
     }
 
@@ -532,7 +532,7 @@ export class VoiceStage {
             await this.client.changeQuality(profile);
             this.status(`qualidade em ${profile}p`);
         } catch (error) {
-            this.status(`não trocou a qualidade: ${error.message}`);
+            this.status(`could not change quality: ${error.message}`);
         }
     }
 
@@ -541,7 +541,7 @@ export class VoiceStage {
             const audio = document.querySelector(`audio[data-peer="${button.dataset.peer}"]`);
 
             if (!audio) {
-                this.status('esta transmissão não tem áudio');
+                this.status('this broadcast has no audio');
 
                 return;
             }
@@ -592,13 +592,13 @@ export class VoiceStage {
     }
 
     /**
-     * Conexão de quem transmite caiu: a mídia para mas o último quadro fica na tela.
-     * Sem este aviso o espectador acha que a imagem travou por conta própria.
+     * Broadcaster connection dropped: media stops but the last frame remains on screen.
+     * Without this notice, the viewer thinks the image froze on its own.
      */
     /**
-     * Se a transmissão não voltar em RECONNECT_GRACE_MS, fecha o quadro. Deixar
-     * "reconectando…" na tela até a carência do servidor estourar dá a impressão de
-     * travamento — melhor admitir que caiu.
+     * Se the broadcast does not return em RECONNECT_GRACE_MS, fecha o quadro. Deixar
+     * "reconnecting…" on screen until the server grace period expires gives the impression of
+     * a freeze — it is better to acknowledge that it dropped.
      */
     markTilesReconnecting(peerId, reconnecting) {
         clearTimeout(this.reconnectDeadlines.get(peerId));
@@ -607,7 +607,7 @@ export class VoiceStage {
             this.reconnectDeadlines.set(peerId, setTimeout(() => {
                 this.reconnectDeadlines.delete(peerId);
                 this.removePeerTiles(peerId);
-                this.status('a transmissão caiu e não voltou');
+                this.status('the broadcast dropped and did not return');
             }, VoiceStage.RECONNECT_GRACE_MS));
         } else {
             this.reconnectDeadlines.delete(peerId);
@@ -658,8 +658,8 @@ export class VoiceStage {
             return;
         }
 
-        // Em tela cheia mostra no máximo 4: acima disso cada quadro fica pequeno
-        // demais para ser útil. As demais continuam recebendo, só não aparecem.
+        // In fullscreen show at most 4: above that each frame is too small
+        // to be useful. The others continue receiving, but are not shown.
         const emTelaCheia = this.isFullscreen(grid);
         const visiveis = emTelaCheia ? tiles.slice(0, 4) : tiles;
 
@@ -702,10 +702,10 @@ export class VoiceStage {
     }
 
     async share() {
-        // Clicar antes do handshake terminar deixava o erro invisível: o join
-        // completava logo depois e sobrescrevia a mensagem de falha.
+        // Clicking before the handshake finished made the error invisible: the join
+        // completed shortly afterward and overwrote the failure message.
         if (! this.client?.sendTransport) {
-            this.status('espere terminar de conectar para compartilhar');
+            this.status('wait for the connection to finish before sharing');
 
             return;
         }
@@ -716,16 +716,16 @@ export class VoiceStage {
                 codec: 'h264',
                 simulcast: false,
                 // 'motion' + maintain-framerate: prioriza fluidez. Com 'detail' e
-                // maintain-resolution o encoder segurava a nitidez derrubando o FPS,
-                // que é a oscilação de 5 a 60 na tela.
+                // maintain-resolution kept the image sharp by lowering FPS,
+                // which is the 5-to-60 fluctuation on screen.
                 contentHint: 'motion',
             });
 
             document.querySelector('[data-action="share"]')?.classList.add('hidden');
             document.querySelector('[data-action="stop-share"]')?.classList.remove('hidden');
-            this.status(hasAudio ? 'compartilhando com áudio' : 'compartilhando sem áudio do sistema');
+            this.status(hasAudio ? 'sharing with audio' : 'sharing without system audio');
         } catch (error) {
-            this.status(`não compartilhou: ${error.message}`);
+            this.status(`did not share: ${error.message}`);
         }
     }
 
@@ -812,6 +812,6 @@ export class VoiceStage {
         document.querySelectorAll('audio[data-tile]').forEach(element => element.remove());
         this.setControlsEnabled(true);
         this.showStage(false);
-        this.status('Disponível');
+        this.status('Available');
     }
 }

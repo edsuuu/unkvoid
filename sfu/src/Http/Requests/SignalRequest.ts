@@ -1,9 +1,9 @@
 import { Request } from './Request.js';
 
 /**
- * Sinalização P2P. O SFU não entende o conteúdo: só entrega de um participante para
- * outro dentro da mesma sala. Assim o P2P reaproveita a sala e a autenticação que já
- * existem, em vez de exigir um segundo canal de sinalização.
+ * P2P signaling. The SFU does not interpret the content; it only delivers from one participant to
+ * another within the same room. This lets P2P reuse the room and its existing authentication
+ * instead of requiring a second signaling channel.
  */
 export class SignalRequest extends Request {
     protected override validate(): void {

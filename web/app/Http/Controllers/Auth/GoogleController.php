@@ -25,9 +25,9 @@ final class GoogleController extends Controller
         try {
             $googleUser = Socialite::driver('google')->user();
         } catch (Throwable $exception) {
-            Log::channel('servers')->error('[ERRO] callback do Google falhou', ['exception' => $exception]);
+            Log::channel('servers')->error('[ERROR] Google callback failed', ['exception' => $exception]);
 
-            return redirect()->route('login')->withErrors(['email' => __('Não foi possível entrar com o Google.')]);
+            return redirect()->route('login')->withErrors(['email' => __('Unable to sign in with Google.')]);
         }
 
         Auth::login($resolveGoogleUser->handle($googleUser), remember: true);

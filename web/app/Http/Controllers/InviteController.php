@@ -17,9 +17,9 @@ final class InviteController extends Controller
         try {
             $server = $joinServerByInvite->handle(Auth::user(), $code);
         } catch (Throwable $exception) {
-            Log::channel('servers')->warning('[WARN] convite inválido', ['code' => $code, 'exception' => $exception]);
+            Log::channel('servers')->warning('[WARN] invalid invite', ['code' => $code, 'exception' => $exception]);
 
-            return redirect()->route('app')->withErrors(['invite' => __('Convite inválido ou expirado.')]);
+            return redirect()->route('app')->withErrors(['invite' => __('Invalid or expired invite.')]);
         }
 
         $channel = $server->channels()->where('type', 'text')->first();

@@ -13,11 +13,11 @@ use Symfony\Component\HttpFoundation\RedirectResponse as SymfonyRedirect;
 use Throwable;
 
 /**
- * Login do app desktop pelo Google.
+ * Desktop app login through Google.
  *
- * O app não tem sessão de navegador, então o fluxo é: abre o navegador do sistema,
- * a pessoa entra no Google, e o callback devolve o token por deep link
- * (`discord2://auth?token=...`). O token nunca passa pela janela do app.
+ * The app has no browser session, so the flow is: open the system browser,
+ * the user signs in with Google, and the callback returns the token via deep link
+ * (`discord2://auth?token=...`). The token never passes through the app window.
  */
 final class DesktopAuthController extends Controller
 {
@@ -35,9 +35,9 @@ final class DesktopAuthController extends Controller
                 ->redirectUrl(route('api.desktop.google.callback'))
                 ->user();
         } catch (Throwable $exception) {
-            Log::channel('servers')->error('[ERRO] login do desktop pelo Google falhou', ['exception' => $exception]);
+            Log::channel('servers')->error('[ERROR] desktop Google login failed', ['exception' => $exception]);
 
-            return redirect()->away('discord2://auth?erro='.urlencode(__('Não foi possível entrar com o Google.')));
+            return redirect()->away('discord2://auth?erro='.urlencode(__('Unable to sign in with Google.')));
         }
 
         $user = $resolveGoogleUser->handle($googleUser);

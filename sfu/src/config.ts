@@ -9,12 +9,12 @@ export const config = {
     announcedAddress: process.env.SFU_ANNOUNCED_ADDRESS ?? '127.0.0.1',
     tokenSecret: process.env.SFU_SECRET ?? '',
 
-    // Uma porta só para toda a mídia (WebRtcServer multiplexa os transports).
-    // O mediasoup é ICE Lite: nunca inicia conexão, só responde. Atrás de firewall
-    // stateful isso significa que a porta PRECISA estar liberada para entrada.
+    // One port for all media (WebRtcServer multiplexes transports).
+    // mediasoup is ICE Lite: it never initiates a connection, only responds. Behind a firewall
+    // stateful, this means the port MUST allow inbound traffic.
     mediaPort: Number(process.env.SFU_MEDIA_PORT ?? 40000),
 
-    // Um worker por núcleo. Cada um ocupa uma porta a partir de mediaPort.
+    // One worker per core. Each one uses a port starting at mediaPort.
     workerCount: Number(process.env.SFU_WORKERS ?? availableParallelism()),
 
     worker: {

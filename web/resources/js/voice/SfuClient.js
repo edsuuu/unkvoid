@@ -1,7 +1,7 @@
 import { Device } from 'mediasoup-client';
 
-// minFrameRate é o piso pedido à CAPTURA: a fonte não entrega menos que isso, então
-// o encoder nunca cai para os 5 fps. Se a banda apertar, quem cede é a resolução.
+// minFrameRate is the floor requested from CAPTURE: the source delivers no less than this, so
+// the encoder never drops to 5 fps. If bandwidth is tight, resolution gives way.
 const PROFILES = {
     720: { width: 1280, height: 720, frameRate: 60, minFrameRate: 30, bitrate: 4_000_000 },
     1080: { width: 1920, height: 1080, frameRate: 60, minFrameRate: 30, bitrate: 7_000_000 },
@@ -45,7 +45,7 @@ export class SfuClient extends EventTarget {
     openSocket() {
         return new Promise((resolve, reject) => {
             this.socket = new WebSocket(this.url);
-            this.socket.onerror = () => reject(new Error('não foi possível abrir o WebSocket'));
+            this.socket.onerror = () => reject(new Error('unable to open the WebSocket'));
             this.socket.onmessage = message => this.handleMessage(JSON.parse(message.data));
             this.socket.onclose = () => this.handleClose();
             this.socket.onopen = () => resolve();
@@ -53,13 +53,13 @@ export class SfuClient extends EventTarget {
     }
 
     /**
-     * A mídia WebRTC não cai junto com a sinalização. Então uma queda de socket é
-     * tratada como soluço: tenta voltar com backoff e, se o servidor ainda tiver a
-     * sessão, ninguém percebe. Se não tiver, republica tudo do zero.
+     * WebRTC media does not drop with signaling. So a socket drop is
+     * treated as a hiccup: it retries with backoff and, if the server still has the
+     * session, no one notices. If not, it republishes everything from scratch.
      */
     handleClose() {
         for (const waiting of this.pending.values()) {
-            waiting.reject(new Error('conexão caiu'));
+            waiting.reject(new Error('connection dropped'));
         }
 
         this.pending.clear();
@@ -165,8 +165,8 @@ export class SfuClient extends EventTarget {
     }
 
     async setup() {
-        // Só pede retomada se os transports desta aba ainda estiverem vivos. Depois
-        // de um F5 eles não existem, então a sessão precisa nascer limpa.
+        // Only request a resume if this tab’s transports are still alive. After
+        // F5 they do not exist, so the session must start clean.
         const joined = await this.request('join', {
             token: await this.tokenProvider(),
             resume: Boolean(this.sendTransport && this.recvTransport),
@@ -175,7 +175,7 @@ export class SfuClient extends EventTarget {
         this.peerId = joined.peerId;
         this.role = joined.role;
 
-        // Retomada: transports, producers e consumers do servidor seguem de pé.
+        // Resume: the server’s transports, producers, and consumers remain active.
         if (joined.resumed) {
             return joined;
         }
@@ -280,7 +280,7 @@ export class SfuClient extends EventTarget {
             encodings: this.buildEncodings(preset, codec, simulcast),
             codecOptions: { videoGoogleStartBitrate: Math.round(preset.bitrate / 2000) },
             codec: this.pickCodec(codec),
-            // Perder nitidez é melhor que engasgar: mantém o FPS estável.
+            // Losing sharpness is better than stuttering: it keeps FPS stable.
             degradationPreference: 'maintain-framerate',
         };
 
@@ -311,8 +311,8 @@ export class SfuClient extends EventTarget {
     }
 
     /**
-     * Troca a qualidade sem parar de compartilhar: reconfigura a captura e o encoder
-     * no lugar, sem republicar o track (republicar faria a tela piscar para todo mundo).
+     * Changes quality without stopping sharing: reconfigures capture and the encoder
+     * in place without republishing the track (republishing would make the screen flicker for everyone).
      */
     async changeQuality(profile) {
         const producer = this.producers.get('screen');
@@ -463,7 +463,7 @@ export class SfuClient extends EventTarget {
             }
 
             rows.push({
-                layer: report.rid ?? 'única',
+                layer: report.rid ?? 'single',
                 resolution: `${report.frameWidth ?? '?'}×${report.frameHeight ?? '?'}`,
                 fps: report.framesPerSecond ?? 0,
                 limitedBy: report.qualityLimitationReason ?? 'none',
@@ -479,7 +479,7 @@ export class SfuClient extends EventTarget {
         return rows;
     }
 
-    /** Saída explícita: sem isto o servidor trata como queda e a pessoa fica fantasma. */
+    /** Explicit departure: without this, the server treats it as a drop and the person becomes a ghost. */
     async leaveRoom() {
         await this.request('leave').catch(() => {});
     }

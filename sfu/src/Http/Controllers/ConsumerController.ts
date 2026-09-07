@@ -10,13 +10,13 @@ export class ConsumerController {
         const peer = request.peer();
 
         if (! room.router.canConsume({ producerId: request.producerId(), rtpCapabilities: request.rtpCapabilities() })) {
-            throw new ValidationException('este participante não consegue receber esta mídia');
+            throw new ValidationException('this participant cannot receive this media');
         }
 
         const owner = room.findProducerOwner(request.producerId());
 
-        // Nasce pausado de propósito: retomar só depois que o cliente confirma o
-        // consumer evita perder o keyframe inicial e a tela abrir preta.
+        // It starts paused intentionally: resume only after the client confirms the
+        // the consumer avoids losing the initial keyframe and showing a black screen.
         const consumer = await peer.getTransport(request.transportId()).consume({
             producerId: request.producerId(),
             rtpCapabilities: request.rtpCapabilities(),

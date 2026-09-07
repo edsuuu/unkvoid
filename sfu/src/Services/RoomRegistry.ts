@@ -14,20 +14,20 @@ export class RoomRegistry {
     private readonly slotByRoom = new Map<string, WorkerSlot>();
 
     /**
-     * Um worker do mediasoup é um PROCESSO C++ separado e single-thread — ele satura
-     * um núcleo e para. Threads no Node não ajudariam: a mídia nunca passa pelo
-     * JavaScript, só a sinalização. Escalar aqui é ter um worker por núcleo e
+     * A mediasoup worker is a separate, single-threaded C++ PROCESS — it saturates
+     * one core and stops. Node threads would not help: media never passes through
+     * JavaScript, only signaling does. Scaling here means one worker per core and
      * distribuir as salas entre eles.
      *
-     * Cada worker precisa da própria porta de mídia, porque o WebRtcServer não é
-     * compartilhável entre processos.
+     * Each worker needs its own media port because WebRtcServer is not
+     * shared between processes.
      */
     async boot(): Promise<void> {
         for (let index = 0; index < config.workerCount; index += 1) {
             const worker = await mediasoup.createWorker(config.worker);
 
             worker.on('died', () => {
-                console.error('[ERRO] worker do mediasoup morreu — saindo para o pm2 reiniciar');
+                console.error('[ERROR] mediasoup worker died — exiting so pm2 can restart');
                 process.exit(1);
             });
 
@@ -43,10 +43,10 @@ export class RoomRegistry {
             this.slots.push({ worker, webRtcServer, rooms: 0 });
         }
 
-        console.log(`[INFO] ${this.slots.length} workers de mídia nas portas ${config.mediaPort}-${config.mediaPort + this.slots.length - 1}`);
+        console.log(`[INFO] ${this.slots.length} media workers on ports ${config.mediaPort}-${config.mediaPort + this.slots.length - 1}`);
     }
 
-    /** Sala nova vai para o worker com menos salas. */
+    /** A new room goes to the worker with the fewest rooms. */
     private leastLoadedSlot(): WorkerSlot {
         return this.slots.reduce((menor, slot) => (slot.rooms < menor.rooms ? slot : menor));
     }
@@ -59,7 +59,7 @@ export class RoomRegistry {
         }
 
         if (this.slots.length === 0) {
-            throw new Error('o registro de salas não foi inicializado');
+            throw new Error('the room registry was not initialized');
         }
 
         const slot = this.leastLoadedSlot();

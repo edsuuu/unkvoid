@@ -34,11 +34,11 @@ export class Kernel {
         const route = this.routes[action as ActionName];
 
         if (! route) {
-            throw new NotFoundException(`ação desconhecida: ${action}`);
+            throw new NotFoundException(`unknown action: ${action}`);
         }
 
         if (! route.guest && ! session.peer) {
-            throw new UnauthorizedException('entre em uma sala antes desta ação');
+            throw new UnauthorizedException('join a room before this action');
         }
 
         const resource = await route.handle(route.build(data, session) as never);

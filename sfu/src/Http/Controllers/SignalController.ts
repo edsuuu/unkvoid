@@ -3,8 +3,8 @@ import { StatusResource } from '../Resources/StatusResource.js';
 
 export class SignalController {
     /**
-     * Repassa a mensagem ao destinatário. O remetente vem da sessão, nunca do corpo:
-     * senão daria para se passar por outra pessoa na sala.
+     * Forwards the message to the recipient. The sender comes from the session, never the body:
+     * otherwise someone could impersonate another person in the room.
      */
     handle(request: SignalRequest): StatusResource {
         const origem = request.peer();

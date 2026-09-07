@@ -3,8 +3,8 @@ use videotoolbox::prelude::*;
 
 use crate::{EncodedFrame, EncoderConfig, EncoderError};
 
-/// Encoder H.264 por hardware. No Apple Silicon roda no media engine — a CPU só
-/// entrega o buffer e recebe os bytes de volta.
+/// Hardware H.264 encoder. On Apple Silicon it runs on the media engine — the CPU
+/// only supplies the buffer and receives the bytes back.
 pub struct VideoToolboxEncoder {
     session: CompressionSession,
     frame_rate: f64,
@@ -16,15 +16,15 @@ impl VideoToolboxEncoder {
         let (width, height) = config.quality.dimensions();
 
         let session = CompressionSession::builder(width as i32, height as i32, Codec::H264)
-            // Tempo real: prioriza latência baixa sobre taxa de compressão.
+            // Real time: prioritize low latency over compression ratio.
             .with_real_time(true)
-            // Sem B-frames. Eles comprimem melhor, mas exigem reordenar quadros, o
-            // que adiciona latência — inaceitável numa chamada.
+            // No B-frames. They compress better, but require reordering frames, which
+            // adds latency — unacceptable in a call.
             .with_allow_frame_reordering(false)
             .with_average_bit_rate(config.bitrate as i32)
             .with_expected_frame_rate(config.frame_rate)
-            // Keyframe a cada 2s: quem entra no meio da transmissão não espera muito,
-            // e não gasta banda mandando quadro completo toda hora.
+            // Keyframe every 2s: someone joining mid-broadcast does not wait long, and
+            // bandwidth is not wasted sending a full frame constantly.
             .with_max_keyframe_interval((config.frame_rate * 2.0) as i32)
             .build()
             .map_err(|error| EncoderError::Start(error.to_string()))?;
@@ -36,7 +36,7 @@ impl VideoToolboxEncoder {
         })
     }
 
-    /// Codifica um quadro. `surface` vem direto da captura, sem passar pela CPU.
+    /// Encodes a frame. `surface` comes directly from capture without passing through the CPU.
     pub fn encode(
         &mut self,
         surface: &IOSurface,
@@ -60,8 +60,8 @@ impl VideoToolboxEncoder {
     }
 }
 
-/// Um quadro-chave em H.264 carrega SPS (tipo 7), PPS (8) ou IDR (5). Olhar o tipo
-/// do primeiro NAL é suficiente e não custa nada.
+/// An H.264 keyframe carries SPS (type 7), PPS (8), or IDR (5). Checking the
+/// first NAL type is sufficient and costs nothing.
 fn is_keyframe(data: &[u8]) -> bool {
     let mut posicao = 0;
 

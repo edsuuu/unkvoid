@@ -23,7 +23,7 @@ final class AuthController extends Controller
         $user = User::where('email', $request->email())->first();
 
         if (! $user || ! $user->password || ! Hash::check($request->password(), $user->password)) {
-            throw ValidationException::withMessages(['email' => __('Credenciais inválidas.')]);
+            throw ValidationException::withMessages(['email' => __('Invalid credentials.')]);
         }
 
         return response()->json([

@@ -1,7 +1,6 @@
 /**
- * Cliente da API do Laravel. O app é inútil sem servidor, então toda falha de rede
- * derruba para a tela de reconexão em vez de deixar a interface mentir com dados
- * velhos.
+ * Laravel API client. The app is useless without a server, so every network failure
+ * sends it to the reconnect screen instead of letting the interface show stale data.
  */
 export class Api {
     static BASE = localStorage.getItem('api:base') ?? 'https://discord.unkvoid.com';
@@ -31,19 +30,19 @@ export class Api {
         } catch {
             this.onOffline?.();
 
-            throw new Error('sem conexão com o servidor');
+            throw new Error('no connection to the server');
         }
 
         if (resposta.status === 401) {
             this.forget();
 
-            throw new Error('sessão expirada');
+            throw new Error('session expired');
         }
 
         const dados = await resposta.json().catch(() => ({}));
 
         if (! resposta.ok) {
-            throw new Error(dados.message ?? `o servidor recusou (${resposta.status})`);
+            throw new Error(dados.message ?? `the server rejected the request (${resposta.status})`);
         }
 
         return dados;

@@ -1,7 +1,7 @@
-//! Prova que a PeerConnection sobe, negocia H.264 e reúne candidatos ICE.
+//! Proves that the PeerConnection starts, negotiates H.264, and gathers ICE candidates.
 //!
-//! Não precisa de outra ponta: se a oferta sai com H.264 e o ICE encontra caminho,
-//! o transporte está de pé. Faltaria só o outro lado responder.
+//! No other endpoint is needed: if the offer contains H.264 and ICE finds a path,
+//! transport is up. Only the other side's response would be missing.
 //!
 //! cargo run -p media --example peer
 
@@ -22,9 +22,9 @@ async fn main() -> anyhow::Result<()> {
         .filter(|linha| linha.starts_with("m=video"))
         .count();
 
-    println!("oferta gerada: {} bytes", oferta.len());
-    println!("trilha de vídeo: {linhas_video}");
-    println!("H.264 negociado: {}", if tem_h264 { "sim" } else { "NÃO" });
+    println!("generated offer: {} bytes", oferta.len());
+    println!("video track: {linhas_video}");
+    println!("H.264 negotiated: {}", if tem_h264 { "yes" } else { "NO" });
 
     let mut candidatos = 0;
     let prazo = tokio::time::sleep(Duration::from_secs(6));
@@ -38,16 +38,16 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    println!("candidatos ICE reunidos: {candidatos}");
+    println!("gathered ICE candidates: {candidatos}");
 
     peer.close().await?;
 
     println!(
         "\n{}",
         if tem_h264 && linhas_video == 1 && candidatos > 0 {
-            "TRANSPORTE OK — falta só a outra ponta responder"
+            "TRANSPORT OK — only the other endpoint's response is missing"
         } else {
-            "ALGO FALTOU: veja os números acima"
+            "SOMETHING IS MISSING: see the numbers above"
         }
     );
 

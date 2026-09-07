@@ -15,7 +15,7 @@ export class Request {
 
     peer(): Peer {
         if (! this.session.peer) {
-            throw new ValidationException('esta ação exige uma sala');
+            throw new ValidationException('this action requires a room');
         }
 
         return this.session.peer;
@@ -23,7 +23,7 @@ export class Request {
 
     room(): Room {
         if (! this.session.room) {
-            throw new ValidationException('esta ação exige uma sala');
+            throw new ValidationException('this action requires a room');
         }
 
         return this.session.room;
@@ -33,7 +33,7 @@ export class Request {
         const value = this.data[key];
 
         if (typeof value !== 'string' || value.trim() === '') {
-            throw new ValidationException(`o campo ${key} é obrigatório`);
+            throw new ValidationException(`field ${key} is required`);
         }
 
         return value;
@@ -43,7 +43,7 @@ export class Request {
         const value = this.data[key];
 
         if (typeof value !== 'object' || value === null) {
-            throw new ValidationException(`o campo ${key} é obrigatório`);
+            throw new ValidationException(`field ${key} is required`);
         }
 
         return value as T;
@@ -53,7 +53,7 @@ export class Request {
         const value = this.string(key);
 
         if (! (allowed as readonly string[]).includes(value)) {
-            throw new ValidationException(`o campo ${key} deve ser um de: ${allowed.join(', ')}`);
+            throw new ValidationException(`field ${key} must be one of: ${allowed.join(', ')}`);
         }
 
         return value as T;
