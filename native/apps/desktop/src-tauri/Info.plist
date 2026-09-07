@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>O Discord 2.0 precisa gravar a tela para você compartilhá-la na chamada.</string>
+
+    <key>NSMicrophoneUsageDescription</key>
+    <string>O Discord 2.0 precisa do microfone para você falar na chamada.</string>
+
+    <key>NSCameraUsageDescription</key>
+    <string>O Discord 2.0 precisa da câmera para você aparecer em vídeo.</string>
+</dict>
+</plist>
