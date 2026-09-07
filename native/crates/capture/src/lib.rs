@@ -40,6 +40,13 @@ pub struct Window {
     pub application: String,
 }
 
+/// Buffer de GPU específico da plataforma.
+#[cfg(target_os = "macos")]
+pub type GpuSurface = apple_cf::iosurface::IOSurface;
+
+#[cfg(not(target_os = "macos"))]
+pub type GpuSurface = ();
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Quality {
     Hd720,
@@ -102,8 +109,10 @@ pub struct VideoFrame {
 
     /// Buffer da GPU com o quadro. Vai direto para o encoder por hardware, sem
     /// cópia para a CPU — é o que permite 1440p60 sem derreter a máquina.
-    #[cfg(target_os = "macos")]
-    pub surface: Option<apple_cf::iosurface::IOSurface>,
+    ///
+    /// O campo existe em toda plataforma para o app compilar em todas; só o tipo
+    /// dentro dele muda. Fora do macOS ainda vem sempre vazio.
+    pub surface: Option<GpuSurface>,
 }
 
 pub struct AudioChunk {

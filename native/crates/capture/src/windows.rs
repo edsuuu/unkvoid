@@ -66,6 +66,9 @@ impl GraphicsCaptureApiHandler for Sink {
             width: frame.width(),
             height: frame.height(),
             timestamp_ns: self.started_at.elapsed().as_nanos() as u64,
+            // Sem encoder por hardware no Windows ainda: o quadro é contado, não
+            // codificado. Falta o caminho por Media Foundation.
+            surface: None,
         }));
 
         Ok(())

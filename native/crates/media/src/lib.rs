@@ -18,6 +18,14 @@ pub use peer::{PeerLink, Signal};
 #[cfg(target_os = "macos")]
 pub use macos::VideoToolboxEncoder as PlatformEncoder;
 
+/// O buffer de GPU que o encoder recebe. No macOS é uma `IOSurface` de verdade; nas
+/// outras plataformas é um marcador, até existir encoder por lá.
+#[cfg(target_os = "macos")]
+pub type GpuSurface = apple_cf::iosurface::IOSurface;
+
+#[cfg(not(target_os = "macos"))]
+pub type GpuSurface = ();
+
 /// Um quadro já comprimido, pronto para virar pacote RTP.
 pub struct EncodedFrame {
     pub data: Vec<u8>,
@@ -64,12 +72,23 @@ pub enum EncoderError {
     Unsupported,
 }
 
+/// Fora do macOS ainda não há encoder por hardware. O stub existe com a **mesma
+/// forma** do real para o app compilar e falhar com mensagem clara, em vez de não
+/// compilar — assim o `.msi` e o `.deb` saem e o resto do app funciona.
 #[cfg(not(target_os = "macos"))]
 pub struct PlatformEncoder;
 
 #[cfg(not(target_os = "macos"))]
 impl PlatformEncoder {
     pub fn new(_config: &EncoderConfig) -> Result<Self, EncoderError> {
+        Err(EncoderError::Unsupported)
+    }
+
+    pub fn encode(
+        &mut self,
+        _surface: &GpuSurface,
+        _timestamp_ns: u64,
+    ) -> Result<EncodedFrame, EncoderError> {
         Err(EncoderError::Unsupported)
     }
 }

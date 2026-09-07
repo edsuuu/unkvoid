@@ -72,6 +72,52 @@ autenticação, nenhum canal novo.
 
 ---
 
+## ⚠️ Só existe build de macOS
+
+**Nenhum `.msi` ou `.deb` foi gerado ou publicado até hoje.** Todas as releases
+(v0.1.0 a v0.5.0) contêm apenas artefatos de macOS, e só para Apple Silicon.
+
+O workflow do CI (`.github/workflows/desktop.yml`) está configurado para os três
+sistemas e nunca rodou — as releases foram feitas à mão, desta máquina.
+
+### Por que não dá para gerar daqui
+
+Instalador **não pode ser cross-compilado**: `.msi` exige Windows, `.deb` exige
+Linux. É limitação da ferramenta, não escolha.
+
+E mesmo o `cargo check` cruzado para Windows para no `ring` (dependência de
+criptografia do WebRTC), que precisa de um toolchain C do Windows. Num runner nativo
+compila normalmente.
+
+### O que foi verificado por plataforma
+
+| Peça | macOS | Windows | Linux |
+|---|---|---|---|
+| `capture` | roda | type-check cruzado | type-check cruzado |
+| `media` (encoder + WebRTC) | roda e medido | **não verificado** | **não verificado** |
+| App Tauri | roda | **não verificado** | **não verificado** |
+| Instalador | `.dmg` publicado | **nunca gerado** | **nunca gerado** |
+
+### O que o app faria hoje fora do macOS
+
+Compila e abre, mas **não transmite**: o encoder por hardware só existe no macOS
+(VideoToolbox). Fora dele, `PlatformEncoder::new` devolve `EncoderError::Unsupported`
+e a interface mostra o erro.
+
+O stub existe com a **mesma forma** do encoder real de propósito — sem isso o app nem
+compilaria fora do mac, e aí nem o `.msi` sairia. Antes desta correção o
+`broadcast.rs` usava um campo (`surface`) que só existia no macOS: **o build de
+Windows estava quebrado, não só não testado.**
+
+### Para destravar
+
+1. Rodar o workflow (`workflow_dispatch` ou uma tag `v*`) e ver o que quebra de
+   verdade num runner nativo.
+2. Encoder no Windows: Media Foundation, espelhando `crates/media/src/macos.rs`.
+3. Captura no Linux: consumir o nó do PipeWire que o portal XDG devolve.
+
+---
+
 ## O que NÃO existe
 
 | Peça | Situação |
@@ -79,7 +125,7 @@ autenticação, nenhum canal novo.
 | **Microfone** | só o áudio do sistema entra; falta a voz de quem transmite (`cpal`) |
 | Trocar qualidade sem parar | o app web faz; aqui exige reiniciar a transmissão |
 | Fallback para o SFU | acima de 3 espectadores recusa, mas não cai para o SFU sozinho |
-| Encoder no Windows | falta Media Foundation |
+| Encoder no Windows | falta Media Foundation — ver a seção sobre build acima |
 | Chat no desktop | lista mensagens em texto cru, sem enviar |
 | Captura no Linux | recusa com erro claro; falta consumir o nó do PipeWire |
 | Áudio de sistema no Windows | precisa de WASAPI loopback, separado do Graphics Capture |
