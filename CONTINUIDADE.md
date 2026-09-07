@@ -328,15 +328,19 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
   Era exatamente a tela "No connection" num app recém-instalado. Por isso existe
   `/api/health`, pública.
 - O Windows bloqueia conexão de **entrada** por padrão, e o WebRTC precisa receber para
-  o ICE fechar: sem regra de firewall a transmissão direta entre duas máquinas não
-  conecta. Sair não precisa de permissão, então o caminho pelo SFU funciona de qualquer
-  jeito. A regra entra pelo instalador (`src-tauri/wix/windows.wxs`) com
-  `Return="ignore"` — instalação que quebra por causa de rede seria pior.
+  o ICE fechar. **Quem cria a regra é o próprio Windows**, com aquele diálogo "permitir
+  que o Unkvoid se comunique nestas redes?", na primeira vez que o app abre um socket de
+  escuta — igual a Discord, Zoom e qualquer outro. É comportamento padrão do sistema, não
+  precisa de código.
+  > Houve uma tentativa de criar a regra calada no instalador, por `netsh` num fragmento
+  > WiX. Foi removida de propósito: tirava do usuário a decisão de deixar um app escutar
+  > a rede, e o fragmento ainda derrubou um build. Sair não precisa de permissão, então
+  > o caminho pelo SFU funciona mesmo que a pessoa negue o diálogo.
 - O template WiX do Tauri **já cria o atalho da área de trabalho**
-  (`ApplicationDesktopShortcut`, dentro de `ShortcutsFeature`). Declarar `DesktopFolder`
-  outra vez num fragmento duplica o símbolo e o `light` falha **sem imprimir o erro** —
-  foi o que derrubou a v0.8.0. Para saber o que o template já tem, inspecione um MSI
-  pronto: `msiinfo export <app>.msi Directory`.
+  (`ApplicationDesktopShortcut`, dentro de `ShortcutsFeature`) — não precisa de fragmento.
+  Declarar `DesktopFolder` outra vez duplica o símbolo e o `light` falha **sem imprimir o
+  erro**; foi o que derrubou a v0.8.0. Antes de escrever fragmento, veja o que o template
+  já tem: `msiinfo export <app>.msi Directory` (e `Shortcut`, e `Feature`).
 
 **Reverb**
 - `ShouldBroadcast` **enfileira**. Sem worker (esta VPS não tem), a mensagem salva e
