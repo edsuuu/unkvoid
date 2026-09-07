@@ -1,0 +1,23 @@
+[package]
+name = "discord-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cliente desktop com captura de tela nativa"
+
+[lib]
+name = "discord_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+capture = { path = "../../../crates/capture" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

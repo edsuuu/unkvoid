@@ -21,6 +21,7 @@ export class VoiceStage {
         this.focused = null;
         this.bytesMark = new Map();
         this.presenceState = null;
+        this.reconnectDeadlines = new Map();
         this.escapeHandler = event => {
             if (event.key !== 'Escape') {
                 return;
@@ -32,6 +33,9 @@ export class VoiceStage {
 
     /** Chave onde fica o canal ativo, para o F5 não derrubar a pessoa da chamada. */
     static STORAGE_KEY = 'voice:channel';
+
+    /** Quanto o espectador espera a transmissão voltar antes de fechar o quadro. */
+    static RECONNECT_GRACE_MS = 20_000;
 
     remember(channelId, channelName) {
         try {
@@ -172,6 +176,7 @@ export class VoiceStage {
             Livewire.on('url-changed', payload => history.replaceState({}, '', payload.url));
 
             this.presence.addEventListener('presence', event => this.renderPresence(event.detail));
+            document.addEventListener('fullscreenchange', () => this.layoutGrid());
             setInterval(() => this.renderChannelClocks(), 1000);
             this.watchCurrentServer();
 
@@ -231,6 +236,7 @@ export class VoiceStage {
                 return;
             }
 
+            if (action === 'fullscreen-grid') this.toggleFullscreen(this.grid());
             if (action === 'share') this.share();
             if (action === 'stop-share') this.stopShare();
             if (action === 'leave') this.leave();
@@ -421,6 +427,10 @@ export class VoiceStage {
      * nem todo contexto permite), cai para um modo expandido em CSS, que sempre
      * funciona. Esc sai dos dois.
      */
+    isFullscreen(element) {
+        return document.fullscreenElement === element || element?.dataset.expanded === 'true';
+    }
+
     async toggleFullscreen(tile) {
         if (document.fullscreenElement) {
             await document.exitFullscreen().catch(() => {});
@@ -439,18 +449,21 @@ export class VoiceStage {
         } catch {
             this.expandTile(tile);
         }
+
+        this.layoutGrid();
     }
 
     expandTile(tile) {
         tile.dataset.expanded = 'true';
-        tile.classList.add('fixed', 'inset-0', 'z-50', 'rounded-none');
+        tile.classList.add('fixed', 'inset-0', 'z-50', 'rounded-none', 'bg-[#1e1f22]');
         document.addEventListener('keydown', this.escapeHandler);
     }
 
     collapseTile(tile) {
         delete tile.dataset.expanded;
-        tile.classList.remove('fixed', 'inset-0', 'z-50', 'rounded-none');
+        tile.classList.remove('fixed', 'inset-0', 'z-50', 'rounded-none', 'bg-[#1e1f22]');
         document.removeEventListener('keydown', this.escapeHandler);
+        this.layoutGrid();
     }
 
     setControlsEnabled(enabled) {
@@ -570,6 +583,8 @@ export class VoiceStage {
     }
 
     removePeerTiles(peerId) {
+        clearTimeout(this.reconnectDeadlines.get(peerId));
+        this.reconnectDeadlines.delete(peerId);
         document.querySelectorAll(`[data-peer="${peerId}"][data-expanded="true"]`)
             .forEach(tile => this.collapseTile(tile));
         document.querySelectorAll(`[data-peer="${peerId}"]`).forEach(element => element.remove());
@@ -580,7 +595,28 @@ export class VoiceStage {
      * Conexão de quem transmite caiu: a mídia para mas o último quadro fica na tela.
      * Sem este aviso o espectador acha que a imagem travou por conta própria.
      */
+    /**
+     * Se a transmissão não voltar em RECONNECT_GRACE_MS, fecha o quadro. Deixar
+     * "reconectando…" na tela até a carência do servidor estourar dá a impressão de
+     * travamento — melhor admitir que caiu.
+     */
     markTilesReconnecting(peerId, reconnecting) {
+        clearTimeout(this.reconnectDeadlines.get(peerId));
+
+        if (reconnecting) {
+            this.reconnectDeadlines.set(peerId, setTimeout(() => {
+                this.reconnectDeadlines.delete(peerId);
+                this.removePeerTiles(peerId);
+                this.status('a transmissão caiu e não voltou');
+            }, VoiceStage.RECONNECT_GRACE_MS));
+        } else {
+            this.reconnectDeadlines.delete(peerId);
+        }
+
+        this.paintReconnecting(peerId, reconnecting);
+    }
+
+    paintReconnecting(peerId, reconnecting) {
         document.querySelectorAll(`figure[data-peer="${peerId}"]`).forEach(tile => {
             tile.classList.toggle('opacity-40', reconnecting);
 
@@ -622,12 +658,18 @@ export class VoiceStage {
             return;
         }
 
-        tiles.forEach(tile => tile.classList.remove('hidden'));
+        // Em tela cheia mostra no máximo 4: acima disso cada quadro fica pequeno
+        // demais para ser útil. As demais continuam recebendo, só não aparecem.
+        const emTelaCheia = this.isFullscreen(grid);
+        const visiveis = emTelaCheia ? tiles.slice(0, 4) : tiles;
 
-        const columns = tiles.length <= 1 ? 1 : tiles.length <= 4 ? 2 : 3;
+        tiles.forEach(tile => tile.classList.toggle('hidden', ! visiveis.includes(tile)));
+
+        const columns = visiveis.length <= 1 ? 1 : visiveis.length <= 4 ? 2 : 3;
+        const rows = Math.ceil(visiveis.length / columns);
 
         grid.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
-        grid.style.gridAutoRows = tiles.length <= 2 ? '1fr' : 'minmax(0, 1fr)';
+        grid.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
 
         const empty = document.querySelector('[data-voice-empty]');
 
@@ -752,6 +794,11 @@ export class VoiceStage {
             list.innerHTML = '';
         }
 
+        for (const timer of this.reconnectDeadlines.values()) {
+            clearTimeout(timer);
+        }
+
+        this.reconnectDeadlines.clear();
         this.client = null;
         this.channelId = null;
         this.bytesMark.clear();

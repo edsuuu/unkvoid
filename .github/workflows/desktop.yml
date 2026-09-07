@@ -1,0 +1,101 @@
+name: App desktop
+
+# Instaladores só saem em runner nativo: .msi precisa de Windows, .deb de Linux e
+# .dmg de macOS. Não dá para gerar os três de uma máquina só.
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+    paths: ['native/**', '.github/workflows/desktop.yml']
+  pull_request:
+    paths: ['native/**']
+  workflow_dispatch:
+
+jobs:
+  verificar:
+    name: Verificar (${{ matrix.alvo }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            alvo: windows
+          - os: ubuntu-22.04
+            alvo: linux
+          - os: macos-latest
+            alvo: macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+
+      - name: Dependências do sistema (Linux)
+        if: matrix.alvo == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+
+      - name: Formatação
+        working-directory: native
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        working-directory: native
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Testes
+        working-directory: native
+        run: cargo test --workspace
+
+  instaladores:
+    name: Instalador (${{ matrix.alvo }})
+    needs: verificar
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            alvo: windows
+            artefato: msi
+          - os: ubuntu-22.04
+            alvo: linux
+            artefato: deb
+          - os: macos-latest
+            alvo: macos
+            artefato: dmg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+
+      - name: Dependências do sistema (Linux)
+        if: matrix.alvo == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+
+      - name: Gerar instalador
+        working-directory: native/apps/desktop
+        run: cargo install tauri-cli --version "^2" --locked && cargo tauri build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: discord2-${{ matrix.alvo }}
+          path: |
+            native/target/release/bundle/msi/*.msi
+            native/target/release/bundle/deb/*.deb
+            native/target/release/bundle/dmg/*.dmg
+          if-no-files-found: warn
+          retention-days: 14

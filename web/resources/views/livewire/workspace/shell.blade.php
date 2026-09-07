@@ -351,7 +351,17 @@
                 </p>
             </div>
 
-            <div class="flex shrink-0 items-center justify-center gap-2 border-t border-[#26282c] bg-[#232428] px-4 py-3">
+            <div class="flex shrink-0 items-center justify-center gap-3 border-t border-[#26282c] bg-[#232428] px-4 py-3">
+                <button
+                    type="button"
+                    data-action="fullscreen-grid"
+                    title="{{ __('Ver as transmissões em tela cheia (até 4)') }}"
+                    class="flex cursor-pointer items-center gap-2 rounded-lg bg-[#4e5058] px-3 py-1.5 text-sm font-medium text-white transition hover:bg-[#5865f2]"
+                >
+                    <svg class="size-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/></svg>
+                    {{ __('Tela cheia') }}
+                </button>
+
                 <span data-voice-stats class="ml-3 font-mono text-xs text-[#949ba4]"></span>
             </div>
         </section>

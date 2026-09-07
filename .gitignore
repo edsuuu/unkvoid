@@ -15,3 +15,5 @@ web/storage/*.key
 web/storage/framework/
 web/storage/logs/
 web/bootstrap/cache/*.php
+
+native/target/
