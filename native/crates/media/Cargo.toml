@@ -24,6 +24,10 @@ name = "encoder"
 path = "examples/encoder.rs"
 
 [[example]]
+name = "p2p"
+path = "examples/p2p.rs"
+
+[[example]]
 name = "peer"
 path = "examples/peer.rs"
 

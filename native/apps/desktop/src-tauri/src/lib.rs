@@ -80,60 +80,101 @@ fn list_windows() -> Result<Vec<WindowInfo>, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Começa a transmitir: captura, codifica por hardware e devolve a oferta SDP para
-/// a interface repassar pelo SFU. Os candidatos ICE chegam pelo evento `p2p:signal`.
+/// Começa a transmitir. A captura e o encoder sobem aqui; as conexões nascem uma
+/// por espectador em `offer_to`.
 #[tauri::command]
 async fn start_broadcast(
     app: tauri::AppHandle,
     state: State<'_, ActiveBroadcast>,
     quality: String,
     ice_servers: Vec<String>,
-) -> Result<String, String> {
+) -> Result<(), String> {
     let mut ativo = state.0.lock().await;
 
     if ativo.is_some() {
         return Err("já existe uma transmissão em andamento".into());
     }
 
-    let (transmissao, oferta, mut sinais) = Broadcast::start(quality_from(&quality), ice_servers)
-        .await
-        .map_err(|erro| erro.to_string())?;
+    let (transmissao, mut sinais) =
+        Broadcast::start(quality_from(&quality), ice_servers).map_err(|erro| erro.to_string())?;
 
     let handle = app.clone();
 
     tokio::spawn(async move {
-        while let Some(media::Signal::Candidate(json)) = sinais.recv().await {
-            let _ = handle.emit("p2p:signal", json);
+        while let Some((peer_id, media::Signal::Candidate(json))) = sinais.recv().await {
+            let _ = handle.emit("p2p:signal", (peer_id, json));
         }
     });
 
     *ativo = Some(transmissao);
 
-    Ok(oferta)
+    Ok(())
 }
 
+/// Oferta para um espectador específico. Uma conexão por pessoa, um encoder só.
 #[tauri::command]
-async fn accept_answer(state: State<'_, ActiveBroadcast>, sdp: String) -> Result<(), String> {
+async fn offer_to(state: State<'_, ActiveBroadcast>, peer_id: String) -> Result<String, String> {
     let ativo = state.0.lock().await;
 
     ativo
         .as_ref()
         .ok_or_else(|| "nenhuma transmissão ativa".to_string())?
-        .accept_answer(sdp)
+        .offer_to(peer_id)
         .await
         .map_err(|erro| erro.to_string())
 }
 
 #[tauri::command]
-async fn add_candidate(state: State<'_, ActiveBroadcast>, candidate: String) -> Result<(), String> {
+async fn accept_answer(
+    state: State<'_, ActiveBroadcast>,
+    peer_id: String,
+    sdp: String,
+) -> Result<(), String> {
     let ativo = state.0.lock().await;
 
     ativo
         .as_ref()
         .ok_or_else(|| "nenhuma transmissão ativa".to_string())?
-        .add_candidate(candidate)
+        .accept_answer(&peer_id, sdp)
         .await
         .map_err(|erro| erro.to_string())
+}
+
+#[tauri::command]
+async fn add_candidate(
+    state: State<'_, ActiveBroadcast>,
+    peer_id: String,
+    candidate: String,
+) -> Result<(), String> {
+    let ativo = state.0.lock().await;
+
+    ativo
+        .as_ref()
+        .ok_or_else(|| "nenhuma transmissão ativa".to_string())?
+        .add_candidate(&peer_id, candidate)
+        .await
+        .map_err(|erro| erro.to_string())
+}
+
+#[tauri::command]
+async fn drop_viewer(state: State<'_, ActiveBroadcast>, peer_id: String) -> Result<(), String> {
+    let ativo = state.0.lock().await;
+
+    if let Some(transmissao) = ativo.as_ref() {
+        transmissao.drop_peer(&peer_id).await;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn broadcast_stats(state: State<'_, ActiveBroadcast>) -> Result<(u64, usize), String> {
+    let ativo = state.0.lock().await;
+
+    match ativo.as_ref() {
+        Some(transmissao) => Ok((transmissao.frames(), transmissao.viewers().await)),
+        None => Ok((0, 0)),
+    }
 }
 
 #[tauri::command]
@@ -266,8 +307,11 @@ pub fn run() {
             check_update,
             restart,
             start_broadcast,
+            offer_to,
             accept_answer,
             add_candidate,
+            drop_viewer,
+            broadcast_stats,
             stop_broadcast
         ])
         .run(tauri::generate_context!())

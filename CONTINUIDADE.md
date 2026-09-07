@@ -41,9 +41,23 @@ cd sfu && pnpm run check   # asserções sobre o contrato inteiro
 mensagens, e os mesmos emissores de token do SFU que o web usa.
 Testes em `web/tests/Feature/Api/DesktopApiTest.php`.
 
-### App desktop (v0.2.0)
-Abre, verifica atualização, exige servidor, pede login, lista servidores e canais com
-o design do web, e **captura a tela nativamente** — sem barra do Chrome.
+### App desktop (v0.4.0)
+Abre, verifica atualização, exige servidor, pede login (e-mail/senha **ou Google**),
+lista servidores e canais com o design do web, **captura a tela nativamente** e
+**transmite por P2P**.
+
+**Topologia:** quem envia usa Rust (captura nativa + encoder por hardware, sem barra
+do navegador); quem recebe usa o WebRTC do próprio webview e um `<video>`. A
+limitação do WKWebView era só o `getDisplayMedia` — receber vídeo ele faz bem, e
+assim não é preciso decodificar nem desenhar em Rust.
+
+**Um encoder, N conexões:** o quadro é comprimido uma vez e enviado a cada
+espectador. Codificar por espectador derreteria a máquina de quem transmite — o
+custo do P2P é banda de upload, não CPU. Limite de 3 espectadores (`LIMITE_P2P`);
+acima disso o SFU compensa.
+
+A sinalização vai pelo WebSocket do SFU (ação `signal`): mesma sala, mesma
+autenticação, nenhum canal novo.
 
 ---
 
@@ -51,16 +65,19 @@ o design do web, e **captura a tela nativamente** — sem barra do Chrome.
 
 | Peça | Situação |
 |---|---|
-| **P2P ponta a ponta** | falta a interface trocar SDP pelo SFU e receber vídeo |
-| Recepção de vídeo | só envia; `on_track` do lado de quem assiste não existe |
+| **Áudio na chamada** | nem microfone nem áudio de sistema entram no WebRTC ainda |
+| Fallback para o SFU | acima de 3 espectadores recusa, mas não cai para o SFU sozinho |
 | Encoder no Windows | falta Media Foundation |
+| Chat no desktop | lista mensagens em texto cru, sem enviar |
 | Captura no Linux | recusa com erro claro; falta consumir o nó do PipeWire |
 | Áudio de sistema no Windows | precisa de WASAPI loopback, separado do Graphics Capture |
 | Chat no desktop | lista mensagens em texto cru, sem enviar |
 | SFU em Rust (str0m) | não começou |
 
-**Nenhuma captura foi testada de verdade.** No macOS a permissão foi negada nesta
-máquina; Windows e Linux só passaram por cross-compile (type-check, não execução).
+**A captura nunca rodou de verdade.** No macOS a permissão de gravação de tela foi
+negada nesta máquina; Windows e Linux só passaram por cross-compile. O encoder e a
+negociação WebRTC **foram testados** e os números estão abaixo — o que não foi testado
+é a ponta a ponta com tela real e duas pessoas.
 
 ---
 
@@ -68,14 +85,21 @@ máquina; Windows e Linux só passaram por cross-compile (type-check, não execu
 
 O caminho de mídia do app, nesta ordem — cada etapa é verificável sozinha:
 
-1. **Fechar o P2P**: a interface precisa abrir o WebSocket do SFU, entrar na sala e
-   trocar `offer`/`answer`/`candidate` pela ação `signal`. Os comandos Rust já
-   existem: `start_broadcast` devolve a oferta, `accept_answer` e `add_candidate`
-   recebem o resto.
-2. **Receber vídeo**: hoje só envia. Falta tratar `on_track` e exibir.
-3. **Regra dos 3**: acima de 3 espectadores, cair para o SFU. O upload de quem
-   compartilha multiplica no P2P (4 pessoas em 1080p ≈ 28 Mbps de subida).
-4. **Encoder no Windows** (Media Foundation) e captura no Linux (PipeWire).
+1. **Áudio**: microfone (`cpal`) e áudio de sistema (já vem da captura no macOS)
+   como uma segunda trilha Opus na mesma PeerConnection.
+2. **Cair para o SFU acima de 3**: hoje `broadcast` recusa. A rota do SFU já existe
+   e funciona no app web — falta o app escolher entre as duas.
+3. **Encoder no Windows** (Media Foundation) e captura no Linux (PipeWire).
+4. **Chat no desktop**: a API já envia e lê; falta a interface.
+
+### Verificações que existem
+
+```bash
+cargo run -p media --example encoder   # encoder por hardware, ms/quadro
+cargo run -p media --example peer      # oferta com H.264 + ICE
+cargo run -p media --example p2p       # negociação completa entre dois lados
+cargo run -p capture --example spike   # captura (exige permissão de tela)
+```
 
 ### Números já medidos do encoder
 

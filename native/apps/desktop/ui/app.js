@@ -1,4 +1,5 @@
 import { Api } from './api.js';
+import { P2P } from './p2p.js';
 
 const { invoke } = window.__TAURI__.core;
 const { openUrl } = window.__TAURI__.opener;
@@ -14,6 +15,8 @@ class App {
         this.servidor = null;
         this.canal = null;
         this.voz = null;
+        this.p2p = null;
+        this.participantes = [];
         this.relogio = null;
         this.tentativa = 0;
     }
@@ -258,7 +261,19 @@ class App {
             return;
         }
 
-        // O caminho de mídia P2P entra aqui: o token e a sala já vêm prontos.
+        try {
+            this.p2p = new P2P((de, stream) => this.mostrarTela(de, stream));
+
+            const entrada = await this.p2p.join(this.voz.url, this.voz.token);
+
+            this.participantes = entrada.peers.map(peer => peer.peerId);
+        } catch (falha) {
+            el('meu-estado').textContent = `não entrou na sala: ${falha.message}`;
+            this.p2p = null;
+
+            return;
+        }
+
         el('faixa-voz').hidden = false;
         el('voz-canal').textContent = canal.name;
         el('meu-estado').textContent = `em ${canal.name}`;
@@ -282,9 +297,38 @@ class App {
         }, 1000);
     }
 
+    /** Desenha (ou remove) a tela de quem está transmitindo. */
+    mostrarTela(de, stream) {
+        const existente = document.querySelector(`[data-tela="${de}"]`);
+
+        if (! stream) {
+            existente?.remove();
+
+            return;
+        }
+
+        const quadro = existente ?? document.createElement('figure');
+
+        quadro.className = 'tile';
+        quadro.dataset.tela = de;
+        quadro.innerHTML = '<video autoplay playsinline></video><figcaption></figcaption>';
+        quadro.querySelector('video').srcObject = stream;
+        quadro.querySelector('figcaption').textContent = 'transmitindo';
+
+        if (! existente) {
+            el('palco').appendChild(quadro);
+        }
+
+        const total = el('palco').childElementCount;
+
+        el('palco').style.gridTemplateColumns = `repeat(${total > 1 ? 2 : 1}, minmax(0, 1fr))`;
+    }
+
     async sairDaVoz() {
         clearInterval(this.relogio);
         await this.pararCompartilhamento();
+        this.p2p?.close();
+        this.p2p = null;
         this.voz = null;
         el('faixa-voz').hidden = true;
         el('palco').hidden = true;
@@ -293,20 +337,33 @@ class App {
     }
 
     async compartilhar() {
+        if (! this.p2p) {
+            el('meu-estado').textContent = 'entre num canal de voz primeiro';
+
+            return;
+        }
+
         try {
-            await invoke('start_capture', { quality: el('qualidade').value });
+            await this.p2p.broadcast(el('qualidade').value, this.participantes);
             el('compartilhar').hidden = true;
             el('parar').hidden = false;
-            el('meu-estado').textContent = 'compartilhando';
+            el('meu-estado').textContent = this.participantes.length
+                ? `transmitindo para ${this.participantes.length}`
+                : 'transmitindo (ninguém assistindo ainda)';
         } catch (falha) {
-            el('meu-estado').textContent = String(falha);
+            el('meu-estado').textContent = falha.message ?? String(falha);
         }
     }
 
     async pararCompartilhamento() {
-        await invoke('stop_capture').catch(() => {});
+        const quadros = await this.p2p?.stop().catch(() => 0);
+
         el('compartilhar').hidden = false;
         el('parar').hidden = true;
+
+        if (quadros) {
+            el('meu-estado').textContent = `${quadros} quadros transmitidos`;
+        }
     }
 }
 
