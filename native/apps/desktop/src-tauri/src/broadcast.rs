@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use capture::{CaptureConfig, CaptureEvent, PlatformCapturer, Quality};
+use capture::{CaptureConfig, CaptureEvent, CaptureSource, PlatformCapturer, Quality};
 use media::{
     AudioEncoder, EncodedFrame, EncoderConfig, PeerLink, PlainSender, PlatformEncoder, Signal,
 };
@@ -34,6 +34,7 @@ impl Broadcast {
     /// Starts capture and the encoder. Connections are created afterward, one per viewer.
     pub fn start(
         quality: Quality,
+        source: CaptureSource,
         ice_servers: Vec<String>,
     ) -> anyhow::Result<(Self, mpsc::Receiver<(String, Signal)>)> {
         let encoder_config = EncoderConfig::for_quality(quality);
@@ -52,6 +53,7 @@ impl Broadcast {
         let capturer = PlatformCapturer::start(
             &CaptureConfig {
                 quality,
+                source,
                 ..CaptureConfig::default()
             },
             move |event| {

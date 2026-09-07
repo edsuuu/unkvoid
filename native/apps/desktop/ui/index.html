@@ -72,64 +72,79 @@
 
   <div class="flex-1 overflow-y-auto px-2 py-3" id="channel-list"></div>
 
-  <div class="shrink-0 border-t border-row bg-panel px-2 py-2" id="voice-bar" hidden>
-    <div class="flex items-center gap-2 px-2">
-      <span class="size-2 shrink-0 rounded-full bg-online"></span>
+  <!-- Barra de voz, no formato do Discord: estado em cima, ações no meio, você embaixo. -->
+  <div class="shrink-0 border-t border-row bg-panel px-2 pt-2" id="voice-bar" hidden>
+    <div class="flex items-start gap-2 px-2">
+      <svg class="mt-0.5 size-5 shrink-0 text-online" fill="currentColor" viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 0 1 2.2-5.3 1 1 0 1 0-1.4-1.4A9.5 9.5 0 0 0 2.5 12a9.5 9.5 0 0 0 2.8 6.7 1 1 0 1 0 1.4-1.4A7.5 7.5 0 0 1 4.5 12zm15 0a7.5 7.5 0 0 1-2.2 5.3 1 1 0 1 0 1.4 1.4A9.5 9.5 0 0 0 21.5 12a9.5 9.5 0 0 0-2.8-6.7 1 1 0 1 0-1.4 1.4A7.5 7.5 0 0 1 19.5 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>
+
       <div class="min-w-0 flex-1 leading-tight">
-        <p class="truncate text-sm font-medium text-online">
-          Voz conectada <span class="font-mono text-xs text-ink-soft" id="voice-clock"></span>
-        </p>
+        <p class="truncate text-sm font-semibold text-online">Voz conectada</p>
         <p class="truncate text-xs text-ink-soft" id="voice-channel"></p>
       </div>
 
-      <button class="shrink-0 cursor-pointer rounded bg-[#4e5058] px-2.5 py-1.5 text-xs font-medium text-white hover:bg-[#6d6f78]" id="mute">Silenciar</button>
-      <button class="shrink-0 cursor-pointer rounded bg-[#4e5058] px-2.5 py-1.5 text-xs font-medium text-white hover:bg-[#6d6f78]" id="mic-settings" title="Configurações do microfone">Microfone</button>
-      <button class="shrink-0 cursor-pointer rounded bg-[#4e5058] px-2.5 py-1.5 text-xs font-medium text-white hover:bg-[#6d6f78]" id="leave-voice">Sair</button>
+      <button class="shrink-0 cursor-pointer rounded p-1.5 text-ink transition-colors hover:bg-line hover:text-white" id="voice-mute" title="Silenciar microfone">
+        <svg class="size-5" fill="currentColor" viewBox="0 0 24 24" id="voice-mute-icon"></svg>
+      </button>
+
+      <button class="shrink-0 cursor-pointer rounded p-1.5 text-ink transition-colors hover:bg-line hover:text-white" id="deafen" title="Silenciar o áudio da sala">
+        <svg class="size-5" fill="currentColor" viewBox="0 0 24 24" id="deafen-icon"></svg>
+      </button>
+
+      <button class="shrink-0 cursor-pointer rounded p-1.5 text-ink-soft transition-colors hover:bg-line hover:text-danger" id="leave-voice" title="Desconectar">
+        <svg class="size-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15M12 9l-3 3m0 0 3 3m-3-3h12.75"/></svg>
+      </button>
     </div>
 
-    <div class="mt-2 flex gap-2">
-      <select class="w-[68px] shrink-0 cursor-pointer rounded border-0 bg-rail px-1.5 py-1.5 text-xs text-ink focus:ring-0" id="quality">
-        <option value="720">720p</option>
-        <option value="1080" selected>1080p</option>
-        <option value="1440">1440p</option>
-      </select>
-      <button class="flex-1 cursor-pointer whitespace-nowrap rounded bg-brand px-2 py-1.5 text-sm font-medium text-white hover:bg-brand-dark" id="share">Compartilhar</button>
-      <button class="flex-1 cursor-pointer whitespace-nowrap rounded bg-danger px-2 py-1.5 text-sm font-medium text-white hover:bg-danger-dark" id="stop" hidden>Parar</button>
-    </div>
-
-    <div class="mt-2 h-1 overflow-hidden rounded-sm bg-rail">
-      <span class="block h-full w-0 bg-[#4e5058] transition-[width] duration-75" data-meter></span>
-    </div>
-
-    <div class="mt-2.5 flex flex-col gap-1.5 rounded-md bg-rail p-2.5 text-[13px]" id="mic-panel" hidden>
-      <label class="flex cursor-pointer items-center gap-2"><input class="accent-brand" type="radio" name="mic-mode" value="voice"> Detecção de voz</label>
-      <label class="flex cursor-pointer items-center gap-2"><input class="accent-brand" type="radio" name="mic-mode" value="ptt"> Apertar para falar</label>
-
-      <div id="mic-voice">
-        <p class="mt-1 mb-1 text-xs font-bold uppercase tracking-wide text-ink-soft">Sensibilidade de entrada</p>
-        <input class="w-full accent-brand" type="range" id="mic-threshold" min="-100" max="0" step="1">
-      </div>
-
-      <div id="mic-key" hidden>
-        <p class="mt-1 mb-1 text-xs font-bold uppercase tracking-wide text-ink-soft">Tecla</p>
-        <button class="w-full cursor-pointer rounded bg-[#4e5058] px-3 py-1.5 text-left text-white hover:bg-[#6d6f78]" id="mic-shortcut"></button>
-      </div>
-
-      <label class="flex cursor-pointer items-center gap-2"><input class="accent-brand" type="checkbox" id="mic-noise"> Supressão de ruído</label>
-
-      <p class="mt-1 mb-1 text-xs font-bold uppercase tracking-wide text-ink-soft">Esta máquina</p>
-      <label class="flex cursor-pointer items-center gap-2"><input class="accent-brand" type="checkbox" id="autostart"> Iniciar com o sistema</label>
-      <p class="ml-[22px] text-xs text-ink-soft">Abre na bandeja, sem jogar uma janela na sua cara.</p>
+    <div class="mt-2 px-2">
+      <button class="w-full cursor-pointer rounded bg-[#4e5058] px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-brand" id="share">Compartilhar tela</button>
+      <button class="mt-2 hidden w-full cursor-pointer rounded bg-danger px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-danger-dark" id="stop">Parar de compartilhar</button>
     </div>
   </div>
 
-  <div class="flex h-[52px] shrink-0 items-center gap-2 bg-panel px-2">
+  <!-- Você. Sempre visível, esteja em chamada ou não — como no Discord. -->
+  <div class="relative flex h-[52px] shrink-0 items-center gap-2 bg-panel px-2">
     <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand text-xs font-semibold text-white" id="my-avatar"></span>
+
     <div class="min-w-0 flex-1 leading-tight">
       <div class="truncate text-sm font-medium text-white" id="my-name"></div>
       <div class="truncate text-xs text-ink-soft" id="my-state">Disponível</div>
     </div>
+
+    <button class="shrink-0 cursor-pointer rounded p-1.5 text-ink transition-colors hover:bg-line hover:text-white" id="mute" title="Silenciar microfone">
+      <svg class="size-5" fill="currentColor" viewBox="0 0 24 24" id="mute-icon"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M18 11a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.917V19H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.083A6 6 0 0 0 18 11z"/></svg>
+    </button>
+
+    <button class="shrink-0 cursor-pointer rounded p-1.5 text-ink transition-colors hover:bg-line hover:text-white" id="mic-settings" title="Configurações">
+      <svg class="size-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.34 3.94c.09-.54.55-.94 1.1-.94h1.12c.55 0 1.01.4 1.1.94l.15.9c.44.16.86.38 1.24.65l.85-.32c.51-.2 1.09 0 1.37.48l.56.97c.28.48.15 1.09-.29 1.42l-.72.54c.04.24.06.48.06.72s-.02.48-.06.72l.72.54c.44.33.57.94.29 1.42l-.56.97c-.28.48-.86.68-1.37.48l-.85-.32c-.38.27-.8.49-1.24.65l-.15.9c-.09.54-.55.94-1.1.94h-1.12c-.55 0-1.01-.4-1.1-.94l-.15-.9a5.7 5.7 0 0 1-1.24-.65l-.85.32c-.51.2-1.09 0-1.37-.48l-.56-.97a1.12 1.12 0 0 1 .29-1.42l.72-.54a5.6 5.6 0 0 1 0-1.44l-.72-.54a1.12 1.12 0 0 1-.29-1.42l.56-.97c.28-.48.86-.68 1.37-.48l.85.32c.38-.27.8-.49 1.24-.65l.15-.9z"/><circle cx="12" cy="12" r="2.5"/></svg>
+    </button>
+
+    <!-- Configurações do microfone: sobe do canto, como o painel do Discord. -->
+    <div class="absolute bottom-[56px] left-2 z-40 w-[248px] rounded-lg bg-[#111214] p-3 text-[13px] shadow-2xl" id="mic-panel" hidden>
+      <p class="mb-2 text-xs font-bold uppercase tracking-wide text-ink-soft">Modo de entrada</p>
+
+      <label class="flex cursor-pointer items-center gap-2 py-0.5"><input class="accent-brand" type="radio" name="mic-mode" value="voice"> Detecção de voz</label>
+      <label class="flex cursor-pointer items-center gap-2 py-0.5"><input class="accent-brand" type="radio" name="mic-mode" value="ptt"> Apertar para falar</label>
+
+      <div id="mic-voice">
+        <p class="mb-1 mt-3 text-xs font-bold uppercase tracking-wide text-ink-soft">Sensibilidade de entrada</p>
+        <input class="w-full accent-brand" type="range" id="mic-threshold" min="-100" max="0" step="1">
+
+        <div class="relative mt-1 h-1.5 overflow-hidden rounded-full bg-rail">
+          <span class="block h-full w-0 bg-[#4e5058] transition-[width] duration-75" data-meter></span>
+          <span class="absolute top-0 h-full w-0.5 bg-white/70" data-mark></span>
+        </div>
+      </div>
+
+      <div id="mic-key" hidden>
+        <p class="mb-1 mt-3 text-xs font-bold uppercase tracking-wide text-ink-soft">Tecla</p>
+        <button class="w-full cursor-pointer rounded bg-[#4e5058] px-3 py-1.5 text-left text-white hover:bg-[#6d6f78]" id="mic-shortcut"></button>
+        <p class="mt-1 text-xs text-ink-soft">Só funciona com a janela em foco.</p>
+      </div>
+
+      <label class="mt-3 flex cursor-pointer items-center gap-2"><input class="accent-brand" type="checkbox" id="mic-noise"> Supressão de ruído</label>
+    </div>
   </div>
+
 </aside>
 
 <main class="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-content">
@@ -139,7 +154,7 @@
   <div class="grid min-h-0 flex-1 gap-3 overflow-y-auto p-4" id="stage" hidden></div>
 
   <section class="flex min-h-0 flex-1 flex-col" id="chat" hidden>
-    <div class="flex-1 space-y-4 overflow-y-auto px-4 py-4" id="messages"></div>
+    <div class="flex-1 overflow-y-auto py-4" id="messages"></div>
 
     <form class="shrink-0 px-4 pb-5" id="message-form">
       <input
@@ -154,6 +169,31 @@
 
   <div class="flex flex-1 items-center justify-center text-sm text-ink-soft" id="empty">Escolha um servidor para começar</div>
 </main>
+
+<!-- Escolher O QUE transmitir antes de transmitir: mandar a tela inteira quando a
+     pessoa queria só o jogo mostra e-mail e conversa para a sala toda. -->
+<section class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6" id="share-modal" hidden>
+  <div class="flex max-h-[80vh] w-full max-w-lg flex-col rounded-lg bg-content p-6">
+    <h2 class="text-xl font-semibold text-white">Compartilhar tela</h2>
+    <p class="mt-1 text-sm text-ink">Escolha o que a sala vai ver.</p>
+
+    <div class="mt-5 min-h-0 flex-1 overflow-y-auto" id="share-sources"></div>
+
+    <div class="mt-5 flex items-center gap-3">
+      <label class="text-xs font-bold uppercase tracking-wide text-ink-soft" for="quality">Qualidade</label>
+      <select class="cursor-pointer rounded border-0 bg-rail px-2 py-1.5 text-sm text-ink focus:ring-0" id="quality">
+        <option value="720">720p</option>
+        <option value="1080" selected>1080p</option>
+        <option value="1440">1440p</option>
+      </select>
+
+      <span class="flex-1"></span>
+
+      <button class="cursor-pointer rounded px-4 py-2 text-sm text-ink hover:text-white" id="share-cancel" type="button">Cancelar</button>
+      <button class="cursor-pointer rounded bg-brand px-5 py-2 text-sm font-medium text-white hover:bg-brand-dark disabled:opacity-50" id="share-confirm" type="button" disabled>Transmitir</button>
+    </div>
+  </div>
+</section>
 
 <script type="module" src="app.js"></script>
 </body>

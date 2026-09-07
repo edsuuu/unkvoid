@@ -23,6 +23,14 @@ export class MicrophoneGate {
     /** Floor of the meter in dBFS: below this everything is indistinguishable from silence. */
     static FLOOR_DB = -100;
 
+    /**
+     * A partir daqui a pessoa é considerada falando, para efeito da borda no avatar.
+     *
+     * É fixo e mais alto que o limiar do gate: o limiar de quem envia é escolha dela
+     * ("o que sai da minha máquina"), e o indicador é sobre o que já chegou aqui.
+     */
+    static SPEAKING_DB = -45;
+
     /** How often the level is reported. Comfortably faster than a syllable. */
     static FRAME_MS = 50;
 
@@ -94,6 +102,64 @@ export class MicrophoneGate {
         this.onBlur = () => {
             this.pushing = false;
             this.apply();
+        };
+    }
+
+    /**
+     * Observa o nível de um stream sem gatear nada — para saber quem está falando.
+     *
+     * Reusa o mesmo medidor do microfone de propósito: é a mesma pergunta ("está saindo
+     * som?") feita sobre o áudio de outra pessoa, e um segundo medidor com outro limiar
+     * daria respostas diferentes para a mesma voz.
+     *
+     * Devolve a função que desliga tudo.
+     */
+    static async watch(stream, onSpeaking) {
+        const context = new AudioContext();
+
+        await context.resume().catch(() => {});
+
+        const module = URL.createObjectURL(new Blob([MicrophoneGate.METER], { type: 'application/javascript' }));
+
+        try {
+            await context.audioWorklet.addModule(module);
+        } finally {
+            URL.revokeObjectURL(module);
+        }
+
+        const meter = new AudioWorkletNode(context, 'unkvoid-meter', {
+            processorOptions: { block: Math.round(MicrophoneGate.FRAME_MS / 1000 * context.sampleRate) },
+        });
+
+        let speaking = false;
+        let until = 0;
+
+        meter.port.onmessage = event => {
+            const db = event.data > 0
+                ? Math.max(MicrophoneGate.FLOOR_DB, 20 * Math.log10(event.data))
+                : MicrophoneGate.FLOOR_DB;
+
+            if (db >= MicrophoneGate.SPEAKING_DB) {
+                until = performance.now() + MicrophoneGate.RELEASE_MS;
+            }
+
+            const agora = performance.now() < until;
+
+            // Só avisa na virada: pintar a borda 20 vezes por segundo é trabalho à toa.
+            if (agora !== speaking) {
+                speaking = agora;
+                onSpeaking(agora);
+            }
+        };
+
+        const silence = context.createGain();
+
+        silence.gain.value = 0;
+        context.createMediaStreamSource(stream).connect(meter).connect(silence).connect(context.destination);
+
+        return () => {
+            meter.port.close();
+            context.close().catch(() => {});
         };
     }
 

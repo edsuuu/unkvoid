@@ -6,6 +6,12 @@ import { P2P } from './p2p.js';
 
 const el = id => document.getElementById(id);
 
+const HEAD_ON = '<path d="M12 3a9 9 0 0 0-9 9v5a3 3 0 0 0 3 3h1a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1H5v-.5a7 7 0 1 1 14 0v.5h-2a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1a3 3 0 0 0 3-3v-5a9 9 0 0 0-9-9z"/>';
+const HEAD_OFF = '<path d="M4.7 3.3a1 1 0 0 0-1.4 1.4l3 3A8.96 8.96 0 0 0 3 12v5a3 3 0 0 0 3 3h1a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1H5v-.5c0-1.3.36-2.5 1-3.53l12.3 12.32a1 1 0 0 0 1.4-1.42L4.7 3.3zM21 12a9 9 0 0 0-13.6-7.75l1.47 1.47A7 7 0 0 1 19 11.5v.5h-2a1 1 0 0 0-1 1v3.17l2 2A3 3 0 0 0 21 17v-5z"/>';
+
+const MIC_ON = '<path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M18 11a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.917V19H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.083A6 6 0 0 0 18 11z"/>';
+const MIC_OFF = '<path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-5.4-1.8l4.2 4.2V11a1 1 0 0 1-1.8.6L12 14zM4.7 3.3a1 1 0 0 0-1.4 1.4l16 16a1 1 0 0 0 1.4-1.4l-3.2-3.2A6 6 0 0 0 18 11a1 1 0 1 0-2 0c0 .7-.18 1.35-.5 1.92l-1.5-1.5V11l-.02.02L9 6.05V6a3 3 0 0 1 .1-.75L4.7 3.3zM6 10a1 1 0 0 0-2 0 6 6 0 0 0 5 5.92V19H9a1 1 0 1 0 0 2h6a1 1 0 0 0 .7-1.71L13 16.58V17h-1a4 4 0 0 1-4-4v-1.17L6.4 10.24A1 1 0 0 0 6 10z"/>';
+
 /** Aparência dos elementos que o JavaScript cria. */
 const LOOK = {
     server: 'group relative flex size-12 cursor-pointer items-center justify-center rounded-[24px] text-sm font-semibold transition-all duration-200 hover:rounded-2xl hover:bg-brand hover:text-white',
@@ -37,15 +43,29 @@ const initials = name => (name ?? '?').slice(0, 2).toUpperCase();
 class App {
     constructor() {
         this.api = new Api(() => this.showOffline());
+
+        this.me = 'você';
         this.servers = [];
         this.server = null;
         this.channel = null;
+
         this.voice = null;
+        this.voiceChannel = null;
         this.sfu = null;
         this.p2p = null;
-        this.mic = new MicrophoneGate(state => this.paintMicrophone(state));
-        this.micPanel = null;
         this.participants = [];
+
+        this.mic = new MicrophoneGate(state => this.paintMicrophone(state));
+        this.micDenied = false;
+        this.deafened = false;
+
+        /** Quem está falando agora, por id — para a borda verde sobreviver ao redesenho. */
+        this.speaking = new Map();
+
+        /** Função que desliga o medidor de cada áudio remoto. */
+        this.watchers = new Map();
+
+        this.shareSource = null;
         this.clock = null;
         this.attempt = 0;
     }
@@ -215,16 +235,26 @@ class App {
     async signIn() {
         const eu = await this.api.me();
 
+        this.me = eu.name;
         el('my-name').textContent = eu.name;
         el('my-avatar').textContent = initials(eu.name);
 
         this.servers = await this.api.servers();
         this.drawServerRail();
 
-        el('share').onclick = () => this.share();
+        el('share').onclick = () => this.openShareModal();
+        el('share-cancel').onclick = () => this.closeShareModal();
+
+        el('share-confirm').onclick = async () => {
+            this.closeShareModal();
+            await this.share();
+        };
         el('stop').onclick = () => this.stopSharing();
         el('leave-voice').onclick = () => this.leaveVoice();
         el('mute').onclick = () => this.toggleMicrophone();
+        el('voice-mute').onclick = () => this.toggleMicrophone();
+        el('deafen').onclick = () => this.toggleDeafen();
+        el('deafen-icon').innerHTML = HEAD_ON;
         el('mic-settings').onclick = () => this.toggleMicPanel();
 
         el('message-form').onsubmit = async event => {
@@ -251,20 +281,17 @@ class App {
      * computador se comporta.
      */
     async wireMachineSettings() {
-        const autostart = el('autostart');
-
-        autostart.checked = await invoke('autostart_enabled').catch(() => false);
-
-        autostart.onchange = async () => {
-            try {
-                await invoke('set_autostart', { enabled: autostart.checked });
-                await invoke('set_setting', { key: 'autostart', value: String(autostart.checked) });
-            } catch (failure) {
-                // Reverter o visual: um checkbox marcado que não valeu mente para quem clicou.
-                autostart.checked = ! autostart.checked;
-                el('my-state').textContent = `não deu para mudar o início automático: ${failure}`;
+        // Iniciar com o sistema é o padrão, não uma opção: um app de voz que só existe
+        // depois de alguém lembrar de abrir perde a chamada. Ligamos uma vez e
+        // registramos que já foi feito — se a pessoa desligar por fora, fica desligado.
+        try {
+            if (! await invoke('get_setting', { key: 'autostart:asked' })) {
+                await invoke('set_autostart', { enabled: true });
+                await invoke('set_setting', { key: 'autostart:asked', value: 'sim' });
             }
-        };
+        } catch (failure) {
+            console.warn('início automático indisponível:', failure);
+        }
 
         // O gate guarda as preferências no localStorage do webview, que some se o app
         // for reinstalado. O banco é a cópia que sobrevive.
@@ -279,6 +306,7 @@ class App {
         const { mode, threshold, pushKey, noiseSuppression } = this.mic.settings;
 
         el('mic-threshold').value = threshold;
+        this.drawThreshold(threshold);
         el('mic-noise').checked = noiseSuppression;
         el('mic-shortcut').textContent = pushKey;
 
@@ -294,7 +322,12 @@ class App {
         el('mic-voice').hidden = mode !== 'voice';
         el('mic-key').hidden = mode !== 'ptt';
 
-        el('mic-threshold').oninput = event => this.rememberMic({ threshold: Number(event.target.value) });
+        el('mic-threshold').oninput = event => {
+            const threshold = Number(event.target.value);
+
+            this.rememberMic({ threshold });
+            this.drawThreshold(threshold);
+        };
         el('mic-noise').onchange = event => this.rememberMic({ noiseSuppression: event.target.checked });
 
         el('mic-shortcut').onclick = () => {
@@ -307,6 +340,87 @@ class App {
                 el('mic-shortcut').textContent = event.code;
             }, { once: true, capture: true });
         };
+    }
+
+    /**
+     * Quem está no canal de voz, listado logo abaixo dele.
+     *
+     * Você entra na lista **antes** do handshake terminar: sem isso, clicar no canal
+     * parece não fazer nada durante os segundos de conexão.
+     */
+    drawParticipants(channelId, people) {
+        const lista = document.querySelector(`[data-participants="${channelId}"]`);
+
+        if (! lista) {
+            return;
+        }
+
+        lista.className = people.length ? 'mb-1 ml-6 space-y-0.5' : '';
+        lista.innerHTML = '';
+
+        for (const person of people) {
+            const linha = document.createElement('div');
+
+            linha.className = `flex items-center gap-2 rounded px-2 py-1 text-sm ${person.connecting ? 'text-ink-dim italic' : 'text-ink-soft'}`;
+            linha.dataset.participant = person.id ?? '';
+            linha.innerHTML = '<span class="flex size-6 shrink-0 items-center justify-center rounded-full bg-brand text-[10px] font-semibold text-white ring-2 ring-transparent transition-[box-shadow]" data-avatar></span><span class="truncate"></span>';
+
+            const [avatar, nome] = linha.querySelectorAll('span');
+
+            avatar.textContent = initials(person.name);
+            nome.textContent = person.connecting ? `${person.name} · conectando…` : person.name;
+
+            lista.appendChild(linha);
+        }
+    }
+
+    /**
+     * Todo mundo que o SFU conhece na sala.
+     *
+     * A lista do SFU **já inclui você** (marcado com `self`), então acrescentar seu nome
+     * por fora faz aparecer duas vezes. Antes de conectar não há lista nenhuma, e aí sim
+     * o nome vem daqui.
+     */
+    refreshParticipants() {
+        if (! this.voiceChannel) {
+            return;
+        }
+
+        const sala = [...(this.sfu?.peers?.entries() ?? [])];
+
+        this.drawParticipants(
+            this.voiceChannel.id,
+            sala.length
+                ? sala.map(([id, peer]) => ({ id, name: peer.name }))
+                : [{ name: this.me }],
+        );
+
+        // Redesenhar apaga as bordas: quem estava falando volta a acender no próximo
+        // quadro de áudio, mas quem já estava falando não pode piscar.
+        for (const [id, falando] of this.speaking) {
+            this.paintSpeaking(id, falando);
+        }
+    }
+
+    /** Borda verde no avatar de quem está falando, como no Discord. */
+    paintSpeaking(peerId, falando) {
+        this.speaking.set(peerId, falando);
+
+        const avatar = document.querySelector(`[data-participant="${peerId}"] [data-avatar]`);
+
+        if (avatar) {
+            avatar.classList.toggle('ring-online', falando);
+            avatar.classList.toggle('ring-transparent', ! falando);
+        }
+    }
+
+    /** A marca do limiar e o medidor dividem a mesma escala — senão a marca mente. */
+    drawThreshold(threshold) {
+        const mark = document.querySelector('[data-mark]');
+
+        if (mark) {
+            mark.style.left = `${MicrophoneGate.toFraction(threshold) * 100}%`;
+        }
     }
 
     /** Aplica no gate e guarda no banco, para sobreviver a uma reinstalação. */
@@ -422,6 +536,7 @@ class App {
         el('channel-title').textContent = `# ${channel.name}`;
         el('draft').placeholder = `Conversar em #${channel.name}`;
         this.drawChannels();
+        this.refreshParticipants();
 
         el('stage').hidden = true;
         el('empty').hidden = true;
@@ -448,34 +563,40 @@ class App {
         let anterior = null;
 
         for (const message of messages) {
-            const mesmaPessoa = anterior?.author.id === message.author.id;
+            // Agrupa falas seguidas da mesma pessoa dentro de 5 minutos: repetir nome e
+            // horário a cada frase vira ruído, e um intervalo grande deixa de ser a
+            // mesma conversa.
+            const seguida = anterior?.author.id === message.author.id
+                && new Date(message.created_at) - new Date(anterior.created_at) < 5 * 60_000;
+
             const linha = document.createElement('div');
 
-            linha.className = mesmaPessoa ? 'flex gap-3' : 'flex gap-3 pt-2';
-            linha.innerHTML = mesmaPessoa
-                ? `<span class="w-10 shrink-0"></span>
-                   <p class="min-w-0 break-words text-ink"></p>`
-                : `<span class="flex size-10 shrink-0 items-center justify-center rounded-full bg-brand text-xs font-semibold text-white">${initials(message.author.name)}</span>
-                   <div class="min-w-0 flex-1">
-                     <p class="mb-0.5 flex items-baseline gap-2">
-                       <span class="font-medium text-white"></span>
-                       <span class="text-xs text-ink-soft"></span>
-                     </p>
-                     <p class="break-words text-ink"></p>
-                   </div>`;
+            linha.className = `flex gap-4 px-4 hover:bg-black/10 ${seguida ? 'py-0.5' : 'mt-4 py-0.5 first:mt-0'}`;
+            linha.innerHTML = seguida
+                ? '<span class="w-10 shrink-0"></span><p class="min-w-0 flex-1 break-words leading-relaxed text-ink"></p>'
+                : '<span class="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-full bg-brand text-sm font-semibold text-white"></span>'
+                    + '<div class="min-w-0 flex-1">'
+                    + '<p class="flex items-baseline gap-2 leading-tight">'
+                    + '<span class="font-medium text-white"></span>'
+                    + '<span class="text-xs text-ink-soft"></span>'
+                    + '</p>'
+                    + '<p class="break-words leading-relaxed text-ink"></p>'
+                    + '</div>';
 
-            // textContent e não innerHTML: mensagem é texto de outra pessoa, e montar
+            // textContent e nunca innerHTML: mensagem é texto de outra pessoa, e montar
             // HTML com ela deixaria qualquer um executar script na tela dos outros.
-            const partes = linha.querySelectorAll('p, span');
-
-            if (mesmaPessoa) {
+            if (seguida) {
                 linha.querySelector('p').textContent = message.content;
             } else {
-                partes[1].textContent = message.author.name;
-                partes[2].textContent = new Date(message.created_at).toLocaleString('pt-BR', {
+                const spans = linha.querySelectorAll('span');
+                const paragrafos = linha.querySelectorAll('p');
+
+                spans[0].textContent = initials(message.author.name);
+                spans[1].textContent = message.author.name;
+                spans[2].textContent = new Date(message.created_at).toLocaleString('pt-BR', {
                     day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
                 });
-                linha.querySelectorAll('p')[1].textContent = message.content;
+                paragrafos[1].textContent = message.content;
             }
 
             lista.appendChild(linha);
@@ -501,6 +622,9 @@ class App {
     async joinVoice(channel) {
         el('my-state').textContent = 'conectando…';
 
+        this.voiceChannel = channel;
+        this.drawParticipants(channel.id, [{ name: this.me, connecting: true }]);
+
         try {
             this.voice = await this.api.voiceToken(channel.id);
         } catch (failure) {
@@ -514,6 +638,8 @@ class App {
             // number of people), while the screen stays direct between machines.
             this.sfu = new SfuClient();
             this.sfu.addEventListener('newProducer', event => this.consume(event.detail));
+            // A lista embaixo do canal acompanha quem entra e sai, sem F5.
+            this.sfu.addEventListener('peersChanged', () => this.refreshParticipants());
 
             this.p2p = new P2P(this.sfu, (from, stream) => this.showScreen(from, stream));
 
@@ -544,6 +670,7 @@ class App {
         el('voice-bar').hidden = false;
         el('voice-channel').textContent = channel.name;
         el('my-state').textContent = `em ${channel.name}`;
+        this.refreshParticipants();
         el('stage').hidden = false;
         el('empty').hidden = true;
 
@@ -553,8 +680,6 @@ class App {
         this.clock = setInterval(() => {
             const seconds = Math.floor((Date.now() - startedAt) / 1000);
             const label = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
-
-            el('voice-clock').textContent = label;
 
             const channelClock = document.querySelector(`[data-clock="${channel.id}"]`);
 
@@ -620,7 +745,15 @@ class App {
                 audio.srcObject = new MediaStream([consumer.track]);
                 audio.autoplay = true;
                 audio.dataset.remote = producerId;
+                audio.muted = this.deafened;
                 document.body.appendChild(audio);
+
+                const stream = audio.srcObject;
+
+                this.watchers.set(
+                    producerId,
+                    await MicrophoneGate.watch(stream, falando => this.paintSpeaking(peerId, falando)),
+                );
 
                 return;
             }
@@ -633,7 +766,29 @@ class App {
         }
     }
 
-    /** Mute is the gate, never the producer: the call keeps the audio path warm. */
+    /**
+     * Ensurdecer: cala o áudio da sala inteira sem sair dela.
+     *
+     * Silencia o próprio microfone junto, como no Discord — quem não está ouvindo não
+     * deveria continuar falando sem perceber.
+     */
+    toggleDeafen() {
+        this.deafened = ! this.deafened;
+
+        for (const audio of document.querySelectorAll('audio[data-remote]')) {
+            audio.muted = this.deafened;
+        }
+
+        if (this.deafened && ! this.mic.muted) {
+            this.mic.setMuted(true);
+        }
+
+        el('deafen-icon').innerHTML = this.deafened ? HEAD_OFF : HEAD_ON;
+        el('deafen').classList.toggle('text-danger', this.deafened);
+        el('deafen').title = this.deafened ? 'Ouvir a sala de novo' : 'Silenciar o áudio da sala';
+    }
+
+    /** Mute é o portão, nunca o producer: a chamada mantém o caminho do áudio quente. */
     toggleMicrophone() {
         if (! this.mic.active) {
             el('my-state').textContent = this.micDenied ? 'o sistema negou o microfone' : 'entre num canal de voz primeiro';
@@ -645,11 +800,23 @@ class App {
     }
 
     paintMicrophone({ transmitting, muted, db }) {
-        const button = el('mute');
+        // O mesmo estado pinta os dois botões: o da barra de voz e o do rodapé.
+        for (const id of ['mute', 'voice-mute']) {
+            const botao = el(id);
 
-        if (button) {
-            button.textContent = muted ? 'Ativar som' : 'Silenciar';
-            button.classList.toggle('danger', muted);
+            if (! botao) {
+                continue;
+            }
+
+            el(`${id}-icon`).innerHTML = muted ? MIC_OFF : MIC_ON;
+            botao.title = muted ? 'Ativar o microfone' : 'Silenciar microfone';
+            botao.classList.toggle('text-danger', muted);
+            botao.classList.toggle('text-online', ! muted && transmitting);
+            botao.classList.toggle('text-ink', ! muted && ! transmitting);
+        }
+
+        if (this.sfu?.peerId) {
+            this.paintSpeaking(this.sfu.peerId, ! muted && transmitting);
         }
 
         const meter = document.querySelector('[data-meter]');
@@ -661,6 +828,18 @@ class App {
     }
 
     async leaveVoice() {
+        for (const parar of this.watchers.values()) {
+            parar();
+        }
+
+        this.watchers.clear();
+        this.speaking.clear();
+
+        if (this.voiceChannel) {
+            this.drawParticipants(this.voiceChannel.id, []);
+            this.voiceChannel = null;
+        }
+
         clearInterval(this.clock);
         await this.stopSharing();
         this.mic.close();
@@ -678,6 +857,101 @@ class App {
         el('my-state').textContent = 'Disponível';
     }
 
+    /**
+     * Abre a escolha do que transmitir.
+     *
+     * A lista vem do sistema operacional, não de um palpite: `list_displays` e
+     * `list_windows` são os mesmos que o macOS usa para montar o seletor dele.
+     */
+    async openShareModal() {
+        if (! this.p2p) {
+            el('my-state').textContent = 'entre num canal de voz primeiro';
+
+            return;
+        }
+
+        const lista = el('share-sources');
+
+        lista.innerHTML = '<p class="text-sm text-ink-soft">Procurando telas e janelas…</p>';
+        el('share-modal').hidden = false;
+        this.shareSource = null;
+        this.speaking = new Map();
+        this.watchers = new Map();
+        el('share-confirm').disabled = true;
+
+        const [telas, janelas] = await Promise.all([
+            invoke('list_displays').catch(() => []),
+            invoke('list_windows').catch(() => []),
+        ]);
+
+        lista.innerHTML = '';
+
+        const grupo = (titulo, itens) => {
+            if (! itens.length) {
+                return;
+            }
+
+            const cabecalho = document.createElement('p');
+
+            cabecalho.className = 'mb-2 mt-4 text-xs font-bold uppercase tracking-wide text-ink-soft first:mt-0';
+            cabecalho.textContent = titulo;
+            lista.appendChild(cabecalho);
+
+            for (const item of itens) {
+                const botao = document.createElement('button');
+
+                botao.type = 'button';
+                botao.dataset.source = item.value;
+                botao.className = 'mb-1 flex w-full cursor-pointer items-center gap-3 rounded px-3 py-2 text-left text-sm text-ink transition-colors hover:bg-line';
+                botao.innerHTML = '<span class="shrink-0 text-ink-dim"></span><span class="min-w-0 flex-1 truncate"></span><span class="shrink-0 text-xs text-ink-soft"></span>';
+
+                const [icone, nome, detalhe] = botao.querySelectorAll('span');
+
+                icone.textContent = item.icon;
+                nome.textContent = item.label;
+                detalhe.textContent = item.detail ?? '';
+
+                botao.onclick = () => this.pickShareSource(botao);
+                lista.appendChild(botao);
+            }
+        };
+
+        grupo('Telas', telas.map(tela => ({
+            value: `display:${tela.id}`,
+            icon: '🖥',
+            label: `Tela ${tela.id}`,
+            detail: `${tela.width}×${tela.height}`,
+        })));
+
+        // Janela sem título é painel de sistema: mostrar só polui a escolha.
+        grupo('Janelas', janelas
+            .filter(janela => janela.title.trim())
+            .map(janela => ({
+                value: `window:${janela.id}`,
+                icon: '🪟',
+                label: janela.title,
+                detail: janela.application,
+            })));
+
+        if (! lista.children.length) {
+            lista.innerHTML = '<p class="text-sm text-ink-soft">Nada para compartilhar. No macOS, autorize a gravação de tela nas Configurações do Sistema.</p>';
+        }
+    }
+
+    pickShareSource(botao) {
+        for (const outro of el('share-sources').querySelectorAll('button')) {
+            outro.classList.toggle('bg-brand', outro === botao);
+            outro.classList.toggle('text-white', outro === botao);
+        }
+
+        this.shareSource = botao.dataset.source;
+        el('share-confirm').disabled = false;
+    }
+
+    closeShareModal() {
+        el('share-modal').hidden = true;
+    }
+
     async share() {
         if (! this.p2p) {
             el('my-state').textContent = 'entre num canal de voz primeiro';
@@ -686,7 +960,7 @@ class App {
         }
 
         try {
-            await this.p2p.broadcast(el('quality').value, this.participants);
+            await this.p2p.broadcast(el('quality').value, this.shareSource, this.participants);
             el('share').hidden = true;
             el('stop').hidden = false;
             el('my-state').textContent = this.participants.length

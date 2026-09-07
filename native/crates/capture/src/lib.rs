@@ -64,9 +64,23 @@ impl Quality {
     }
 }
 
+/// O que transmitir.
+///
+/// A escolha vem da interface, e não é detalhe: transmitir a tela inteira quando a
+/// pessoa queria só o jogo mostra e-mail, senha e conversa para a sala toda.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CaptureSource {
+    /// O monitor principal — o que a maioria quer, e o que não exige escolher nada.
+    #[default]
+    PrimaryDisplay,
+    Display(u32),
+    Window(u32),
+}
+
 #[derive(Debug, Clone)]
 pub struct CaptureConfig {
     pub quality: Quality,
+    pub source: CaptureSource,
     /// Frame-rate ceiling. The actual floor is the encoder and transport's responsibility.
     pub frame_rate: u32,
     pub capture_audio: bool,
@@ -86,6 +100,7 @@ impl CaptureConfig {
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
+            source: CaptureSource::PrimaryDisplay,
             quality: Quality::Hd1080,
             frame_rate: 60,
             capture_audio: true,
