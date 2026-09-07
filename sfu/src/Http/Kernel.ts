@@ -22,9 +22,9 @@ export class Kernel {
             leave: new LeaveController((roomId, peerId) => presence.leave(roomId, peerId)),
             presence: new PresenceController(presence, tokens),
             transport: new TransportController(),
-            producer: new ProducerController(),
+            producer: new ProducerController(presence),
             consumer: new ConsumerController(),
-            moderation: new ModerationController(),
+            moderation: new ModerationController((roomId, peerId) => presence.setSharing(roomId, peerId, false)),
         });
     }
 

@@ -1,9 +1,13 @@
+import { Source } from '../../Enums/Source.js';
+import type { PresenceRegistry } from '../../Services/PresenceRegistry.js';
 import type { ProduceRequest } from '../Requests/ProduceRequest.js';
 import type { ProducerRequest } from '../Requests/ProducerRequest.js';
 import { ProducerResource } from '../Resources/ProducerResource.js';
 import { StatusResource } from '../Resources/StatusResource.js';
 
 export class ProducerController {
+    constructor(private readonly presence: PresenceRegistry) {}
+
     async store(request: ProduceRequest): Promise<ProducerResource> {
         const peer = request.peer();
         const room = request.room();
@@ -15,6 +19,10 @@ export class ProducerController {
 
         peer.addProducer(producer, request.source());
         producer.on('transportclose', () => peer.producers.delete(producer.id));
+
+        if (request.source() === Source.Screen) {
+            this.presence.setSharing(room.id, peer.id, true, producer.id);
+        }
 
         room.broadcast('newProducer', {
             peerId: peer.id,
@@ -33,9 +41,15 @@ export class ProducerController {
         const producer = peer.producers.get(request.producerId());
 
         if (producer) {
+            const source = String(producer.appData.source);
+
             producer.close();
             peer.producers.delete(producer.id);
             request.room().broadcast('producerClosed', { peerId: peer.id, producerId: producer.id }, peer.id);
+
+            if (source === Source.Screen) {
+                this.presence.setSharing(request.room().id, peer.id, false);
+            }
         }
 
         return new StatusResource('closed');

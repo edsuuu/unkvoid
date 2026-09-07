@@ -2,8 +2,10 @@ import type { WebSocket } from 'ws';
 
 type Watcher = { socket: WebSocket; serverId: string };
 
+type Membro = { name: string; avatar: string | null; joinedAt: number; sharing: boolean; screenProducerId: string | null };
+
 type ChannelPresence = {
-    members: { peerId: string; name: string; avatar: string | null; joinedAt: number }[];
+    members: ({ peerId: string } & Membro)[];
     startedAt: number;
 };
 
@@ -17,7 +19,7 @@ export class PresenceRegistry {
 
     private readonly channelServer = new Map<string, string>();
 
-    private readonly channels = new Map<string, Map<string, { name: string; avatar: string | null; joinedAt: number }>>();
+    private readonly channels = new Map<string, Map<string, Membro>>();
 
     link(channelId: string, serverId: string | undefined): void {
         if (serverId) {
@@ -60,8 +62,30 @@ export class PresenceRegistry {
         // veem não pode zerar porque a sinalização caiu.
         const joinedAt = members.get(peerId)?.joinedAt ?? Date.now();
 
-        members.set(peerId, { name, avatar, joinedAt });
+        const anterior = members.get(peerId);
+
+        members.set(peerId, {
+            name,
+            avatar,
+            joinedAt,
+            sharing: anterior?.sharing ?? false,
+            screenProducerId: anterior?.screenProducerId ?? null,
+        });
         this.channels.set(channelId, members);
+        this.publish(channelId);
+    }
+
+    /** Quem não está no canal também precisa ver que alguém está transmitindo. */
+    setSharing(channelId: string, peerId: string, sharing: boolean, screenProducerId: string | null = null): void {
+        const member = this.channels.get(channelId)?.get(peerId);
+
+        if (! member || (member.sharing === sharing && member.screenProducerId === screenProducerId)) {
+            return;
+        }
+
+        member.sharing = sharing;
+        // O id do producer vai junto para quem fechou a transmissão poder reabrir.
+        member.screenProducerId = sharing ? screenProducerId : null;
         this.publish(channelId);
     }
 

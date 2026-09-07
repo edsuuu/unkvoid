@@ -92,11 +92,16 @@ export class VoiceStage {
             const members = channels[list.dataset.voiceMembers]?.members ?? [];
 
             list.innerHTML = members.map(member => `
-                <div class="flex items-center gap-2 rounded px-2 py-1 text-sm text-[#949ba4]">
+                <div class="flex items-center gap-2 rounded px-2 py-1 text-sm ${member.sharing ? 'text-[#f23f43]' : 'text-[#949ba4]'}">
                     <span class="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#5865f2] text-[10px] font-semibold text-white">
                         ${member.avatar ? `<img src="${member.avatar}" alt="" class="size-6 object-cover">` : member.name.slice(0, 2).toUpperCase()}
                     </span>
                     <span class="truncate">${member.name}</span>
+                    ${member.sharing ? `<button type="button" data-watch="${member.screenProducerId ?? ''}"
+                        title="Assistir a transmissão"
+                        class="ml-auto flex shrink-0 cursor-pointer items-center gap-1 rounded bg-[#f23f43] px-1.5 py-0.5 text-[10px] font-bold uppercase leading-none text-white transition hover:bg-[#a12828]">
+                        <span class="size-1.5 rounded-full bg-white"></span>ao vivo
+                    </button>` : ''}
                 </div>
             `).join('');
         });
@@ -190,11 +195,32 @@ export class VoiceStage {
             }
         });
 
+        document.addEventListener('input', event => {
+            if (! event.target.matches('[data-tile-volume]')) {
+                return;
+            }
+
+            const audio = document.querySelector(`audio[data-peer="${event.target.dataset.tileVolume}"]`);
+
+            if (audio) {
+                audio.volume = Number(event.target.value) / 100;
+                audio.muted = false;
+            }
+        });
+
         document.addEventListener('click', event => {
             const tileButton = event.target.closest('[data-tile-action]');
 
             if (tileButton) {
                 this.tileAction(tileButton.dataset.tileAction, tileButton);
+
+                return;
+            }
+
+            const watchButton = event.target.closest('[data-watch]');
+
+            if (watchButton) {
+                this.watchAgain(watchButton.dataset.watch);
 
                 return;
             }
@@ -282,7 +308,6 @@ export class VoiceStage {
                 detail: { inCall: true, channelName: this.channelName, channelId: this.channelId },
             }));
         });
-        this.client.addEventListener('peersChanged', () => this.renderMembers());
         this.client.addEventListener('replaced', event => this.status(event.detail.reason));
 
         try {
@@ -295,7 +320,6 @@ export class VoiceStage {
             this.channelName = channelName;
             this.showStage(true, channelName);
             this.status(`em ${channelName}`);
-            this.renderMembers();
 
             for (const peer of joined.peers) {
                 for (const producer of peer.producers) {
@@ -372,6 +396,9 @@ export class VoiceStage {
             <span class="truncate">${name}</span>
             <span class="flex-1"></span>
             ${button('mute', 'Mutar o áudio desta transmissão', ICONS.audioOn)}
+            <input type="range" min="0" max="100" value="100" data-tile-volume="${peerId}"
+                title="Volume desta transmissão"
+                class="h-1 w-16 cursor-pointer appearance-none rounded-full bg-[#4e5058] accent-[#5865f2]">
             ${button('focus', 'Ver só esta (esconde as outras)', ICONS.focus)}
             ${button('fullscreen', 'Tela cheia', ICONS.fullscreen)}
             ${button('close', 'Parar de assistir (libera banda)', ICONS.close, true)}
@@ -429,6 +456,51 @@ export class VoiceStage {
                 button.classList.toggle('cursor-not-allowed', ! enabled);
             }
         }
+    }
+
+    /**
+     * Reabre uma transmissão que você fechou. Fechar pausa o consumer no servidor,
+     * então voltar a assistir é retomar aquele consumer ou criar um novo.
+     */
+    async watchAgain(producerId) {
+        if (! producerId || ! this.client?.recvTransport) {
+            return;
+        }
+
+        if (document.querySelector(`[data-tile="${producerId}"]`)) {
+            return;
+        }
+
+        const existente = [...this.client.consumers.values()].find(consumer => consumer.producerId === producerId);
+
+        try {
+            if (existente) {
+                await this.client.resumeConsumerById(existente.id);
+                const peer = this.client.peers.get(this.ownerOf(producerId)) ?? { name: 'transmissão' };
+
+                this.addTile(producerId, this.ownerOf(producerId), peer.name, existente.track, existente.id);
+
+                return;
+            }
+
+            await this.consume({ producerId, name: '' });
+        } catch (error) {
+            this.status(`não deu para reabrir: ${error.message}`);
+        }
+    }
+
+    ownerOf(producerId) {
+        for (const [peerId, presence] of Object.entries(this.presenceState ?? {})) {
+            const member = presence.members.find(candidate => candidate.screenProducerId === producerId);
+
+            if (member) {
+                return member.peerId;
+            }
+
+            void peerId;
+        }
+
+        return '';
     }
 
     async applyQuality(profile) {
@@ -532,24 +604,6 @@ export class VoiceStage {
         }));
     }
 
-    renderMembers() {
-        const list = document.querySelector(`[data-voice-members="${this.channelId}"]`);
-
-        if (!list) {
-            return;
-        }
-
-        list.innerHTML = [...this.client.peers.values()].map(peer => `
-            <div class="flex items-center gap-2 rounded px-2 py-1 text-sm ${peer.sharing ? 'text-[#23a55a]' : 'text-[#949ba4]'}">
-                <span class="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#5865f2] text-[10px] font-semibold text-white">
-                    ${peer.avatar ? `<img src="${peer.avatar}" alt="" class="size-6 object-cover">` : peer.name.slice(0, 2).toUpperCase()}
-                </span>
-                <span class="truncate">${peer.name}</span>
-                ${peer.sharing ? `<span title="compartilhando a tela" class="ml-auto shrink-0 rounded bg-[#23a55a] px-1 py-0.5 text-[10px] font-bold uppercase text-white">ao vivo</span>` : ''}
-            </div>
-        `).join('');
-    }
-
     async announceLeave() {
         await this.client?.leaveRoom();
     }
@@ -581,7 +635,10 @@ export class VoiceStage {
                 profile: document.querySelector('[data-quality]')?.value ?? '1080',
                 codec: 'h264',
                 simulcast: false,
-                contentHint: 'detail',
+                // 'motion' + maintain-framerate: prioriza fluidez. Com 'detail' e
+                // maintain-resolution o encoder segurava a nitidez derrubando o FPS,
+                // que é a oscilação de 5 a 60 na tela.
+                contentHint: 'motion',
             });
 
             document.querySelector('[data-action="share"]')?.classList.add('hidden');

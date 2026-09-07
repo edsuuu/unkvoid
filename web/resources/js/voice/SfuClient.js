@@ -1,9 +1,11 @@
 import { Device } from 'mediasoup-client';
 
+// minFrameRate é o piso pedido à CAPTURA: a fonte não entrega menos que isso, então
+// o encoder nunca cai para os 5 fps. Se a banda apertar, quem cede é a resolução.
 const PROFILES = {
-    720: { width: 1280, height: 720, frameRate: 60, bitrate: 3_000_000 },
-    1080: { width: 1920, height: 1080, frameRate: 60, bitrate: 6_000_000 },
-    1440: { width: 2560, height: 1440, frameRate: 60, bitrate: 10_000_000 },
+    720: { width: 1280, height: 720, frameRate: 60, minFrameRate: 30, bitrate: 4_000_000 },
+    1080: { width: 1920, height: 1080, frameRate: 60, minFrameRate: 30, bitrate: 7_000_000 },
+    1440: { width: 2560, height: 1440, frameRate: 60, minFrameRate: 30, bitrate: 12_000_000 },
 };
 
 export class SfuClient extends EventTarget {
@@ -251,7 +253,11 @@ export class SfuClient extends EventTarget {
     async shareScreen({ profile, codec, simulcast, contentHint }) {
         const preset = PROFILES[profile];
         const stream = await navigator.mediaDevices.getDisplayMedia({
-            video: { width: preset.width, height: preset.height, frameRate: preset.frameRate },
+            video: {
+                width: { ideal: preset.width },
+                height: { ideal: preset.height },
+                frameRate: { min: preset.minFrameRate, ideal: preset.frameRate },
+            },
             audio: true,
             systemAudio: 'include',
             selfBrowserSurface: 'exclude',
@@ -262,23 +268,22 @@ export class SfuClient extends EventTarget {
         videoTrack.contentHint = contentHint;
         videoTrack.addEventListener('ended', () => this.emit('shareEnded'));
 
-        const video = await this.sendTransport.produce({
-            track: videoTrack,
+        const publishOptions = {
             encodings: this.buildEncodings(preset, codec, simulcast),
             codecOptions: { videoGoogleStartBitrate: Math.round(preset.bitrate / 2000) },
             codec: this.pickCodec(codec),
+            // Perder nitidez é melhor que engasgar: mantém o FPS estável.
+            degradationPreference: 'maintain-framerate',
+        };
+
+        const video = await this.sendTransport.produce({
+            track: videoTrack,
+            ...publishOptions,
             appData: { source: 'screen' },
         });
 
         this.producers.set('screen', video);
-        this.localTracks.set('screen', {
-            track: videoTrack,
-            options: {
-                encodings: this.buildEncodings(preset, codec, simulcast),
-                codecOptions: { videoGoogleStartBitrate: Math.round(preset.bitrate / 2000) },
-                codec: this.pickCodec(codec),
-            },
-        });
+        this.localTracks.set('screen', { track: videoTrack, options: publishOptions });
         this.markSharing(this.peerId, true);
         this.emit('peersChanged', [...this.peers.entries()]);
 
@@ -312,7 +317,7 @@ export class SfuClient extends EventTarget {
         await producer.track.applyConstraints({
             width: { ideal: preset.width },
             height: { ideal: preset.height },
-            frameRate: { ideal: preset.frameRate },
+            frameRate: { min: preset.minFrameRate, ideal: preset.frameRate },
         });
 
         const sender = producer.rtpSender;

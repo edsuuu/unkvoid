@@ -4,6 +4,8 @@ import type { ModerationRequest } from '../Requests/ModerationRequest.js';
 import { StatusResource } from '../Resources/StatusResource.js';
 
 export class ModerationController {
+    constructor(private readonly onBroadcastStopped: (roomId: string, peerId: string) => void) {}
+
     /**
      * Encerra a transmissão sem tirar a pessoa da sala: ela continua na chamada e no
      * chat, só para de publicar. Expulsar do servidor é outra coisa, e mora no Laravel.
@@ -12,6 +14,7 @@ export class ModerationController {
         const target = this.authorize(request);
 
         target.closeProducers();
+        this.onBroadcastStopped(request.room().id, target.id);
         target.send('broadcastStopped', { by: request.peer().name });
         request.room().broadcast('peerProducersClosed', { peerId: target.id });
 
