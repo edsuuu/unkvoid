@@ -67,9 +67,19 @@ class App {
         }
     }
 
+    /**
+     * `/api/health` e não `/api/me`: a segunda exige token, responde 302 para /login sem
+     * ele, e a página de login não tem cabeçalho CORS — o fetch segue o redirecionamento,
+     * rejeita, e o app conclui que o servidor caiu. Um app recém-instalado, que ainda não
+     * tem token, nunca passava dessa tela.
+     */
     async serverAnswered() {
         try {
-            await fetch(`${Api.BASE}/api/me`, { method: 'GET' });
+            const response = await fetch(`${Api.BASE}/api/health`, { method: 'GET' });
+
+            if (! response.ok) {
+                throw new Error(`the server answered ${response.status}`);
+            }
 
             return true;
         } catch {
