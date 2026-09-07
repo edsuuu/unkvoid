@@ -115,7 +115,11 @@ class App {
 
         onOpenUrl(async ([url]) => {
             const params = new URL(url).searchParams;
-            const error = params.get('error');
+
+            // `erro`, não `error`: é o nome que o servidor manda no deep link. Trocar um
+            // pelo outro faz a falha chegar e ser ignorada — a tela de login fica muda e
+            // parece que o botão não fez nada.
+            const error = params.get('erro');
 
             if (error) {
                 el('login-error').textContent = error;
