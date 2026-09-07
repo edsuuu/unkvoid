@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "check": "node ../../../web/resources/js/voice/MicrophoneGate.check.mjs",
+    "check": "python3 check-ui.py && node ../../../web/resources/js/voice/MicrophoneGate.check.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

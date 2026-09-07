@@ -20,25 +20,25 @@ const STUN = ['stun:stun.l.google.com:19302'];
 export class P2P {
     static LIMITE_P2P = 3;
 
-    constructor(sfu, aoReceberTela) {
+    constructor(sfu, onScreen) {
         this.sfu = sfu;
-        this.recebendo = new Map();
-        this.espectadores = new Set();
-        this.transmitindo = false;
-        this.noSfu = false;
-        this.aoReceberTela = aoReceberTela;
+        this.receiving = new Map();
+        this.viewers = new Set();
+        this.broadcasting = false;
+        this.onSfu = false;
+        this.onScreen = onScreen;
     }
 
     async attach() {
-        this.sfu.addEventListener('signal', evento => this.tratarSinal(evento.detail));
-        this.sfu.addEventListener('peerLeft', evento => this.encerrarRecepcao(evento.detail.peerId));
-        this.sfu.addEventListener('peerJoined', evento => this.oferecerA(evento.detail.peerId));
+        this.sfu.addEventListener('signal', event => this.handleSignal(event.detail));
+        this.sfu.addEventListener('peerLeft', event => this.endReception(event.detail.peerId));
+        this.sfu.addEventListener('peerJoined', event => this.offerTo(event.detail.peerId));
 
         // Each Rust-side connection sends its own, already-addressed candidates.
-        await listen('p2p:signal', evento => {
-            const [destino, candidato] = evento.payload;
+        await listen('p2p:signal', event => {
+            const [target, candidate] = event.payload;
 
-            void this.sfu.signal(destino, 'candidate', { candidate: candidato });
+            void this.sfu.signal(target, 'candidate', { candidate: candidate });
         });
     }
 
@@ -48,53 +48,53 @@ export class P2P {
      * about 139 ms instead of 20. Past that, it moves to the server, where the upload
      * stops depending on how many people are watching.
      */
-    async broadcast(quality, espectadores) {
+    async broadcast(quality, viewers) {
         await invoke('start_broadcast', { quality, iceServers: STUN });
 
-        this.transmitindo = true;
+        this.broadcasting = true;
 
-        if (espectadores.length > P2P.LIMITE_P2P) {
-            await this.subirParaOSfu();
+        if (viewers.length > P2P.LIMITE_P2P) {
+            await this.moveToSfu();
 
             return;
         }
 
-        for (const espectador of espectadores) {
-            await this.oferecerA(espectador);
+        for (const espectador of viewers) {
+            await this.offerTo(espectador);
         }
     }
 
     /** One connection per viewer — including those who join after it starts. */
-    async oferecerA(peerId) {
-        if (! this.transmitindo || peerId === this.sfu.peerId) {
+    async offerTo(peerId) {
+        if (! this.broadcasting || peerId === this.sfu.peerId) {
             return;
         }
 
         // The person who has just arrived is the one who tips the balance: from here on
         // the direct path costs more upload than the server does.
-        if (! this.noSfu && this.recebendoDe().length >= P2P.LIMITE_P2P) {
-            await this.subirParaOSfu();
+        if (! this.onSfu && this.directViewers().length >= P2P.LIMITE_P2P) {
+            await this.moveToSfu();
 
             return;
         }
 
-        if (this.noSfu) {
+        if (this.onSfu) {
             return;
         }
 
         try {
             const sdp = await invoke('offer_to', { peerId });
 
-            this.espectadores.add(peerId);
+            this.viewers.add(peerId);
             await this.sfu.signal(peerId, 'offer', { sdp });
-        } catch (falha) {
-            console.warn(`could not offer to ${peerId}:`, falha);
+        } catch (failure) {
+            console.warn(`could not offer to ${peerId}:`, failure);
         }
     }
 
     /** Direct connections currently carrying this broadcast. */
-    recebendoDe() {
-        return [...this.espectadores];
+    directViewers() {
+        return [...this.viewers];
     }
 
     /**
@@ -102,44 +102,44 @@ export class P2P {
      * and the SRTP key — the server answers with where to send it, and from then on the
      * viewers consume it like any other producer, including the ones on the web.
      */
-    async subirParaOSfu() {
-        if (this.noSfu) {
+    async moveToSfu() {
+        if (this.onSfu) {
             return;
         }
 
-        this.noSfu = true;
+        this.onSfu = true;
 
         for (const kind of ['video', 'audio']) {
-            const oferta = await invoke('sfu_offer', { kind });
-            const destino = await this.sfu.request('producePlain', {
+            const offer = await invoke('sfu_offer', { kind });
+            const target = await this.sfu.request('producePlain', {
                 kind,
                 source: kind === 'video' ? 'screen' : 'screenAudio',
-                ...oferta,
+                ...offer,
             });
 
             if (kind === 'video') {
-                await invoke('use_sfu', { address: `${destino.ip}:${destino.port}` });
+                await invoke('use_sfu', { address: `${target.ip}:${target.port}` });
             }
         }
 
-        this.espectadores.clear();
+        this.viewers.clear();
     }
 
     async stop() {
-        if (! this.transmitindo) {
+        if (! this.broadcasting) {
             return 0;
         }
 
-        this.transmitindo = false;
-        this.noSfu = false;
-        this.espectadores.clear();
+        this.broadcasting = false;
+        this.onSfu = false;
+        this.viewers.clear();
 
         return invoke('stop_broadcast');
     }
 
-    async tratarSinal({ from, kind, payload }) {
+    async handleSignal({ from, kind, payload }) {
         if (kind === 'offer') {
-            await this.receberOferta(from, payload.sdp);
+            await this.receiveOffer(from, payload.sdp);
 
             return;
         }
@@ -151,64 +151,64 @@ export class P2P {
         }
 
         if (kind === 'candidate') {
-            await this.adicionarCandidato(from, payload.candidate);
+            await this.addCandidate(from, payload.candidate);
         }
     }
 
     /** Viewer side: the webview builds the connection and delivers ready-to-play video. */
-    async receberOferta(de, sdp) {
-        this.encerrarRecepcao(de);
+    async receiveOffer(from, sdp) {
+        this.endReception(from);
 
-        const conexao = new RTCPeerConnection({ iceServers: [{ urls: STUN }] });
+        const connection = new RTCPeerConnection({ iceServers: [{ urls: STUN }] });
 
-        this.recebendo.set(de, conexao);
+        this.receiving.set(from, connection);
 
-        conexao.onicecandidate = evento => {
-            if (evento.candidate) {
-                void this.sfu.signal(de, 'candidate', { candidate: JSON.stringify(evento.candidate.toJSON()) });
+        connection.onicecandidate = event => {
+            if (event.candidate) {
+                void this.sfu.signal(from, 'candidate', { candidate: JSON.stringify(event.candidate.toJSON()) });
             }
         };
 
-        conexao.ontrack = evento => this.aoReceberTela(de, evento.streams[0] ?? new MediaStream([evento.track]));
+        connection.ontrack = event => this.onScreen(from, event.streams[0] ?? new MediaStream([event.track]));
 
-        await conexao.setRemoteDescription({ type: 'offer', sdp });
+        await connection.setRemoteDescription({ type: 'offer', sdp });
 
-        const resposta = await conexao.createAnswer();
+        const answer = await connection.createAnswer();
 
-        await conexao.setLocalDescription(resposta);
-        await this.sfu.signal(de, 'answer', { sdp: resposta.sdp });
+        await connection.setLocalDescription(answer);
+        await this.sfu.signal(from, 'answer', { sdp: answer.sdp });
     }
 
-    async adicionarCandidato(de, json) {
-        const conexao = this.recebendo.get(de);
+    async addCandidate(from, json) {
+        const connection = this.receiving.get(from);
 
         // Without a receiving connection, the candidate is for the broadcasting side.
-        if (! conexao) {
-            await invoke('add_candidate', { peerId: de, candidate: json }).catch(() => {});
+        if (! connection) {
+            await invoke('add_candidate', { peerId: from, candidate: json }).catch(() => {});
 
             return;
         }
 
-        await conexao.addIceCandidate(JSON.parse(json)).catch(() => {});
+        await connection.addIceCandidate(JSON.parse(json)).catch(() => {});
     }
 
-    encerrarRecepcao(de) {
-        const conexao = this.recebendo.get(de);
+    endReception(from) {
+        const connection = this.receiving.get(from);
 
-        if (conexao) {
-            conexao.close();
-            this.recebendo.delete(de);
-            this.aoReceberTela(de, null);
+        if (connection) {
+            connection.close();
+            this.receiving.delete(from);
+            this.onScreen(from, null);
         }
 
         // Someone who left is no longer a viewer of my broadcast.
-        this.espectadores.delete(de);
-        void invoke('drop_viewer', { peerId: de }).catch(() => {});
+        this.viewers.delete(from);
+        void invoke('drop_viewer', { peerId: from }).catch(() => {});
     }
 
     close() {
-        for (const de of [...this.recebendo.keys()]) {
-            this.encerrarRecepcao(de);
+        for (const from of [...this.receiving.keys()]) {
+            this.endReception(from);
         }
     }
 }

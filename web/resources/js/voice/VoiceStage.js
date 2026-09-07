@@ -47,9 +47,9 @@ export class VoiceStage {
         try {
             // Do not overwrite with null: during restoration, the page is still on the
             // initial panel and the server is not in the DOM — the saved value wins.
-            const anterior = JSON.parse(localStorage.getItem(VoiceStage.STORAGE_KEY) ?? 'null');
+            const previous = JSON.parse(localStorage.getItem(VoiceStage.STORAGE_KEY) ?? 'null');
             const serverId = document.querySelector('[data-server-id]')?.dataset.serverId
-                ?? (anterior?.channelId === channelId ? anterior.serverId : null);
+                ?? (previous?.channelId === channelId ? previous.serverId : null);
 
             localStorage.setItem(VoiceStage.STORAGE_KEY, JSON.stringify({ channelId, channelName, serverId }));
         } catch {
@@ -315,11 +315,11 @@ export class VoiceStage {
         this.client.addEventListener('shareEnded', () => this.stopShare());
         this.client.addEventListener('closed', () => this.teardown());
         this.client.addEventListener('reconnecting', event => {
-            this.status(`reconectando… (tentativa ${event.detail.attempt})`);
+            this.status(`reconnecting… (attempt ${event.detail.attempt})`);
             window.dispatchEvent(new CustomEvent('voice-connecting'));
         });
         this.client.addEventListener('reconnected', event => {
-            this.status(event.detail.resumed ? `em ${this.channelName}` : `em ${this.channelName} (republicado)`);
+            this.status(event.detail.resumed ? `in ${this.channelName}` : `in ${this.channelName} (republished)`);
             window.dispatchEvent(new CustomEvent('voice-state', {
                 detail: { inCall: true, channelName: this.channelName, channelId: this.channelId },
             }));
@@ -335,7 +335,7 @@ export class VoiceStage {
             this.channelId = channelId;
             this.channelName = channelName;
             this.showStage(true, channelName);
-            this.status(`em ${channelName}`);
+            this.status(`in ${channelName}`);
 
             for (const peer of joined.peers) {
                 for (const producer of peer.producers) {
@@ -500,14 +500,14 @@ export class VoiceStage {
             return;
         }
 
-        const existente = [...this.client.consumers.values()].find(consumer => consumer.producerId === producerId);
+        const existing = [...this.client.consumers.values()].find(consumer => consumer.producerId === producerId);
 
         try {
-            if (existente) {
-                await this.client.resumeConsumerById(existente.id);
+            if (existing) {
+                await this.client.resumeConsumerById(existing.id);
                 const peer = this.client.peers.get(this.ownerOf(producerId)) ?? { name: 'broadcast' };
 
-                this.addTile(producerId, this.ownerOf(producerId), peer.name, existente.track, existente.id);
+                this.addTile(producerId, this.ownerOf(producerId), peer.name, existing.track, existing.id);
 
                 return;
             }
@@ -539,7 +539,7 @@ export class VoiceStage {
 
         try {
             await this.client.changeQuality(profile);
-            this.status(`qualidade em ${profile}p`);
+            this.status(`quality at ${profile}p`);
         } catch (error) {
             this.status(`could not change quality: ${error.message}`);
         }
@@ -629,15 +629,15 @@ export class VoiceStage {
         document.querySelectorAll(`figure[data-peer="${peerId}"]`).forEach(tile => {
             tile.classList.toggle('opacity-40', reconnecting);
 
-            const existente = tile.querySelector('[data-reconnect-overlay]');
+            const existing = tile.querySelector('[data-reconnect-overlay]');
 
             if (! reconnecting) {
-                existente?.remove();
+                existing?.remove();
 
                 return;
             }
 
-            if (existente) {
+            if (existing) {
                 return;
             }
 
@@ -761,7 +761,7 @@ export class VoiceStage {
             this.paintMicrophone({ db: MicrophoneGate.FLOOR_DB, transmitting: false, muted: false });
         } catch (error) {
             this.micDenied = true;
-            this.status(`microfone indisponível: ${error.message}`);
+            this.status(`microphone unavailable: ${error.message}`);
             this.paintMicrophone({ db: MicrophoneGate.FLOOR_DB, transmitting: false, muted: true });
         }
     }
@@ -769,7 +769,7 @@ export class VoiceStage {
     /** Mute is the gate, not the producer: the call keeps the audio path warm. */
     toggleMicrophone() {
         if (! this.mic.active) {
-            this.status(this.micDenied ? 'o navegador negou o microfone' : 'espere terminar de conectar');
+            this.status(this.micDenied ? 'the browser denied the microphone' : 'wait for the connection to finish');
 
             return;
         }

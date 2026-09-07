@@ -19,45 +19,45 @@ const FRAME_SAMPLES: usize = (SAMPLE_RATE as usize / 1000) * FRAME_MS as usize *
 /// caller's voice and create feedback.
 pub struct AudioEncoder {
     encoder: Encoder,
-    pendente: Vec<f32>,
+    pending: Vec<f32>,
 }
 
 impl AudioEncoder {
     pub fn new(bitrate: i32) -> Result<Self, EncoderError> {
         let mut encoder = Encoder::new(SAMPLE_RATE, Channels::Stereo, Application::Audio)
-            .map_err(|erro| EncoderError::Start(erro.to_string()))?;
+            .map_err(|error| EncoderError::Start(error.to_string()))?;
 
         encoder
             .set_bitrate(opus::Bitrate::Bits(bitrate))
-            .map_err(|erro| EncoderError::Start(erro.to_string()))?;
+            .map_err(|error| EncoderError::Start(error.to_string()))?;
 
         Ok(Self {
             encoder,
-            pendente: Vec::with_capacity(FRAME_SAMPLES * 2),
+            pending: Vec::with_capacity(FRAME_SAMPLES * 2),
         })
     }
 
     /// Opus accepts only fixed-duration blocks, but capture provides variable-sized
     /// chunks. Remainders are saved for the next block.
     pub fn push(&mut self, chunk: &AudioChunk) -> Result<Vec<Vec<u8>>, EncoderError> {
-        self.pendente.extend_from_slice(&chunk.samples);
+        self.pending.extend_from_slice(&chunk.samples);
 
-        let mut pacotes = Vec::new();
+        let mut packets = Vec::new();
 
-        while self.pendente.len() >= FRAME_SAMPLES {
-            let bloco: Vec<f32> = self.pendente.drain(..FRAME_SAMPLES).collect();
-            let mut saida = vec![0u8; 4_000];
+        while self.pending.len() >= FRAME_SAMPLES {
+            let block: Vec<f32> = self.pending.drain(..FRAME_SAMPLES).collect();
+            let mut out = vec![0u8; 4_000];
 
-            let tamanho = self
+            let size = self
                 .encoder
-                .encode_float(&bloco, &mut saida)
-                .map_err(|erro| EncoderError::Encode(erro.to_string()))?;
+                .encode_float(&block, &mut out)
+                .map_err(|error| EncoderError::Encode(error.to_string()))?;
 
-            saida.truncate(tamanho);
-            pacotes.push(saida);
+            out.truncate(size);
+            packets.push(out);
         }
 
-        Ok(pacotes)
+        Ok(packets)
     }
 }
 

@@ -254,10 +254,10 @@ mod tests {
 
     #[test]
     fn chave_precisa_ter_o_tamanho_da_suite() {
-        let (_servidor, endereco) = ouvinte();
+        let (_servidor, address) = ouvinte();
 
-        assert!(PlainSender::connect(endereco, &[0; 10]).is_err());
-        assert!(PlainSender::connect(endereco, &PlainSender::generate_key()).is_ok());
+        assert!(PlainSender::connect(address, &[0; 10]).is_err());
+        assert!(PlainSender::connect(address, &PlainSender::generate_key()).is_ok());
     }
 
     #[test]
@@ -267,19 +267,19 @@ mod tests {
 
     #[test]
     fn um_quadro_grande_vira_varios_pacotes_protegidos() {
-        let (servidor, endereco) = ouvinte();
-        let chave = PlainSender::generate_key();
-        let mut sender = PlainSender::connect(endereco, &chave).expect("could not connect");
+        let (servidor, address) = ouvinte();
+        let key = PlainSender::generate_key();
+        let mut sender = PlainSender::connect(address, &key).expect("could not connect");
 
         // A NAL unit far larger than the MTU: the payloader has to split it, and every
         // piece has to arrive protected.
-        let mut dados = vec![0u8, 0, 0, 1, 0x65];
-        dados.extend(std::iter::repeat_n(0xAB, MTU * 3));
+        let mut data = vec![0u8, 0, 0, 1, 0x65];
+        data.extend(std::iter::repeat_n(0xAB, MTU * 3));
 
         sender
             .send_frame(
                 &EncodedFrame {
-                    data: dados.clone(),
+                    data: data.clone(),
                     keyframe: true,
                     timestamp_ns: 0,
                 },
@@ -290,13 +290,13 @@ mod tests {
         let mut recebidos = 0;
         let mut buffer = [0u8; 2048];
 
-        while let Ok(tamanho) = servidor.recv(&mut buffer) {
+        while let Ok(size) = servidor.recv(&mut buffer) {
             recebidos += 1;
 
-            assert!(tamanho <= MTU + 64, "packet above the MTU: {tamanho}");
+            assert!(size <= MTU + 64, "packet above the MTU: {size}");
             // Protected payload: the plaintext must not appear on the wire.
             assert!(
-                !buffer[..tamanho]
+                !buffer[..size]
                     .windows(16)
                     .any(|janela| janela == [0xAB; 16]),
                 "the payload went out in the clear"
@@ -311,9 +311,9 @@ mod tests {
 
     #[test]
     fn audio_cabe_em_um_pacote_e_avanca_o_relogio() {
-        let (servidor, endereco) = ouvinte();
-        let mut sender = PlainSender::connect(endereco, &PlainSender::generate_key())
-            .expect("could not connect");
+        let (servidor, address) = ouvinte();
+        let mut sender =
+            PlainSender::connect(address, &PlainSender::generate_key()).expect("could not connect");
 
         sender
             .send_audio(&[0x7F; 160])
@@ -325,16 +325,13 @@ mod tests {
         let mut buffer = [0u8; 2048];
         let mut carimbos = Vec::new();
 
-        while let Ok(tamanho) = servidor.recv(&mut buffer) {
+        while let Ok(size) = servidor.recv(&mut buffer) {
             // The RTP timestamp lives in bytes 4..8 and is not encrypted — the header
             // travels in the clear so the far side can reorder before decrypting.
             carimbos.push(u32::from_be_bytes([
                 buffer[4], buffer[5], buffer[6], buffer[7],
             ]));
-            assert!(
-                tamanho > 160,
-                "packet without header or auth tag: {tamanho}"
-            );
+            assert!(size > 160, "packet without header or auth tag: {size}");
         }
 
         assert_eq!(carimbos.len(), 2, "each 20 ms block is one packet");

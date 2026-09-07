@@ -57,15 +57,15 @@ impl<F: Fn(CaptureEvent) + Send + Sync + 'static> SCStreamOutputTrait for Sink<F
 /// ScreenCaptureKit provides one float32 buffer per channel. Opus and WebRTC
 /// require interleaved samples (L, R, L, R...), so conversion happens here.
 fn interleave(sample: &CMSampleBuffer) -> Option<Vec<f32>> {
-    let lista = sample.audio_buffer_list()?;
-    let canais = lista.num_buffers();
+    let list = sample.audio_buffer_list()?;
+    let channels = list.num_buffers();
 
-    if canais == 0 {
+    if channels == 0 {
         return None;
     }
 
-    let planos: Vec<&[f32]> = (0..canais)
-        .filter_map(|indice| lista.buffer(indice))
+    let planos: Vec<&[f32]> = (0..channels)
+        .filter_map(|index| list.buffer(index))
         .map(|buffer| {
             let bytes = buffer.data();
 
@@ -80,12 +80,12 @@ fn interleave(sample: &CMSampleBuffer) -> Option<Vec<f32>> {
         })
         .collect();
 
-    let quadros = planos.iter().map(|plano| plano.len()).min()?;
-    let mut intercalado = Vec::with_capacity(quadros * planos.len());
+    let frames = planos.iter().map(|plano| plano.len()).min()?;
+    let mut intercalado = Vec::with_capacity(frames * planos.len());
 
-    for quadro in 0..quadros {
+    for frame in 0..frames {
         for plano in &planos {
-            intercalado.push(plano[quadro]);
+            intercalado.push(plano[frame]);
         }
     }
 

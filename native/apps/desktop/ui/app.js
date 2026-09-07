@@ -18,22 +18,22 @@ if (! window.__TAURI__?.core) {
 const { invoke } = window.__TAURI__.core;
 const { openUrl } = window.__TAURI__.opener;
 const { onOpenUrl } = window.__TAURI__.deepLink;
-const iniciais = nome => (nome ?? '?').slice(0, 2).toUpperCase();
+const initials = name => (name ?? '?').slice(0, 2).toUpperCase();
 
 class App {
     constructor() {
-        this.api = new Api(() => this.mostrarOffline());
-        this.servidores = [];
-        this.servidor = null;
-        this.canal = null;
-        this.voz = null;
+        this.api = new Api(() => this.showOffline());
+        this.servers = [];
+        this.server = null;
+        this.channel = null;
+        this.voice = null;
         this.sfu = null;
         this.p2p = null;
-        this.mic = new MicrophoneGate(estado => this.pintarMicrofone(estado));
-        this.painelMic = null;
-        this.participantes = [];
-        this.relogio = null;
-        this.tentativa = 0;
+        this.mic = new MicrophoneGate(state => this.paintMicrophone(state));
+        this.micPanel = null;
+        this.participants = [];
+        this.clock = null;
+        this.attempt = 0;
     }
 
     /**
@@ -42,78 +42,78 @@ class App {
      * only produce an error later.
      */
     async start() {
-        await this.atualizar();
+        await this.update();
 
-        el('tela-update').hidden = true;
+        el('update-screen').hidden = true;
 
-        if (! await this.servidorRespondeu()) {
+        if (! await this.serverAnswered()) {
             return;
         }
 
-        this.api.authenticated ? await this.entrar() : this.pedirLogin();
+        this.api.authenticated ? await this.signIn() : this.askForLogin();
     }
 
-    async atualizar() {
+    async update() {
         try {
-            const versao = await invoke('check_update');
+            const version = await invoke('check_update');
 
-            if (versao) {
-                el('update-status').textContent = `Installing version ${versao}…`;
+            if (version) {
+                el('update-status').textContent = `Installing version ${version}…`;
                 await invoke('restart');
             }
-        } catch (falha) {
+        } catch (failure) {
             // An update failure must not prevent startup: the app continues on its current version.
-            console.warn('update unavailable:', falha);
+            console.warn('update unavailable:', failure);
         }
     }
 
-    async servidorRespondeu() {
+    async serverAnswered() {
         try {
             await fetch(`${Api.BASE}/api/me`, { method: 'GET' });
 
             return true;
         } catch {
-            this.mostrarOffline();
+            this.showOffline();
 
             return false;
         }
     }
 
-    mostrarOffline() {
-        el('tela-offline').hidden = false;
-        el('tela-login').hidden = true;
+    showOffline() {
+        el('offline-screen').hidden = false;
+        el('login-screen').hidden = true;
 
-        this.tentativa += 1;
-        el('offline-tentativa').textContent = `attempt ${this.tentativa}`;
+        this.attempt += 1;
+        el('offline-attempt').textContent = `attempt ${this.attempt}`;
 
-        clearTimeout(this.reconectar);
-        this.reconectar = setTimeout(async () => {
-            if (await this.servidorRespondeu()) {
-                el('tela-offline').hidden = true;
-                this.tentativa = 0;
-                this.api.authenticated ? await this.entrar() : this.pedirLogin();
+        clearTimeout(this.reconnect);
+        this.reconnect = setTimeout(async () => {
+            if (await this.serverAnswered()) {
+                el('offline-screen').hidden = true;
+                this.attempt = 0;
+                this.api.authenticated ? await this.signIn() : this.askForLogin();
             }
-        }, Math.min(2000 * this.tentativa, 10000));
+        }, Math.min(2000 * this.attempt, 10000));
     }
 
-    pedirLogin() {
-        el('tela-login').hidden = false;
+    askForLogin() {
+        el('login-screen').hidden = false;
 
         // Google does not open inside the app: it opens in the system browser and
         // returns through a deep link. The password never passes through Unkvoid.
-        el('botao-google').onclick = () => openUrl(`${Api.BASE}/api/desktop/google`);
+        el('google-button').onclick = () => openUrl(`${Api.BASE}/api/desktop/google`);
 
         onOpenUrl(async ([url]) => {
-            const parametros = new URL(url).searchParams;
-            const erro = parametros.get('erro');
+            const params = new URL(url).searchParams;
+            const error = params.get('error');
 
-            if (erro) {
-                el('erro-login').textContent = erro;
+            if (error) {
+                el('login-error').textContent = error;
 
                 return;
             }
 
-            const token = parametros.get('token');
+            const token = params.get('token');
 
             if (! token) {
                 return;
@@ -121,202 +121,202 @@ class App {
 
             localStorage.setItem('api:token', token);
             this.api.token = token;
-            el('tela-login').hidden = true;
-            await this.entrar();
+            el('login-screen').hidden = true;
+            await this.signIn();
         });
 
-        el('form-login').onsubmit = async evento => {
-            evento.preventDefault();
-            el('erro-login').textContent = '';
-            el('botao-entrar').disabled = true;
+        el('login-form').onsubmit = async event => {
+            event.preventDefault();
+            el('login-error').textContent = '';
+            el('sign-in-button').disabled = true;
 
             try {
-                await this.api.login(el('email').value, el('senha').value);
-                el('tela-login').hidden = true;
-                await this.entrar();
-            } catch (falha) {
-                el('erro-login').textContent = falha.message;
+                await this.api.login(el('email').value, el('password').value);
+                el('login-screen').hidden = true;
+                await this.signIn();
+            } catch (failure) {
+                el('login-error').textContent = failure.message;
             } finally {
-                el('botao-entrar').disabled = false;
+                el('sign-in-button').disabled = false;
             }
         };
     }
 
-    async entrar() {
+    async signIn() {
         const eu = await this.api.me();
 
-        el('meu-nome').textContent = eu.name;
-        el('meu-avatar').textContent = iniciais(eu.name);
+        el('my-name').textContent = eu.name;
+        el('my-avatar').textContent = initials(eu.name);
 
-        this.servidores = await this.api.servers();
-        this.desenharTrilha();
+        this.servers = await this.api.servers();
+        this.drawServerRail();
 
-        el('compartilhar').onclick = () => this.compartilhar();
-        el('parar').onclick = () => this.pararCompartilhamento();
-        el('sair-voz').onclick = () => this.sairDaVoz();
-        el('mudo').onclick = () => this.alternarMicrofone();
-        el('config-mic').onclick = () => this.alternarPainelMic();
-        this.ligarPainelMic();
+        el('share').onclick = () => this.share();
+        el('stop').onclick = () => this.stopSharing();
+        el('leave-voice').onclick = () => this.leaveVoice();
+        el('mute').onclick = () => this.toggleMicrophone();
+        el('mic-settings').onclick = () => this.toggleMicPanel();
+        this.wireMicPanel();
     }
 
     /**
      * The panel is static markup wired once. The settings live in the gate, which is
      * what actually decides frame by frame whether the audio leaves this machine.
      */
-    ligarPainelMic() {
+    wireMicPanel() {
         const { mode, threshold, pushKey, noiseSuppression } = this.mic.settings;
 
-        el('mic-limiar').value = threshold;
-        el('mic-ruido').checked = noiseSuppression;
-        el('mic-atalho').textContent = pushKey;
+        el('mic-threshold').value = threshold;
+        el('mic-noise').checked = noiseSuppression;
+        el('mic-shortcut').textContent = pushKey;
 
-        for (const opcao of document.querySelectorAll('input[name="modo-mic"]')) {
-            opcao.checked = opcao.value === mode;
-            opcao.onchange = () => {
-                this.mic.save({ mode: opcao.value });
-                el('mic-voz').hidden = opcao.value !== 'voice';
-                el('mic-tecla').hidden = opcao.value !== 'ptt';
+        for (const option of document.querySelectorAll('input[name="mic-mode"]')) {
+            option.checked = option.value === mode;
+            option.onchange = () => {
+                this.mic.save({ mode: option.value });
+                el('mic-voice').hidden = option.value !== 'voice';
+                el('mic-key').hidden = option.value !== 'ptt';
             };
         }
 
-        el('mic-voz').hidden = mode !== 'voice';
-        el('mic-tecla').hidden = mode !== 'ptt';
+        el('mic-voice').hidden = mode !== 'voice';
+        el('mic-key').hidden = mode !== 'ptt';
 
-        el('mic-limiar').oninput = evento => this.mic.save({ threshold: Number(evento.target.value) });
-        el('mic-ruido').onchange = evento => this.mic.save({ noiseSuppression: evento.target.checked });
+        el('mic-threshold').oninput = event => this.mic.save({ threshold: Number(event.target.value) });
+        el('mic-noise').onchange = event => this.mic.save({ noiseSuppression: event.target.checked });
 
-        el('mic-atalho').onclick = () => {
-            el('mic-atalho').textContent = 'press a key…';
+        el('mic-shortcut').onclick = () => {
+            el('mic-shortcut').textContent = 'press a key…';
 
             // `once` matters: without it every later keypress would keep rebinding.
-            window.addEventListener('keydown', evento => {
-                evento.preventDefault();
-                this.mic.save({ pushKey: evento.code });
-                el('mic-atalho').textContent = evento.code;
+            window.addEventListener('keydown', event => {
+                event.preventDefault();
+                this.mic.save({ pushKey: event.code });
+                el('mic-shortcut').textContent = event.code;
             }, { once: true, capture: true });
         };
     }
 
-    alternarPainelMic() {
-        el('painel-mic').hidden = ! el('painel-mic').hidden;
+    toggleMicPanel() {
+        el('mic-panel').hidden = ! el('mic-panel').hidden;
     }
 
-    desenharTrilha() {
-        const trilha = el('trilha');
+    drawServerRail() {
+        const rail = el('server-rail');
 
-        trilha.innerHTML = '';
+        rail.innerHTML = '';
 
-        for (const servidor of this.servidores) {
-            const botao = document.createElement('button');
+        for (const server of this.servers) {
+            const button = document.createElement('button');
 
-            botao.className = `servidor${this.servidor?.id === servidor.id ? ' ativo' : ''}`;
-            botao.textContent = servidor.initials;
-            botao.title = servidor.name;
-            botao.onclick = () => this.abrirServidor(servidor.id);
-            trilha.appendChild(botao);
+            button.className = `server${this.server?.id === server.id ? ' active' : ''}`;
+            button.textContent = server.initials;
+            button.title = server.name;
+            button.onclick = () => this.openServer(server.id);
+            rail.appendChild(button);
         }
 
-        const separador = document.createElement('span');
+        const separator = document.createElement('span');
 
-        separador.className = 'separador';
-        trilha.appendChild(separador);
+        separator.className = 'separator';
+        rail.appendChild(separator);
 
-        const novo = document.createElement('button');
+        const plus = document.createElement('button');
 
-        novo.className = 'servidor novo';
-        novo.textContent = '+';
-        novo.title = 'Criar servidor';
-        novo.onclick = () => this.criarServidor();
-        trilha.appendChild(novo);
+        plus.className = 'server plus';
+        plus.textContent = '+';
+        plus.title = 'Criar server';
+        plus.onclick = () => this.createServer();
+        rail.appendChild(plus);
     }
 
-    async criarServidor() {
-        const nome = prompt('Server name');
+    async createServer() {
+        const name = prompt('Server name');
 
-        if (! nome?.trim()) {
+        if (! name?.trim()) {
             return;
         }
 
-        const servidor = await this.api.createServer(nome.trim());
+        const server = await this.api.createServer(name.trim());
 
-        this.servidores = await this.api.servers();
-        await this.abrirServidor(servidor.id);
+        this.servers = await this.api.servers();
+        await this.openServer(server.id);
     }
 
-    async abrirServidor(id) {
-        this.servidor = await this.api.server(id);
+    async openServer(id) {
+        this.server = await this.api.server(id);
 
-        el('nome-servidor').textContent = this.servidor.name;
-        el('vazio').hidden = true;
-        this.desenharTrilha();
-        this.desenharCanais();
+        el('server-name').textContent = this.server.name;
+        el('empty').hidden = true;
+        this.drawServerRail();
+        this.drawChannels();
 
-        const texto = this.servidor.channels.find(canal => canal.type === 'text');
+        const text = this.server.channels.find(channel => channel.type === 'text');
 
-        if (texto) {
-            await this.abrirCanal(texto);
+        if (text) {
+            await this.openChannel(text);
         }
     }
 
-    desenharCanais() {
-        const lista = el('lista-canais');
+    drawChannels() {
+        const list = el('channel-list');
 
-        lista.innerHTML = '';
+        list.innerHTML = '';
 
-        for (const tipo of ['text', 'voice']) {
-            const canais = this.servidor.channels.filter(canal => canal.type === tipo);
+        for (const kind of ['text', 'voice']) {
+            const channels = this.server.channels.filter(channel => channel.type === kind);
 
-            if (! canais.length) {
+            if (! channels.length) {
                 continue;
             }
 
-            const titulo = document.createElement('p');
+            const title = document.createElement('p');
 
-            titulo.className = 'secao';
-            titulo.textContent = tipo === 'text' ? 'Text channels' : 'Voice channels';
-            lista.appendChild(titulo);
+            title.className = 'section';
+            title.textContent = kind === 'text' ? 'Text channels' : 'Voice channels';
+            list.appendChild(title);
 
-            for (const canal of canais) {
-                const botao = document.createElement('button');
+            for (const channel of channels) {
+                const button = document.createElement('button');
 
-                botao.className = `canal${this.canal?.id === canal.id ? ' ativo' : ''}`;
-                botao.innerHTML = tipo === 'text'
-                    ? `<span style="font-size:20px;color:#80848e">#</span><span>${canal.name}</span>`
-                    : `<span style="color:#80848e">🔊</span><span>${canal.name}</span><span class="relogio" data-relogio="${canal.id}"></span>`;
-                botao.onclick = () => (tipo === 'text' ? this.abrirCanal(canal) : this.entrarNaVoz(canal));
-                lista.appendChild(botao);
+                button.className = `channel${this.channel?.id === channel.id ? ' active' : ''}`;
+                button.innerHTML = kind === 'text'
+                    ? `<span style="font-size:20px;color:#80848e">#</span><span>${channel.name}</span>`
+                    : `<span style="color:#80848e">🔊</span><span>${channel.name}</span><span class="clock" data-clock="${channel.id}"></span>`;
+                button.onclick = () => (kind === 'text' ? this.openChannel(channel) : this.joinVoice(channel));
+                list.appendChild(button);
 
-                if (tipo === 'voice') {
-                    const membros = document.createElement('div');
+                if (kind === 'voice') {
+                    const members = document.createElement('div');
 
-                    membros.dataset.participantes = canal.id;
-                    lista.appendChild(membros);
+                    members.dataset.participants = channel.id;
+                    list.appendChild(members);
                 }
             }
         }
     }
 
-    async abrirCanal(canal) {
-        this.canal = canal;
-        el('titulo-canal').textContent = `# ${canal.name}`;
-        this.desenharCanais();
+    async openChannel(channel) {
+        this.channel = channel;
+        el('channel-title').textContent = `# ${channel.name}`;
+        this.drawChannels();
 
-        const mensagens = await this.api.messages(canal.id);
+        const messages = await this.api.messages(channel.id);
 
-        el('palco').hidden = true;
-        el('vazio').hidden = false;
-        el('vazio').textContent = mensagens.length
-            ? mensagens.map(mensagem => `${mensagem.author.name}: ${mensagem.content}`).join('\n')
+        el('stage').hidden = true;
+        el('empty').hidden = false;
+        el('empty').textContent = messages.length
+            ? messages.map(message => `${message.author.name}: ${message.content}`).join('\n')
             : 'No messages yet.';
     }
 
-    async entrarNaVoz(canal) {
-        el('meu-estado').textContent = 'connecting…';
+    async joinVoice(channel) {
+        el('my-state').textContent = 'connecting…';
 
         try {
-            this.voz = await this.api.voiceToken(canal.id);
-        } catch (falha) {
-            el('meu-estado').textContent = falha.message;
+            this.voice = await this.api.voiceToken(channel.id);
+        } catch (failure) {
+            el('my-state').textContent = failure.message;
 
             return;
         }
@@ -325,82 +325,82 @@ class App {
             // One client for everything: voice rides the SFU (which fans out to any
             // number of people), while the screen stays direct between machines.
             this.sfu = new SfuClient();
-            this.sfu.addEventListener('newProducer', evento => this.consumir(evento.detail));
+            this.sfu.addEventListener('newProducer', event => this.consume(event.detail));
 
-            this.p2p = new P2P(this.sfu, (de, stream) => this.mostrarTela(de, stream));
+            this.p2p = new P2P(this.sfu, (from, stream) => this.showScreen(from, stream));
 
-            const entrada = await this.sfu.connect(
-                this.voz.url,
-                async () => (await this.api.voiceToken(canal.id)).token,
+            const joined = await this.sfu.connect(
+                this.voice.url,
+                async () => (await this.api.voiceToken(channel.id)).token,
             );
 
             await this.p2p.attach();
 
-            this.participantes = entrada.peers.map(peer => peer.peerId);
+            this.participants = joined.peers.map(peer => peer.peerId);
 
-            for (const peer of entrada.peers) {
+            for (const peer of joined.peers) {
                 for (const producer of peer.producers) {
-                    await this.consumir({ ...producer, peerId: peer.peerId, name: peer.name });
+                    await this.consume({ ...producer, peerId: peer.peerId, name: peer.name });
                 }
             }
 
-            await this.abrirMicrofone();
-        } catch (falha) {
-            el('meu-estado').textContent = `could not join the room: ${falha.message}`;
+            await this.openMicrophone();
+        } catch (failure) {
+            el('my-state').textContent = `could not join the room: ${failure.message}`;
             this.p2p = null;
             this.sfu = null;
 
             return;
         }
 
-        el('faixa-voz').hidden = false;
-        el('voz-canal').textContent = canal.name;
-        el('meu-estado').textContent = `in ${canal.name}`;
-        el('palco').hidden = false;
-        el('vazio').hidden = true;
+        el('voice-bar').hidden = false;
+        el('voice-channel').textContent = channel.name;
+        el('my-state').textContent = `in ${channel.name}`;
+        el('stage').hidden = false;
+        el('empty').hidden = true;
 
-        const inicio = Date.now();
+        const startedAt = Date.now();
 
-        clearInterval(this.relogio);
-        this.relogio = setInterval(() => {
-            const segundos = Math.floor((Date.now() - inicio) / 1000);
-            const marca = `${String(Math.floor(segundos / 60)).padStart(2, '0')}:${String(segundos % 60).padStart(2, '0')}`;
+        clearInterval(this.clock);
+        this.clock = setInterval(() => {
+            const seconds = Math.floor((Date.now() - startedAt) / 1000);
+            const label = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 
-            el('voz-relogio').textContent = marca;
+            el('voice-clock').textContent = label;
 
-            const relogioDoCanal = document.querySelector(`[data-relogio="${canal.id}"]`);
+            const channelClock = document.querySelector(`[data-clock="${channel.id}"]`);
 
-            if (relogioDoCanal) {
-                relogioDoCanal.textContent = marca;
+            if (channelClock) {
+                channelClock.textContent = label;
             }
         }, 1000);
     }
 
     /** Draws (or removes) the screen of someone who is broadcasting. */
-    mostrarTela(de, stream) {
-        const existente = document.querySelector(`[data-tela="${de}"]`);
+    showScreen(from, stream) {
+        const existing = document.querySelector(`[data-screen="${from}"]`);
 
         if (! stream) {
-            existente?.remove();
+            existing?.remove();
 
             return;
         }
 
-        const quadro = existente ?? document.createElement('figure');
+        const frame = existing ?? document.createElement('figure');
 
-        quadro.className = 'tile';
-        quadro.dataset.tela = de;
-        quadro.innerHTML = '<video autoplay playsinline></video><figcaption></figcaption>';
-        quadro.querySelector('video').srcObject = stream;
-        quadro.querySelector('figcaption').textContent = 'broadcasting';
+        frame.className = 'tile';
+        frame.dataset.tela = from;
+        frame.innerHTML = '<video autoplay playsinline></video><figcaption></figcaption>';
+        frame.querySelector('video').srcObject = stream;
+        frame.querySelector('figcaption').textContent = 'broadcasting';
 
-        if (! existente) {
-            el('palco').appendChild(quadro);
+        if (! existing) {
+            el('stage').appendChild(frame);
         }
 
-        const total = el('palco').childElementCount;
+        const total = el('stage').childElementCount;
 
-        el('palco').style.gridTemplateColumns = `repeat(${total > 1 ? 2 : 1}, minmax(0, 1fr))`;
+        el('stage').style.gridTemplateColumns = `repeat(${total > 1 ? 2 : 1}, minmax(0, 1fr))`;
     }
 
     /**
@@ -408,20 +408,20 @@ class App {
      * out to everyone in the room, so talking works with any number of people — while the
      * screen, which is expensive, stays direct between machines.
      */
-    async abrirMicrofone() {
+    async openMicrophone() {
         try {
-            const trilha = await this.mic.open();
+            const micTrack = await this.mic.open();
 
-            await this.sfu.publishMicrophone(trilha);
-            this.pintarMicrofone({ db: MicrophoneGate.FLOOR_DB, transmitting: false, muted: false });
-        } catch (falha) {
-            this.micNegado = true;
-            el('meu-estado').textContent = `microphone unavailable: ${falha.message}`;
+            await this.sfu.publishMicrophone(micTrack);
+            this.paintMicrophone({ db: MicrophoneGate.FLOOR_DB, transmitting: false, muted: false });
+        } catch (failure) {
+            this.micDenied = true;
+            el('my-state').textContent = `microphone unavailable: ${failure.message}`;
         }
     }
 
     /** Someone else's audio or screen arriving through the SFU. */
-    async consumir({ producerId }) {
+    async consume({ producerId }) {
         try {
             const { consumer, peerId } = await this.sfu.consume(producerId);
 
@@ -438,16 +438,16 @@ class App {
 
             // A web broadcaster publishes to the SFU, not P2P: this is how the desktop
             // watches someone who is not using the app.
-            this.mostrarTela(peerId, new MediaStream([consumer.track]));
-        } catch (falha) {
-            console.warn('could not receive media:', falha);
+            this.showScreen(peerId, new MediaStream([consumer.track]));
+        } catch (failure) {
+            console.warn('could not receive media:', failure);
         }
     }
 
     /** Mute is the gate, never the producer: the call keeps the audio path warm. */
-    alternarMicrofone() {
+    toggleMicrophone() {
         if (! this.mic.active) {
-            el('meu-estado').textContent = this.micNegado ? 'the system denied the microphone' : 'join a voice channel first';
+            el('my-state').textContent = this.micDenied ? 'the system denied the microphone' : 'join a voice channel first';
 
             return;
         }
@@ -455,67 +455,67 @@ class App {
         this.mic.setMuted(! this.mic.muted);
     }
 
-    pintarMicrofone({ transmitting, muted, db }) {
-        const botao = el('mudo');
+    paintMicrophone({ transmitting, muted, db }) {
+        const button = el('mute');
 
-        if (botao) {
-            botao.textContent = muted ? 'Unmute' : 'Mute';
-            botao.classList.toggle('perigo', muted);
+        if (button) {
+            button.textContent = muted ? 'Unmute' : 'Mute';
+            button.classList.toggle('danger', muted);
         }
 
-        const medidor = document.querySelector('[data-medidor]');
+        const meter = document.querySelector('[data-meter]');
 
-        if (medidor) {
-            medidor.style.width = `${MicrophoneGate.toFraction(db) * 100}%`;
-            medidor.style.background = transmitting ? '#23a55a' : '#4e5058';
+        if (meter) {
+            meter.style.width = `${MicrophoneGate.toFraction(db) * 100}%`;
+            meter.style.background = transmitting ? '#23a55a' : '#4e5058';
         }
     }
 
-    async sairDaVoz() {
-        clearInterval(this.relogio);
-        await this.pararCompartilhamento();
+    async leaveVoice() {
+        clearInterval(this.clock);
+        await this.stopSharing();
         this.mic.close();
-        this.micNegado = false;
+        this.micDenied = false;
         await this.sfu?.leaveRoom();
         this.sfu?.disconnect();
         this.p2p?.close();
         this.p2p = null;
         this.sfu = null;
-        this.voz = null;
-        document.querySelectorAll('audio[data-remoto]').forEach(elemento => elemento.remove());
-        el('faixa-voz').hidden = true;
-        el('palco').hidden = true;
-        el('vazio').hidden = false;
-        el('meu-estado').textContent = 'Available';
+        this.voice = null;
+        document.querySelectorAll('audio[data-remote]').forEach(elemento => elemento.remove());
+        el('voice-bar').hidden = true;
+        el('stage').hidden = true;
+        el('empty').hidden = false;
+        el('my-state').textContent = 'Available';
     }
 
-    async compartilhar() {
+    async share() {
         if (! this.p2p) {
-            el('meu-estado').textContent = 'join a voice channel first';
+            el('my-state').textContent = 'join a voice channel first';
 
             return;
         }
 
         try {
-            await this.p2p.broadcast(el('qualidade').value, this.participantes);
-            el('compartilhar').hidden = true;
-            el('parar').hidden = false;
-            el('meu-estado').textContent = this.participantes.length
-                ? `broadcasting to ${this.participantes.length}`
+            await this.p2p.broadcast(el('quality').value, this.participants);
+            el('share').hidden = true;
+            el('stop').hidden = false;
+            el('my-state').textContent = this.participants.length
+                ? `broadcasting to ${this.participants.length}`
                 : 'broadcasting (no one watching yet)';
-        } catch (falha) {
-            el('meu-estado').textContent = falha.message ?? String(falha);
+        } catch (failure) {
+            el('my-state').textContent = failure.message ?? String(failure);
         }
     }
 
-    async pararCompartilhamento() {
-        const quadros = await this.p2p?.stop().catch(() => 0);
+    async stopSharing() {
+        const frames = await this.p2p?.stop().catch(() => 0);
 
-        el('compartilhar').hidden = false;
-        el('parar').hidden = true;
+        el('share').hidden = false;
+        el('stop').hidden = true;
 
-        if (quadros) {
-            el('meu-estado').textContent = `${quadros} frames broadcast`;
+        if (frames) {
+            el('my-state').textContent = `${frames} frames broadcast`;
         }
     }
 }

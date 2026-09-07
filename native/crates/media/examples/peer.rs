@@ -11,30 +11,30 @@ use media::PeerLink;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (peer, mut sinais) =
+    let (peer, mut signals) =
         PeerLink::connect(vec!["stun:stun.l.google.com:19302".to_owned()], 60.0).await?;
 
-    let oferta = peer.create_offer().await?;
+    let offer = peer.create_offer().await?;
 
-    let tem_h264 = oferta.to_lowercase().contains("h264");
-    let linhas_video = oferta
+    let tem_h264 = offer.to_lowercase().contains("h264");
+    let linhas_video = offer
         .lines()
         .filter(|linha| linha.starts_with("m=video"))
         .count();
 
-    println!("generated offer: {} bytes", oferta.len());
+    println!("generated offer: {} bytes", offer.len());
     println!("video track: {linhas_video}");
     println!("H.264 negotiated: {}", if tem_h264 { "yes" } else { "NO" });
 
     let mut candidatos = 0;
-    let prazo = tokio::time::sleep(Duration::from_secs(6));
+    let deadline = tokio::time::sleep(Duration::from_secs(6));
 
-    tokio::pin!(prazo);
+    tokio::pin!(deadline);
 
     loop {
         tokio::select! {
-            Some(_) = sinais.recv() => candidatos += 1,
-            _ = &mut prazo => break,
+            Some(_) = signals.recv() => candidatos += 1,
+            _ = &mut deadline => break,
         }
     }
 

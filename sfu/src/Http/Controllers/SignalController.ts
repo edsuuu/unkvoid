@@ -7,12 +7,12 @@ export class SignalController {
      * otherwise someone could impersonate another person in the room.
      */
     handle(request: SignalRequest): StatusResource {
-        const origem = request.peer();
-        const destino = request.room().findPeer(request.to());
+        const from = request.peer();
+        const to = request.room().findPeer(request.to());
 
-        destino.send('signal', {
-            from: origem.id,
-            name: origem.name,
+        to.send('signal', {
+            from: from.id,
+            name: from.name,
             kind: request.kind(),
             payload: request.payload(),
         });

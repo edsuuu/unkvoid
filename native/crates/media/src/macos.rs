@@ -47,14 +47,14 @@ impl VideoToolboxEncoder {
 
         self.frames += 1;
 
-        let codificado = self
+        let encoded = self
             .session
             .encode(surface, apresentacao)
             .map_err(|error| EncoderError::Encode(error.to_string()))?;
 
         Ok(EncodedFrame {
-            keyframe: is_keyframe(&codificado.data),
-            data: codificado.data,
+            keyframe: is_keyframe(&encoded.data),
+            data: encoded.data,
             timestamp_ns,
         })
     }
@@ -63,22 +63,22 @@ impl VideoToolboxEncoder {
 /// An H.264 keyframe carries SPS (type 7), PPS (8), or IDR (5). Checking the
 /// first NAL type is sufficient and costs nothing.
 fn is_keyframe(data: &[u8]) -> bool {
-    let mut posicao = 0;
+    let mut position = 0;
 
-    while posicao + 4 < data.len() {
-        let tamanho = u32::from_be_bytes([
-            data[posicao],
-            data[posicao + 1],
-            data[posicao + 2],
-            data[posicao + 3],
+    while position + 4 < data.len() {
+        let size = u32::from_be_bytes([
+            data[position],
+            data[position + 1],
+            data[position + 2],
+            data[position + 3],
         ]) as usize;
-        let tipo = data.get(posicao + 4).map(|byte| byte & 0x1F);
+        let tipo = data.get(position + 4).map(|byte| byte & 0x1F);
 
         if matches!(tipo, Some(5 | 7 | 8)) {
             return true;
         }
 
-        posicao += 4 + tamanho;
+        position += 4 + size;
     }
 
     false

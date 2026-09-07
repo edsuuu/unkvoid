@@ -17,10 +17,10 @@ export class Api {
     }
 
     async request(path, { method = 'GET', body } = {}) {
-        let resposta;
+        let answer;
 
         try {
-            resposta = await fetch(`${Api.BASE}/api/${path}`, {
+            answer = await fetch(`${Api.BASE}/api/${path}`, {
                 method,
                 headers: {
                     Accept: 'application/json',
@@ -35,31 +35,31 @@ export class Api {
             throw new Error('no connection to the server');
         }
 
-        if (resposta.status === 401) {
+        if (answer.status === 401) {
             this.forget();
 
             throw new Error('session expired');
         }
 
-        const dados = await resposta.json().catch(() => ({}));
+        const data = await answer.json().catch(() => ({}));
 
-        if (! resposta.ok) {
-            throw new Error(dados.message ?? `the server rejected the request (${resposta.status})`);
+        if (! answer.ok) {
+            throw new Error(data.message ?? `the server rejected the request (${answer.status})`);
         }
 
-        return dados;
+        return data;
     }
 
     async login(email, password) {
-        const dados = await this.request('login', {
+        const data = await this.request('login', {
             method: 'POST',
             body: { email, password, device: `desktop-${navigator.platform}` },
         });
 
-        this.token = dados.token;
-        localStorage.setItem('api:token', dados.token);
+        this.token = data.token;
+        localStorage.setItem('api:token', data.token);
 
-        return dados.user.data ?? dados.user;
+        return data.user.data ?? data.user;
     }
 
     forget() {
@@ -68,28 +68,28 @@ export class Api {
     }
 
     me() {
-        return this.request('me').then(dados => dados.data);
+        return this.request('me').then(data => data.data);
     }
 
     servers() {
-        return this.request('servers').then(dados => dados.data);
+        return this.request('servers').then(data => data.data);
     }
 
     server(id) {
-        return this.request(`servers/${id}`).then(dados => dados.data);
+        return this.request(`servers/${id}`).then(data => data.data);
     }
 
     createServer(name) {
-        return this.request('servers', { method: 'POST', body: { name } }).then(dados => dados.data);
+        return this.request('servers', { method: 'POST', body: { name } }).then(data => data.data);
     }
 
     messages(channelId) {
-        return this.request(`channels/${channelId}/messages`).then(dados => dados.data);
+        return this.request(`channels/${channelId}/messages`).then(data => data.data);
     }
 
     sendMessage(channelId, content) {
         return this.request(`channels/${channelId}/messages`, { method: 'POST', body: { content } })
-            .then(dados => dados.data);
+            .then(data => data.data);
     }
 
     voiceToken(channelId) {

@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
         }
     })?;
 
-    let mut anterior = 0;
+    let mut previous = 0;
 
     for segundo in 1..=seconds {
         std::thread::sleep(Duration::from_secs(1));
@@ -75,13 +75,13 @@ fn main() -> anyhow::Result<()> {
 
         println!(
             "{segundo:>3}s  {:>3} fps  {}x{}  audio: {} chunks",
-            total - anterior,
+            total - previous,
             last_width.load(Ordering::Relaxed),
             last_height.load(Ordering::Relaxed),
             audio_chunks.load(Ordering::Relaxed),
         );
 
-        anterior = total;
+        previous = total;
     }
 
     capturer.stop()?;
