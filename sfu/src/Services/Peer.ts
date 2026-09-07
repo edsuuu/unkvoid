@@ -1,4 +1,4 @@
-import type { Consumer, Producer, WebRtcTransport } from 'mediasoup/types';
+import type { Consumer, PlainTransport, Producer, WebRtcTransport } from 'mediasoup/types';
 import type { WebSocket } from 'ws';
 
 import { canModerate, Role, type RoleName } from '../Enums/Role.js';
@@ -17,6 +17,9 @@ export class Peer {
     public orphanedAt: number | null = null;
 
     public readonly transports = new Map<string, WebRtcTransport>();
+
+    /** Plain RTP ingest from the native app. Separate map: it has no DTLS to connect. */
+    public readonly plainTransports = new Map<string, PlainTransport>();
 
     public readonly producers = new Map<string, Producer>();
 
@@ -52,6 +55,10 @@ export class Peer {
 
     addTransport(transport: WebRtcTransport): void {
         this.transports.set(transport.id, transport);
+    }
+
+    addPlainTransport(transport: PlainTransport): void {
+        this.plainTransports.set(transport.id, transport);
     }
 
     getTransport(transportId: string): WebRtcTransport {
@@ -96,6 +103,13 @@ export class Peer {
             producer.close();
         }
 
+        // A plain transport exists only to carry one broadcast: leaving it open would
+        // hold a UDP port from a small band for the rest of the process's life.
+        for (const transport of this.plainTransports.values()) {
+            transport.close();
+        }
+
+        this.plainTransports.clear();
         this.producers.clear();
     }
 
@@ -108,11 +122,12 @@ export class Peer {
     }
 
     close(): void {
-        for (const transport of this.transports.values()) {
+        for (const transport of [...this.transports.values(), ...this.plainTransports.values()]) {
             transport.close();
         }
 
         this.transports.clear();
+        this.plainTransports.clear();
         this.producers.clear();
         this.consumers.clear();
     }

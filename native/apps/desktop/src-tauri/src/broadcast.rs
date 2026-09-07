@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use capture::{CaptureConfig, CaptureEvent, PlatformCapturer, Quality};
-use media::{AudioEncoder, EncodedFrame, EncoderConfig, PeerLink, PlatformEncoder, Signal};
+use media::{
+    AudioEncoder, EncodedFrame, EncoderConfig, PeerLink, PlainSender, PlatformEncoder, Signal,
+};
 use tokio::sync::{Mutex, mpsc};
 
 /// Above this limit, the broadcaster's upload multiplies: 4 viewers at 1080p
@@ -16,10 +18,13 @@ use tokio::sync::{Mutex, mpsc};
 pub const LIMITE_P2P: usize = 3;
 
 type Peers = Arc<Mutex<HashMap<String, PeerLink>>>;
+type Sfu = Arc<Mutex<Option<PlainSender>>>;
 
 pub struct Broadcast {
     capturer: PlatformCapturer,
     peers: Peers,
+    sfu: Sfu,
+    sfu_key: [u8; 30],
     ice_servers: Vec<String>,
     frame_rate: f64,
     signals: mpsc::Sender<(String, Signal)>,
@@ -38,8 +43,11 @@ impl Broadcast {
         // needs interior mutability.
         let encoder = std::sync::Mutex::new(PlatformEncoder::new(&encoder_config)?);
         let audio = std::sync::Mutex::new(AudioEncoder::new(96_000)?);
+        let sfu: Sfu = Arc::new(Mutex::new(None));
         let destino = Arc::clone(&peers);
+        let destino_sfu = Arc::clone(&sfu);
         let runtime = tokio::runtime::Handle::current();
+        let frame_rate = encoder_config.frame_rate;
 
         let capturer = PlatformCapturer::start(
             &CaptureConfig {
@@ -65,8 +73,9 @@ impl Broadcast {
                         }
 
                         let peers = Arc::clone(&destino);
+                        let sfu = Arc::clone(&destino_sfu);
 
-                        runtime.spawn(async move { difundir_audio(&peers, pacotes).await });
+                        runtime.spawn(async move { difundir_audio(&peers, &sfu, pacotes).await });
 
                         return;
                     }
@@ -88,8 +97,9 @@ impl Broadcast {
                 };
 
                 let peers = Arc::clone(&destino);
+                let sfu = Arc::clone(&destino_sfu);
 
-                runtime.spawn(async move { difundir(&peers, codificado).await });
+                runtime.spawn(async move { difundir(&peers, &sfu, codificado, frame_rate).await });
             },
         )?;
 
@@ -99,6 +109,8 @@ impl Broadcast {
             Self {
                 capturer,
                 peers,
+                sfu,
+                sfu_key: PlainSender::generate_key(),
                 ice_servers,
                 frame_rate: encoder_config.frame_rate,
                 signals: emissor,
@@ -161,6 +173,33 @@ impl Broadcast {
         }
     }
 
+    /// What the server needs before the first packet, including the key that protects
+    /// it. The key is generated when the broadcast starts and never changes: it is the
+    /// same context that numbers the packets.
+    pub fn sfu_offer(&self, kind: &str) -> serde_json::Value {
+        serde_json::json!({
+            "rtpParameters": PlainSender::rtp_parameters(kind),
+            "srtpParameters": {
+                "cryptoSuite": PlainSender::CRYPTO_SUITE,
+                "keyBase64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, self.sfu_key),
+            },
+        })
+    }
+
+    /// Switches the broadcast to the server. From here the upload is constant no matter
+    /// how many people watch — which is the whole reason to give up the direct path.
+    pub async fn use_sfu(&self, address: String) -> anyhow::Result<()> {
+        let sender = PlainSender::connect(address.as_str(), &self.sfu_key)?;
+
+        *self.sfu.lock().await = Some(sender);
+
+        for (_, peer) in self.peers.lock().await.drain() {
+            let _ = peer.close().await;
+        }
+
+        Ok(())
+    }
+
     pub async fn viewers(&self) -> usize {
         self.peers.lock().await.len()
     }
@@ -176,26 +215,37 @@ impl Broadcast {
             let _ = peer.close().await;
         }
 
+        *self.sfu.lock().await = None;
+
         Ok(())
     }
 }
 
 /// The same frame goes to everyone. A failure for one viewer does not affect the others.
-async fn difundir(peers: &Peers, quadro: EncodedFrame) {
-    let peers = peers.lock().await;
-
-    for peer in peers.values() {
+///
+/// Only one of the two paths is ever populated: turning on the SFU closes the direct
+/// connections, because uploading to both is exactly the cost the SFU exists to avoid.
+async fn difundir(peers: &Peers, sfu: &Sfu, quadro: EncodedFrame, frame_rate: f64) {
+    for peer in peers.lock().await.values() {
         let _ = peer.send_frame(&quadro).await;
+    }
+
+    if let Some(sender) = sfu.lock().await.as_mut() {
+        let _ = sender.send_frame(&quadro, frame_rate);
     }
 }
 
 /// Audio follows the same path: compressed once and sent to everyone.
-async fn difundir_audio(peers: &Peers, pacotes: Vec<Vec<u8>>) {
-    let peers = peers.lock().await;
-
-    for peer in peers.values() {
+async fn difundir_audio(peers: &Peers, sfu: &Sfu, pacotes: Vec<Vec<u8>>) {
+    for peer in peers.lock().await.values() {
         for pacote in &pacotes {
             let _ = peer.send_audio(pacote).await;
+        }
+    }
+
+    if let Some(sender) = sfu.lock().await.as_mut() {
+        for pacote in &pacotes {
+            let _ = sender.send_audio(pacote);
         }
     }
 }

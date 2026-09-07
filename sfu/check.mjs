@@ -18,6 +18,19 @@ const mint = (claims, secret = SECRET) => {
     return `${input}.${signature}`;
 };
 
+/** The minimum a viewer needs to declare in order to receive H.264 from the native app. */
+const CAPACIDADES = {
+    codecs: [{
+        kind: 'video',
+        mimeType: 'video/H264',
+        clockRate: 90000,
+        preferredPayloadType: 96,
+        parameters: { 'packetization-mode': 1, 'level-asymmetry-allowed': 1, 'profile-level-id': '42e01f' },
+        rtcpFeedback: [{ type: 'nack' }, { type: 'nack', parameter: 'pli' }],
+    }],
+    headerExtensions: [],
+};
+
 class Client {
     constructor() {
         this.socket = new WebSocket(URL_WS);
@@ -234,6 +247,68 @@ const run = async () => {
     assert.equal(reply.data.resumed, false, 'without resume:true it MUST NOT resume — the client has no transports');
 
     depoisDoF5.close();
+
+    // Plain RTP ingest: the native app declares what it will send before sending it.
+    const nativo = new Client();
+    await nativo.open();
+    await nativo.call('join', { token: mint({ sub: 'nativo-uuid', name: 'Nativo', room, role: 'member' }) });
+
+    const semChave = await nativo.call('producePlain', {
+        kind: 'video',
+        source: 'screen',
+        rtpParameters: { codecs: [], encodings: [] },
+        srtpParameters: { cryptoSuite: 'AES_CM_128_HMAC_SHA1_80' },
+    });
+
+    assert.equal(semChave.ok, false, 'producing without an SRTP key must be refused');
+    assert.equal(semChave.status, 422);
+
+    const suiteInvalida = await nativo.call('producePlain', {
+        kind: 'video',
+        source: 'screen',
+        rtpParameters: { codecs: [], encodings: [] },
+        srtpParameters: { cryptoSuite: 'ROT13', keyBase64: 'AAAA' },
+    });
+
+    assert.equal(suiteInvalida.ok, false, 'an unknown crypto suite must be refused');
+
+    const plain = await nativo.call('producePlain', {
+        kind: 'video',
+        source: 'screen',
+        srtpParameters: { cryptoSuite: 'AES_CM_128_HMAC_SHA1_80', keyBase64: Buffer.alloc(30, 7).toString('base64') },
+        rtpParameters: {
+            codecs: [{
+                mimeType: 'video/H264',
+                payloadType: 96,
+                clockRate: 90000,
+                parameters: { 'packetization-mode': 1, 'level-asymmetry-allowed': 1, 'profile-level-id': '42e01f' },
+                rtcpFeedback: [{ type: 'nack' }, { type: 'nack', parameter: 'pli' }],
+            }],
+            encodings: [{ ssrc: 0x22345678 }],
+        },
+    });
+
+    assert.equal(plain.ok, true, `plain ingest should be accepted: ${JSON.stringify(plain)}`);
+    assert.ok(plain.data.producerId, 'it must return the producer id');
+    assert.ok(plain.data.port > 0, 'it must return the UDP port to send RTP to');
+    assert.ok(plain.data.srtpParameters?.keyBase64, 'it must return the key for the other direction');
+
+    // The whole point: someone else in the room consumes it like any other broadcast.
+    const assistindo = new Client();
+    await assistindo.open();
+    await assistindo.call('join', { token: mint({ sub: 'assiste-uuid', name: 'Assiste', room, role: 'member' }) });
+
+    const transporte = await assistindo.call('createTransport');
+    const consumo = await assistindo.call('consume', {
+        transportId: transporte.data.transportId,
+        producerId: plain.data.producerId,
+        rtpCapabilities: CAPACIDADES,
+    });
+
+    assert.equal(consumo.ok, true, `a plain producer must be consumable: ${JSON.stringify(consumo)}`);
+
+    assistindo.close();
+    nativo.close();
     voltou.close();
     guest.close();
     owner.close();
