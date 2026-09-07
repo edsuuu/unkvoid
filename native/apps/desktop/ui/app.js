@@ -956,6 +956,8 @@ class App {
             aba.classList.toggle('text-ink-soft', ! ativa);
         }
 
+        this.shareSource = null;
+        el('share-confirm').disabled = true;
         lista.innerHTML = '';
 
         if (! itens.length) {
@@ -966,7 +968,7 @@ class App {
             return;
         }
 
-        lista.className = 'mt-4 grid min-h-0 flex-1 grid-cols-2 gap-3 overflow-y-auto';
+        lista.className = 'mt-4 grid min-h-0 flex-1 auto-rows-min grid-cols-2 gap-3 overflow-y-auto content-start';
 
         for (const item of itens) {
             const botao = document.createElement('button');
@@ -1006,6 +1008,23 @@ class App {
                 })
                 .catch(() => {});
         }
+    }
+
+    /**
+     * Marca o escolhido pela borda, não pelo fundo: o card é quase todo miniatura, e
+     * pintar o fundo não aparece atrás da imagem.
+     */
+    pickShareSource(botao) {
+        for (const outro of el('share-sources').querySelectorAll('button')) {
+            const escolhido = outro === botao;
+
+            outro.classList.toggle('border-brand', escolhido);
+            outro.classList.toggle('border-transparent', ! escolhido);
+            outro.classList.toggle('bg-brand', escolhido);
+        }
+
+        this.shareSource = botao.dataset.source;
+        el('share-confirm').disabled = false;
     }
 
     closeShareModal() {
