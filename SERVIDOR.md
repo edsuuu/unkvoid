@@ -1,7 +1,7 @@
-# Discord 2.0 — o que está rodando na VPS
+# Unkvoid — o que está rodando na VPS
 
 **URL:** https://discord.unkvoid.com · **VPS:** 144.126.133.10 (Contabo, St. Louis/EUA)
-**Repositório:** https://github.com/edsuuu/discord2.0 (privado)
+**Repositório:** https://github.com/edsuuu/unkvoid (privado)
 
 ---
 

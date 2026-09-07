@@ -1,10 +1,16 @@
-# Discord 2.0 — estado do projeto
+# Unkvoid — estado do projeto
 
 Documento para quem pegar o trabalho daqui. Diz o que existe, o que **não** existe,
 e onde estão as armadilhas que já custaram tempo.
 
-**Web em produção:** https://discord.unkvoid.com · **Repo:** github.com/edsuuu/discord2.0
+**Web em produção:** https://discord.unkvoid.com · **Repo:** github.com/edsuuu/unkvoid
 **VPS:** 144.126.133.10 (Contabo, St. Louis/EUA)
+
+> **Nome.** O projeto se chama **Unkvoid** desde a v0.6.0 (app, repositório e bundle
+> `com.unkvoid.desktop`). O subdomínio segue `discord.unkvoid.com` por enquanto — é a
+> única string "discord" que ainda importa. O deep link continua `discord2://` de
+> propósito: renomear o esquema exigiria um deploy do web no mesmo instante, e ele não
+> aparece para o usuário.
 
 ---
 
@@ -189,9 +195,41 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
 
 ## Armadilhas já pagas
 
+**Tauri**
+- **`withGlobalTauri` é obrigatório aqui.** A UI (`native/apps/desktop/ui/`) não passa
+  por bundler, então só alcança o Rust por `window.__TAURI__`. Sem essa flag no
+  `tauri.conf.json` o objeto não existe, a primeira linha do `app.js` estoura, e o app
+  fica **parado para sempre na tela de atualização** — sem erro visível, porque quem
+  mostraria o erro é justamente o script que morreu. Foi assim da v0.2.0 à v0.5.0.
+  Os plugins (`opener`, `deepLink`) só se registram *depois* que esse objeto existe:
+  o `api-iife.js` de cada um começa com `if ("__TAURI__" in window)`.
+- `app.js` agora checa `window.__TAURI__?.core` e escreve o motivo na própria tela.
+  Uma tela travada não diz nada; uma tela com o motivo diz tudo.
+- `updater.check()` sem `timeout` fica pendurado no timeout do sistema quando o
+  endpoint aceita a conexão e não responde. São 10 s em `check_update`.
+- Identificador terminado em `.app` conflita com a extensão de bundle do macOS —
+  daí `com.unkvoid.desktop` e não `com.unkvoid.app`.
+
+**CI**
+- `if: env.X == ''` num *step* **não enxerga** o `env:` daquele mesmo step, e o contexto
+  `secrets` não existe em `if` de step. A secret tem que virar `env` no nível do **job**.
+  Enquanto isso estava errado, a condição era sempre verdadeira e **todo instalador saía
+  com o updater desligado**.
+- O build de Windows morria em `icons/icon.ico not found`. `npx tauri icon icons/icon.png`
+  gera o set inteiro (o `.ico` e o `.icns` entram no repo; as pastas `android/` e `ios/`
+  que ele cria são lixo aqui).
+- Os `examples/` da crate `media` linkam IOSurface: só passam clippy no macOS. Fora dele
+  o CI roda `--lib --bins --tests`.
+- `createUpdaterArtifacts` **não** gera o `latest.json` — ele só assina os bundles. O job
+  `manifest` monta o manifesto a partir dos `.sig` e publica na release; sem ele o
+  auto-update procura um arquivo que não existe e toma 404.
+
 **Build**
 - O Opus vem da crate `opus`, que compila libopus do zero via **cmake**. Os runners do
   GitHub já têm cmake; localmente foi preciso `brew install cmake`.
+- Uma tradução pt→en aplicada sem fronteira de palavra passou por cima de
+  `sfu/node_modules` (`echo`→`andcho`, `command`→`withmand`). 156 arquivos. Nada
+  versionado foi afetado; `rm -rf node_modules && pnpm install` resolveu.
 
 **Rust / macOS**
 - A crate `screencapturekit` compila Swift e o linker procura o runtime no caminho do

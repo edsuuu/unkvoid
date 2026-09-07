@@ -1,11 +1,20 @@
 import { Api } from './api.js';
 import { P2P } from './p2p.js';
 
+const el = id => document.getElementById(id);
+
+// This UI has no bundler, so `window.__TAURI__` (config `withGlobalTauri`) is the only
+// bridge to Rust — and the plugin scripts only attach themselves to it once it exists.
+// Reading it blind would throw here and leave the update screen spinning forever, which
+// is exactly what it looked like before: a hang with no message.
+if (! window.__TAURI__?.core) {
+    el('update-status').textContent = 'Broken build: the Tauri bridge did not load.';
+    throw new Error('window.__TAURI__ is missing — check withGlobalTauri in tauri.conf.json');
+}
+
 const { invoke } = window.__TAURI__.core;
 const { openUrl } = window.__TAURI__.opener;
 const { onOpenUrl } = window.__TAURI__.deepLink;
-
-const el = id => document.getElementById(id);
 const iniciais = nome => (nome ?? '?').slice(0, 2).toUpperCase();
 
 class App {
@@ -85,7 +94,7 @@ class App {
         el('tela-login').hidden = false;
 
         // Google does not open inside the app: it opens in the system browser and
-        // returns through a deep link. The password never passes through Discord 2.0.
+        // returns through a deep link. The password never passes through Unkvoid.
         el('botao-google').onclick = () => openUrl(`${Api.BASE}/api/desktop/google`);
 
         onOpenUrl(async ([url]) => {

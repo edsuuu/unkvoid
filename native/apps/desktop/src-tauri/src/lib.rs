@@ -262,11 +262,18 @@ fn stop_capture(state: State<'_, ActiveCapture>) -> Result<(), String> {
 /// Checks for, downloads, and installs updates before opening the app — as Discord
 /// does. A network failure does not block startup: without a server the user cannot
 /// use the app anyway, but blocking on the update screen would be worse than warning them.
+///
+/// The timeout is what keeps that promise: without it an endpoint that accepts the
+/// connection and never answers holds the splash screen until the OS gives up.
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_updater::UpdaterExt;
 
-    let updater = app.updater().map_err(|error| error.to_string())?;
+    let updater = app
+        .updater_builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|error| error.to_string())?;
 
     let Some(update) = updater.check().await.map_err(|error| error.to_string())? else {
         return Ok(None);

@@ -46,11 +46,18 @@ jobs:
         working-directory: native
         run: cargo fmt --all --check
 
+      # The examples are macOS-only spikes (they link against IOSurface), so they are
+      # only linted where they can actually compile. Outside macOS this code has never
+      # been executed either, so warnings there do not block an installer.
       - name: Clippy
         working-directory: native
-        # Outside macOS this code has never been executed: treating warnings as errors
-        # here would block installers for something we cannot verify locally.
-        run: cargo clippy --workspace --all-targets ${{ matrix.target == 'macos' && '-- -D warnings' || '' }}
+        run: |
+          if [ "${{ matrix.target }}" = "macos" ]; then
+            cargo clippy --workspace --all-targets -- -D warnings
+          else
+            cargo clippy --workspace --lib --bins --tests
+          fi
+        shell: bash
 
       - name: Tests
         working-directory: native
@@ -72,6 +79,9 @@ jobs:
           - os: macos-latest
             target: macos
             artifact: dmg
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
     steps:
       - uses: actions/checkout@v4
 
@@ -104,24 +114,49 @@ jobs:
           p.write_text(json.dumps(d, indent=2) + '\n')
           print('Updater disabled: TAURI_SIGNING_PRIVATE_KEY is missing from secrets')
           EOF
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 
       - name: Build installer
         working-directory: native/apps/desktop
         run: npm install --no-save @tauri-apps/cli@^2 && npx tauri build
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+
+      # Exactly one bundle per platform is signed for the updater (.app.tar.gz on macOS,
+      # the installer itself on Windows, the AppImage on Linux). Finding it by its .sig
+      # keeps this step honest if Tauri ever renames the artifact. No JSON is built here:
+      # this runs on three OSes and only Linux is guaranteed to have python3.
+      - name: Collect the updater bundle
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            macos)   key=darwin-aarch64 ;;
+            windows) key=windows-x86_64 ;;
+            linux)   key=linux-x86_64 ;;
+          esac
+          sig=$(find native/target/release/bundle -name '*.sig' -print -quit)
+          test -n "$sig" || { echo "no signed bundle: is TAURI_SIGNING_PRIVATE_KEY set?" >&2; exit 1; }
+          bundle="${sig%.sig}"
+          mkdir -p updater/bundle
+          cp "$bundle" updater/bundle/
+          cp "$sig" "updater/$key.sig"
+          basename "$bundle" > "updater/$key.file"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: discord2-${{ matrix.target }}
+          name: unkvoid-${{ matrix.target }}
           path: |
             native/target/release/bundle/msi/*.msi
             native/target/release/bundle/deb/*.deb
             native/target/release/bundle/dmg/*.dmg
           if-no-files-found: warn
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: updater-${{ matrix.target }}
+          path: updater/
+          if-no-files-found: error
           retention-days: 14
 
       # On a tag, the installer goes directly to the Release — binaries do not enter
@@ -134,6 +169,59 @@ jobs:
             native/target/release/bundle/msi/*.msi
             native/target/release/bundle/deb/*.deb
             native/target/release/bundle/dmg/*.dmg
+            updater/bundle/*
           draft: false
           prerelease: true
           fail_on_unmatched_files: false
+
+  # The app only updates itself if it finds this manifest, so it is published last:
+  # a latest.json pointing at assets that failed to upload would break every client.
+  manifest:
+    name: Updater manifest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: installers
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: updater-*
+          path: updater
+          merge-multiple: true
+
+      - name: Compose latest.json
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'EOF'
+          import datetime, json, os, pathlib
+
+          tag = os.environ['TAG']
+          base = f"https://github.com/{os.environ['REPO']}/releases/download/{tag}"
+
+          platforms = {
+              signature.stem: {
+                  'signature': signature.read_text().strip(),
+                  'url': f"{base}/{signature.with_suffix('.file').read_text().strip()}",
+              }
+              for signature in sorted(pathlib.Path('updater').glob('*.sig'))
+          }
+
+          if not platforms:
+              raise SystemExit('no platform was signed — latest.json would be useless')
+
+          pathlib.Path('latest.json').write_text(json.dumps({
+              'version': tag.lstrip('v'),
+              'notes': f'Unkvoid {tag}',
+              'pub_date': datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z'),
+              'platforms': platforms,
+          }, indent=2) + '\n')
+          EOF
+          cat latest.json
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: latest.json
+          draft: false
+          prerelease: true

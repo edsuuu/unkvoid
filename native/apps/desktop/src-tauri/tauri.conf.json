@@ -1,15 +1,15 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Discord 2.0",
-  "version": "0.5.0",
-  "identifier": "com.unkvoid.discord",
+  "productName": "Unkvoid",
+  "version": "0.6.0",
+  "identifier": "com.unkvoid.desktop",
   "build": {
     "frontendDist": "../ui"
   },
   "app": {
     "windows": [
       {
-        "title": "Discord 2.0",
+        "title": "Unkvoid",
         "width": 1280,
         "height": 800,
         "minWidth": 940,
@@ -18,6 +18,7 @@
         "label": "main"
       }
     ],
+    "withGlobalTauri": true,
     "security": {
       "csp": null
     }
@@ -32,11 +33,15 @@
       "appimage"
     ],
     "icon": [
-      "icons/icon.png"
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
     ],
     "category": "SocialNetworking",
     "shortDescription": "Voice, video, and screen sharing",
-    "longDescription": "Desktop client with native screen capture, no browser bar, and system audio.",
+    "longDescription": "Unkvoid: desktop client with native screen capture, no browser bar, and system audio.",
     "macOS": {
       "minimumSystemVersion": "13.0"
     },
@@ -60,7 +65,7 @@
       "active": true,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFEMkFFRDNFNEI5QzgwQTQKUldTa2dKeExQdTBxSGFyYjJLazd1RmNvWFFCdDY5cUYvZmt6MXY2M0ZCb3F2RXorL0U2enowRTYK",
       "endpoints": [
-        "https://github.com/edsuuu/discord2.0/releases/latest/download/latest.json"
+        "https://github.com/edsuuu/unkvoid/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"
