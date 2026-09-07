@@ -10,7 +10,7 @@ use Illuminate\Validation\Rule;
 use Livewire\Attributes\Title;
 use Livewire\Component;
 
-#[Title('Escolha seu nickname')]
+#[Title('Choose your nickname')]
 final class ChooseNickname extends Component
 {
     public string $name = '';
@@ -36,7 +36,7 @@ final class ChooseNickname extends Component
                 Rule::unique('users', 'nickname')->ignore($user->id),
             ],
         ], [
-            'nickname.regex' => __('Use apenas letras minúsculas, números, ponto e underline.'),
+            'nickname.regex' => __('Use only lowercase letters, numbers, periods, and underscores.'),
         ]);
 
         $user->fill($validated)->save();

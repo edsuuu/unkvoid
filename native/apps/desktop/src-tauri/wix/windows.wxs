@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Duas coisas que o instalador padrão do Tauri não faz e que o Windows exige:
+
+  1. Atalho na área de trabalho. O template só cria o do menu Iniciar, e quem instala
+     espera achar o ícone na tela.
+
+  2. Regra de firewall. O Windows bloqueia conexão de ENTRADA por padrão, e o WebRTC
+     precisa receber para o ICE fechar — sem isso a transmissão direta entre duas
+     máquinas nunca conecta, e o usuário vê um popup do firewall no meio da chamada.
+     Sair não precisa de permissão, então o caminho pelo SFU funcionaria de qualquer
+     jeito; é o P2P que depende disto.
+
+  A regra é adicionada por netsh com Return="ignore": se falhar, a instalação continua
+  e o pior caso é o popup do firewall que já existia. Uma instalação que quebra por
+  causa de uma regra de rede seria pior que a regra faltando.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Fragment>
+        <DirectoryRef Id="TARGETDIR">
+            <Directory Id="DesktopFolder" Name="Desktop" />
+        </DirectoryRef>
+
+        <DirectoryRef Id="INSTALLDIR">
+            <Component Id="DesktopShortcut" Guid="6E2B6A17-0F4C-4D3E-9C21-58B0F3A7D411">
+                <Shortcut
+                    Id="UnkvoidDesktopShortcut"
+                    Directory="DesktopFolder"
+                    Name="[ProductName]"
+                    Description="[ProductName]"
+                    Target="[INSTALLDIR][ProductName].exe"
+                    WorkingDirectory="INSTALLDIR" />
+
+                <RemoveFolder Id="RemoveDesktopShortcut" Directory="DesktopFolder" On="uninstall" />
+
+                <!-- Um componente precisa de uma chave: sem ela o MSI não sabe se o
+                     atalho está instalado e não o remove na desinstalação. -->
+                <RegistryValue
+                    Root="HKCU"
+                    Key="Software\[Manufacturer]\[ProductName]"
+                    Name="DesktopShortcut"
+                    Type="integer"
+                    Value="1"
+                    KeyPath="yes" />
+            </Component>
+        </DirectoryRef>
+
+        <ComponentGroup Id="DesktopShortcutGroup">
+            <ComponentRef Id="DesktopShortcut" />
+        </ComponentGroup>
+
+        <!-- Elevado (Impersonate="no"): mexer no firewall exige privilégio, e o MSI já
+             está elevado nesta fase. -->
+        <CustomAction
+            Id="AllowThroughFirewall"
+            Directory="INSTALLDIR"
+            ExeCommand="netsh advfirewall firewall add rule name=&quot;[ProductName]&quot; dir=in action=allow program=&quot;[INSTALLDIR][ProductName].exe&quot; enable=yes profile=private,domain"
+            Execute="deferred"
+            Impersonate="no"
+            Return="ignore" />
+
+        <CustomAction
+            Id="RemoveFromFirewall"
+            Directory="INSTALLDIR"
+            ExeCommand="netsh advfirewall firewall delete rule name=&quot;[ProductName]&quot;"
+            Execute="deferred"
+            Impersonate="no"
+            Return="ignore" />
+
+        <InstallExecuteSequence>
+            <Custom Action="AllowThroughFirewall" After="InstallFiles">NOT Installed</Custom>
+            <Custom Action="RemoveFromFirewall" Before="RemoveFiles">Installed AND NOT UPGRADINGPRODUCTCODE</Custom>
+        </InstallExecuteSequence>
+    </Fragment>
+</Wix>

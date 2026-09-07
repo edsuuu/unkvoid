@@ -1,7 +1,7 @@
-# Discord 2.0 — o que está rodando na VPS
+# Unkvoid — o que está rodando na VPS
 
 **URL:** https://discord.unkvoid.com · **VPS:** 144.126.133.10 (Contabo, St. Louis/EUA)
-**Repositório:** https://github.com/edsuuu/discord2.0 (privado)
+**Repositório:** https://github.com/edsuuu/unkvoid (privado)
 
 ---
 
@@ -56,9 +56,16 @@ curl 127.0.0.1:3000/health
 |---|---|---|---|
 | 80 / 443 | TCP | nginx | sim |
 | 3000 | TCP | API de mídia (só 127.0.0.1) | não precisa |
-| **40000** | **UDP** | **mídia WebRTC** | **sim — sem isso nada conecta** |
-| 40000 | TCP | fallback de mídia | sim |
+| **40000-40003** | **UDP** | **mídia WebRTC — uma porta por worker** | **sim** |
+| 40000-40003 | TCP | fallback de mídia | sim |
 
+> **Por que são quatro portas:** o worker do mediasoup é um processo C++ separado e
+> single-thread — satura um núcleo e para. Threads no Node não ajudariam, porque a
+> mídia nunca passa pelo JavaScript, só a sinalização. Escalar é ter **um worker por
+> núcleo** (a VPS tem 4), e cada um precisa da própria porta, porque o `WebRtcServer`
+> não é compartilhável entre processos. Salas novas vão para o worker menos carregado;
+> o `/health` mostra a distribuição.
+>
 > **Por que a porta UDP precisa estar liberada:** o mediasoup é **ICE Lite** — ele só
 > responde a checagens ICE, nunca inicia. Num firewall stateful isso significa que a
 > porta tem que aceitar entrada não solicitada. Foi medido: com um listener na porta,
@@ -79,19 +86,26 @@ para 5 MB. O default gera perda de pacote sob carga.
 `.env` e `storage` moram em `shared/` e sobrevivem ao deploy. Nenhum segredo está no
 repositório — o `SFU_SECRET` fica em `/var/www/projects/sfu/.env` (600).
 
-**Duas armadilhas que já custaram tempo:**
+**Armadilhas que já custaram tempo:**
 
 1. `pnpm install` não baixa o worker do mediasoup (o pnpm 11 ignora
    `onlyBuiltDependencies` e ainda sai com erro). O deploy roda o postinstall na mão.
 2. `pm2 restart <nome> --update-env` relê o ambiente do **shell**, não o
    `ecosystem.config.cjs`. Use `pm2 startOrRestart ecosystem.config.cjs --update-env`.
+3. `pm2 startOrRestart` **não** troca o caminho do script de um app já registrado —
+   o deploy faz `pm2 delete` + `pm2 start` para mudanças no ecosystem valerem.
+4. Entrar de novo com o mesmo usuário **substitui** a sessão anterior em vez de ser
+   recusado — recusar prendia a pessoa fora quando um socket morria sem fechar. A
+   remoção de participante compara o objeto, não o id: fechar o socket antigo não
+   pode derrubar a sessão nova, que carrega o mesmo id.
 
 ---
 
 ## A API de mídia
 
-Escrita por nós, na estrutura do MoneyClips: rota → Request (validação na fronteira,
-com acessores) → controller magro → Service → **retorno sempre via Resource**.
+Escrita por nós em **TypeScript** (strict), na estrutura do MoneyClips: rota → Request
+(validação na fronteira, com acessores) → controller magro → Service → **retorno
+sempre via Resource**. Compila para `dist/`, e o pm2 roda `dist/server.js`.
 
 ```
 src/
@@ -111,12 +125,44 @@ O mediasoup entra só como motor de transporte (ICE, DTLS, SRTP, RTP, estimativa
 banda) — o mesmo papel que o Pion faz dentro do LiveKit.
 
 ```bash
-cd sfu && pnpm run check   # 14 asserções sobre o contrato da API
+cd sfu && pnpm run build       # tsc
+cd sfu && pnpm run typecheck   # tsc --noEmit
+cd sfu && pnpm run check       # asserções sobre o contrato da API
 ```
 
 O check já pegou um bug real: o `SFU_SECRET` não estava chegando na VPS.
 
 ---
+
+## Queda de conexão não derruba da sala
+
+O WebSocket é **só sinalização** — a mídia WebRTC continua fluindo mesmo com ele
+caído. O sistema aproveita isso em dois níveis:
+
+**Servidor:** quando o socket cai, o participante não é destruído. Fica órfão por
+**45 s** com transports, producers e consumers intactos. Reconectar dentro dessa
+janela **retoma** a sessão — a tela de quem estava assistindo nem pisca, e a sala nem
+é avisada, porque ninguém saiu de fato. Só quando a carência estoura é que o
+participante sai e a sala pode ser liberada.
+
+**Quem assiste** é avisado na hora (`peerConnectionLost`): a tela esmaece e mostra
+"reconectando…" em vez de deixar o último quadro congelado passando por imagem viva.
+Se a pessoa volta, o aviso some (`peerReconnected`); se a carência estoura, o quadro
+é removido (`peerLeft`). Uma transmissão republicada substitui a antiga do mesmo
+participante, em vez de duplicar.
+
+**Cliente:** queda não intencional dispara reconexão com backoff exponencial
+(1s, 2s, 4s… até 10s, 8 tentativas). O token é buscado **na hora** de cada tentativa,
+porque o antigo pode ter expirado. O servidor responde se retomou:
+
+| Resposta | O que o cliente faz |
+|---|---|
+| `resumed: true` | nada — a mídia nunca parou |
+| `resumed: false` | recria transports e **republica** os tracks locais guardados |
+
+Medido nos dois caminhos: fechando o socket na mão (retomou, cronômetro em 00:15 sem
+zerar) e reiniciando o SFU inteiro, que apaga o estado do servidor (republicou,
+cronômetro em 00:43 sem zerar).
 
 ## Autenticação e permissão
 
@@ -126,8 +172,15 @@ O check já pegou um bug real: o `SFU_SECRET` não estava chegando na VPS.
 - **Só entra em servidor por link de convite** (`/convite/{code}`) e **só logado**
 - Papéis por servidor: `owner`, `admin`, `member`
 
-O dono/admin pode **encerrar a transmissão** de alguém e **expulsar da chamada**. Isso
-é verificado nos dois lados: no Laravel (quem pode disparar) e no SFU (o papel vem
+Moderação em três níveis, propositalmente separados:
+
+| Ação | Onde | Efeito |
+|---|---|---|
+| Encerrar transmissão | SFU | para de publicar; **continua na chamada e no chat** |
+| Tirar da chamada | SFU | sai da voz; **continua membro e no chat** |
+| Remover do servidor | Laravel | perde acesso a tudo — única destrutiva |
+
+Verificado nos dois lados: no Laravel (quem pode disparar) e no SFU (o papel vem
 assinado dentro do token, o cliente não escolhe).
 
 **Token de voz:** `POST /api/voz/{channel}/token` verifica canal de voz → membro do

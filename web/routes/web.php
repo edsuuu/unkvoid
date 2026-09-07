@@ -4,11 +4,12 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Auth\GoogleController;
 use App\Http\Controllers\InviteController;
+use App\Http\Controllers\PresenceTokenController;
 use App\Http\Controllers\VoiceTokenController;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 
-// A raiz é a porta de entrada: quem está logado vai pro workspace, o resto loga.
+// The root is the entry point: logged-in users go to the workspace; everyone else signs in.
 Route::get('/', fn () => redirect()->route(Auth::check() ? 'app' : 'login'))->name('home');
 
 Route::get('oauth2/google', [GoogleController::class, 'redirect'])->name('google.redirect');
@@ -24,6 +25,7 @@ Route::middleware(['auth', 'nickname'])->group(function (): void {
 
     Route::get('convite/{code}', InviteController::class)->name('invite');
     Route::post('api/voz/{channel}/token', VoiceTokenController::class)->name('voice.token');
+    Route::post('api/servidores/{server}/presenca', PresenceTokenController::class)->name('presence.token');
 });
 
 require __DIR__.'/settings.php';

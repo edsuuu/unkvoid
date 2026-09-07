@@ -1,0 +1,27 @@
+[package]
+name = "capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Screen and system audio capture, native per platform"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = { version = "9", features = ["macos_15_0"] }
+apple-cf = { version = "0.9", features = ["cv"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-capture = "2"
+
+
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+
+[[example]]
+name = "spike"
+path = "examples/spike.rs"

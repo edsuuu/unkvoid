@@ -1,0 +1,12 @@
+# A crate screencapturekit compila Swift e o linker procura o runtime no caminho do
+# Xcode completo. Nesta máquina só existem os Command Line Tools, então apontamos o
+# caminho real.
+# ponytail: caminho derivado de `xcode-select -p` na hora de gerar este arquivo.
+# Teto: quebra se a máquina trocar de toolchain. Upgrade: mover para um build.rs
+# que resolva o caminho em tempo de compilação.
+[target.aarch64-apple-darwin]
+rustflags = ["-L", "/Library/Developer/CommandLineTools/usr/lib/swift/macosx"]
+
+[env]
+# ScreenCaptureKit exige 13.0; o default do Rust em arm64 é 11.0.
+MACOSX_DEPLOYMENT_TARGET = "13.0"

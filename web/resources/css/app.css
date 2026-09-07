@@ -47,3 +47,46 @@
 [x-cloak] {
     display: none !important;
 }
+
+/* Thin scrollbar, like Discord’s: appears over the dark background without
+   take up space or draw attention. */
+@layer base {
+    [x-cloak] {
+        display: none !important;
+    }
+
+    .dark ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+
+    .dark ::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    .dark ::-webkit-scrollbar-thumb {
+        background: #1a1b1e;
+        border-radius: 4px;
+    }
+
+    .dark ::-webkit-scrollbar-thumb:hover {
+        background: #111214;
+    }
+
+    .dark * {
+        scrollbar-width: thin;
+        scrollbar-color: #1a1b1e transparent;
+    }
+
+    /* Tailwind’s default focus ring disappears in Discord’s dark theme. */
+    .dark :focus-visible {
+        outline: 2px solid #5865f2;
+        outline-offset: 1px;
+    }
+
+    /* Prevents accidental text selection when quickly clicking channels and buttons. */
+    button,
+    [role='button'] {
+        user-select: none;
+    }
+}

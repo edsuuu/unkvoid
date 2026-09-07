@@ -26,7 +26,7 @@ final class ResolveGoogleUser
         }
 
         return User::create([
-            'name' => $googleUser->getName() ?? $googleUser->getNickname() ?? 'Usuário',
+            'name' => $googleUser->getName() ?? $googleUser->getNickname() ?? 'User',
             'email' => $googleUser->getEmail(),
             'google_id' => $googleUser->getId(),
             'avatar_url' => $googleUser->getAvatar(),

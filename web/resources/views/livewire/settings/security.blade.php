@@ -202,7 +202,7 @@
                                             this.copied = true;
                                             setTimeout(() => this.copied = false, 1500);
                                         } catch (error) {
-                                            console.warn('[WARN] falha ao copiar a chave para a área de transferência', error);
+                                            console.warn('[WARN] failed to copy the key to the clipboard', error);
                                         }
                                     }
                                 }"
