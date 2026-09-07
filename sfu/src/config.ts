@@ -17,11 +17,15 @@ export const config = {
     // One worker per core. Each one uses a port starting at mediaPort.
     workerCount: Number(process.env.SFU_WORKERS ?? availableParallelism()),
 
-    // Plain RTP ingest (the native app broadcasting to many viewers) needs one UDP port
-    // per broadcast, and those cannot share the WebRtcServer port. mediasoup would pick
-    // from 10000-59999 by default; a narrow band keeps the firewall rule to one line.
+    // Ingest de RTP puro (o app nativo transmitindo para muita gente). Não pode dividir
+    // a porta do WebRtcServer, e o mediasoup sortearia de 10000-59999 por padrão — uma
+    // faixa estreita mantém a regra de firewall em uma linha só.
+    //
+    // Uma porta por worker: vídeo e áudio de uma transmissão dividem o mesmo transport,
+    // então isto é uma transmissão simultânea por worker. Subir o número aqui é barato,
+    // mas cada porta a mais é uma regra de firewall que alguém abre à mão.
     plainPortBase: Number(process.env.SFU_PLAIN_PORT ?? 41000),
-    plainPortsPerWorker: Number(process.env.SFU_PLAIN_PORTS ?? 8),
+    plainPortsPerWorker: Number(process.env.SFU_PLAIN_PORTS ?? 1),
 
     worker: {
         logLevel: 'warn' as const,

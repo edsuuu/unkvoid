@@ -419,10 +419,38 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
 **Rede**
 - O firewall da Contabo tem allowlist por porta. Abertas: 22, 80, 443, 8443,
   30033/tcp, 9987/udp e 40000-40003 (tcp+udp).
-- ⚠️ **Falta abrir `41000-41031/udp`** — é por onde o app desktop entrega a
-  transmissão ao SFU acima de 3 espectadores. Sem isso os pacotes saem e não chegam,
-  e a transmissão fica preta para quem assiste (o caminho direto, até 3, não usa
-  essas portas e continua funcionando).
+- ⚠️ **`41000-41003/udp`** é por onde o app desktop entrega a transmissão ao SFU acima
+  de 3 espectadores. Sem isso os pacotes saem e não chegam, e a transmissão fica preta
+  para quem assiste — o caminho direto, até 3, não usa essas portas e continua
+  funcionando.
+- **Como saber se a porta está aberta de verdade**, sem depender do painel da Contabo:
+
+  ```bash
+  # na VPS
+  sudo timeout 20 tcpdump -nn -i any 'udp and dst portrange 40000-41003' > /tmp/cap.txt
+  # na sua máquina, enquanto isso
+  python3 -c "
+  import socket, time
+  s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+  for p in (40000, 41000, 41001, 41002, 41003):
+      for _ in range(6): s.sendto(b'x', ('144.126.133.10', p)); time.sleep(0.02)
+  "
+  # de volta na VPS
+  grep 'IP ' /tmp/cap.txt | sed 's/.*> //' | cut -d. -f5 | cut -d: -f1 | sort -n | uniq -c
+  ```
+
+  A `40000` serve de **controle**: ela funciona. Se ela aparece e a outra não, o problema
+  é a regra; se nenhuma aparece, o problema é a saída da sua máquina. Foi exatamente
+  assim que se descobriu que a regra cobria só a `41000` e não a faixa.
+- O teste ponta a ponta contra produção, sem expor o segredo (ele é usado **na VPS**):
+
+  ```bash
+  ssh -f -N -L 3100:127.0.0.1:3000 vps
+  cargo run -p media --example plain -- ws://127.0.0.1:3100/sfu <token gerado na VPS>
+  ```
+
+  A sinalização vai pelo túnel, mas o RTP vai para o IP público — atravessa o firewall
+  de verdade.
 
 ---
 

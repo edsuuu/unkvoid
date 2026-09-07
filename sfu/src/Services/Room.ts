@@ -186,7 +186,21 @@ export class Room {
      * since it sits behind a home router. SRTP is not optional here: without it the
      * screen would cross the internet in the clear.
      */
-    async createPlainTransport(peer: Peer, srtpParameters: SrtpParameters): Promise<PlainTransport> {
+    /**
+     * Uma transmissão, um transport — vídeo e áudio compartilham.
+     *
+     * O mediasoup aceita vários `produce()` no mesmo transport, e o app manda os dois de
+     * um socket só: o SSRC e o payload type já distinguem um do outro. Um transport por
+     * mídia gastava o dobro de portas UDP sem ganhar nada, e cada porta a mais é uma
+     * linha a mais na regra de firewall que alguém tem que criar à mão.
+     */
+    async plainTransportFor(peer: Peer, srtpParameters: SrtpParameters): Promise<PlainTransport> {
+        const existing = [...peer.plainTransports.values()].at(0);
+
+        if (existing) {
+            return existing;
+        }
+
         const transport = await this.router.createPlainTransport({
             listenInfo: { protocol: 'udp', ip: '0.0.0.0', announcedAddress: config.announcedAddress },
             rtcpMux: true,
