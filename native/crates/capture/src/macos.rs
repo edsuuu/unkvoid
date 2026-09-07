@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use screencapturekit::prelude::*;
+use screencapturekit::screenshot_manager::{CGImageExt, ImageFormat, SCScreenshotManager};
 
 use crate::{
     AudioChunk, CaptureConfig, CaptureError, CaptureEvent, CaptureSource, Display, VideoFrame,
@@ -135,6 +136,73 @@ impl MacCapturer {
                     .unwrap_or_default(),
             })
             .collect())
+    }
+
+    /// Miniatura de uma tela ou janela, em JPEG.
+    ///
+    /// Serve para a pessoa **ver** o que vai transmitir antes de transmitir. Um nome de
+    /// janela não basta: "Terminal" e "Terminal" são dois, e escolher errado manda para
+    /// a sala o que ela não queria mostrar.
+    ///
+    /// Pequena de propósito — é um preview, e gerar uma dúzia em tamanho real
+    /// engasgaria a abertura do seletor.
+    pub fn preview(source: CaptureSource) -> Result<Vec<u8>, CaptureError> {
+        const WIDTH: u32 = 480;
+        const HEIGHT: u32 = 270;
+
+        let content =
+            SCShareableContent::get().map_err(|error| CaptureError::Platform(error.to_string()))?;
+
+        let filter = match source {
+            CaptureSource::Window(id) => {
+                let window = content
+                    .windows()
+                    .into_iter()
+                    .find(|window| window.window_id() == id)
+                    .ok_or(CaptureError::NoDisplay)?;
+
+                SCContentFilter::create().with_window(&window).build()
+            }
+            other => {
+                let displays = content.displays();
+
+                let display = match other {
+                    CaptureSource::Display(id) => {
+                        displays.into_iter().find(|d| d.display_id() == id)
+                    }
+                    _ => displays.into_iter().next(),
+                }
+                .ok_or(CaptureError::NoDisplay)?;
+
+                SCContentFilter::create().with_display(&display).build()
+            }
+        };
+
+        let configuration = SCStreamConfiguration::new()
+            .with_width(WIDTH)
+            .with_height(HEIGHT)
+            .with_pixel_format(PixelFormat::BGRA)
+            .with_shows_cursor(false);
+
+        let image = SCScreenshotManager::capture_image(&filter, &configuration)
+            .map_err(|error| CaptureError::Platform(error.to_string()))?;
+
+        // O macOS já sabe codificar JPEG; escrever um encoder aqui seria refazer o que
+        // o sistema faz melhor. O arquivo é temporário e some logo em seguida.
+        let caminho =
+            std::env::temp_dir().join(format!("unkvoid-preview-{}.jpg", std::process::id()));
+        let texto = caminho.to_string_lossy().to_string();
+
+        image
+            .save(&texto, ImageFormat::Jpeg(0.7))
+            .map_err(|error| CaptureError::Platform(error.to_string()))?;
+
+        let bytes =
+            std::fs::read(&caminho).map_err(|error| CaptureError::Platform(error.to_string()))?;
+
+        let _ = std::fs::remove_file(&caminho);
+
+        Ok(bytes)
     }
 
     pub fn start<F>(config: &CaptureConfig, on_event: F) -> Result<Self, CaptureError>

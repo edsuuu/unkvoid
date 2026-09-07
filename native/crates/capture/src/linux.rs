@@ -9,6 +9,12 @@ use crate::{CaptureConfig, CaptureError, CaptureEvent, Display, Window};
 pub struct LinuxCapturer;
 
 impl LinuxCapturer {
+    /// Sem miniatura fora do macOS ainda. Devolver vazio em vez de erro deixa o
+    /// seletor abrir listando os nomes — pior que com preview, melhor que quebrado.
+    pub fn preview(_source: crate::CaptureSource) -> Result<Vec<u8>, CaptureError> {
+        Ok(Vec::new())
+    }
+
     pub fn displays() -> Result<Vec<Display>, CaptureError> {
         // The portal does not expose the list before the user chooses: it displays
         // the selector. Returning an empty list lets the interface open the dialog.
