@@ -207,7 +207,8 @@ nem compilaria em Windows e Linux, e aí nem o `.msi` sairia.
 | Arquivo | Papel |
 |---|---|
 | `src-tauri/src/lib.rs` | os comandos que a interface chama: transmitir, ofertar, aceitar resposta, subir para o SFU, atualizar |
-| `src-tauri/wix/windows.wxs` | o que o instalador padrão não faz: atalho na área de trabalho e regra de firewall |
+| `src-tauri/src/settings.rs` | SQLite local: bind, monitor, iniciar com o sistema — o que é desta máquina |
+| `src-tauri/wix/windows.wxs` | o que o instalador padrão não faz: liberar o app no firewall do Windows |
 | `src-tauri/src/broadcast.rs` | junta captura, encoder e transporte: **um encoder alimenta N conexões** |
 | `ui/app.js` | a aplicação: login, servidores, canais, voz, microfone |
 | `ui/p2p.js` | as conexões diretas e a troca automática para o SFU |
@@ -264,6 +265,21 @@ cada frase.
 
 No app a voz passa pelo **SFU** (que replica para quantas pessoas forem) enquanto a tela
 fica direta: áudio é barato, vídeo não.
+
+---
+
+## O que fica onde
+
+| Guardado | Onde | Por quê |
+|---|---|---|
+| Conta, servidores, canais, mensagens | MySQL, no servidor | é o que precisa ser o mesmo em qualquer máquina |
+| Token de sessão do app | `localStorage` do webview | é por dispositivo, e some se o app for reinstalado |
+| Bind do apertar-para-falar, limiar do microfone, iniciar com o sistema | **SQLite local** (`settings.db`) | preso à máquina: atalho e monitor não fazem sentido viajando |
+
+O SQLite fica no diretório de dados do app (`%APPDATA%/com.unkvoid.desktop` no Windows,
+`~/Library/Application Support/…` no macOS). É SQLite e não um JSON solto porque o Rust
+e o webview escrevem nele ao mesmo tempo: um arquivo reescrito inteiro a cada tecla
+perde dados quando duas escritas se cruzam, e um desligamento no meio o deixa truncado.
 
 ---
 

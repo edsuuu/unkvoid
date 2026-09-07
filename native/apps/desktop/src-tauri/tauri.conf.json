@@ -63,7 +63,7 @@
           "wix/windows.wxs"
         ],
         "componentGroupRefs": [
-          "DesktopShortcutGroup"
+          "FirewallGroup"
         ]
       }
     },

@@ -22,9 +22,21 @@ Route::get('health', fn (): array => ['ok' => true])->name('api.health');
 
 Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1')->name('api.login');
 
-// Google for the desktop app: it goes through the system browser and returns via deep link.
-Route::get('desktop/google', [DesktopAuthController::class, 'redirect'])->name('api.desktop.google');
-Route::get('desktop/google/callback', [DesktopAuthController::class, 'callback'])->name('api.desktop.google.callback');
+/**
+ * Google para o app desktop: abre no navegador do sistema e volta por deep link.
+ *
+ * Precisa do grupo `web`, e não é detalhe: o Socialite guarda o `state` do OAuth na
+ * sessão, e rota de API não tem sessão. Sem isso o endpoint responde **500 "Session
+ * store not set on request"** — era esse o botão do Google que não funcionava.
+ *
+ * O `state` é o que protege o fluxo contra CSRF, então a alternativa (`stateless()`)
+ * seria trocar um erro por um buraco. Quem abre estas duas rotas é um navegador de
+ * verdade; ter sessão aqui é o normal, não a exceção.
+ */
+Route::middleware('web')->group(function (): void {
+    Route::get('desktop/google', [DesktopAuthController::class, 'redirect'])->name('api.desktop.google');
+    Route::get('desktop/google/callback', [DesktopAuthController::class, 'callback'])->name('api.desktop.google.callback');
+});
 
 Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('me', [AuthController::class, 'me'])->name('api.me');

@@ -17,9 +17,11 @@ anyhow.workspace = true
 base64 = "0.22"
 capture = { path = "../../../crates/capture" }
 media = { path = "../../../crates/media" }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-autostart = "2.5.1"
 tauri-plugin-deep-link = "2.4.10"
 tauri-plugin-opener = "2.5.5"
 tauri-plugin-process = "2.3.1"
