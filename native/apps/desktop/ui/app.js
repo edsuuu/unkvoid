@@ -111,7 +111,17 @@ class App {
 
         // Google does not open inside the app: it opens in the system browser and
         // returns through a deep link. The password never passes through Unkvoid.
-        el('google-button').onclick = () => openUrl(`${Api.BASE}/api/desktop/google`);
+        //
+        // O catch não é decoração: o plugin `opener` recusa URL fora do escopo e a
+        // promessa rejeita sem nada aparecer. Sem isto, um erro de permissão vira um
+        // botão que não faz nada — e foi exatamente o que aconteceu.
+        el('google-button').onclick = async () => {
+            try {
+                await openUrl(`${Api.BASE}/api/desktop/google`);
+            } catch (failure) {
+                el('login-error').textContent = `could not open the browser: ${failure}`;
+            }
+        };
 
         onOpenUrl(async ([url]) => {
             const params = new URL(url).searchParams;
