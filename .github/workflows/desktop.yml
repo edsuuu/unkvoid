@@ -11,6 +11,9 @@ on:
     paths: ['native/**']
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   verify:
     name: Verify (${{ matrix.target }})
@@ -46,18 +49,11 @@ jobs:
         working-directory: native
         run: cargo fmt --all --check
 
-      # The examples are macOS-only spikes (they link against IOSurface), so they are
-      # only linted where they can actually compile. Outside macOS this code has never
-      # been executed either, so warnings there do not block an installer.
+      # Warnings only block on macOS: outside it this code has never been executed, so a
+      # lint there should not stop an installer from being produced.
       - name: Clippy
         working-directory: native
-        run: |
-          if [ "${{ matrix.target }}" = "macos" ]; then
-            cargo clippy --workspace --all-targets -- -D warnings
-          else
-            cargo clippy --workspace --lib --bins --tests
-          fi
-        shell: bash
+        run: cargo clippy --workspace --all-targets ${{ matrix.target == 'macos' && '-- -D warnings' || '' }}
 
       - name: Tests
         working-directory: native

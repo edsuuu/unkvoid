@@ -5,13 +5,27 @@
 //! a sign that it runs on the media chip rather than the CPU.
 //!
 //! cargo run -p media --example encoder -- [720|1080|1440] [frames]
+//!
+//! macOS only: it builds an IOSurface by hand. The stub below keeps the workspace
+//! compiling elsewhere — `cargo test` builds every example, so without it the whole
+//! suite fails on Linux and Windows for a file that could never run there anyway.
 
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!("this example only runs on macOS: it encodes from an IOSurface");
+}
+
+#[cfg(target_os = "macos")]
 use std::time::Instant;
 
+#[cfg(target_os = "macos")]
 use apple_cf::iosurface::IOSurface;
+#[cfg(target_os = "macos")]
 use capture::Quality;
+#[cfg(target_os = "macos")]
 use media::{EncoderConfig, PlatformEncoder};
 
+#[cfg(target_os = "macos")]
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
 
