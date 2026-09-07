@@ -18,8 +18,8 @@ struct ActiveCapture(Mutex<Option<PlatformCapturer>>);
 #[derive(Default)]
 struct ActiveBroadcast(tokio::sync::Mutex<Option<Broadcast>>);
 
-fn quality_from(nome: &str) -> Quality {
-    match nome {
+fn quality_from(name: &str) -> Quality {
+    match name {
         "720" => Quality::Hd720,
         "1440" => Quality::Qhd1440,
         _ => Quality::Hd1080,
@@ -89,24 +89,24 @@ async fn start_broadcast(
     quality: String,
     ice_servers: Vec<String>,
 ) -> Result<(), String> {
-    let mut ativo = state.0.lock().await;
+    let mut active = state.0.lock().await;
 
-    if ativo.is_some() {
+    if active.is_some() {
         return Err("a stream is already in progress".into());
     }
 
-    let (transmissao, mut sinais) =
-        Broadcast::start(quality_from(&quality), ice_servers).map_err(|erro| erro.to_string())?;
+    let (broadcast, mut signals) =
+        Broadcast::start(quality_from(&quality), ice_servers).map_err(|error| error.to_string())?;
 
     let handle = app.clone();
 
     tokio::spawn(async move {
-        while let Some((peer_id, media::Signal::Candidate(json))) = sinais.recv().await {
+        while let Some((peer_id, media::Signal::Candidate(json))) = signals.recv().await {
             let _ = handle.emit("p2p:signal", (peer_id, json));
         }
     });
 
-    *ativo = Some(transmissao);
+    *active = Some(broadcast);
 
     Ok(())
 }
@@ -114,14 +114,14 @@ async fn start_broadcast(
 /// Offer for a specific viewer. One connection per person, one encoder only.
 #[tauri::command]
 async fn offer_to(state: State<'_, ActiveBroadcast>, peer_id: String) -> Result<String, String> {
-    let ativo = state.0.lock().await;
+    let active = state.0.lock().await;
 
-    ativo
+    active
         .as_ref()
         .ok_or_else(|| "no active stream".to_string())?
         .offer_to(peer_id)
         .await
-        .map_err(|erro| erro.to_string())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -130,14 +130,14 @@ async fn accept_answer(
     peer_id: String,
     sdp: String,
 ) -> Result<(), String> {
-    let ativo = state.0.lock().await;
+    let active = state.0.lock().await;
 
-    ativo
+    active
         .as_ref()
         .ok_or_else(|| "no active stream".to_string())?
         .accept_answer(&peer_id, sdp)
         .await
-        .map_err(|erro| erro.to_string())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -146,22 +146,22 @@ async fn add_candidate(
     peer_id: String,
     candidate: String,
 ) -> Result<(), String> {
-    let ativo = state.0.lock().await;
+    let active = state.0.lock().await;
 
-    ativo
+    active
         .as_ref()
         .ok_or_else(|| "no active stream".to_string())?
         .add_candidate(&peer_id, candidate)
         .await
-        .map_err(|erro| erro.to_string())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn drop_viewer(state: State<'_, ActiveBroadcast>, peer_id: String) -> Result<(), String> {
-    let ativo = state.0.lock().await;
+    let active = state.0.lock().await;
 
-    if let Some(transmissao) = ativo.as_ref() {
-        transmissao.drop_peer(&peer_id).await;
+    if let Some(broadcast) = active.as_ref() {
+        broadcast.drop_peer(&peer_id).await;
     }
 
     Ok(())
@@ -173,9 +173,9 @@ async fn sfu_offer(
     state: State<'_, ActiveBroadcast>,
     kind: String,
 ) -> Result<serde_json::Value, String> {
-    let ativo = state.0.lock().await;
+    let active = state.0.lock().await;
 
-    Ok(ativo
+    Ok(active
         .as_ref()
         .ok_or_else(|| "no active stream".to_string())?
         .sfu_offer(&kind))
@@ -185,39 +185,39 @@ async fn sfu_offer(
 /// connections can carry — from here the upload no longer depends on the audience.
 #[tauri::command]
 async fn use_sfu(state: State<'_, ActiveBroadcast>, address: String) -> Result<(), String> {
-    let ativo = state.0.lock().await;
+    let active = state.0.lock().await;
 
-    ativo
+    active
         .as_ref()
         .ok_or_else(|| "no active stream".to_string())?
         .use_sfu(address)
         .await
-        .map_err(|erro| erro.to_string())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn broadcast_stats(state: State<'_, ActiveBroadcast>) -> Result<(u64, usize), String> {
-    let ativo = state.0.lock().await;
+    let active = state.0.lock().await;
 
-    match ativo.as_ref() {
-        Some(transmissao) => Ok((transmissao.frames(), transmissao.viewers().await)),
+    match active.as_ref() {
+        Some(broadcast) => Ok((broadcast.frames(), broadcast.viewers().await)),
         None => Ok((0, 0)),
     }
 }
 
 #[tauri::command]
 async fn stop_broadcast(state: State<'_, ActiveBroadcast>) -> Result<u64, String> {
-    let mut ativo = state.0.lock().await;
+    let mut active = state.0.lock().await;
 
-    let Some(mut transmissao) = ativo.take() else {
+    let Some(mut broadcast) = active.take() else {
         return Ok(0);
     };
 
-    let quadros = transmissao.frames();
+    let frames = broadcast.frames();
 
-    transmissao.stop().await.map_err(|erro| erro.to_string())?;
+    broadcast.stop().await.map_err(|error| error.to_string())?;
 
-    Ok(quadros)
+    Ok(frames)
 }
 
 #[tauri::command]
@@ -307,14 +307,14 @@ async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
         return Ok(None);
     };
 
-    let versao = update.version.clone();
+    let version = update.version.clone();
 
     update
         .download_and_install(|_baixado, _total| {}, || {})
         .await
         .map_err(|error| error.to_string())?;
 
-    Ok(Some(versao))
+    Ok(Some(version))
 }
 
 #[tauri::command]

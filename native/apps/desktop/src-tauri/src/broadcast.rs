@@ -44,8 +44,8 @@ impl Broadcast {
         let encoder = std::sync::Mutex::new(PlatformEncoder::new(&encoder_config)?);
         let audio = std::sync::Mutex::new(AudioEncoder::new(96_000)?);
         let sfu: Sfu = Arc::new(Mutex::new(None));
-        let destino = Arc::clone(&peers);
-        let destino_sfu = Arc::clone(&sfu);
+        let target = Arc::clone(&peers);
+        let sfu_target = Arc::clone(&sfu);
         let runtime = tokio::runtime::Handle::current();
         let frame_rate = encoder_config.frame_rate;
 
@@ -54,52 +54,52 @@ impl Broadcast {
                 quality,
                 ..CaptureConfig::default()
             },
-            move |evento| {
-                let quadro = match evento {
-                    CaptureEvent::Video(quadro) => quadro,
-                    CaptureEvent::Audio(bloco) => {
+            move |event| {
+                let frame = match event {
+                    CaptureEvent::Video(frame) => frame,
+                    CaptureEvent::Audio(block) => {
                         let Ok(mut audio) = audio.lock() else {
                             return;
                         };
 
-                        let Ok(pacotes) = audio.push(&bloco) else {
+                        let Ok(packets) = audio.push(&block) else {
                             return;
                         };
 
                         drop(audio);
 
-                        if pacotes.is_empty() {
+                        if packets.is_empty() {
                             return;
                         }
 
-                        let peers = Arc::clone(&destino);
-                        let sfu = Arc::clone(&destino_sfu);
+                        let peers = Arc::clone(&target);
+                        let sfu = Arc::clone(&sfu_target);
 
-                        runtime.spawn(async move { difundir_audio(&peers, &sfu, pacotes).await });
+                        runtime.spawn(async move { fan_out_audio(&peers, &sfu, packets).await });
 
                         return;
                     }
                 };
 
-                let Some(surface) = quadro.surface.as_ref() else {
+                let Some(surface) = frame.surface.as_ref() else {
                     return;
                 };
 
-                let codificado = {
+                let encoded = {
                     let Ok(mut encoder) = encoder.lock() else {
                         return;
                     };
 
-                    match encoder.encode(surface, quadro.timestamp_ns) {
-                        Ok(codificado) => codificado,
+                    match encoder.encode(surface, frame.timestamp_ns) {
+                        Ok(encoded) => encoded,
                         Err(_) => return,
                     }
                 };
 
-                let peers = Arc::clone(&destino);
-                let sfu = Arc::clone(&destino_sfu);
+                let peers = Arc::clone(&target);
+                let sfu = Arc::clone(&sfu_target);
 
-                runtime.spawn(async move { difundir(&peers, &sfu, codificado, frame_rate).await });
+                runtime.spawn(async move { fan_out(&peers, &sfu, encoded, frame_rate).await });
             },
         )?;
 
@@ -127,24 +127,24 @@ impl Broadcast {
             anyhow::bail!("P2P supports only {LIMITE_P2P} viewers — use the SFU above that limit");
         }
 
-        let (peer, mut sinais) =
+        let (peer, mut signals) =
             PeerLink::connect(self.ice_servers.clone(), self.frame_rate).await?;
-        let oferta = peer.create_offer().await?;
+        let offer = peer.create_offer().await?;
 
         peers.insert(peer_id.clone(), peer);
 
         // Each connection has its own candidates, and each goes only to its owner.
-        let saida = self.signals.clone();
+        let out = self.signals.clone();
 
         tokio::spawn(async move {
-            while let Some(sinal) = sinais.recv().await {
-                if saida.send((peer_id.clone(), sinal)).await.is_err() {
+            while let Some(signal) = signals.recv().await {
+                if out.send((peer_id.clone(), signal)).await.is_err() {
                     break;
                 }
             }
         });
 
-        Ok(oferta)
+        Ok(offer)
     }
 
     pub async fn accept_answer(&self, peer_id: &str, sdp: String) -> anyhow::Result<()> {
@@ -225,27 +225,27 @@ impl Broadcast {
 ///
 /// Only one of the two paths is ever populated: turning on the SFU closes the direct
 /// connections, because uploading to both is exactly the cost the SFU exists to avoid.
-async fn difundir(peers: &Peers, sfu: &Sfu, quadro: EncodedFrame, frame_rate: f64) {
+async fn fan_out(peers: &Peers, sfu: &Sfu, frame: EncodedFrame, frame_rate: f64) {
     for peer in peers.lock().await.values() {
-        let _ = peer.send_frame(&quadro).await;
+        let _ = peer.send_frame(&frame).await;
     }
 
     if let Some(sender) = sfu.lock().await.as_mut() {
-        let _ = sender.send_frame(&quadro, frame_rate);
+        let _ = sender.send_frame(&frame, frame_rate);
     }
 }
 
 /// Audio follows the same path: compressed once and sent to everyone.
-async fn difundir_audio(peers: &Peers, sfu: &Sfu, pacotes: Vec<Vec<u8>>) {
+async fn fan_out_audio(peers: &Peers, sfu: &Sfu, packets: Vec<Vec<u8>>) {
     for peer in peers.lock().await.values() {
-        for pacote in &pacotes {
-            let _ = peer.send_audio(pacote).await;
+        for packet in &packets {
+            let _ = peer.send_audio(packet).await;
         }
     }
 
     if let Some(sender) = sfu.lock().await.as_mut() {
-        for pacote in &pacotes {
-            let _ = sender.send_audio(pacote);
+        for packet in &packets {
+            let _ = sender.send_audio(packet);
         }
     }
 }

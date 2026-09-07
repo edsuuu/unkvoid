@@ -12,55 +12,55 @@ use media::{PeerLink, Signal};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (mut quem_envia, mut sinais_envio) =
+    let (mut sender, mut sender_signals) =
         PeerLink::connect(vec!["stun:stun.l.google.com:19302".into()], 60.0).await?;
-    let (mut quem_recebe, mut sinais_recepcao) =
+    let (mut receiver, mut receiver_signals) =
         PeerLink::connect(vec!["stun:stun.l.google.com:19302".into()], 60.0).await?;
 
-    let oferta = quem_envia.create_offer().await?;
+    let offer = sender.create_offer().await?;
 
     println!(
         "offer: {} bytes · H.264: {}",
-        oferta.len(),
-        oferta.to_lowercase().contains("h264")
+        offer.len(),
+        offer.to_lowercase().contains("h264")
     );
 
-    let resposta = quem_recebe.accept_offer(oferta).await?;
+    let answer = receiver.accept_offer(offer).await?;
 
-    println!("answer: {} bytes", resposta.len());
+    println!("answer: {} bytes", answer.len());
 
-    quem_envia.accept_answer(resposta).await?;
+    sender.accept_answer(answer).await?;
 
     println!("SDP exchanged — now the candidates\n");
 
-    let prazo = tokio::time::sleep(Duration::from_secs(10));
+    let deadline = tokio::time::sleep(Duration::from_secs(10));
 
-    tokio::pin!(prazo);
+    tokio::pin!(deadline);
 
-    let (mut de_envio, mut de_recepcao) = (0, 0);
+    let (mut from_sender, mut from_receiver) = (0, 0);
 
     loop {
         tokio::select! {
-            Some(Signal::Candidate(json)) = sinais_envio.recv() => {
-                de_envio += 1;
-                let _ = quem_recebe.add_candidate(json).await;
+            Some(Signal::Candidate(json)) = sender_signals.recv() => {
+                from_sender += 1;
+                let _ = receiver.add_candidate(json).await;
             }
-            Some(Signal::Candidate(json)) = sinais_recepcao.recv() => {
-                de_recepcao += 1;
-                let _ = quem_envia.add_candidate(json).await;
+            Some(Signal::Candidate(json)) = receiver_signals.recv() => {
+                from_receiver += 1;
+                let _ = sender.add_candidate(json).await;
             }
-            _ = &mut prazo => break,
+            _ = &mut deadline => break,
         }
     }
 
-    println!("candidates exchanged: {de_envio} from sender · {de_recepcao} from receiver");
+    println!("candidates exchanged: {from_sender} from sender · {from_receiver} from receiver");
 
-    quem_envia.close().await?;
-    quem_recebe.close().await?;
+    sender.close().await?;
+    receiver.close().await?;
 
     println!(
         "\n{}",
-        if de_envio > 0 && de_recepcao > 0 {
+        if from_sender > 0 && from_receiver > 0 {
             "NEGOTIATION COMPLETE — offer, response, and candidates from both sides"
         } else {
             "INCOMPLETE: see the numbers above"

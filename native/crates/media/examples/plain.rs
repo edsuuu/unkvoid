@@ -19,10 +19,10 @@ use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
 /// A NAL unit big enough to be split, so fragmentation is exercised too.
-fn quadro(keyframe: bool, tamanho: usize) -> EncodedFrame {
+fn frame(keyframe: bool, size: usize) -> EncodedFrame {
     let mut data = vec![0, 0, 0, 1, if keyframe { 0x65 } else { 0x41 }];
 
-    data.extend(std::iter::repeat_n(0x5A, tamanho));
+    data.extend(std::iter::repeat_n(0x5A, size));
 
     EncodedFrame {
         data,
@@ -56,35 +56,35 @@ async fn main() -> Result<()> {
     socket.send(call("join", json!({ "token": token }))).await?;
 
     let mut sender: Option<PlainSender> = None;
-    let mut chave_pendente: Option<[u8; 30]> = None;
+    let mut pending_key: Option<[u8; 30]> = None;
     let mut producer = String::new();
-    let mut ativo = false;
-    let mut enviados = 0u32;
+    let mut active = false;
+    let mut sent = 0u32;
 
-    let prazo = tokio::time::sleep(Duration::from_secs(20));
-    tokio::pin!(prazo);
+    let deadline = tokio::time::sleep(Duration::from_secs(20));
+    tokio::pin!(deadline);
 
     let mut tick = tokio::time::interval(Duration::from_millis(33));
 
     loop {
         tokio::select! {
-            _ = &mut prazo => break,
+            _ = &mut deadline => break,
 
             _ = tick.tick(), if sender.is_some() => {
                 let sender = sender.as_mut().expect("checked by the guard");
 
                 // A keyframe first: without it the server has nothing to score.
-                sender.send_frame(&quadro(enviados.is_multiple_of(60), 4_000), 30.0)?;
-                enviados += 1;
+                sender.send_frame(&frame(sent.is_multiple_of(60), 4_000), 30.0)?;
+                sent += 1;
             }
 
-            mensagem = socket.next() => {
-                let Some(mensagem) = mensagem else { break };
-                let Message::Text(texto) = mensagem? else { continue };
-                let payload: Value = serde_json::from_str(&texto)?;
+            message = socket.next() => {
+                let Some(message) = message else { break };
+                let Message::Text(text) = message? else { continue };
+                let payload: Value = serde_json::from_str(&text)?;
 
                 if payload["event"] == "producerActive" && payload["data"]["producerId"] == producer.as_str() {
-                    ativo = true;
+                    active = true;
                     break;
                 }
 
@@ -96,10 +96,10 @@ async fn main() -> Result<()> {
                 if payload["id"] == 1 {
                     println!("joined the room, declaring the broadcast…");
 
-                    let chave = PlainSender::generate_key();
+                    let key = PlainSender::generate_key();
                     let key_base64 = base64::Engine::encode(
                         &base64::engine::general_purpose::STANDARD,
-                        chave,
+                        key,
                     );
 
                     socket.send(call("producePlain", json!({
@@ -114,39 +114,39 @@ async fn main() -> Result<()> {
 
                     // Kept so the sender can be built with the same key once the server
                     // answers with the address.
-                    chave_pendente = Some(chave);
+                    pending_key = Some(key);
 
                     continue;
                 }
 
                 if payload["id"] == 2 {
-                    let destino = &payload["data"];
+                    let target = &payload["data"];
 
-                    producer = destino["producerId"]
+                    producer = target["producerId"]
                         .as_str()
                         .ok_or_else(|| anyhow!("answer without a producer id"))?
                         .to_owned();
 
-                    let endereco = format!(
+                    let address = format!(
                         "{}:{}",
-                        destino["ip"].as_str().unwrap_or("127.0.0.1"),
-                        destino["port"].as_u64().unwrap_or(0),
+                        target["ip"].as_str().unwrap_or("127.0.0.1"),
+                        target["port"].as_u64().unwrap_or(0),
                     );
 
-                    let chave = chave_pendente
+                    let key = pending_key
                         .take()
                         .ok_or_else(|| anyhow!("key lost between the request and the answer"))?;
 
-                    println!("sending RTP to {endereco}");
-                    sender = Some(PlainSender::connect(endereco.as_str(), &chave)?);
+                    println!("sending RTP to {address}");
+                    sender = Some(PlainSender::connect(address.as_str(), &key)?);
                 }
             }
         }
     }
 
-    println!("frames sent: {enviados}");
+    println!("frames sent: {sent}");
 
-    if !ativo {
+    if !active {
         bail!("the server never reported receiving — check the port, the SSRC or the key");
     }
 

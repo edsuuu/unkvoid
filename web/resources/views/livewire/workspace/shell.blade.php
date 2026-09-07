@@ -131,7 +131,7 @@
 
             @if ($this->currentServer)
                 <div class="group/section flex items-center justify-between px-2 pb-1 pt-2">
-                    <p class="text-xs font-bold uppercase tracking-wide text-[#949ba4]">{{ __('Canais de texto') }}</p>
+                    <p class="text-xs font-bold uppercase tracking-wide text-[#949ba4]">{{ __('Text channels') }}</p>
                     @if ($this->viewerMember?->canModerate())
                         <button type="button" wire:click="startChannel('text')" title="{{ __('Create text channel') }}"
                             class="cursor-pointer text-[#949ba4] opacity-0 transition hover:text-white group-hover/section:opacity-100"><svg class="size-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M12 5v14M5 12h14"/></svg></button>
@@ -154,7 +154,7 @@
                     </button>
 
                     @if ($this->viewerMember?->canModerate())
-                        <button type="button" wire:click="startRenameChannel('{{ $channel->id }}')" title="{{ __('Renomear') }}"
+                        <button type="button" wire:click="startRenameChannel('{{ $channel->id }}')" title="{{ __('Rename') }}"
                             class="cursor-pointer rounded p-1 text-[#949ba4] opacity-0 transition hover:text-white group-hover/row:opacity-100"><svg class="size-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m16.86 4.49 2.65 2.65m-1.4-3.9a1.87 1.87 0 1 1 2.65 2.65L7.5 18.15l-3.5.85.85-3.5L18.11 3.24z"/></svg></button>
                     @endif
                     </div>
@@ -190,7 +190,7 @@
                         </button>
 
                         @if ($this->viewerMember?->canModerate())
-                            <button type="button" wire:click="startRenameChannel('{{ $channel->id }}')" title="{{ __('Renomear') }}"
+                            <button type="button" wire:click="startRenameChannel('{{ $channel->id }}')" title="{{ __('Rename') }}"
                                 class="cursor-pointer rounded p-1 text-[#949ba4] opacity-0 transition hover:text-white group-hover/row:opacity-100"><svg class="size-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m16.86 4.49 2.65 2.65m-1.4-3.9a1.87 1.87 0 1 1 2.65 2.65L7.5 18.15l-3.5.85.85-3.5L18.11 3.24z"/></svg></button>
                         @endif
                         </div>
@@ -208,7 +208,7 @@
                 <span class="size-2 shrink-0 rounded-full bg-[#23a55a]"></span>
                 <div class="min-w-0 flex-1 leading-tight">
                     <p class="truncate text-sm font-medium text-[#23a55a]">
-                        {{ __('Voz conectada') }}
+                        {{ __('Voice connected') }}
                         <span class="font-mono text-xs text-[#949ba4]" x-text="voiceClock"></span>
                     </p>
                     <p class="truncate text-xs text-[#949ba4]" x-text="voiceChannel"></p>
@@ -217,7 +217,7 @@
                 <button
                     type="button"
                     data-action="leave"
-                    title="{{ __('Desconectar') }}"
+                    title="{{ __('Disconnect') }}"
                     class="cursor-pointer rounded p-1.5 text-[#b5bac1] hover:bg-[#35373c] hover:text-[#f23f43]"
                 >
                     <svg class="size-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15M12 9l-3 3m0 0 3 3m-3-3h12.75"/></svg>
@@ -239,14 +239,14 @@
                     type="button"
                     data-action="share"
                     class="flex-1 cursor-pointer whitespace-nowrap rounded bg-[#5865f2] px-2 py-1.5 text-sm font-medium text-white hover:bg-[#4752c4]"
-                >{{ __('Compartilhar') }}</button>
+                >{{ __('Share') }}</button>
             </div>
 
             <button
                 type="button"
                 data-action="stop-share"
                 class="mt-2 hidden w-full cursor-pointer rounded bg-[#da373c] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#a12828]"
-            >{{ __('Parar de compartilhar') }}</button>
+            >{{ __('Stop sharing') }}</button>
         </div>
 
         {{-- User panel --}}
@@ -259,7 +259,7 @@
                 </div>
 
                 <a href="{{ route('profile.edit') }}" wire:navigate class="block cursor-pointer px-3 py-2 text-sm text-[#dbdee1] hover:bg-[#5865f2] hover:text-white">
-                    {{ __('Minha conta') }}
+                    {{ __('My account') }}
                 </a>
 
                 <button type="button" x-on:click="$dispatch('logout')"
@@ -304,7 +304,7 @@
             <button
                 type="button"
                 x-on:click="channels = ! channels; localStorage.setItem('ui:channels', channels ? '1' : '0')"
-                x-bind:title="channels ? '{{ __('Ocultar canais') }}' : '{{ __('Mostrar canais') }}'"
+                x-bind:title="channels ? '{{ __('Hide channels') }}' : '{{ __('Show channels') }}'"
                 class="-ml-1 cursor-pointer rounded p-1.5 text-[#b5bac1] transition-colors hover:bg-[#35373c] hover:text-white"
             >
                 <svg class="size-[18px]" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
@@ -347,7 +347,7 @@
 
                 <div x-show="connecting" x-cloak class="absolute inset-0 flex items-center justify-center gap-3 bg-[#1e1f22] text-[#b5bac1]">
                     <span class="size-4 animate-spin rounded-full border-2 border-[#4e5058] border-t-[#5865f2]"></span>
-                    {{ __('Conectando…') }}
+                    {{ __('Connecting…') }}
                 </div>
 
                 <p x-show="! connecting" x-cloak data-voice-empty class="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-[#949ba4]">
@@ -477,7 +477,7 @@
                 class="mb-2 flex w-full cursor-pointer items-center justify-between rounded px-2 py-1 text-xs font-bold uppercase tracking-wide text-[#949ba4] hover:bg-[#35373c] hover:text-[#dbdee1]"
             >
                 <span>{{ __('Members') }} — {{ $this->members->count() }}</span>
-                <span class="font-normal normal-case tracking-normal">{{ __('ver todos') }}</span>
+                <span class="font-normal normal-case tracking-normal">{{ __('see all') }}</span>
             </button>
 
             @foreach ($this->members as $member)
@@ -738,7 +738,7 @@
                         type="button"
                         x-on:click="navigator.clipboard.writeText('{{ $this->inviteUrl }}'); copied = true; setTimeout(() => copied = false, 2000)"
                         class="shrink-0 cursor-pointer rounded bg-[#5865f2] px-4 text-sm font-medium text-white hover:bg-[#4752c4]"
-                        x-text="copied ? '{{ __('Copiado') }}' : '{{ __('Copiar') }}'"
+                        x-text="copied ? '{{ __('Copied') }}' : '{{ __('Copy') }}'"
                     ></button>
                 </div>
             </div>

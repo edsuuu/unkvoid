@@ -39,14 +39,14 @@ pub enum Signal {
 
 #[derive(Clone)]
 struct IceHandler {
-    saida: mpsc::Sender<Signal>,
+    out: mpsc::Sender<Signal>,
 }
 
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for IceHandler {
-    async fn on_ice_candidate(&self, evento: RTCPeerConnectionIceEvent) {
-        if let Ok(texto) = serde_json::to_string(&evento.candidate) {
-            let _ = self.saida.send(Signal::Candidate(texto)).await;
+    async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        if let Ok(text) = serde_json::to_string(&event.candidate) {
+            let _ = self.out.send(Signal::Candidate(text)).await;
         }
     }
 }
@@ -134,7 +134,7 @@ impl PeerLink {
             .with_media_engine(media_engine)
             .with_interceptor_registry(registry)
             .with_runtime(Arc::new(TokioRuntime))
-            .with_handler(Arc::new(IceHandler { saida: emissor }))
+            .with_handler(Arc::new(IceHandler { out: emissor }))
             .with_udp_addrs(vec!["0.0.0.0:0"])
             .build()
             .await
@@ -143,9 +143,9 @@ impl PeerLink {
         let connection: Arc<dyn PeerConnection> = Arc::new(connection);
 
         let screen = Arc::new(
-            TrackLocalStaticSample::new(trilha(
+            TrackLocalStaticSample::new(track(
                 "screen",
-                "tela",
+                "screen",
                 RtpCodecKind::Video,
                 SSRC_VIDEO,
                 codec,
@@ -154,7 +154,7 @@ impl PeerLink {
         );
 
         let audio = Arc::new(
-            TrackLocalStaticSample::new(trilha(
+            TrackLocalStaticSample::new(track(
                 "audio",
                 "som",
                 RtpCodecKind::Audio,
@@ -190,48 +190,48 @@ impl PeerLink {
     }
 
     pub async fn create_offer(&self) -> Result<String> {
-        let oferta = self
+        let offer = self
             .connection
             .create_offer(None)
             .await
             .context("create offer")?;
 
         self.connection
-            .set_local_description(oferta.clone())
+            .set_local_description(offer.clone())
             .await
             .context("apply local offer")?;
 
-        Ok(oferta.sdp)
+        Ok(offer.sdp)
     }
 
     pub async fn accept_offer(&mut self, sdp: String) -> Result<String> {
-        let oferta = RTCSessionDescription::offer(sdp).context("build offer")?;
+        let offer = RTCSessionDescription::offer(sdp).context("build offer")?;
 
         self.connection
-            .set_remote_description(oferta)
+            .set_remote_description(offer)
             .await
             .context("apply remote offer")?;
 
-        let resposta = self
+        let answer = self
             .connection
             .create_answer(None)
             .await
             .context("create answer")?;
 
         self.connection
-            .set_local_description(resposta.clone())
+            .set_local_description(answer.clone())
             .await
             .context("apply local answer")?;
         self.resolve_payload_type().await?;
 
-        Ok(resposta.sdp)
+        Ok(answer.sdp)
     }
 
     pub async fn accept_answer(&mut self, sdp: String) -> Result<()> {
-        let resposta = RTCSessionDescription::answer(sdp).context("build answer")?;
+        let answer = RTCSessionDescription::answer(sdp).context("build answer")?;
 
         self.connection
-            .set_remote_description(resposta)
+            .set_remote_description(answer)
             .await
             .context("apply answer")?;
         self.resolve_payload_type().await?;
@@ -253,12 +253,12 @@ impl PeerLink {
     /// The payload type comes from negotiation, not from us: each packet must carry
     /// exactly what was agreed in the SDP.
     async fn resolve_payload_type(&mut self) -> Result<()> {
-        self.payload_type = negociado(&self.sender)
+        self.payload_type = negotiated(&self.sender)
             .await
             .ok_or_else(|| anyhow!("the other side did not accept H.264"))?;
 
         // Audio is optional: if the other side does not want Opus, video continues.
-        self.audio_payload_type = negociado(&self.audio_sender).await.unwrap_or(0);
+        self.audio_payload_type = negotiated(&self.audio_sender).await.unwrap_or(0);
 
         Ok(())
     }
@@ -305,7 +305,7 @@ impl PeerLink {
     }
 }
 
-fn trilha(
+fn track(
     id: &str,
     rotulo: &str,
     kind: RtpCodecKind,
@@ -330,7 +330,7 @@ fn trilha(
 
 /// The payload type comes from negotiation, not from us: each packet must carry
 /// exactly what was agreed in the SDP.
-async fn negociado(sender: &Arc<dyn RtpSender>) -> Option<PayloadType> {
+async fn negotiated(sender: &Arc<dyn RtpSender>) -> Option<PayloadType> {
     sender
         .get_parameters()
         .await

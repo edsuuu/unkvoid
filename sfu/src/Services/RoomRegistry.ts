@@ -56,7 +56,7 @@ export class RoomRegistry {
 
     /** A new room goes to the worker with the fewest rooms. */
     private leastLoadedSlot(): WorkerSlot {
-        return this.slots.reduce((menor, slot) => (slot.rooms < menor.rooms ? slot : menor));
+        return this.slots.reduce((smallest, slot) => (slot.rooms < smallest.rooms ? slot : smallest));
     }
 
     async findOrCreate(roomId: string): Promise<Room> {

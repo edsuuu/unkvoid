@@ -62,14 +62,14 @@ export class PresenceRegistry {
         // see must not reset because signaling dropped.
         const joinedAt = members.get(peerId)?.joinedAt ?? Date.now();
 
-        const anterior = members.get(peerId);
+        const previous = members.get(peerId);
 
         members.set(peerId, {
             name,
             avatar,
             joinedAt,
-            sharing: anterior?.sharing ?? false,
-            screenProducerId: anterior?.screenProducerId ?? null,
+            sharing: previous?.sharing ?? false,
+            screenProducerId: previous?.screenProducerId ?? null,
             reconnecting: false,
         });
         this.channels.set(channelId, members);
@@ -125,13 +125,13 @@ export class PresenceRegistry {
                 continue;
             }
 
-            const lista = [...members].map(([peerId, member]) => ({ peerId, ...member }));
+            const list = [...members].map(([peerId, member]) => ({ peerId, ...member }));
 
             result[channelId] = {
-                members: lista,
+                members: list,
                 // Those outside the channel also need to see how long the
                 // conversation has been going: the local clock of someone who joined is not enough.
-                startedAt: Math.min(...lista.map(member => member.joinedAt)),
+                startedAt: Math.min(...list.map(member => member.joinedAt)),
             };
         }
 

@@ -37,7 +37,7 @@ fn main() -> anyhow::Result<()> {
 
     let total: u64 = args
         .next()
-        .and_then(|valor| valor.parse().ok())
+        .and_then(|value| value.parse().ok())
         .unwrap_or(120);
     let (width, height) = quality.dimensions();
     let config = EncoderConfig::for_quality(quality);
@@ -58,22 +58,22 @@ fn main() -> anyhow::Result<()> {
 
     let mut encoder = PlatformEncoder::new(&config)?;
 
-    let inicio = Instant::now();
+    let start = Instant::now();
     let mut bytes = 0usize;
     let mut keyframes = 0u64;
     let mut pior_ms = 0f64;
 
-    for indice in 0..total {
+    for index in 0..total {
         let antes = Instant::now();
-        let quadro = encoder.encode(&surface, indice * 16_666_667)?;
+        let frame = encoder.encode(&surface, index * 16_666_667)?;
         let levou = antes.elapsed().as_secs_f64() * 1000.0;
 
-        bytes += quadro.data.len();
-        keyframes += u64::from(quadro.keyframe);
+        bytes += frame.data.len();
+        keyframes += u64::from(frame.keyframe);
         pior_ms = pior_ms.max(levou);
     }
 
-    let decorrido = inicio.elapsed().as_secs_f64();
+    let decorrido = start.elapsed().as_secs_f64();
     let media_ms = decorrido * 1000.0 / total as f64;
     let orcamento = 1000.0 / config.frame_rate;
 

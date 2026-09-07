@@ -113,7 +113,7 @@ final class Shell extends Component
         $this->newServerName = '';
         $this->creatingServer = false;
         $this->selectServer($server->id);
-        $this->dispatch('toast', variant: 'success', text: __('Servidor criado.'));
+        $this->dispatch('toast', variant: 'success', text: __('Server created.'));
     }
 
     public function sendMessage(): void
@@ -256,7 +256,7 @@ final class Shell extends Component
             $this->selectChannel($channel->id);
         }
 
-        $this->dispatch('toast', variant: 'success', text: __('Canal criado.'));
+        $this->dispatch('toast', variant: 'success', text: __('Channel created.'));
     }
 
     public function deleteChannel(string $channelId): void
@@ -319,7 +319,7 @@ final class Shell extends Component
 
         $this->renamingChannelId = null;
         unset($this->channels);
-        $this->dispatch('toast', variant: 'success', text: __('Canal renomeado.'));
+        $this->dispatch('toast', variant: 'success', text: __('Channel renamed.'));
     }
 
     public function openServerSettings(): void
@@ -347,7 +347,7 @@ final class Shell extends Component
 
         unset($this->servers, $this->currentServer);
         $this->editingServer = false;
-        $this->dispatch('toast', variant: 'success', text: __('Servidor renomeado.'));
+        $this->dispatch('toast', variant: 'success', text: __('Server renamed.'));
     }
 
     public function deleteServer(): void
