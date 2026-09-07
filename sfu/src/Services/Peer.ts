@@ -11,6 +11,11 @@ type PeerOptions = {
 };
 
 export class Peer {
+    public socket: WebSocket;
+
+    /** Momento em que o socket caiu. Nulo enquanto a sinalização está viva. */
+    public orphanedAt: number | null = null;
+
     public readonly transports = new Map<string, WebRtcTransport>();
 
     public readonly producers = new Map<string, Producer>();
@@ -24,11 +29,25 @@ export class Peer {
     constructor(
         public readonly id: string,
         public readonly name: string,
-        public readonly socket: WebSocket,
+        socket: WebSocket,
         options: PeerOptions = {},
     ) {
+        this.socket = socket;
         this.role = options.role ?? Role.Member;
         this.avatar = options.avatar ?? null;
+    }
+
+    /**
+     * Troca a sinalização sem tocar na mídia: transports, producers e consumers
+     * continuam vivos, então a tela de quem estava assistindo nem pisca.
+     */
+    attachSocket(socket: WebSocket): void {
+        this.socket = socket;
+        this.orphanedAt = null;
+    }
+
+    isOrphaned(): boolean {
+        return this.orphanedAt !== null;
     }
 
     addTransport(transport: WebRtcTransport): void {

@@ -46,7 +46,7 @@ export class RoomRegistry {
     }
 
     release(room: Room): void {
-        if (! room.isEmpty()) {
+        if (room.activeCount() > 0 || ! room.isEmpty()) {
             return;
         }
 

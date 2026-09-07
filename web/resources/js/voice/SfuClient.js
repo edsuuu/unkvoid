@@ -20,26 +20,83 @@ export class SfuClient extends EventTarget {
         this.peerId = null;
         this.role = 'member';
         this.peers = new Map();
+        this.tokenProvider = null;
+        this.url = null;
+        this.closedByUs = false;
+        this.reconnectAttempt = 0;
+        this.reconnectTimer = null;
+        this.localTracks = new Map();
     }
 
     emit(name, detail) {
         this.dispatchEvent(new CustomEvent(name, { detail }));
     }
 
-    connect(url, token) {
+    connect(url, tokenProvider) {
+        this.url = url;
+        this.tokenProvider = tokenProvider;
+        this.closedByUs = false;
+
+        return this.openSocket().then(() => this.setup());
+    }
+
+    openSocket() {
         return new Promise((resolve, reject) => {
-            this.socket = new WebSocket(url);
+            this.socket = new WebSocket(this.url);
             this.socket.onerror = () => reject(new Error('não foi possível abrir o WebSocket'));
-            this.socket.onclose = () => this.emit('closed');
             this.socket.onmessage = message => this.handleMessage(JSON.parse(message.data));
-            this.socket.onopen = async () => {
-                try {
-                    resolve(await this.setup(token));
-                } catch (error) {
-                    reject(error);
-                }
-            };
+            this.socket.onclose = () => this.handleClose();
+            this.socket.onopen = () => resolve();
         });
+    }
+
+    /**
+     * A mídia WebRTC não cai junto com a sinalização. Então uma queda de socket é
+     * tratada como soluço: tenta voltar com backoff e, se o servidor ainda tiver a
+     * sessão, ninguém percebe. Se não tiver, republica tudo do zero.
+     */
+    handleClose() {
+        for (const waiting of this.pending.values()) {
+            waiting.reject(new Error('conexão caiu'));
+        }
+
+        this.pending.clear();
+
+        if (this.closedByUs) {
+            this.emit('closed');
+
+            return;
+        }
+
+        this.emit('reconnecting', { attempt: this.reconnectAttempt + 1 });
+        this.scheduleReconnect();
+    }
+
+    scheduleReconnect() {
+        if (this.reconnectAttempt >= 8) {
+            this.emit('closed');
+
+            return;
+        }
+
+        const delay = Math.min(1000 * 2 ** this.reconnectAttempt, 10000);
+
+        this.reconnectAttempt += 1;
+        this.reconnectTimer = setTimeout(() => void this.reconnect(), delay);
+    }
+
+    async reconnect() {
+        try {
+            await this.openSocket();
+
+            const joined = await this.setup();
+
+            this.reconnectAttempt = 0;
+            this.emit('reconnected', { resumed: joined.resumed });
+        } catch (error) {
+            this.emit('reconnecting', { attempt: this.reconnectAttempt, error: error.message });
+            this.scheduleReconnect();
+        }
     }
 
     handleMessage(message) {
@@ -97,11 +154,19 @@ export class SfuClient extends EventTarget {
         });
     }
 
-    async setup(token) {
-        const joined = await this.request('join', { token });
+    async setup() {
+        const joined = await this.request('join', { token: await this.tokenProvider() });
 
         this.peerId = joined.peerId;
         this.role = joined.role;
+
+        // Retomada: transports, producers e consumers do servidor seguem de pé.
+        if (joined.resumed) {
+            return joined;
+        }
+
+        this.producers.clear();
+        this.consumers.clear();
         this.peers.set(joined.peerId, { name: joined.name, avatar: null, self: true, sharing: false });
 
         for (const peer of joined.peers) {
@@ -117,7 +182,32 @@ export class SfuClient extends EventTarget {
         this.sendTransport = await this.createTransport('send');
         this.recvTransport = await this.createTransport('recv');
 
+        await this.republishLocalTracks();
+
         return joined;
+    }
+
+    async republishLocalTracks() {
+        for (const [source, entry] of this.localTracks) {
+            if (entry.track.readyState !== 'live') {
+                this.localTracks.delete(source);
+
+                continue;
+            }
+
+            const producer = await this.sendTransport.produce({
+                track: entry.track,
+                ...entry.options,
+                appData: { source },
+            });
+
+            this.producers.set(source, producer);
+        }
+
+        if (this.localTracks.has('screen')) {
+            this.markSharing(this.peerId, true);
+            this.emit('peersChanged', [...this.peers.entries()]);
+        }
     }
 
     async createTransport(direction) {
@@ -176,6 +266,14 @@ export class SfuClient extends EventTarget {
         });
 
         this.producers.set('screen', video);
+        this.localTracks.set('screen', {
+            track: videoTrack,
+            options: {
+                encodings: this.buildEncodings(preset, codec, simulcast),
+                codecOptions: { videoGoogleStartBitrate: Math.round(preset.bitrate / 2000) },
+                codec: this.pickCodec(codec),
+            },
+        });
         this.markSharing(this.peerId, true);
         this.emit('peersChanged', [...this.peers.entries()]);
 
@@ -188,6 +286,7 @@ export class SfuClient extends EventTarget {
             });
 
             this.producers.set('screenAudio', audio);
+            this.localTracks.set('screenAudio', { track: audioTrack, options: {} });
         }
 
         return { hasAudio: Boolean(audioTrack), track: videoTrack };
@@ -260,8 +359,9 @@ export class SfuClient extends EventTarget {
 
             producer.track?.stop();
             producer.close();
-            await this.request('closeProducer', { producerId: producer.id });
+            await this.request('closeProducer', { producerId: producer.id }).catch(() => {});
             this.producers.delete(source);
+            this.localTracks.delete(source);
         }
 
         this.markSharing(this.peerId, false);
@@ -274,8 +374,9 @@ export class SfuClient extends EventTarget {
         if (existing) {
             existing.track.stop();
             existing.close();
-            await this.request('closeProducer', { producerId: existing.id });
+            await this.request('closeProducer', { producerId: existing.id }).catch(() => {});
             this.producers.delete('mic');
+            this.localTracks.delete('mic');
 
             return false;
         }
@@ -287,6 +388,7 @@ export class SfuClient extends EventTarget {
         });
 
         this.producers.set('mic', producer);
+        this.localTracks.set('mic', { track: stream.getAudioTracks()[0], options: {} });
 
         return true;
     }
@@ -360,10 +462,13 @@ export class SfuClient extends EventTarget {
     }
 
     disconnect() {
+        this.closedByUs = true;
+        clearTimeout(this.reconnectTimer);
         this.socket?.close();
         this.sendTransport?.close();
         this.recvTransport?.close();
         this.producers.clear();
         this.consumers.clear();
+        this.localTracks.clear();
     }
 }

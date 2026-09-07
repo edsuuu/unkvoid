@@ -137,6 +137,31 @@ const run = async () => {
     reply = await owner.call('disconnectPeer', { peerId: 'member-uuid' });
     assert.equal(reply.ok, true, 'dono pode desconectar membro da chamada');
 
+    // Queda de sinalização não pode derrubar da sala: reconectar dentro da carência
+    // deve retomar a sessão, com a mídia intacta.
+    const solucador = new Client();
+    await solucador.open();
+    reply = await solucador.call('join', { token: mint({ sub: 'soluco-uuid', name: 'Soluço', room, role: 'member' }) });
+    assert.equal(reply.ok, true, 'entrada normal antes do teste de queda');
+    assert.equal(reply.data.resumed, false, 'primeira entrada não é retomada');
+
+    reply = await solucador.call('createTransport', {});
+    const transportAntes = reply.data.transportId;
+    assert.ok(transportAntes, 'transport criado antes da queda');
+
+    solucador.socket.close();
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+    const voltou = new Client();
+    await voltou.open();
+    reply = await voltou.call('join', { token: mint({ sub: 'soluco-uuid', name: 'Soluço', room, role: 'member' }) });
+    assert.equal(reply.ok, true, 'reconexão dentro da carência deve entrar');
+    assert.equal(reply.data.resumed, true, 'deve RETOMAR a sessão, não criar outra');
+
+    reply = await voltou.call('connectTransport', { transportId: transportAntes, dtlsParameters: { fingerprints: [], role: 'client' } });
+    assert.notEqual(reply.status, 404, 'o transport de antes da queda ainda deve existir');
+
+    voltou.close();
     guest.close();
     owner.close();
     member.close();

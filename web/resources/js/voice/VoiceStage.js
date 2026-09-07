@@ -7,6 +7,7 @@ export class VoiceStage {
         this.statsTimer = null;
         this.clockTimer = null;
         this.joinedAt = null;
+        this.channelName = '';
         this.focused = null;
         this.bytesMark = new Map();
     }
@@ -66,9 +67,7 @@ export class VoiceStage {
 
         await this.leave();
 
-        let credentials;
-
-        try {
+        const fetchCredentials = async () => {
             const response = await fetch(`/api/voz/${channelId}/token`, {
                 method: 'POST',
                 headers: {
@@ -81,7 +80,13 @@ export class VoiceStage {
                 throw new Error(`servidor recusou (${response.status})`);
             }
 
-            credentials = await response.json();
+            return response.json();
+        };
+
+        let credentials;
+
+        try {
+            credentials = await fetchCredentials();
         } catch (error) {
             this.status(`erro: ${error.message}`);
 
@@ -99,13 +104,27 @@ export class VoiceStage {
         });
         this.client.addEventListener('shareEnded', () => this.stopShare());
         this.client.addEventListener('closed', () => this.teardown());
+        this.client.addEventListener('reconnecting', event => {
+            this.status(`reconectando… (tentativa ${event.detail.attempt})`);
+            window.dispatchEvent(new CustomEvent('voice-connecting'));
+        });
+        this.client.addEventListener('reconnected', event => {
+            this.status(event.detail.resumed ? `em ${this.channelName}` : `em ${this.channelName} (republicado)`);
+            window.dispatchEvent(new CustomEvent('voice-state', {
+                detail: { inCall: true, channelName: this.channelName, channelId: this.channelId },
+            }));
+        });
         this.client.addEventListener('peersChanged', () => this.renderMembers());
         this.client.addEventListener('replaced', event => this.status(event.detail.reason));
 
         try {
-            const joined = await this.client.connect(credentials.url, credentials.token);
+            const joined = await this.client.connect(
+                credentials.url,
+                async () => (await fetchCredentials()).token,
+            );
 
             this.channelId = channelId;
+            this.channelName = channelName;
             this.showStage(true, channelName);
             this.status(`em ${channelName}`);
             this.renderMembers();

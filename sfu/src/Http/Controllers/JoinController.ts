@@ -1,8 +1,8 @@
 import { ValidationException } from '../../Exceptions/ApiException.js';
 import type { RoomRegistry } from '../../Services/RoomRegistry.js';
 import type { TokenVerifier } from '../../Services/TokenVerifier.js';
-import { JoinResource } from '../Resources/JoinResource.js';
 import type { JoinRequest } from '../Requests/JoinRequest.js';
+import { JoinResource } from '../Resources/JoinResource.js';
 
 export class JoinController {
     constructor(private readonly registry: RoomRegistry, private readonly tokens: TokenVerifier) {}
@@ -17,7 +17,7 @@ export class JoinController {
         const claims = this.tokens.verify(request.token());
         const room = await this.registry.findOrCreate(claims.room);
 
-        const peer = room.addPeer(claims.sub, claims.name ?? 'anônimo', request.session.socket, {
+        const { peer, resumed } = room.addPeer(claims.sub, claims.name ?? 'anônimo', request.session.socket, {
             role: claims.role,
             avatar: claims.avatar ?? null,
         });
@@ -25,13 +25,16 @@ export class JoinController {
         request.session.room = room;
         request.session.peer = peer;
 
-        room.broadcast('peerJoined', {
-            peerId: peer.id,
-            name: peer.name,
-            avatar: peer.avatar,
-            role: peer.role,
-        }, peer.id);
+        // Retomada não é novidade para a sala: ninguém saiu, a sinalização só voltou.
+        if (! resumed) {
+            room.broadcast('peerJoined', {
+                peerId: peer.id,
+                name: peer.name,
+                avatar: peer.avatar,
+                role: peer.role,
+            }, peer.id);
+        }
 
-        return new JoinResource(peer, room);
+        return new JoinResource(peer, room, resumed);
     }
 }

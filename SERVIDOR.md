@@ -127,6 +127,30 @@ O check já pegou um bug real: o `SFU_SECRET` não estava chegando na VPS.
 
 ---
 
+## Queda de conexão não derruba da sala
+
+O WebSocket é **só sinalização** — a mídia WebRTC continua fluindo mesmo com ele
+caído. O sistema aproveita isso em dois níveis:
+
+**Servidor:** quando o socket cai, o participante não é destruído. Fica órfão por
+**45 s** com transports, producers e consumers intactos. Reconectar dentro dessa
+janela **retoma** a sessão — a tela de quem estava assistindo nem pisca, e a sala nem
+é avisada, porque ninguém saiu de fato. Só quando a carência estoura é que o
+participante sai e a sala pode ser liberada.
+
+**Cliente:** queda não intencional dispara reconexão com backoff exponencial
+(1s, 2s, 4s… até 10s, 8 tentativas). O token é buscado **na hora** de cada tentativa,
+porque o antigo pode ter expirado. O servidor responde se retomou:
+
+| Resposta | O que o cliente faz |
+|---|---|
+| `resumed: true` | nada — a mídia nunca parou |
+| `resumed: false` | recria transports e **republica** os tracks locais guardados |
+
+Medido nos dois caminhos: fechando o socket na mão (retomou, cronômetro em 00:15 sem
+zerar) e reiniciando o SFU inteiro, que apaga o estado do servidor (republicou,
+cronômetro em 00:43 sem zerar).
+
 ## Autenticação e permissão
 
 - E-mail/senha (Fortify) e **Google OAuth** em `/oauth2/google`

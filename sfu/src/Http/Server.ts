@@ -83,7 +83,9 @@ export class Server {
             return;
         }
 
-        session.room.removePeer(session.peer);
-        this.registry.release(session.room);
+        // Não destrói na hora: a mídia continua viva e a pessoa tem uma janela para
+        // reconectar a sinalização sem cair da chamada.
+        session.room.onEvicted = room => this.registry.release(room);
+        session.room.orphanPeer(session.peer);
     }
 }
