@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Livewire\Workspace;
 
 use App\Actions\Servers\CreateServer;
+use App\Events\MessageSent;
 use App\Models\Channel;
 use App\Models\Message;
 use App\Models\Server;
@@ -85,6 +86,7 @@ final class Shell extends Component
             $this->channelId = $channelId;
             $this->syncUrl();
             $this->dispatch('stage-changed', stage: 'text');
+            $this->announceTextChannel();
 
             return;
         }
@@ -123,11 +125,14 @@ final class Shell extends Component
         }
 
         try {
-            Message::create([
+            $message = Message::create([
                 'channel_id' => $this->currentChannel->id,
                 'user_id' => Auth::id(),
                 'content' => $validated['draft'],
             ]);
+
+            // The sender already sees it from their own render; this is for everyone else.
+            MessageSent::dispatch($message);
         } catch (Throwable $exception) {
             Log::channel('servers')->error('[ERROR] failed to save the message', ['exception' => $exception]);
             $this->dispatch('toast', variant: 'error', text: __('Message not sent.'));
@@ -137,6 +142,26 @@ final class Shell extends Component
 
         $this->draft = '';
         unset($this->messages);
+    }
+
+    /**
+     * Someone wrote in the channel that is open. Only the id travels on the socket —
+     * the list is read here, with the same permissions as any other render.
+     *
+     * The subscription itself is made in JS (`ChatSocket`), not with an Echo listener on
+     * this component: Livewire fixes its listeners at mount, and the channel is only
+     * known after someone clicks one. A listener declared later would never subscribe.
+     */
+    #[On('message-received')]
+    public function refreshMessages(): void
+    {
+        unset($this->messages);
+    }
+
+    /** Tells the browser which channel to listen to — including on F5, from the URL. */
+    private function announceTextChannel(): void
+    {
+        $this->dispatch('text-channel-opened', channelId: $this->currentChannel?->type === 'text' ? $this->channelId : null);
     }
 
     /**
@@ -453,6 +478,11 @@ final class Shell extends Component
 
     public function render(): View
     {
+        // Every path that changes the open channel passes through here — mount, choosing
+        // a server, going home. Announcing in one place is what keeps the subscription
+        // from lingering on a channel the person has already left.
+        $this->announceTextChannel();
+
         return view('livewire.workspace.shell');
     }
 
@@ -478,4 +508,5 @@ final class Shell extends Component
 
         $this->channelId = $this->channels->firstWhere('type', 'text')?->id;
     }
+
 }
