@@ -8,9 +8,12 @@ description = "Hardware video encoding and WebRTC transport"
 [dependencies]
 anyhow.workspace = true
 async-trait = "0.1.92"
+base64 = "0.22"
+bytes = "1"
 capture = { path = "../capture" }
 futures-util = "0.3.34"
 opus = "0.4"
+rand = "0.8"
 rtc = "0.20"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

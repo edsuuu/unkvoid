@@ -111,9 +111,20 @@ jobs:
           print('Updater disabled: TAURI_SIGNING_PRIVATE_KEY is missing from secrets')
           EOF
 
+      # The UI now goes through Vite (it bundles mediasoup-client and shares the voice
+      # code with web/), so the dependencies have to be installed before tauri build —
+      # it calls `npm run build` itself as beforeBuildCommand.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: native/apps/desktop/package-lock.json
+
       - name: Build installer
         working-directory: native/apps/desktop
-        run: npm install --no-save @tauri-apps/cli@^2 && npx tauri build
+        run: |
+          npm ci
+          npx tauri build
 
       # Exactly one bundle per platform is signed for the updater (.app.tar.gz on macOS,
       # the installer itself on Windows, the AppImage on Linux). Finding it by its .sig

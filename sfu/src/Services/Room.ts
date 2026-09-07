@@ -1,4 +1,4 @@
-import type { Producer, Router, WebRtcServer, WebRtcTransport, Worker } from 'mediasoup/types';
+import type { PlainTransport, Producer, Router, SrtpParameters, WebRtcServer, WebRtcTransport, Worker } from 'mediasoup/types';
 import type { WebSocket } from 'ws';
 
 import { config } from '../config.js';
@@ -173,6 +173,31 @@ export class Room {
         });
 
         peer.addTransport(transport);
+
+        return transport;
+    }
+
+    /**
+     * Ingest for a broadcaster that is not a browser: the native app already encodes
+     * H.264 on the GPU and sends RTP straight to this port, with no ICE and no DTLS.
+     *
+     * `comedia` means the transport learns the sender's address from the first packet,
+     * so the app does not need a reachable port of its own — which is the whole point,
+     * since it sits behind a home router. SRTP is not optional here: without it the
+     * screen would cross the internet in the clear.
+     */
+    async createPlainTransport(peer: Peer, srtpParameters: SrtpParameters): Promise<PlainTransport> {
+        const transport = await this.router.createPlainTransport({
+            listenInfo: { protocol: 'udp', ip: '0.0.0.0', announcedAddress: config.announcedAddress },
+            rtcpMux: true,
+            comedia: true,
+            enableSrtp: true,
+            srtpCryptoSuite: srtpParameters.cryptoSuite,
+        });
+
+        await transport.connect({ srtpParameters });
+
+        peer.addPlainTransport(transport);
 
         return transport;
     }

@@ -167,6 +167,34 @@ async fn drop_viewer(state: State<'_, ActiveBroadcast>, peer_id: String) -> Resu
     Ok(())
 }
 
+/// What to send the server to open the plain ingest: codec, SSRC and the SRTP key.
+#[tauri::command]
+async fn sfu_offer(
+    state: State<'_, ActiveBroadcast>,
+    kind: String,
+) -> Result<serde_json::Value, String> {
+    let ativo = state.0.lock().await;
+
+    Ok(ativo
+        .as_ref()
+        .ok_or_else(|| "no active stream".to_string())?
+        .sfu_offer(&kind))
+}
+
+/// Moves the broadcast onto the server. Called when the room outgrows what direct
+/// connections can carry — from here the upload no longer depends on the audience.
+#[tauri::command]
+async fn use_sfu(state: State<'_, ActiveBroadcast>, address: String) -> Result<(), String> {
+    let ativo = state.0.lock().await;
+
+    ativo
+        .as_ref()
+        .ok_or_else(|| "no active stream".to_string())?
+        .use_sfu(address)
+        .await
+        .map_err(|erro| erro.to_string())
+}
+
 #[tauri::command]
 async fn broadcast_stats(state: State<'_, ActiveBroadcast>) -> Result<(u64, usize), String> {
     let ativo = state.0.lock().await;
@@ -319,6 +347,8 @@ pub fn run() {
             add_candidate,
             drop_viewer,
             broadcast_stats,
+            sfu_offer,
+            use_sfu,
             stop_broadcast
         ])
         .run(tauri::generate_context!())

@@ -6,6 +6,7 @@ export const Action = {
     CreateTransport: 'createTransport',
     ConnectTransport: 'connectTransport',
     Produce: 'produce',
+    ProducePlain: 'producePlain',
     CloseProducer: 'closeProducer',
     Consume: 'consume',
     ResumeConsumer: 'resumeConsumer',

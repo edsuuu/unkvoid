@@ -13,6 +13,7 @@ import { ConsumerRequest } from './Requests/ConsumerRequest.js';
 import { JoinRequest } from './Requests/JoinRequest.js';
 import { ModerationRequest } from './Requests/ModerationRequest.js';
 import { ProduceRequest } from './Requests/ProduceRequest.js';
+import { ProducePlainRequest } from './Requests/ProducePlainRequest.js';
 import { ProducerRequest } from './Requests/ProducerRequest.js';
 import { Request } from './Requests/Request.js';
 import { SignalRequest } from './Requests/SignalRequest.js';
@@ -69,6 +70,10 @@ export const routes = (controllers: Controllers): Record<ActionName, Route> => (
     [Action.Produce]: {
         build: (data, session) => new ProduceRequest(data, session),
         handle: request => controllers.producer.store(request),
+    },
+    [Action.ProducePlain]: {
+        build: (data, session) => new ProducePlainRequest(data, session),
+        handle: request => controllers.producer.storePlain(request),
     },
     [Action.CloseProducer]: {
         build: (data, session) => new ProducerRequest(data, session),

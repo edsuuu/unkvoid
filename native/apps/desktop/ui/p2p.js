@@ -23,7 +23,9 @@ export class P2P {
     constructor(sfu, aoReceberTela) {
         this.sfu = sfu;
         this.recebendo = new Map();
+        this.espectadores = new Set();
         this.transmitindo = false;
+        this.noSfu = false;
         this.aoReceberTela = aoReceberTela;
     }
 
@@ -41,17 +43,21 @@ export class P2P {
     }
 
     /**
-     * Starts broadcasting to the specified participants. One offer per viewer:
-     * in P2P, each needs its own connection.
+     * Starts broadcasting. Up to three viewers it goes direct, which is the fast path:
+     * the server is in the US and the people are in Brazil, so going through it costs
+     * about 139 ms instead of 20. Past that, it moves to the server, where the upload
+     * stops depending on how many people are watching.
      */
     async broadcast(quality, espectadores) {
-        if (espectadores.length > P2P.LIMITE_P2P) {
-            throw new Error(`P2P supports up to ${P2P.LIMITE_P2P} viewers — upload multiplies above that`);
-        }
-
         await invoke('start_broadcast', { quality, iceServers: STUN });
 
         this.transmitindo = true;
+
+        if (espectadores.length > P2P.LIMITE_P2P) {
+            await this.subirParaOSfu();
+
+            return;
+        }
 
         for (const espectador of espectadores) {
             await this.oferecerA(espectador);
@@ -64,13 +70,59 @@ export class P2P {
             return;
         }
 
+        // The person who has just arrived is the one who tips the balance: from here on
+        // the direct path costs more upload than the server does.
+        if (! this.noSfu && this.recebendoDe().length >= P2P.LIMITE_P2P) {
+            await this.subirParaOSfu();
+
+            return;
+        }
+
+        if (this.noSfu) {
+            return;
+        }
+
         try {
             const sdp = await invoke('offer_to', { peerId });
 
+            this.espectadores.add(peerId);
             await this.sfu.signal(peerId, 'offer', { sdp });
         } catch (falha) {
             console.warn(`could not offer to ${peerId}:`, falha);
         }
+    }
+
+    /** Direct connections currently carrying this broadcast. */
+    recebendoDe() {
+        return [...this.espectadores];
+    }
+
+    /**
+     * Hands the broadcast over to the server. Rust says what it will send — codec, SSRC
+     * and the SRTP key — the server answers with where to send it, and from then on the
+     * viewers consume it like any other producer, including the ones on the web.
+     */
+    async subirParaOSfu() {
+        if (this.noSfu) {
+            return;
+        }
+
+        this.noSfu = true;
+
+        for (const kind of ['video', 'audio']) {
+            const oferta = await invoke('sfu_offer', { kind });
+            const destino = await this.sfu.request('producePlain', {
+                kind,
+                source: kind === 'video' ? 'screen' : 'screenAudio',
+                ...oferta,
+            });
+
+            if (kind === 'video') {
+                await invoke('use_sfu', { address: `${destino.ip}:${destino.port}` });
+            }
+        }
+
+        this.espectadores.clear();
     }
 
     async stop() {
@@ -79,6 +131,8 @@ export class P2P {
         }
 
         this.transmitindo = false;
+        this.noSfu = false;
+        this.espectadores.clear();
 
         return invoke('stop_broadcast');
     }
@@ -148,6 +202,7 @@ export class P2P {
         }
 
         // Someone who left is no longer a viewer of my broadcast.
+        this.espectadores.delete(de);
         void invoke('drop_viewer', { peerId: de }).catch(() => {});
     }
 

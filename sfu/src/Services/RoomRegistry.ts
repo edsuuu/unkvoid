@@ -24,7 +24,13 @@ export class RoomRegistry {
      */
     async boot(): Promise<void> {
         for (let index = 0; index < config.workerCount; index += 1) {
-            const worker = await mediasoup.createWorker(config.worker);
+            const rtcMinPort = config.plainPortBase + index * config.plainPortsPerWorker;
+
+            const worker = await mediasoup.createWorker({
+                ...config.worker,
+                rtcMinPort,
+                rtcMaxPort: rtcMinPort + config.plainPortsPerWorker - 1,
+            });
 
             worker.on('died', () => {
                 console.error('[ERROR] mediasoup worker died — exiting so pm2 can restart');
@@ -43,7 +49,9 @@ export class RoomRegistry {
             this.slots.push({ worker, webRtcServer, rooms: 0 });
         }
 
-        console.log(`[INFO] ${this.slots.length} media workers on ports ${config.mediaPort}-${config.mediaPort + this.slots.length - 1}`);
+        const lastPlain = config.plainPortBase + config.workerCount * config.plainPortsPerWorker - 1;
+
+        console.log(`[INFO] ${this.slots.length} media workers on ports ${config.mediaPort}-${config.mediaPort + this.slots.length - 1} · plain RTP on ${config.plainPortBase}-${lastPlain}`);
     }
 
     /** A new room goes to the worker with the fewest rooms. */

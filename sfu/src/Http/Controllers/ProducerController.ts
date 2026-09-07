@@ -1,7 +1,13 @@
-import { Source } from '../../Enums/Source.js';
+import type { Producer } from 'mediasoup/types';
+
+import { Source, type SourceName } from '../../Enums/Source.js';
+import type { Peer } from '../../Services/Peer.js';
 import type { PresenceRegistry } from '../../Services/PresenceRegistry.js';
+import type { Room } from '../../Services/Room.js';
 import type { ProduceRequest } from '../Requests/ProduceRequest.js';
+import type { ProducePlainRequest } from '../Requests/ProducePlainRequest.js';
 import type { ProducerRequest } from '../Requests/ProducerRequest.js';
+import { PlainProducerResource } from '../Resources/PlainProducerResource.js';
 import { ProducerResource } from '../Resources/ProducerResource.js';
 import { StatusResource } from '../Resources/StatusResource.js';
 
@@ -17,10 +23,52 @@ export class ProducerController {
             rtpParameters: request.rtpParameters(),
         });
 
-        peer.addProducer(producer, request.source());
+        this.announce(peer, room, producer, request.source());
+
+        return new ProducerResource(producer);
+    }
+
+    /**
+     * Same broadcast, arriving as plain RTP instead of through WebRTC. This is how the
+     * native app reaches more viewers than direct connections can carry: it keeps
+     * encoding once on the GPU, but uploads once to the server instead of once per
+     * viewer, and the server fans it out.
+     */
+    async storePlain(request: ProducePlainRequest): Promise<PlainProducerResource> {
+        const peer = request.peer();
+        const room = request.room();
+        const transport = await room.createPlainTransport(peer, request.srtpParameters());
+
+        const producer = await transport.produce({
+            kind: request.kind(),
+            rtpParameters: request.rtpParameters(),
+        });
+
+        this.announce(peer, room, producer, request.source());
+
+        return new PlainProducerResource(producer, transport);
+    }
+
+    /** Registers the producer and tells the room, whichever transport it arrived on. */
+    private announce(peer: Peer, room: Room, producer: Producer, source: SourceName): void {
+        peer.addProducer(producer, source);
         producer.on('transportclose', () => peer.producers.delete(producer.id));
 
-        if (request.source() === Source.Screen) {
+        // A plain producer is declared before a single packet arrives, so until the score
+        // rises the broadcaster has no way to tell "the server is receiving" from "my
+        // packets are going nowhere". Reported once: after that the score only fluctuates.
+        let receiving = false;
+
+        producer.on('score', scores => {
+            if (receiving || ! scores.some(entry => entry.score > 0)) {
+                return;
+            }
+
+            receiving = true;
+            peer.send('producerActive', { producerId: producer.id });
+        });
+
+        if (source === Source.Screen) {
             this.presence.setSharing(room.id, peer.id, true, producer.id);
         }
 
@@ -30,10 +78,8 @@ export class ProducerController {
             avatar: peer.avatar,
             producerId: producer.id,
             kind: producer.kind,
-            source: request.source(),
+            source,
         }, peer.id);
-
-        return new ProducerResource(producer);
     }
 
     destroy(request: ProducerRequest): StatusResource {
