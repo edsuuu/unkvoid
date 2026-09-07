@@ -322,6 +322,56 @@ fn restart(app: tauri::AppHandle) {
     app.restart();
 }
 
+/// Ícone na bandeja, como o Discord: fechar a janela esconde o app em vez de matá-lo.
+///
+/// Sair de verdade é uma escolha explícita no menu do botão direito. Um app de voz que
+/// morre ao fechar a janela derruba a chamada de quem só queria tirar a janela da frente.
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let open = MenuItem::with_id(app, "open", "Open Unkvoid", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Unkvoid", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+
+    TrayIconBuilder::with_id("main")
+        .icon(app.default_window_icon().cloned().ok_or_else(|| {
+            tauri::Error::Anyhow(anyhow::anyhow!("the bundle has no icon for the tray"))
+        })?)
+        .tooltip("Unkvoid")
+        .menu(&menu)
+        // false: no Windows o clique esquerdo abriria o menu, e o esperado é abrir o app.
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+fn show_main_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -351,6 +401,19 @@ pub fn run() {
             use_sfu,
             stop_broadcast
         ])
+        .setup(|app| {
+            build_tray(app)?;
+
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Fechar esconde; quem quer sair usa o menu da bandeja. Sem o prevent_close
+            // o processo morre e a chamada cai junto.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error starting the app");
 }

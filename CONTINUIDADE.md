@@ -300,6 +300,15 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
 - Identificador terminado em `.app` conflita com a extensão de bundle do macOS —
   daí `com.unkvoid.desktop` e não `com.unkvoid.app`.
 
+**Auto-update**
+- ⚠️ **Não marque a release como pré-lançamento.** O endpoint é
+  `/releases/latest/download/latest.json`, e o "latest" do GitHub **ignora**
+  pré-lançamentos: com todas marcadas assim, essa URL responde **404** e o app nunca acha
+  atualização nenhuma. Foi assim da v0.2.0 à v0.7.0 — o auto-update existia e nunca
+  rodou uma vez.
+- A versão do `latest.json` sai do `tauri.conf.json`, não da tag. Se divergirem o cliente
+  entra em laço: instala, continua anunciando a versão antiga, e atualiza de novo.
+
 **Windows**
 - Testar o servidor com uma rota **autenticada** quebra de um jeito difícil de enxergar:
   sem token ela responde 302 para `/login`, o fetch segue o redirecionamento, e a página
