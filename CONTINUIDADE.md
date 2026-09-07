@@ -3,6 +3,8 @@
 Documento para quem pegar o trabalho daqui. Diz o que existe, o que **não** existe,
 e onde estão as armadilhas que já custaram tempo.
 
+Para **o que cada peça faz e por quê**, veja [ARQUITETURA.md](ARQUITETURA.md).
+
 **Web em produção:** https://discord.unkvoid.com · **Repo:** github.com/edsuuu/unkvoid
 **VPS:** 144.126.133.10 (Contabo, St. Louis/EUA)
 
