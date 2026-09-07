@@ -39,15 +39,57 @@ impl<F: Fn(CaptureEvent) + Send + Sync + 'static> SCStreamOutputTrait for Sink<F
             SCStreamOutputType::Audio => {
                 self.audio_chunks.fetch_add(1, Ordering::Relaxed);
 
+                let Some(samples) = interleave(&sample) else {
+                    return;
+                };
+
                 (self.on_event)(CaptureEvent::Audio(AudioChunk {
                     sample_rate: 48_000,
                     channels: 2,
-                    frames: sample.num_samples().max(0) as usize,
+                    samples,
                 }));
             }
             _ => {}
         }
     }
+}
+
+/// O ScreenCaptureKit entrega um buffer por canal, em float32. O Opus e o WebRTC
+/// querem intercalado (L, R, L, R...), então a conversão acontece aqui.
+fn interleave(sample: &CMSampleBuffer) -> Option<Vec<f32>> {
+    let lista = sample.audio_buffer_list()?;
+    let canais = lista.num_buffers();
+
+    if canais == 0 {
+        return None;
+    }
+
+    let planos: Vec<&[f32]> = (0..canais)
+        .filter_map(|indice| lista.buffer(indice))
+        .map(|buffer| {
+            let bytes = buffer.data();
+
+            // SAFETY: o ScreenCaptureKit foi configurado para float32, e o
+            // AudioBufferList reporta o tamanho real em bytes.
+            unsafe {
+                std::slice::from_raw_parts(
+                    bytes.as_ptr().cast::<f32>(),
+                    bytes.len() / size_of::<f32>(),
+                )
+            }
+        })
+        .collect();
+
+    let quadros = planos.iter().map(|plano| plano.len()).min()?;
+    let mut intercalado = Vec::with_capacity(quadros * planos.len());
+
+    for quadro in 0..quadros {
+        for plano in &planos {
+            intercalado.push(plano[quadro]);
+        }
+    }
+
+    Some(intercalado)
 }
 
 fn frame_size(sample: &CMSampleBuffer) -> (u32, u32) {
@@ -117,6 +159,9 @@ impl MacCapturer {
             .with_pixel_format(PixelFormat::BGRA)
             .with_shows_cursor(config.show_cursor)
             .with_captures_audio(config.capture_audio)
+            // O áudio do nosso processo fica de fora: é o que evita mandar de volta
+            // a voz de quem está na chamada.
+            .with_excludes_current_process_audio(CaptureConfig::EXCLUI_AUDIO_DO_APP)
             .with_sample_rate(48_000)
             .with_channel_count(2);
 

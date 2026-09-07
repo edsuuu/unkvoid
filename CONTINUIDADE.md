@@ -51,6 +51,17 @@ do navegador); quem recebe usa o WebRTC do próprio webview e um `<video>`. A
 limitação do WKWebView era só o `getDisplayMedia` — receber vídeo ele faz bem, e
 assim não é preciso decodificar nem desenhar em Rust.
 
+**Áudio do sistema entra na transmissão** em Opus (48 kHz estéreo, blocos de 20 ms),
+como segunda trilha da mesma conexão.
+
+> **O som do próprio app fica de fora.** Quem filtra é o macOS, por processo
+> (`with_excludes_current_process_audio`), não um `if` no nosso código. Sem isso,
+> compartilhar áudio devolveria a voz de quem está na chamada e criaria
+> realimentação. A crate documenta essa opção literalmente como *"Prevent feedback"*.
+>
+> Filtrar por processo é mais confiável que tentar adivinhar a origem do som: o
+> sistema sabe exatamente o que saiu de qual aplicativo.
+
 **Um encoder, N conexões:** o quadro é comprimido uma vez e enviado a cada
 espectador. Codificar por espectador derreteria a máquina de quem transmite — o
 custo do P2P é banda de upload, não CPU. Limite de 3 espectadores (`LIMITE_P2P`);
@@ -65,7 +76,8 @@ autenticação, nenhum canal novo.
 
 | Peça | Situação |
 |---|---|
-| **Áudio na chamada** | nem microfone nem áudio de sistema entram no WebRTC ainda |
+| **Microfone** | só o áudio do sistema entra; falta a voz de quem transmite (`cpal`) |
+| Trocar qualidade sem parar | o app web faz; aqui exige reiniciar a transmissão |
 | Fallback para o SFU | acima de 3 espectadores recusa, mas não cai para o SFU sozinho |
 | Encoder no Windows | falta Media Foundation |
 | Chat no desktop | lista mensagens em texto cru, sem enviar |
@@ -85,12 +97,25 @@ negociação WebRTC **foram testados** e os números estão abaixo — o que nã
 
 O caminho de mídia do app, nesta ordem — cada etapa é verificável sozinha:
 
-1. **Áudio**: microfone (`cpal`) e áudio de sistema (já vem da captura no macOS)
-   como uma segunda trilha Opus na mesma PeerConnection.
+1. **Microfone**: capturar com `cpal` e misturar com o áudio de sistema antes do
+   Opus, ou publicar como terceira trilha.
 2. **Cair para o SFU acima de 3**: hoje `broadcast` recusa. A rota do SFU já existe
    e funciona no app web — falta o app escolher entre as duas.
 3. **Encoder no Windows** (Media Foundation) e captura no Linux (PipeWire).
 4. **Chat no desktop**: a API já envia e lê; falta a interface.
+
+### Perfis de qualidade
+
+Escolhidos na interface e válidos ponta a ponta — a mesma opção define a resolução da
+captura **e** o bitrate do encoder:
+
+| Perfil | Resolução | Bitrate | Custo medido |
+|---|---|---|---|
+| 720p | 1280×720 | 4 Mbps | — |
+| 1080p | 1920×1080 | 7 Mbps | 7,86 ms/quadro (47%) |
+| 1440p | 2560×1440 | 12 Mbps | 12,25 ms/quadro (73%) |
+
+Áudio: Opus a 96 kbps, 48 kHz estéreo, independente do perfil de vídeo.
 
 ### Verificações que existem
 
@@ -99,6 +124,7 @@ cargo run -p media --example encoder   # encoder por hardware, ms/quadro
 cargo run -p media --example peer      # oferta com H.264 + ICE
 cargo run -p media --example p2p       # negociação completa entre dois lados
 cargo run -p capture --example spike   # captura (exige permissão de tela)
+cargo test --workspace                 # inclui o empacotamento de blocos Opus
 ```
 
 ### Números já medidos do encoder
@@ -116,6 +142,10 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
 ---
 
 ## Armadilhas já pagas
+
+**Build**
+- O Opus vem da crate `opus`, que compila libopus do zero via **cmake**. Os runners do
+  GitHub já têm cmake; localmente foi preciso `brew install cmake`.
 
 **Rust / macOS**
 - A crate `screencapturekit` compila Swift e o linker procura o runtime no caminho do

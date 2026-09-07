@@ -7,7 +7,9 @@ use rtc::media::Sample;
 use rtc::media_stream::MediaStreamTrack;
 use rtc::peer_connection::configuration::RTCConfigurationBuilder;
 use rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;
-use rtc::peer_connection::configuration::media_engine::{MIME_TYPE_H264, MediaEngine};
+use rtc::peer_connection::configuration::media_engine::{
+    MIME_TYPE_H264, MIME_TYPE_OPUS, MediaEngine,
+};
 use rtc::peer_connection::sdp::RTCSessionDescription;
 use rtc::peer_connection::transport::RTCIceServer;
 use rtc::rtp_transceiver::PayloadType;
@@ -26,7 +28,8 @@ use webrtc::runtime::TokioRuntime;
 
 use crate::EncodedFrame;
 
-const SSRC: u32 = 0x1234_5678;
+const SSRC_VIDEO: u32 = 0x1234_5678;
+const SSRC_AUDIO: u32 = 0x1234_5679;
 
 /// O que precisa chegar ao outro lado pela sinalização do SFU.
 #[derive(Debug)]
@@ -56,8 +59,11 @@ impl PeerConnectionEventHandler for IceHandler {
 pub struct PeerLink {
     connection: Arc<dyn PeerConnection>,
     screen: Arc<TrackLocalStaticSample>,
+    audio: Arc<TrackLocalStaticSample>,
     sender: Arc<dyn RtpSender>,
+    audio_sender: Arc<dyn RtpSender>,
     payload_type: PayloadType,
+    audio_payload_type: PayloadType,
     frame_rate: f64,
 }
 
@@ -79,6 +85,16 @@ impl PeerLink {
             ..Default::default()
         };
 
+        // Áudio do sistema em Opus. A captura já entrega sem o som do nosso próprio
+        // app, então não há risco de devolver a voz de quem está na chamada.
+        let codec_audio = RTCRtpCodec {
+            mime_type: MIME_TYPE_OPUS.to_owned(),
+            clock_rate: crate::audio::SAMPLE_RATE,
+            channels: crate::audio::CHANNELS,
+            sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
+            ..Default::default()
+        };
+
         // O transceiver só aceita o que o media engine conhece: sem registrar aqui,
         // adicionar a trilha falha com "unsupported codec type".
         let mut media_engine = MediaEngine::default();
@@ -92,6 +108,16 @@ impl PeerLink {
                 RtpCodecKind::Video,
             )
             .context("registrar H.264")?;
+
+        media_engine
+            .register_codec(
+                RTCRtpCodecParameters {
+                    rtp_codec: codec_audio.clone(),
+                    payload_type: 111,
+                },
+                RtpCodecKind::Audio,
+            )
+            .context("registrar Opus")?;
 
         let registry = register_default_interceptors(Registry::new(), &mut media_engine)
             .context("interceptors")?;
@@ -117,34 +143,46 @@ impl PeerLink {
         let connection: Arc<dyn PeerConnection> = Arc::new(connection);
 
         let screen = Arc::new(
-            TrackLocalStaticSample::new(MediaStreamTrack::new(
-                "discord2".to_owned(),
-                "screen".to_owned(),
-                "tela".to_owned(),
+            TrackLocalStaticSample::new(trilha(
+                "screen",
+                "tela",
                 RtpCodecKind::Video,
-                vec![RTCRtpEncodingParameters {
-                    rtp_coding_parameters: RTCRtpCodingParameters {
-                        ssrc: Some(SSRC),
-                        ..Default::default()
-                    },
-                    codec: codec.clone(),
-                    ..Default::default()
-                }],
+                SSRC_VIDEO,
+                codec,
             ))
             .context("montar a trilha da tela")?,
+        );
+
+        let audio = Arc::new(
+            TrackLocalStaticSample::new(trilha(
+                "audio",
+                "som",
+                RtpCodecKind::Audio,
+                SSRC_AUDIO,
+                codec_audio,
+            ))
+            .context("montar a trilha de áudio")?,
         );
 
         let sender = connection
             .add_track(Arc::clone(&screen) as Arc<dyn TrackLocal>)
             .await
-            .context("adicionar a trilha")?;
+            .context("adicionar a trilha de vídeo")?;
+
+        let audio_sender = connection
+            .add_track(Arc::clone(&audio) as Arc<dyn TrackLocal>)
+            .await
+            .context("adicionar a trilha de áudio")?;
 
         Ok((
             Self {
                 connection,
                 screen,
+                audio,
                 sender,
+                audio_sender,
                 payload_type: 0,
+                audio_payload_type: 0,
                 frame_rate,
             },
             receptor,
@@ -215,16 +253,31 @@ impl PeerLink {
     /// O payload type sai da negociação, não é escolhido por nós: cada pacote precisa
     /// carregar exatamente o que foi acordado no SDP.
     async fn resolve_payload_type(&mut self) -> Result<()> {
-        self.payload_type = self
-            .sender
-            .get_parameters()
+        self.payload_type = negociado(&self.sender)
             .await
-            .context("ler parâmetros do sender")?
-            .rtp_parameters
-            .codecs
-            .first()
-            .map(|codec| codec.payload_type)
             .ok_or_else(|| anyhow!("a outra ponta não aceitou H.264"))?;
+
+        // Áudio é opcional: se a outra ponta não quiser Opus, o vídeo continua.
+        self.audio_payload_type = negociado(&self.audio_sender).await.unwrap_or(0);
+
+        Ok(())
+    }
+
+    /// Envia um bloco Opus já comprimido.
+    pub async fn send_audio(&self, opus: &[u8]) -> Result<()> {
+        if self.audio_payload_type == 0 {
+            return Ok(());
+        }
+
+        self.audio
+            .sample_writer(SSRC_AUDIO, self.audio_payload_type)
+            .write_sample(&Sample {
+                data: opus.to_vec().into(),
+                duration: Duration::from_millis(crate::audio::FRAME_MS as u64),
+                ..Default::default()
+            })
+            .await
+            .context("enviar áudio")?;
 
         Ok(())
     }
@@ -233,7 +286,7 @@ impl PeerLink {
     /// quadro ocupa — errar aqui faz o vídeo acelerar ou arrastar.
     pub async fn send_frame(&self, frame: &EncodedFrame) -> Result<()> {
         self.screen
-            .sample_writer(SSRC, self.payload_type)
+            .sample_writer(SSRC_VIDEO, self.payload_type)
             .write_sample(&Sample {
                 data: frame.data.clone().into(),
                 duration: Duration::from_secs_f64(1.0 / self.frame_rate),
@@ -250,4 +303,40 @@ impl PeerLink {
 
         Ok(())
     }
+}
+
+fn trilha(
+    id: &str,
+    rotulo: &str,
+    kind: RtpCodecKind,
+    ssrc: u32,
+    codec: RTCRtpCodec,
+) -> MediaStreamTrack {
+    MediaStreamTrack::new(
+        "discord2".to_owned(),
+        id.to_owned(),
+        rotulo.to_owned(),
+        kind,
+        vec![RTCRtpEncodingParameters {
+            rtp_coding_parameters: RTCRtpCodingParameters {
+                ssrc: Some(ssrc),
+                ..Default::default()
+            },
+            codec,
+            ..Default::default()
+        }],
+    )
+}
+
+/// O payload type sai da negociação, não é escolhido por nós: cada pacote precisa
+/// carregar exatamente o que foi acordado no SDP.
+async fn negociado(sender: &Arc<dyn RtpSender>) -> Option<PayloadType> {
+    sender
+        .get_parameters()
+        .await
+        .ok()?
+        .rtp_parameters
+        .codecs
+        .first()
+        .map(|codec| codec.payload_type)
 }

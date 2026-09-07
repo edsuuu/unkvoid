@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use capture::{CaptureConfig, CaptureEvent, PlatformCapturer, Quality};
-use media::{EncodedFrame, EncoderConfig, PeerLink, PlatformEncoder, Signal};
+use media::{AudioEncoder, EncodedFrame, EncoderConfig, PeerLink, PlatformEncoder, Signal};
 use tokio::sync::{Mutex, mpsc};
 
 /// Acima disso o upload de quem transmite multiplica: 4 espectadores em 1080p já
@@ -37,6 +37,7 @@ impl Broadcast {
         // O callback da captura é Fn: o encoder guarda estado entre quadros e
         // precisa de mutabilidade interior.
         let encoder = std::sync::Mutex::new(PlatformEncoder::new(&encoder_config)?);
+        let audio = std::sync::Mutex::new(AudioEncoder::new(96_000)?);
         let destino = Arc::clone(&peers);
         let runtime = tokio::runtime::Handle::current();
 
@@ -46,8 +47,29 @@ impl Broadcast {
                 ..CaptureConfig::default()
             },
             move |evento| {
-                let CaptureEvent::Video(quadro) = evento else {
-                    return;
+                let quadro = match evento {
+                    CaptureEvent::Video(quadro) => quadro,
+                    CaptureEvent::Audio(bloco) => {
+                        let Ok(mut audio) = audio.lock() else {
+                            return;
+                        };
+
+                        let Ok(pacotes) = audio.push(&bloco) else {
+                            return;
+                        };
+
+                        drop(audio);
+
+                        if pacotes.is_empty() {
+                            return;
+                        }
+
+                        let peers = Arc::clone(&destino);
+
+                        runtime.spawn(async move { difundir_audio(&peers, pacotes).await });
+
+                        return;
+                    }
                 };
 
                 let Some(surface) = quadro.surface.as_ref() else {
@@ -164,5 +186,16 @@ async fn difundir(peers: &Peers, quadro: EncodedFrame) {
 
     for peer in peers.values() {
         let _ = peer.send_frame(&quadro).await;
+    }
+}
+
+/// O áudio segue o mesmo caminho: comprimido uma vez, enviado a todos.
+async fn difundir_audio(peers: &Peers, pacotes: Vec<Vec<u8>>) {
+    let peers = peers.lock().await;
+
+    for peer in peers.values() {
+        for pacote in &pacotes {
+            let _ = peer.send_audio(pacote).await;
+        }
     }
 }

@@ -66,6 +66,16 @@ pub struct CaptureConfig {
     pub show_cursor: bool,
 }
 
+impl CaptureConfig {
+    /// O que sai do nosso próprio app **nunca** entra na captura.
+    ///
+    /// Sem isso, compartilhar áudio do sistema capturaria a voz de quem está na
+    /// chamada e devolveria para eles — o clássico loop de realimentação. Quem
+    /// resolve é o sistema operacional, filtrando por processo: mais confiável que
+    /// tentar adivinhar no nosso código de onde o som veio.
+    pub const EXCLUI_AUDIO_DO_APP: bool = true;
+}
+
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
@@ -99,7 +109,14 @@ pub struct VideoFrame {
 pub struct AudioChunk {
     pub sample_rate: u32,
     pub channels: u16,
-    pub frames: usize,
+    /// Amostras intercaladas (L, R, L, R...) em ponto flutuante, como o WebRTC quer.
+    pub samples: Vec<f32>,
+}
+
+impl AudioChunk {
+    pub fn frames(&self) -> usize {
+        self.samples.len() / self.channels.max(1) as usize
+    }
 }
 
 impl fmt::Debug for VideoFrame {
