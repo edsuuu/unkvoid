@@ -99,3 +99,17 @@ jobs:
             native/target/release/bundle/dmg/*.dmg
           if-no-files-found: warn
           retention-days: 14
+
+      # Em tag, o instalador vai direto para a Release — binário não entra no repo,
+      # senão o histórico incha a cada versão.
+      - name: Publicar na Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            native/target/release/bundle/msi/*.msi
+            native/target/release/bundle/deb/*.deb
+            native/target/release/bundle/dmg/*.dmg
+          draft: false
+          prerelease: true
+          fail_on_unmatched_files: false
