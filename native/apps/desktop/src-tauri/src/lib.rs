@@ -347,8 +347,20 @@ async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
 
     let version = update.version.clone();
 
+    // O progresso vai para a tela. Um download de 12 MB numa conexão ruim leva minutos,
+    // e sem número nenhum a tela de atualização é indistinguível de um app travado —
+    // que foi exatamente a primeira reclamação que este app recebeu.
+    let handle = app.clone();
+    let mut baixado = 0_usize;
+
     update
-        .download_and_install(|_baixado, _total| {}, || {})
+        .download_and_install(
+            move |pedaco, total| {
+                baixado += pedaco;
+                let _ = handle.emit("update:progress", (baixado as u64, total));
+            },
+            || {},
+        )
         .await
         .map_err(|error| error.to_string())?;
 
