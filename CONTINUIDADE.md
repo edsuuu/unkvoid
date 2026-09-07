@@ -361,6 +361,11 @@ medidos**. Dois brasileiros direto ficam em ~20 ms.
   de um `/** */`.
 
 **CI**
+- O repositório é **privado**, então minuto de Actions é cobrado — e runner de **macOS
+  custa 10×**, Windows **2×**. Rodar os seis jobs em todo push de PR queimou a cota e o
+  GitHub passou a recusar os jobs em 2 segundos com *"recent account payments have failed
+  or your spending limit needs to be increased"*. Hoje o instalador só roda em tag, e
+  `concurrency` cancela a rodada anterior do mesmo ref.
 - O `GITHUB_TOKEN` deste repo é read-only por padrão: publicar release volta **403
   "Resource not accessible by integration"**. Resolve com `permissions: contents: write`
   no workflow.
