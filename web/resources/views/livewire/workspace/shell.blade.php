@@ -402,7 +402,7 @@
                         wire:model="draft"
                         type="text"
                         maxlength="2000"
-                        placeholder="{{ __('Conversar em') }} #{{ $this->currentChannel->name }}"
+                        placeholder="{{ __('Message') }} #{{ $this->currentChannel->name }}"
                         class="w-full rounded-lg border-0 bg-[#383a40] px-4 py-3 text-[#dbdee1] placeholder-[#6d6f78] focus:ring-0"
                     >
                 </form>
@@ -541,7 +541,7 @@
                     @error('newServerName') <p class="mt-1 text-sm text-[#f23f43]">{{ $message }}</p> @enderror
 
                     <div class="mt-6 flex justify-end gap-3">
-                        <button type="button" wire:click="$set('creatingServer', false)" class="cursor-pointer px-4 py-2 text-sm text-white hover:underline">{{ __('Cancelar') }}</button>
+                        <button type="button" wire:click="$set('creatingServer', false)" class="cursor-pointer px-4 py-2 text-sm text-white hover:underline">{{ __('Cancel') }}</button>
                         <button type="submit" class="cursor-pointer rounded bg-[#5865f2] px-5 py-2 text-sm font-medium text-white hover:bg-[#4752c4]">{{ __('Create') }}</button>
                     </div>
                 </form>
@@ -564,8 +564,8 @@
                     @error('renamedChannel') <p class="mt-1 text-sm text-[#f23f43]">{{ $message }}</p> @enderror
 
                     <div class="mt-6 flex justify-end gap-3">
-                        <button type="button" wire:click="$set('renamingChannelId', null)" class="cursor-pointer px-4 py-2 text-sm text-white hover:underline">{{ __('Cancelar') }}</button>
-                        <button type="submit" class="cursor-pointer rounded bg-[#5865f2] px-5 py-2 text-sm font-medium text-white hover:bg-[#4752c4]">{{ __('Salvar') }}</button>
+                        <button type="button" wire:click="$set('renamingChannelId', null)" class="cursor-pointer px-4 py-2 text-sm text-white hover:underline">{{ __('Cancel') }}</button>
+                        <button type="submit" class="cursor-pointer rounded bg-[#5865f2] px-5 py-2 text-sm font-medium text-white hover:bg-[#4752c4]">{{ __('Save') }}</button>
                     </div>
                 </form>
             </div>
@@ -595,7 +595,7 @@
                     @error('newChannelName') <p class="mt-1 text-sm text-[#f23f43]">{{ $message }}</p> @enderror
 
                     <div class="mt-6 flex justify-end gap-3">
-                        <button type="button" wire:click="$set('creatingChannelType', null)" class="cursor-pointer px-4 py-2 text-sm text-white hover:underline">{{ __('Cancelar') }}</button>
+                        <button type="button" wire:click="$set('creatingChannelType', null)" class="cursor-pointer px-4 py-2 text-sm text-white hover:underline">{{ __('Cancel') }}</button>
                         <button type="submit" class="cursor-pointer rounded bg-[#5865f2] px-5 py-2 text-sm font-medium text-white hover:bg-[#4752c4]">{{ __('Create') }}</button>
                     </div>
                 </form>
@@ -621,7 +621,7 @@
                     <input
                         wire:model.live.debounce.200ms="memberSearch"
                         type="search"
-                        placeholder="{{ __('Buscar membro…') }}"
+                        placeholder="{{ __('Search member…') }}"
                         class="w-full rounded border-0 bg-[#1e1f22] px-3 py-2 text-sm text-white placeholder-[#6d6f78] focus:ring-0"
                     >
                 </div>
@@ -640,7 +640,7 @@
                             <div class="min-w-0 flex-1">
                                 <p class="truncate text-sm font-medium text-white">{{ $member->nickname ?? $member->user->displayName() }}</p>
                                 <p class="truncate text-xs text-[#949ba4]">
-                                    {{ __('entrou em :data', ['data' => $member->joined_at?->format('d/m/Y') ?? '—']) }}
+                                    {{ __('joined on :data', ['data' => $member->joined_at?->format('d/m/Y') ?? '—']) }}
                                 </p>
                             </div>
 
@@ -679,7 +679,7 @@
                         <label class="text-xs font-bold uppercase tracking-wide text-[#b5bac1]">{{ __('Server name') }}</label>
                         <div class="mt-2 flex gap-2">
                             <input wire:model="serverName" type="text" class="w-full rounded border-0 bg-[#1e1f22] px-3 py-2.5 text-white focus:ring-0">
-                            <button type="submit" class="shrink-0 cursor-pointer rounded bg-[#5865f2] px-4 text-sm font-medium text-white hover:bg-[#4752c4]">{{ __('Salvar') }}</button>
+                            <button type="submit" class="shrink-0 cursor-pointer rounded bg-[#5865f2] px-4 text-sm font-medium text-white hover:bg-[#4752c4]">{{ __('Save') }}</button>
                         </div>
                         @error('serverName') <p class="mt-1 text-sm text-[#f23f43]">{{ $message }}</p> @enderror
                     </form>
@@ -719,7 +719,7 @@
                         <span></span>
                     @endif
 
-                    <button type="button" wire:click="$set('editingServer', false)" class="cursor-pointer px-4 py-2 text-sm text-white hover:underline">{{ __('Fechar') }}</button>
+                    <button type="button" wire:click="$set('editingServer', false)" class="cursor-pointer px-4 py-2 text-sm text-white hover:underline">{{ __('Close') }}</button>
                 </div>
             </div>
         </div>

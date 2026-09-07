@@ -9,6 +9,24 @@ const PROFILES = {
 };
 
 export class SfuClient extends EventTarget {
+    /**
+     * Qual implementação de WebRTC o mediasoup-client deve usar.
+     *
+     * Ele descobre isso farejando o user-agent, e o WKWebView do app **não põe o token
+     * `Safari`** no dele. O teste do mediasoup exige essa palavra, a detecção devolve
+     * `undefined`, e o `load()` estoura com "device not supported" — a voz nunca
+     * funcionou dentro do app por causa de uma palavra que falta numa string.
+     *
+     * Onde a detecção funciona (Chrome, Edge, Firefox, Safari de verdade), este método
+     * não opina: devolve vazio e deixa o mediasoup escolher.
+     */
+    static handler() {
+        const agent = navigator.userAgent;
+        const webkitSemChrome = /AppleWebKit/i.test(agent) && ! /Chrome|Chromium|Edg/i.test(agent);
+
+        return webkitSemChrome && ! /\bSafari\b/i.test(agent) ? { handlerName: 'Safari12' } : {};
+    }
+
     constructor() {
         super();
         this.socket = null;
@@ -191,7 +209,7 @@ export class SfuClient extends EventTarget {
                 sharing: peer.producers.some(producer => producer.source === 'screen'),
             });
         }
-        this.device = new Device();
+        this.device = new Device(SfuClient.handler());
         await this.device.load({ routerRtpCapabilities: joined.routerRtpCapabilities });
 
         this.sendTransport = await this.createTransport('send');

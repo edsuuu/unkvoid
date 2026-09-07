@@ -1,0 +1,44 @@
+<!doctype html>
+<!--
+  Abre a UI do app num navegador comum, com a ponte do Tauri fingida.
+
+  Existe porque a janela do app não tem console acessível: um erro de JavaScript deixa a
+  tela preta e não dá pista nenhuma. Aqui o mesmo bundle roda com devtools — foi assim
+  que apareceu um `this.update is not a function` que a tela preta escondia.
+
+  python3 -m http.server 4599   (nesta pasta) e abra /harness.html
+-->
+<html lang="pt-BR"><head><meta charset="utf-8"><title>Unkvoid — harness</title></head>
+<body>
+<script>
+// Aponta para a pilha local e já entra logado: o objetivo é exercitar a interface,
+// não repetir o login a cada recarga.
+localStorage.setItem('api:base', 'http://localhost:8000');
+localStorage.setItem('api:token', '6|Jg74bCcjle1oVN5mPx3HCL17ztEhKtS1T5LbRSPJe5eb7545');
+
+window.__TAURI__ = {
+    core: {
+        invoke: async (comando, args) => {
+            console.log('invoke', comando, args ?? '');
+
+            return { check_update: null, all_settings: [], autostart_enabled: false }[comando] ?? null;
+        },
+    },
+    opener: { openUrl: async url => console.log('openUrl', url) },
+    deepLink: { onOpenUrl: () => {} },
+    event: { listen: async () => () => {} },
+};
+</script>
+<script type="module">
+const html = await (await fetch('./dist/index.html')).text();
+
+document.body.insertAdjacentHTML('beforeend', html.replace(/[\s\S]*<body>/, '').replace(/<\/body>[\s\S]*/, '').replace(/<script[\s\S]*?<\/script>/g, ''));
+
+const folha = document.createElement('link');
+folha.rel = 'stylesheet';
+folha.href = './dist/' + html.match(/href="\/?(assets\/[^"]*\.css)"/)[1];
+document.head.appendChild(folha);
+
+await import('./dist/' + html.match(/src="\/?(assets\/[^"]*\.js)"/)[1]);
+</script>
+</html>

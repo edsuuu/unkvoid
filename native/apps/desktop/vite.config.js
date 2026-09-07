@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
+import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
 const require = createRequire(import.meta.url);
@@ -14,6 +15,7 @@ const require = createRequire(import.meta.url);
 // reaches this node_modules — every npm import they make has to be pinned here by hand.
 // It worked locally only because web/node_modules happened to be installed next to them.
 export default defineConfig({
+    plugins: [tailwindcss()],
     root: 'ui',
     build: {
         outDir: '../dist',

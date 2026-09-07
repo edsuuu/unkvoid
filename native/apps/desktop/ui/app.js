@@ -6,12 +6,26 @@ import { P2P } from './p2p.js';
 
 const el = id => document.getElementById(id);
 
+/** Aparência dos elementos que o JavaScript cria. */
+const LOOK = {
+    server: 'group relative flex size-12 cursor-pointer items-center justify-center rounded-[24px] text-sm font-semibold transition-all duration-200 hover:rounded-2xl hover:bg-brand hover:text-white',
+    serverIdle: 'bg-content text-ink',
+    serverActive: 'rounded-2xl bg-brand text-white',
+    plus: 'flex size-12 cursor-pointer items-center justify-center rounded-[24px] bg-content text-2xl leading-none text-online transition-all duration-200 hover:rounded-2xl hover:bg-online hover:text-white',
+    separator: 'h-0.5 w-8 shrink-0 rounded-full bg-line',
+    section: 'px-2 pt-4 pb-1 text-xs font-bold uppercase tracking-wide text-ink-soft',
+    channel: 'flex w-full cursor-pointer items-center gap-1.5 rounded px-2 py-1.5 text-left text-[15px] transition-colors duration-100',
+    channelIdle: 'text-ink-soft hover:bg-line hover:text-ink',
+    channelActive: 'bg-[#404249] text-white',
+    tile: 'm-0 flex flex-col overflow-hidden rounded-lg bg-black',
+};
+
 // This UI has no bundler, so `window.__TAURI__` (config `withGlobalTauri`) is the only
 // bridge to Rust — and the plugin scripts only attach themselves to it once it exists.
 // Reading it blind would throw here and leave the update screen spinning forever, which
 // is exactly what it looked like before: a hang with no message.
 if (! window.__TAURI__?.core) {
-    el('update-status').textContent = 'Broken build: the Tauri bridge did not load.';
+    el('update-status').textContent = 'Build quebrada: a ponte do Tauri não carregou.';
     throw new Error('window.__TAURI__ is missing — check withGlobalTauri in tauri.conf.json');
 }
 
@@ -42,6 +56,11 @@ class App {
      * only produce an error later.
      */
     async start() {
+        // Antes de tudo, e uma vez só: o link pode chegar com o app em qualquer tela —
+        // offline, login, já dentro. Registrar isto dentro da tela de login fazia o
+        // token se perder em qualquer outro estado.
+        this.listenForDeepLink();
+
         await this.update();
 
         el('update-screen').hidden = true;
@@ -50,7 +69,7 @@ class App {
             return;
         }
 
-        this.api.authenticated ? await this.signIn() : this.askForLogin();
+        await this.enter();
     }
 
     async update() {
@@ -58,12 +77,13 @@ class App {
             const version = await invoke('check_update');
 
             if (version) {
-                el('update-status').textContent = `Installing version ${version}…`;
+                el('update-status').textContent = `Instalando a versão ${version}…`;
                 await invoke('restart');
             }
         } catch (failure) {
-            // An update failure must not prevent startup: the app continues on its current version.
-            console.warn('update unavailable:', failure);
+            // Falhar a atualização não pode impedir o app de abrir: ele continua na
+            // versão atual.
+            console.warn('atualização indisponível:', failure);
         }
     }
 
@@ -78,7 +98,7 @@ class App {
             const response = await fetch(`${Api.BASE}/api/health`, { method: 'GET' });
 
             if (! response.ok) {
-                throw new Error(`the server answered ${response.status}`);
+                throw new Error(`o servidor respondeu ${response.status}`);
             }
 
             return true;
@@ -94,35 +114,39 @@ class App {
         el('login-screen').hidden = true;
 
         this.attempt += 1;
-        el('offline-attempt').textContent = `attempt ${this.attempt}`;
+        el('offline-attempt').textContent = `tentativa ${this.attempt}`;
 
         clearTimeout(this.reconnect);
         this.reconnect = setTimeout(async () => {
             if (await this.serverAnswered()) {
                 el('offline-screen').hidden = true;
                 this.attempt = 0;
-                this.api.authenticated ? await this.signIn() : this.askForLogin();
+                await this.enter();
             }
         }, Math.min(2000 * this.attempt, 10000));
     }
 
-    askForLogin() {
-        el('login-screen').hidden = false;
+    /** Entra se já houver token; senão pede login. */
+    async enter() {
+        if (! this.api.authenticated) {
+            this.askForLogin();
 
-        // Google does not open inside the app: it opens in the system browser and
-        // returns through a deep link. The password never passes through Unkvoid.
-        //
-        // O catch não é decoração: o plugin `opener` recusa URL fora do escopo e a
-        // promessa rejeita sem nada aparecer. Sem isto, um erro de permissão vira um
-        // botão que não faz nada — e foi exatamente o que aconteceu.
-        el('google-button').onclick = async () => {
-            try {
-                await openUrl(`${Api.BASE}/api/desktop/google`);
-            } catch (failure) {
-                el('login-error').textContent = `could not open the browser: ${failure}`;
-            }
-        };
+            return;
+        }
 
+        try {
+            el('login-screen').hidden = true;
+            await this.signIn();
+        } catch (failure) {
+            // Sem isto, uma falha aqui esconde a tela de login e não mostra nada no
+            // lugar: o app fica numa tela morta sem explicar o motivo.
+            this.api.token = null;
+            this.askForLogin();
+            el('login-error').textContent = `não deu para entrar: ${failure.message ?? failure}`;
+        }
+    }
+
+    listenForDeepLink() {
         onOpenUrl(async ([url]) => {
             const params = new URL(url).searchParams;
 
@@ -145,9 +169,32 @@ class App {
 
             localStorage.setItem('api:token', token);
             this.api.token = token;
-            el('login-screen').hidden = true;
-            await this.signIn();
+
+            // A tela de atualização já passou nesta instância; o login não pode
+            // trazê-la de volta.
+            el('update-screen').hidden = true;
+            await this.enter();
         });
+    }
+
+    askForLogin() {
+        el('login-screen').hidden = false;
+
+        // O Google não abre dentro do app: abre no navegador do sistema e volta por
+        // deep link. A senha nunca passa pela janela do Unkvoid.
+        //
+        // O catch não é decoração: o plugin `opener` recusa URL fora do escopo e a
+        // promessa rejeita sem nada aparecer. Sem isto, um erro de permissão vira um
+        // botão que não faz nada — e foi exatamente o que aconteceu.
+        el('google-button').onclick = async () => {
+            el('login-error').textContent = '';
+
+            try {
+                await openUrl(`${Api.BASE}/api/desktop/google`);
+            } catch (failure) {
+                el('login-error').textContent = `não deu para abrir o navegador: ${failure}`;
+            }
+        };
 
         el('login-form').onsubmit = async event => {
             event.preventDefault();
@@ -156,8 +203,7 @@ class App {
 
             try {
                 await this.api.login(el('email').value, el('password').value);
-                el('login-screen').hidden = true;
-                await this.signIn();
+                await this.enter();
             } catch (failure) {
                 el('login-error').textContent = failure.message;
             } finally {
@@ -180,6 +226,15 @@ class App {
         el('leave-voice').onclick = () => this.leaveVoice();
         el('mute').onclick = () => this.toggleMicrophone();
         el('mic-settings').onclick = () => this.toggleMicPanel();
+
+        el('message-form').onsubmit = async event => {
+            event.preventDefault();
+
+            const texto = el('draft').value;
+
+            el('draft').value = '';
+            await this.sendMessage(texto);
+        };
         this.wireMicPanel();
         void this.wireMachineSettings();
     }
@@ -207,7 +262,7 @@ class App {
             } catch (failure) {
                 // Reverter o visual: um checkbox marcado que não valeu mente para quem clicou.
                 autostart.checked = ! autostart.checked;
-                el('my-state').textContent = `could not change autostart: ${failure}`;
+                el('my-state').textContent = `não deu para mudar o início automático: ${failure}`;
             }
         };
 
@@ -243,7 +298,7 @@ class App {
         el('mic-noise').onchange = event => this.rememberMic({ noiseSuppression: event.target.checked });
 
         el('mic-shortcut').onclick = () => {
-            el('mic-shortcut').textContent = 'press a key…';
+            el('mic-shortcut').textContent = 'pressione uma tecla…';
 
             // `once` matters: without it every later keypress would keep rebinding.
             window.addEventListener('keydown', event => {
@@ -275,7 +330,7 @@ class App {
         for (const server of this.servers) {
             const button = document.createElement('button');
 
-            button.className = `server${this.server?.id === server.id ? ' active' : ''}`;
+            button.className = `${LOOK.server} ${this.server?.id === server.id ? LOOK.serverActive : LOOK.serverIdle}`;
             button.textContent = server.initials;
             button.title = server.name;
             button.onclick = () => this.openServer(server.id);
@@ -284,20 +339,20 @@ class App {
 
         const separator = document.createElement('span');
 
-        separator.className = 'separator';
+        separator.className = LOOK.separator;
         rail.appendChild(separator);
 
         const plus = document.createElement('button');
 
-        plus.className = 'server plus';
+        plus.className = LOOK.plus;
         plus.textContent = '+';
-        plus.title = 'Criar server';
+        plus.title = 'Criar servidor';
         plus.onclick = () => this.createServer();
         rail.appendChild(plus);
     }
 
     async createServer() {
-        const name = prompt('Server name');
+        const name = prompt('Nome do servidor');
 
         if (! name?.trim()) {
             return;
@@ -338,17 +393,17 @@ class App {
 
             const title = document.createElement('p');
 
-            title.className = 'section';
-            title.textContent = kind === 'text' ? 'Text channels' : 'Voice channels';
+            title.className = LOOK.section;
+            title.textContent = kind === 'text' ? 'Canais de texto' : 'Canais de voz';
             list.appendChild(title);
 
             for (const channel of channels) {
                 const button = document.createElement('button');
 
-                button.className = `channel${this.channel?.id === channel.id ? ' active' : ''}`;
+                button.className = `${LOOK.channel} ${this.channel?.id === channel.id ? LOOK.channelActive : LOOK.channelIdle}`;
                 button.innerHTML = kind === 'text'
-                    ? `<span style="font-size:20px;color:#80848e">#</span><span>${channel.name}</span>`
-                    : `<span style="color:#80848e">🔊</span><span>${channel.name}</span><span class="clock" data-clock="${channel.id}"></span>`;
+                    ? `<span class="text-xl leading-none text-ink-dim">#</span><span>${channel.name}</span>`
+                    : `<span class="text-ink-dim">🔊</span><span>${channel.name}</span><span class="ml-auto shrink-0 font-mono text-xs text-online" data-clock="${channel.id}"></span>`;
                 button.onclick = () => (kind === 'text' ? this.openChannel(channel) : this.joinVoice(channel));
                 list.appendChild(button);
 
@@ -365,19 +420,86 @@ class App {
     async openChannel(channel) {
         this.channel = channel;
         el('channel-title').textContent = `# ${channel.name}`;
+        el('draft').placeholder = `Conversar em #${channel.name}`;
         this.drawChannels();
 
-        const messages = await this.api.messages(channel.id);
-
         el('stage').hidden = true;
-        el('empty').hidden = false;
-        el('empty').textContent = messages.length
-            ? messages.map(message => `${message.author.name}: ${message.content}`).join('\n')
-            : 'No messages yet.';
+        el('empty').hidden = true;
+        el('chat').hidden = false;
+
+        this.drawMessages(await this.api.messages(channel.id));
+    }
+
+    /**
+     * Uma linha por mensagem, agrupando falas seguidas da mesma pessoa como no Discord:
+     * repetir nome e horário a cada frase vira ruído numa conversa rápida.
+     */
+    drawMessages(messages) {
+        const lista = el('messages');
+
+        lista.innerHTML = '';
+
+        if (! messages.length) {
+            lista.innerHTML = '<p class="pt-8 text-center text-sm text-ink-soft">Nenhuma mensagem ainda. Manda a primeira.</p>';
+
+            return;
+        }
+
+        let anterior = null;
+
+        for (const message of messages) {
+            const mesmaPessoa = anterior?.author.id === message.author.id;
+            const linha = document.createElement('div');
+
+            linha.className = mesmaPessoa ? 'flex gap-3' : 'flex gap-3 pt-2';
+            linha.innerHTML = mesmaPessoa
+                ? `<span class="w-10 shrink-0"></span>
+                   <p class="min-w-0 break-words text-ink"></p>`
+                : `<span class="flex size-10 shrink-0 items-center justify-center rounded-full bg-brand text-xs font-semibold text-white">${initials(message.author.name)}</span>
+                   <div class="min-w-0 flex-1">
+                     <p class="mb-0.5 flex items-baseline gap-2">
+                       <span class="font-medium text-white"></span>
+                       <span class="text-xs text-ink-soft"></span>
+                     </p>
+                     <p class="break-words text-ink"></p>
+                   </div>`;
+
+            // textContent e não innerHTML: mensagem é texto de outra pessoa, e montar
+            // HTML com ela deixaria qualquer um executar script na tela dos outros.
+            const partes = linha.querySelectorAll('p, span');
+
+            if (mesmaPessoa) {
+                linha.querySelector('p').textContent = message.content;
+            } else {
+                partes[1].textContent = message.author.name;
+                partes[2].textContent = new Date(message.created_at).toLocaleString('pt-BR', {
+                    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+                });
+                linha.querySelectorAll('p')[1].textContent = message.content;
+            }
+
+            lista.appendChild(linha);
+            anterior = message;
+        }
+
+        lista.scrollTop = lista.scrollHeight;
+    }
+
+    async sendMessage(content) {
+        if (! content.trim() || ! this.channel) {
+            return;
+        }
+
+        try {
+            await this.api.sendMessage(this.channel.id, content.trim());
+            this.drawMessages(await this.api.messages(this.channel.id));
+        } catch (failure) {
+            el('my-state').textContent = `não deu para enviar: ${failure.message}`;
+        }
     }
 
     async joinVoice(channel) {
-        el('my-state').textContent = 'connecting…';
+        el('my-state').textContent = 'conectando…';
 
         try {
             this.voice = await this.api.voiceToken(channel.id);
@@ -412,7 +534,7 @@ class App {
 
             await this.openMicrophone();
         } catch (failure) {
-            el('my-state').textContent = `could not join the room: ${failure.message}`;
+            el('my-state').textContent = `não deu para entrar na sala: ${failure.message}`;
             this.p2p = null;
             this.sfu = null;
 
@@ -421,7 +543,7 @@ class App {
 
         el('voice-bar').hidden = false;
         el('voice-channel').textContent = channel.name;
-        el('my-state').textContent = `in ${channel.name}`;
+        el('my-state').textContent = `em ${channel.name}`;
         el('stage').hidden = false;
         el('empty').hidden = true;
 
@@ -454,11 +576,12 @@ class App {
 
         const frame = existing ?? document.createElement('figure');
 
-        frame.className = 'tile';
-        frame.dataset.tela = from;
-        frame.innerHTML = '<video autoplay playsinline></video><figcaption></figcaption>';
+        frame.className = LOOK.tile;
+        frame.dataset.screen = from;
+        frame.innerHTML = '<video class="min-h-0 w-full flex-1 object-contain" autoplay playsinline></video>'
+            + '<figcaption class="bg-panel px-3 py-1.5 text-xs text-ink"></figcaption>';
         frame.querySelector('video').srcObject = stream;
-        frame.querySelector('figcaption').textContent = 'broadcasting';
+        frame.querySelector('figcaption').textContent = 'transmitindo';
 
         if (! existing) {
             el('stage').appendChild(frame);
@@ -482,7 +605,7 @@ class App {
             this.paintMicrophone({ db: MicrophoneGate.FLOOR_DB, transmitting: false, muted: false });
         } catch (failure) {
             this.micDenied = true;
-            el('my-state').textContent = `microphone unavailable: ${failure.message}`;
+            el('my-state').textContent = `microfone indisponível: ${failure.message}`;
         }
     }
 
@@ -496,7 +619,7 @@ class App {
 
                 audio.srcObject = new MediaStream([consumer.track]);
                 audio.autoplay = true;
-                audio.dataset.remoto = producerId;
+                audio.dataset.remote = producerId;
                 document.body.appendChild(audio);
 
                 return;
@@ -513,7 +636,7 @@ class App {
     /** Mute is the gate, never the producer: the call keeps the audio path warm. */
     toggleMicrophone() {
         if (! this.mic.active) {
-            el('my-state').textContent = this.micDenied ? 'the system denied the microphone' : 'join a voice channel first';
+            el('my-state').textContent = this.micDenied ? 'o sistema negou o microfone' : 'entre num canal de voz primeiro';
 
             return;
         }
@@ -525,7 +648,7 @@ class App {
         const button = el('mute');
 
         if (button) {
-            button.textContent = muted ? 'Unmute' : 'Mute';
+            button.textContent = muted ? 'Ativar som' : 'Silenciar';
             button.classList.toggle('danger', muted);
         }
 
@@ -552,12 +675,12 @@ class App {
         el('voice-bar').hidden = true;
         el('stage').hidden = true;
         el('empty').hidden = false;
-        el('my-state').textContent = 'Available';
+        el('my-state').textContent = 'Disponível';
     }
 
     async share() {
         if (! this.p2p) {
-            el('my-state').textContent = 'join a voice channel first';
+            el('my-state').textContent = 'entre num canal de voz primeiro';
 
             return;
         }
@@ -567,8 +690,8 @@ class App {
             el('share').hidden = true;
             el('stop').hidden = false;
             el('my-state').textContent = this.participants.length
-                ? `broadcasting to ${this.participants.length}`
-                : 'broadcasting (no one watching yet)';
+                ? `transmitindo para ${this.participants.length}`
+                : 'transmitindo (ninguém assistindo ainda)';
         } catch (failure) {
             el('my-state').textContent = failure.message ?? String(failure);
         }
@@ -581,9 +704,15 @@ class App {
         el('stop').hidden = true;
 
         if (frames) {
-            el('my-state').textContent = `${frames} frames broadcast`;
+            el('my-state').textContent = `${frames} quadros transmitidos`;
         }
     }
 }
 
-new App().start();
+const app = new App();
+
+// Exposto de propósito: a janela do app não tem console, e quando algo dá errado em
+// produção esta é a única forma de inspecionar o estado sem recompilar.
+window.unkvoid = app;
+
+app.start();

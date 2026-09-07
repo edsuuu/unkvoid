@@ -421,6 +421,13 @@ pub fn run() {
     tracing_subscriber::fmt().with_env_filter("info").init();
 
     tauri::Builder::default()
+        // Precisa ser o PRIMEIRO plugin. Sem ele, o navegador devolvendo `discord2://`
+        // faz o sistema abrir uma SEGUNDA cópia do app, que começa do zero na tela de
+        // atualização por cima de quem acabou de fazer login. Com ele, a segunda cópia
+        // entrega o link para a que já está aberta e sai.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main_window(app);
+        }))
         // `--minimized` é o que o autostart passa: subir com o sistema não pode jogar
         // uma janela na cara de quem acabou de ligar o computador.
         .plugin(tauri_plugin_autostart::init(
@@ -458,6 +465,16 @@ pub fn run() {
         ])
         .setup(|app| {
             use tauri::Manager;
+
+            // Registra o esquema em tempo de execução: sem isto o sistema continua
+            // entregando `discord2://` para a cópia que registrou primeiro — uma pasta
+            // de build, um DMG montado — em vez desta.
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+
+                let _ = app.deep_link().register_all();
+            }
 
             let banco = app.path().app_data_dir()?.join("settings.db");
 
