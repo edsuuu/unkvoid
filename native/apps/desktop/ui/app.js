@@ -1,3 +1,6 @@
+import { MicrophoneGate } from '@voice/MicrophoneGate.js';
+import { SfuClient } from '@voice/SfuClient.js';
+
 import { Api } from './api.js';
 import { P2P } from './p2p.js';
 
@@ -24,7 +27,10 @@ class App {
         this.servidor = null;
         this.canal = null;
         this.voz = null;
+        this.sfu = null;
         this.p2p = null;
+        this.mic = new MicrophoneGate(estado => this.pintarMicrofone(estado));
+        this.painelMic = null;
         this.participantes = [];
         this.relogio = null;
         this.tentativa = 0;
@@ -148,6 +154,51 @@ class App {
         el('compartilhar').onclick = () => this.compartilhar();
         el('parar').onclick = () => this.pararCompartilhamento();
         el('sair-voz').onclick = () => this.sairDaVoz();
+        el('mudo').onclick = () => this.alternarMicrofone();
+        el('config-mic').onclick = () => this.alternarPainelMic();
+        this.ligarPainelMic();
+    }
+
+    /**
+     * The panel is static markup wired once. The settings live in the gate, which is
+     * what actually decides frame by frame whether the audio leaves this machine.
+     */
+    ligarPainelMic() {
+        const { mode, threshold, pushKey, noiseSuppression } = this.mic.settings;
+
+        el('mic-limiar').value = threshold;
+        el('mic-ruido').checked = noiseSuppression;
+        el('mic-atalho').textContent = pushKey;
+
+        for (const opcao of document.querySelectorAll('input[name="modo-mic"]')) {
+            opcao.checked = opcao.value === mode;
+            opcao.onchange = () => {
+                this.mic.save({ mode: opcao.value });
+                el('mic-voz').hidden = opcao.value !== 'voice';
+                el('mic-tecla').hidden = opcao.value !== 'ptt';
+            };
+        }
+
+        el('mic-voz').hidden = mode !== 'voice';
+        el('mic-tecla').hidden = mode !== 'ptt';
+
+        el('mic-limiar').oninput = evento => this.mic.save({ threshold: Number(evento.target.value) });
+        el('mic-ruido').onchange = evento => this.mic.save({ noiseSuppression: evento.target.checked });
+
+        el('mic-atalho').onclick = () => {
+            el('mic-atalho').textContent = 'press a key…';
+
+            // `once` matters: without it every later keypress would keep rebinding.
+            window.addEventListener('keydown', evento => {
+                evento.preventDefault();
+                this.mic.save({ pushKey: evento.code });
+                el('mic-atalho').textContent = evento.code;
+            }, { once: true, capture: true });
+        };
+    }
+
+    alternarPainelMic() {
+        el('painel-mic').hidden = ! el('painel-mic').hidden;
     }
 
     desenharTrilha() {
@@ -271,14 +322,33 @@ class App {
         }
 
         try {
-            this.p2p = new P2P((de, stream) => this.mostrarTela(de, stream));
+            // One client for everything: voice rides the SFU (which fans out to any
+            // number of people), while the screen stays direct between machines.
+            this.sfu = new SfuClient();
+            this.sfu.addEventListener('newProducer', evento => this.consumir(evento.detail));
 
-            const entrada = await this.p2p.join(this.voz.url, this.voz.token);
+            this.p2p = new P2P(this.sfu, (de, stream) => this.mostrarTela(de, stream));
+
+            const entrada = await this.sfu.connect(
+                this.voz.url,
+                async () => (await this.api.voiceToken(canal.id)).token,
+            );
+
+            await this.p2p.attach();
 
             this.participantes = entrada.peers.map(peer => peer.peerId);
+
+            for (const peer of entrada.peers) {
+                for (const producer of peer.producers) {
+                    await this.consumir({ ...producer, peerId: peer.peerId, name: peer.name });
+                }
+            }
+
+            await this.abrirMicrofone();
         } catch (falha) {
             el('meu-estado').textContent = `could not join the room: ${falha.message}`;
             this.p2p = null;
+            this.sfu = null;
 
             return;
         }
@@ -333,12 +403,86 @@ class App {
         el('palco').style.gridTemplateColumns = `repeat(${total > 1 ? 2 : 1}, minmax(0, 1fr))`;
     }
 
+    /**
+     * Voice goes through the SFU, not P2P: audio is cheap and the server already fans it
+     * out to everyone in the room, so talking works with any number of people — while the
+     * screen, which is expensive, stays direct between machines.
+     */
+    async abrirMicrofone() {
+        try {
+            const trilha = await this.mic.open();
+
+            await this.sfu.publishMicrophone(trilha);
+            this.pintarMicrofone({ db: MicrophoneGate.FLOOR_DB, transmitting: false, muted: false });
+        } catch (falha) {
+            this.micNegado = true;
+            el('meu-estado').textContent = `microphone unavailable: ${falha.message}`;
+        }
+    }
+
+    /** Someone else's audio or screen arriving through the SFU. */
+    async consumir({ producerId }) {
+        try {
+            const { consumer, peerId } = await this.sfu.consume(producerId);
+
+            if (consumer.kind === 'audio') {
+                const audio = document.createElement('audio');
+
+                audio.srcObject = new MediaStream([consumer.track]);
+                audio.autoplay = true;
+                audio.dataset.remoto = producerId;
+                document.body.appendChild(audio);
+
+                return;
+            }
+
+            // A web broadcaster publishes to the SFU, not P2P: this is how the desktop
+            // watches someone who is not using the app.
+            this.mostrarTela(peerId, new MediaStream([consumer.track]));
+        } catch (falha) {
+            console.warn('could not receive media:', falha);
+        }
+    }
+
+    /** Mute is the gate, never the producer: the call keeps the audio path warm. */
+    alternarMicrofone() {
+        if (! this.mic.active) {
+            el('meu-estado').textContent = this.micNegado ? 'the system denied the microphone' : 'join a voice channel first';
+
+            return;
+        }
+
+        this.mic.setMuted(! this.mic.muted);
+    }
+
+    pintarMicrofone({ transmitting, muted, db }) {
+        const botao = el('mudo');
+
+        if (botao) {
+            botao.textContent = muted ? 'Unmute' : 'Mute';
+            botao.classList.toggle('perigo', muted);
+        }
+
+        const medidor = document.querySelector('[data-medidor]');
+
+        if (medidor) {
+            medidor.style.width = `${MicrophoneGate.toFraction(db) * 100}%`;
+            medidor.style.background = transmitting ? '#23a55a' : '#4e5058';
+        }
+    }
+
     async sairDaVoz() {
         clearInterval(this.relogio);
         await this.pararCompartilhamento();
+        this.mic.close();
+        this.micNegado = false;
+        await this.sfu?.leaveRoom();
+        this.sfu?.disconnect();
         this.p2p?.close();
         this.p2p = null;
+        this.sfu = null;
         this.voz = null;
+        document.querySelectorAll('audio[data-remoto]').forEach(elemento => elemento.remove());
         el('faixa-voz').hidden = true;
         el('palco').hidden = true;
         el('vazio').hidden = false;

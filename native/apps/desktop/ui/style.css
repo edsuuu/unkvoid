@@ -214,3 +214,44 @@ button, select { cursor: pointer; font: inherit; }
 .girando { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,.25); border-top-color: #fff; border-radius: 50%; animation: girar .8s linear infinite; }
 @keyframes girar { to { transform: rotate(360deg); } }
 .aviso { display: flex; align-items: center; gap: 12px; justify-content: center; color: var(--texto-fraco); font-size: 14px; }
+
+/* Input meter and microphone settings. The meter shares its scale with the sensitivity
+   slider, so the marker and the bar mean the same thing. */
+.medidor {
+    height: 4px;
+    margin: 8px 12px 0;
+    overflow: hidden;
+    border-radius: 2px;
+    background: #1e1f22;
+}
+
+.medidor span {
+    display: block;
+    width: 0;
+    height: 100%;
+    background: #4e5058;
+    transition: width 75ms linear;
+}
+
+.painel-mic {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 10px 12px 0;
+    padding: 10px;
+    border-radius: 6px;
+    background: #1e1f22;
+}
+
+.painel-mic .linha {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.painel-mic input[type="range"] {
+    width: 100%;
+    accent-color: var(--roxo, #5865f2);
+}

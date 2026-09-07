@@ -386,29 +386,49 @@ export class SfuClient extends EventTarget {
         this.emit('peersChanged', [...this.peers.entries()]);
     }
 
-    async toggleMicrophone() {
-        const existing = this.producers.get('mic');
-
-        if (existing) {
-            existing.track.stop();
-            existing.close();
-            await this.request('closeProducer', { producerId: existing.id }).catch(() => {});
-            this.producers.delete('mic');
-            this.localTracks.delete('mic');
-
-            return false;
+    /**
+     * The track comes from outside because who opens the microphone is the gate — it is
+     * the gate that decides, frame by frame, whether the audio leaves. Here the producer
+     * only stays up; muting never closes it.
+     */
+    async publishMicrophone(track) {
+        if (this.producers.has('mic')) {
+            return this.producers.get('mic');
         }
 
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const producer = await this.sendTransport.produce({
-            track: stream.getAudioTracks()[0],
+            track,
             appData: { source: 'mic' },
         });
 
         this.producers.set('mic', producer);
-        this.localTracks.set('mic', { track: stream.getAudioTracks()[0], options: {} });
+        this.localTracks.set('mic', { track, options: {} });
 
-        return true;
+        return producer;
+    }
+
+    /**
+     * Relays a message to another participant through the SFU socket. Used by the
+     * desktop app to set up its direct connections: the server does not read the
+     * payload, it only delivers it, and the sender comes from the session — so the
+     * same authenticated room that carries the media also carries the handshake,
+     * with no second socket and no second identity.
+     */
+    async signal(to, kind, payload) {
+        return this.request('signal', { to, kind, payload });
+    }
+
+    async unpublishMicrophone() {
+        const existing = this.producers.get('mic');
+
+        if (! existing) {
+            return;
+        }
+
+        existing.close();
+        await this.request('closeProducer', { producerId: existing.id }).catch(() => {});
+        this.producers.delete('mic');
+        this.localTracks.delete('mic');
     }
 
     async consume(producerId) {

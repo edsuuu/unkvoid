@@ -1,3 +1,4 @@
+import { MicrophoneGate } from './MicrophoneGate.js';
 import { PresenceClient } from './PresenceClient.js';
 import { SfuClient } from './SfuClient.js';
 
@@ -7,11 +8,15 @@ const ICONS = {
     focus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-4"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="7" y="9" width="10" height="6" rx="1" fill="currentColor" stroke="none"/></svg>',
     fullscreen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-4"><path stroke-linecap="round" stroke-linejoin="round" d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/></svg>',
     close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-4"><path stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>',
+    micOn: '<svg class="size-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M18 11a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.917V19H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.083A6 6 0 0 0 18 11z"/></svg>',
+    micOff: '<svg class="size-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-5.4-1.8l4.2 4.2V11a1 1 0 0 1-1.8.6L12 14zM4.7 3.3a1 1 0 0 0-1.4 1.4l16 16a1 1 0 0 0 1.4-1.4l-3.2-3.2A6 6 0 0 0 18 11a1 1 0 1 0-2 0c0 .7-.18 1.35-.5 1.92l-1.5-1.5V11l-.02.02L9 6.05V6a3 3 0 0 1 .1-.75L4.7 3.3zM6 10a1 1 0 0 0-2 0 6 6 0 0 0 5 5.92V19H9a1 1 0 1 0 0 2h6a1 1 0 0 0 .7-1.71L13 16.58V17h-1a4 4 0 0 1-4-4v-1.17L6.4 10.24A1 1 0 0 0 6 10z"/></svg>',
 };
 
 export class VoiceStage {
     constructor() {
         this.client = null;
+        this.micDenied = false;
+        this.micPanel = null;
         this.presence = new PresenceClient();
         this.channelId = null;
         this.statsTimer = null;
@@ -22,6 +27,7 @@ export class VoiceStage {
         this.bytesMark = new Map();
         this.presenceState = null;
         this.reconnectDeadlines = new Map();
+        this.mic = new MicrophoneGate(state => this.paintMicrophone(state));
         this.escapeHandler = event => {
             if (event.key !== 'Escape') {
                 return;
@@ -241,6 +247,7 @@ export class VoiceStage {
             if (action === 'stop-share') this.stopShare();
             if (action === 'leave') this.leave();
             if (action === 'toggle-mic') this.toggleMicrophone();
+            if (action === 'mic-settings') this.toggleMicPanel();
         });
     }
 
@@ -340,6 +347,8 @@ export class VoiceStage {
             this.setControlsEnabled(true);
             this.remember(channelId, channelName);
             this.statsTimer = setInterval(() => this.refreshStats(), 1000);
+
+            await this.openMicrophone();
         } catch (error) {
             this.teardown();
             this.status(`failed to connect: ${error.message}`);
@@ -467,7 +476,7 @@ export class VoiceStage {
     }
 
     setControlsEnabled(enabled) {
-        for (const action of ['share', 'stop-share', 'toggle-mic']) {
+        for (const action of ['share', 'stop-share', 'toggle-mic', 'mic-settings']) {
             const button = document.querySelector(`[data-action="${action}"]`);
 
             if (button) {
@@ -735,16 +744,151 @@ export class VoiceStage {
         document.querySelector('[data-action="stop-share"]')?.classList.add('hidden');
     }
 
-    async toggleMicrophone() {
-        if (! this.client?.sendTransport) {
-            this.status('espere terminar de conectar');
+    /**
+     * Opens the microphone as soon as the call starts, the way Discord does. A refusal
+     * does not break anything else: the screen share is the important part, so the
+     * failure only reaches the button and the status line.
+     */
+    async openMicrophone() {
+        if (this.mic.active) {
+            return;
+        }
+
+        try {
+            const track = await this.mic.open();
+
+            await this.client.publishMicrophone(track);
+            this.paintMicrophone({ db: MicrophoneGate.FLOOR_DB, transmitting: false, muted: false });
+        } catch (error) {
+            this.micDenied = true;
+            this.status(`microfone indisponível: ${error.message}`);
+            this.paintMicrophone({ db: MicrophoneGate.FLOOR_DB, transmitting: false, muted: true });
+        }
+    }
+
+    /** Mute is the gate, not the producer: the call keeps the audio path warm. */
+    toggleMicrophone() {
+        if (! this.mic.active) {
+            this.status(this.micDenied ? 'o navegador negou o microfone' : 'espere terminar de conectar');
 
             return;
         }
 
-        const on = await this.client.toggleMicrophone();
+        this.mic.setMuted(! this.mic.muted);
+    }
 
-        document.querySelector('[data-action="toggle-mic"]')?.classList.toggle('text-[#f23f43]', !on);
+    paintMicrophone({ transmitting, muted, db }) {
+        const button = document.querySelector('[data-action="toggle-mic"]');
+
+        if (button) {
+            button.innerHTML = muted ? ICONS.micOff : ICONS.micOn;
+            button.classList.toggle('text-[#f23f43]', muted);
+            // Green only while the audio is actually leaving: that is the whole point of
+            // the indicator — knowing whether the gate opened, not whether it could.
+            button.classList.toggle('text-[#23a55a]', ! muted && transmitting);
+        }
+
+        const meter = document.querySelector('[data-mic-meter]');
+
+        if (meter) {
+            meter.style.width = `${MicrophoneGate.toFraction(db) * 100}%`;
+            meter.classList.toggle('bg-[#23a55a]', transmitting);
+            meter.classList.toggle('bg-[#4e5058]', ! transmitting);
+        }
+    }
+
+    toggleMicPanel() {
+        if (this.micPanel) {
+            this.micPanel.remove();
+            this.micPanel = null;
+
+            return;
+        }
+
+        // The panel hangs off <body>, never off the Livewire markup: a re-render would
+        // wipe it mid-adjustment, the same reason the voice stage carries wire:ignore.
+        this.micPanel = this.buildMicPanel();
+        document.body.appendChild(this.micPanel);
+    }
+
+    buildMicPanel() {
+        const { mode, threshold, pushKey, noiseSuppression } = this.mic.settings;
+        const panel = document.createElement('div');
+
+        panel.className = 'fixed bottom-16 left-3 z-50 w-72 rounded-lg border border-[#2b2d31] bg-[#111214] p-4 text-sm text-[#dbdee1] shadow-xl';
+        panel.innerHTML = `
+            <div class="mb-3 flex items-center justify-between">
+                <span class="font-semibold text-white">Microfone</span>
+                <button type="button" data-mic-close class="cursor-pointer rounded p-1 text-[#949ba4] hover:bg-[#35373c] hover:text-white">${ICONS.close}</button>
+            </div>
+
+            <div class="mb-3 space-y-1">
+                <label class="flex cursor-pointer items-center gap-2">
+                    <input type="radio" name="mic-mode" value="voice" ${mode === 'voice' ? 'checked' : ''} class="accent-[#5865f2]">
+                    <span>Detecção de voz</span>
+                </label>
+                <label class="flex cursor-pointer items-center gap-2">
+                    <input type="radio" name="mic-mode" value="ptt" ${mode === 'ptt' ? 'checked' : ''} class="accent-[#5865f2]">
+                    <span>Apertar para falar</span>
+                </label>
+            </div>
+
+            <div data-mic-voice class="${mode === 'voice' ? '' : 'hidden'}">
+                <p class="mb-1 text-xs font-bold uppercase tracking-wide text-[#949ba4]">Sensibilidade de entrada</p>
+                <input type="range" data-mic-threshold min="-100" max="0" step="1" value="${threshold}" class="w-full accent-[#5865f2]">
+            </div>
+
+            <div data-mic-push class="${mode === 'ptt' ? '' : 'hidden'}">
+                <p class="mb-1 text-xs font-bold uppercase tracking-wide text-[#949ba4]">Tecla</p>
+                <button type="button" data-mic-key class="w-full cursor-pointer rounded bg-[#1e1f22] px-3 py-2 text-left hover:bg-[#2b2d31]">${pushKey}</button>
+                <p class="mt-1 text-xs text-[#949ba4]">Só funciona com esta janela em foco — o navegador não dá atalho global.</p>
+            </div>
+
+            <p class="mb-1 mt-3 text-xs font-bold uppercase tracking-wide text-[#949ba4]">Entrada</p>
+            <div class="relative h-2 overflow-hidden rounded bg-[#1e1f22]">
+                <div data-mic-meter class="h-full w-0 bg-[#4e5058] transition-[width] duration-75"></div>
+                <div data-mic-mark class="absolute top-0 h-full w-0.5 bg-white/70" style="left:${MicrophoneGate.toFraction(threshold) * 100}%"></div>
+            </div>
+
+            <label class="mt-4 flex cursor-pointer items-center gap-2">
+                <input type="checkbox" data-mic-noise ${noiseSuppression ? 'checked' : ''} class="accent-[#5865f2]">
+                <span>Supressão de ruído</span>
+            </label>
+        `;
+
+        panel.querySelector('[data-mic-close]').onclick = () => this.toggleMicPanel();
+
+        panel.querySelectorAll('input[name="mic-mode"]').forEach(radio => {
+            radio.onchange = () => {
+                this.mic.save({ mode: radio.value });
+                panel.querySelector('[data-mic-voice]').classList.toggle('hidden', radio.value !== 'voice');
+                panel.querySelector('[data-mic-push]').classList.toggle('hidden', radio.value !== 'ptt');
+            };
+        });
+
+        panel.querySelector('[data-mic-threshold]').oninput = event => {
+            const threshold = Number(event.target.value);
+
+            this.mic.save({ threshold });
+            panel.querySelector('[data-mic-mark]').style.left = `${MicrophoneGate.toFraction(threshold) * 100}%`;
+        };
+
+        panel.querySelector('[data-mic-noise]').onchange = event => this.mic.save({ noiseSuppression: event.target.checked });
+
+        const keyButton = panel.querySelector('[data-mic-key]');
+
+        keyButton.onclick = () => {
+            keyButton.textContent = 'pressione uma tecla…';
+
+            // `once` matters: without it every later keypress would keep rebinding.
+            window.addEventListener('keydown', event => {
+                event.preventDefault();
+                this.mic.save({ pushKey: event.code });
+                keyButton.textContent = event.code;
+            }, { once: true, capture: true });
+        };
+
+        return panel;
     }
 
     async refreshStats() {
@@ -787,6 +931,14 @@ export class VoiceStage {
         clearInterval(this.statsTimer);
         clearInterval(this.clockTimer);
         this.focused = null;
+
+        // Releasing the device is what turns off the operating system's microphone
+        // indicator. Leaving the track alive after the call would keep it lit.
+        this.mic.close();
+        this.micDenied = false;
+        this.micPanel?.remove();
+        this.micPanel = null;
+        this.paintMicrophone({ db: MicrophoneGate.FLOOR_DB, transmitting: false, muted: false });
 
         const list = document.querySelector(`[data-voice-members="${this.channelId}"]`);
 

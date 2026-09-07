@@ -2,11 +2,18 @@
   "name": "unkvoid-desktop",
   "private": true,
   "version": "0.6.0",
+  "type": "module",
   "scripts": {
-    "dev": "tauri dev",
-    "build": "tauri build"
+    "dev": "vite",
+    "build": "vite build",
+    "check": "node ../../../web/resources/js/voice/MicrophoneGate.check.mjs",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "mediasoup-client": "^3.15.4"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "^2",
+    "vite": "^8"
   }
 }
