@@ -3,12 +3,12 @@
 <plist version="1.0">
 <dict>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>O Discord 2.0 precisa gravar a tela para você compartilhá-la na chamada.</string>
+    <string>Unkvoid needs to record the screen so you can share it on a call.</string>
 
     <key>NSMicrophoneUsageDescription</key>
-    <string>O Discord 2.0 precisa do microfone para você falar na chamada.</string>
+    <string>Unkvoid needs the microphone so you can talk on a call.</string>
 
     <key>NSCameraUsageDescription</key>
-    <string>O Discord 2.0 precisa da câmera para você aparecer em vídeo.</string>
+    <string>Unkvoid needs the camera so you can appear on video.</string>
 </dict>
 </plist>
