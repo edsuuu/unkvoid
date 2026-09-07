@@ -13,8 +13,14 @@
 <script>
 // Aponta para a pilha local e já entra logado: o objetivo é exercitar a interface,
 // não repetir o login a cada recarga.
+// O token NÃO fica aqui. Este arquivo é versionado, e um Bearer de produção commitado
+// vale para qualquer um que leia o repositório — foi o que aconteceu, e o token que
+// estava nesta linha teve de ser revogado. Cole o seu no console uma vez:
+//
+//   localStorage.setItem('api:token', 'SEU_TOKEN')
+//
+// Ele sobrevive ao reload e nunca entra no git.
 localStorage.setItem('api:base', 'http://localhost:8000');
-localStorage.setItem('api:token', '6|Jg74bCcjle1oVN5mPx3HCL17ztEhKtS1T5LbRSPJe5eb7545');
 
 window.__TAURI__ = {
     core: {
