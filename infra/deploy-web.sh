@@ -28,6 +28,12 @@ ssh "$REMOTE" "set -e
     php artisan optimize
     ln -sfn $TARGET/shared/storage/app/public public/storage
     sudo chown -R \$(id -un):www-data $TARGET
-    sudo chmod -R 2775 $TARGET/shared/storage"
+    sudo chmod -R 2775 $TARGET/shared/storage
+
+    # Reverb carrega a configuração no boot: sem reiniciar, ele continua com a chave e
+    # a porta do deploy anterior e o chat para de autenticar.
+    pm2 delete reverb > /dev/null 2>&1 || true
+    pm2 start reverb.config.cjs --update-env
+    pm2 save"
 
 echo "[INFO] pronto: https://discord.unkvoid.com"

@@ -25,7 +25,7 @@ final class JoinServerByInvite
                 ['role' => 'member'],
             );
         } catch (Throwable $exception) {
-            Log::channel('servers')->error('[ERRO] falha ao entrar no servidor', [
+            Log::channel('servers')->error('[ERROR] failed to join the server', [
                 'user' => $user->id,
                 'server' => $server->id,
                 'exception' => $exception,

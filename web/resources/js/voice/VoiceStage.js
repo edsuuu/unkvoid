@@ -1,32 +1,253 @@
+import { MicrophoneGate } from './MicrophoneGate.js';
+import { PresenceClient } from './PresenceClient.js';
 import { SfuClient } from './SfuClient.js';
+
+const ICONS = {
+    audioOn: '<svg viewBox="0 0 24 24" fill="currentColor" class="size-4"><path d="M11.38 3.08A1 1 0 0 1 12 4v16a1 1 0 0 1-1.71.71L5.59 16H3a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1h2.59l4.7-4.71a1 1 0 0 1 1.09-.21zM16.5 7.5a1 1 0 0 1 1.41 0 6 6 0 0 1 0 8.49 1 1 0 1 1-1.41-1.42 4 4 0 0 0 0-5.65 1 1 0 0 1 0-1.42z"/></svg>',
+    audioOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-4"><path stroke-linecap="round" d="M11 5 6 9H3v6h3l5 4V5zM17 9l4 6M21 9l-4 6"/></svg>',
+    focus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-4"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="7" y="9" width="10" height="6" rx="1" fill="currentColor" stroke="none"/></svg>',
+    fullscreen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-4"><path stroke-linecap="round" stroke-linejoin="round" d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/></svg>',
+    close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-4"><path stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>',
+    micOn: '<svg class="size-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M18 11a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.917V19H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.083A6 6 0 0 0 18 11z"/></svg>',
+    micOff: '<svg class="size-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-5.4-1.8l4.2 4.2V11a1 1 0 0 1-1.8.6L12 14zM4.7 3.3a1 1 0 0 0-1.4 1.4l16 16a1 1 0 0 0 1.4-1.4l-3.2-3.2A6 6 0 0 0 18 11a1 1 0 1 0-2 0c0 .7-.18 1.35-.5 1.92l-1.5-1.5V11l-.02.02L9 6.05V6a3 3 0 0 1 .1-.75L4.7 3.3zM6 10a1 1 0 0 0-2 0 6 6 0 0 0 5 5.92V19H9a1 1 0 1 0 0 2h6a1 1 0 0 0 .7-1.71L13 16.58V17h-1a4 4 0 0 1-4-4v-1.17L6.4 10.24A1 1 0 0 0 6 10z"/></svg>',
+};
 
 export class VoiceStage {
     constructor() {
         this.client = null;
+        this.micDenied = false;
+        this.micPanel = null;
+        this.presence = new PresenceClient();
         this.channelId = null;
         this.statsTimer = null;
+        this.clockTimer = null;
+        this.joinedAt = null;
+        this.channelName = '';
+        this.focused = null;
         this.bytesMark = new Map();
+        this.presenceState = null;
+        this.reconnectDeadlines = new Map();
+        this.mic = new MicrophoneGate(state => this.paintMicrophone(state));
+        this.escapeHandler = event => {
+            if (event.key !== 'Escape') {
+                return;
+            }
+
+            document.querySelectorAll('[data-expanded="true"]').forEach(tile => this.collapseTile(tile));
+        };
+    }
+
+    /** Key holding the active channel so F5 does not remove the person from the call. */
+    static STORAGE_KEY = 'voice:channel';
+
+    /** How long the viewer waits for the broadcast to return before closing the frame. */
+    static RECONNECT_GRACE_MS = 20_000;
+
+    remember(channelId, channelName) {
+        try {
+            // Do not overwrite with null: during restoration, the page is still on the
+            // initial panel and the server is not in the DOM — the saved value wins.
+            const previous = JSON.parse(localStorage.getItem(VoiceStage.STORAGE_KEY) ?? 'null');
+            const serverId = document.querySelector('[data-server-id]')?.dataset.serverId
+                ?? (previous?.channelId === channelId ? previous.serverId : null);
+
+            localStorage.setItem(VoiceStage.STORAGE_KEY, JSON.stringify({ channelId, channelName, serverId }));
+        } catch {
+            // Browser without storage: only automatic reconnection after reload is lost.
+        }
+    }
+
+    forget() {
+        try {
+            localStorage.removeItem(VoiceStage.STORAGE_KEY);
+        } catch {
+            // idem
+        }
+    }
+
+    restore() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(VoiceStage.STORAGE_KEY) ?? 'null');
+
+            if (! saved?.channelId) {
+                return;
+            }
+
+            void this.join(saved.channelId, saved.channelName ?? '');
+        } catch {
+            this.forget();
+        }
+    }
+
+    watchCurrentServer() {
+        const serverId = document.querySelector('[data-server-id]')?.dataset.serverId;
+
+        if (!serverId) {
+            this.presence.stop();
+
+            return;
+        }
+
+        void this.presence.watch(serverId).catch(() => {});
+    }
+
+    /**
+     * Renders who is in each voice channel from what the server pushes —
+     * including for those who joined no channel.
+     */
+    renderPresence(channels) {
+        this.presenceState = channels;
+
+        document.querySelectorAll('[data-voice-members]').forEach(list => {
+            const members = channels[list.dataset.voiceMembers]?.members ?? [];
+
+            list.innerHTML = members.map(member => `
+                <div class="flex items-center gap-2 rounded px-2 py-1 text-sm ${member.sharing ? 'text-[#f23f43]' : 'text-[#949ba4]'}">
+                    <span class="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#5865f2] text-[10px] font-semibold text-white">
+                        ${member.avatar ? `<img src="${member.avatar}" alt="" class="size-6 object-cover">` : member.name.slice(0, 2).toUpperCase()}
+                    </span>
+                    <span class="truncate">${member.name}</span>
+                    ${member.sharing ? `<button type="button" data-watch="${member.screenProducerId ?? ''}"
+                        title="Watch broadcast"
+                        class="ml-auto flex shrink-0 cursor-pointer items-center gap-1 rounded bg-[#f23f43] px-1.5 py-0.5 text-[10px] font-bold uppercase leading-none text-white transition hover:bg-[#a12828]">
+                        <span class="size-1.5 rounded-full bg-white"></span>live
+                    </button>` : ''}
+                </div>
+            `).join('');
+        });
+
+        this.renderChannelClocks();
+    }
+
+    /**
+     * The time beside the channel comes from the server, so those NOT in the call
+     * also see how long it has been going.
+     */
+    renderChannelClocks() {
+        document.querySelectorAll('[data-channel-clock]').forEach(element => {
+            const presence = this.presenceState?.[element.dataset.channelClock];
+
+            if (! presence?.members.length) {
+                element.textContent = '';
+
+                return;
+            }
+
+            const seconds = Math.max(0, Math.floor((Date.now() - presence.startedAt) / 1000));
+            const parts = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60];
+
+            element.textContent = (parts[0] ? parts : parts.slice(1))
+                .map(value => String(value).padStart(2, '0'))
+                .join(':');
+        });
+    }
+
+    me() {
+        const root = document.querySelector('[data-me]');
+
+        return {
+            name: root?.dataset.me ?? 'you',
+            avatar: root?.dataset.meAvatar || null,
+        };
+    }
+
+    /**
+     * Places you under the channel before the handshake finishes. Without this, clicking
+     * appears to do nothing during the connection seconds.
+     */
+    showSelfPending(channelId) {
+        const list = document.querySelector(`[data-voice-members="${channelId}"]`);
+
+        if (!list) {
+            return;
+        }
+
+        const { name, avatar } = this.me();
+
+        list.innerHTML = `
+            <div class="flex animate-pulse items-center gap-2 rounded px-2 py-1 text-sm text-[#949ba4]">
+                <span class="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#5865f2] text-[10px] font-semibold text-white">
+                    ${avatar ? `<img src="${avatar}" alt="" class="size-6 object-cover">` : name.slice(0, 2).toUpperCase()}
+                </span>
+                <span class="truncate">${name}</span>
+            </div>
+        `;
     }
 
     start() {
         document.addEventListener('livewire:init', () => {
             Livewire.on('voice-join', payload => this.join(payload.channelId, payload.channelName));
             Livewire.on('voice-stop-broadcast', payload => this.moderate('stopBroadcastOf', payload.userId));
-            Livewire.on('voice-kick', payload => this.moderate('kick', payload.userId));
+            Livewire.on('voice-disconnect', payload => this.moderate('disconnectPeer', payload.userId));
             Livewire.on('url-changed', payload => history.replaceState({}, '', payload.url));
+
+            this.presence.addEventListener('presence', event => this.renderPresence(event.detail));
+            document.addEventListener('fullscreenchange', () => this.layoutGrid());
+            setInterval(() => this.renderChannelClocks(), 1000);
+            this.watchCurrentServer();
+
+            // Observing the attribute is more reliable than a Livewire hook: it works
+            // regardless of when morphing finishes and across version changes.
+            new MutationObserver(() => this.watchCurrentServer()).observe(document.body, {
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['data-server-id'],
+            });
+
+        });
+
+        // restore() only after components exist: on 'livewire:init' a
+        // Livewire.dispatch is lost because nothing is listening yet.
+        document.addEventListener('livewire:initialized', () => this.restore());
+
+        document.addEventListener('change', event => {
+            if (event.target.matches('[data-quality]')) {
+                this.applyQuality(event.target.value);
+            }
+        });
+
+        document.addEventListener('input', event => {
+            if (! event.target.matches('[data-tile-volume]')) {
+                return;
+            }
+
+            const audio = document.querySelector(`audio[data-peer="${event.target.dataset.tileVolume}"]`);
+
+            if (audio) {
+                audio.volume = Number(event.target.value) / 100;
+                audio.muted = false;
+            }
         });
 
         document.addEventListener('click', event => {
+            const tileButton = event.target.closest('[data-tile-action]');
+
+            if (tileButton) {
+                this.tileAction(tileButton.dataset.tileAction, tileButton);
+
+                return;
+            }
+
+            const watchButton = event.target.closest('[data-watch]');
+
+            if (watchButton) {
+                this.watchAgain(watchButton.dataset.watch);
+
+                return;
+            }
+
             const action = event.target.closest('[data-action]')?.dataset.action;
 
             if (!action) {
                 return;
             }
 
+            if (action === 'fullscreen-grid') this.toggleFullscreen(this.grid());
             if (action === 'share') this.share();
             if (action === 'stop-share') this.stopShare();
             if (action === 'leave') this.leave();
             if (action === 'toggle-mic') this.toggleMicrophone();
+            if (action === 'mic-settings') this.toggleMicPanel();
         });
     }
 
@@ -49,9 +270,11 @@ export class VoiceStage {
 
         await this.leave();
 
-        let credentials;
+        this.showSelfPending(channelId);
+        this.setControlsEnabled(false);
+        window.dispatchEvent(new CustomEvent('voice-connecting'));
 
-        try {
+        const fetchCredentials = async () => {
             const response = await fetch(`/api/voz/${channelId}/token`, {
                 method: 'POST',
                 headers: {
@@ -61,12 +284,18 @@ export class VoiceStage {
             });
 
             if (!response.ok) {
-                throw new Error(`servidor recusou (${response.status})`);
+                throw new Error(`server rejected (${response.status})`);
             }
 
-            credentials = await response.json();
+            return response.json();
+        };
+
+        let credentials;
+
+        try {
+            credentials = await fetchCredentials();
         } catch (error) {
-            this.status(`erro: ${error.message}`);
+            this.status(`error: ${error.message}`);
 
             return;
         }
@@ -75,17 +304,38 @@ export class VoiceStage {
         this.client.addEventListener('newProducer', event => this.consume(event.detail));
         this.client.addEventListener('producerClosed', event => this.removeTile(event.detail.producerId));
         this.client.addEventListener('peerProducersClosed', event => this.removePeerTiles(event.detail.peerId));
-        this.client.addEventListener('broadcastStopped', event => this.status(`${event.detail.by} encerrou sua transmissão`));
-        this.client.addEventListener('kicked', () => { this.status('você foi removido da chamada'); this.leave(); });
+        this.client.addEventListener('peerLeft', event => this.removePeerTiles(event.detail.peerId));
+        this.client.addEventListener('peerConnectionLost', event => this.markTilesReconnecting(event.detail.peerId, true));
+        this.client.addEventListener('peerReconnected', event => this.markTilesReconnecting(event.detail.peerId, false));
+        this.client.addEventListener('broadcastStopped', event => this.status(`${event.detail.by} stopped their broadcast`));
+        this.client.addEventListener('disconnected', event => {
+            this.status(`${event.detail.by} removed you from the call`);
+            this.leave();
+        });
         this.client.addEventListener('shareEnded', () => this.stopShare());
         this.client.addEventListener('closed', () => this.teardown());
+        this.client.addEventListener('reconnecting', event => {
+            this.status(`reconnecting… (attempt ${event.detail.attempt})`);
+            window.dispatchEvent(new CustomEvent('voice-connecting'));
+        });
+        this.client.addEventListener('reconnected', event => {
+            this.status(event.detail.resumed ? `in ${this.channelName}` : `in ${this.channelName} (republished)`);
+            window.dispatchEvent(new CustomEvent('voice-state', {
+                detail: { inCall: true, channelName: this.channelName, channelId: this.channelId },
+            }));
+        });
+        this.client.addEventListener('replaced', event => this.status(event.detail.reason));
 
         try {
-            const joined = await this.client.connect(credentials.url, credentials.token);
+            const joined = await this.client.connect(
+                credentials.url,
+                async () => (await fetchCredentials()).token,
+            );
 
             this.channelId = channelId;
-            this.showStage(true);
-            this.status(`em ${channelName}`);
+            this.channelName = channelName;
+            this.showStage(true, channelName);
+            this.status(`in ${channelName}`);
 
             for (const peer of joined.peers) {
                 for (const producer of peer.producers) {
@@ -93,10 +343,15 @@ export class VoiceStage {
                 }
             }
 
+            this.startClock();
+            this.setControlsEnabled(true);
+            this.remember(channelId, channelName);
             this.statsTimer = setInterval(() => this.refreshStats(), 1000);
+
+            await this.openMicrophone();
         } catch (error) {
-            this.status(`não conectou: ${error.message}`);
             this.teardown();
+            this.status(`failed to connect: ${error.message}`);
         }
     }
 
@@ -108,7 +363,7 @@ export class VoiceStage {
         try {
             await this.client[method](targetPeerId);
         } catch (error) {
-            this.status(`ação recusada: ${error.message}`);
+            this.status(`action rejected: ${error.message}`);
         }
     }
 
@@ -127,17 +382,22 @@ export class VoiceStage {
                 return;
             }
 
-            this.addTile(producerId, peerId, name, consumer.track);
+            if (source === 'screen') {
+                this.removePeerTiles(peerId);
+            }
+
+            this.addTile(producerId, peerId, name, consumer.track, consumer.id);
         } catch (error) {
-            this.status(`erro ao receber vídeo: ${error.message}`);
+            this.status(`error receiving video: ${error.message}`);
         }
     }
 
-    addTile(producerId, peerId, name, track) {
+    addTile(producerId, peerId, name, track, consumerId) {
         const tile = document.createElement('figure');
-        tile.className = 'm-0 flex flex-col overflow-hidden rounded-lg bg-black';
+        tile.className = 'group relative m-0 flex flex-col overflow-hidden rounded-lg bg-black';
         tile.dataset.tile = producerId;
         tile.dataset.peer = peerId;
+        tile.dataset.consumer = consumerId;
 
         const video = document.createElement('video');
         video.className = 'min-h-0 w-full flex-1 object-contain';
@@ -146,23 +406,248 @@ export class VoiceStage {
         video.playsInline = true;
         video.muted = true;
 
-        const caption = document.createElement('figcaption');
-        caption.className = 'bg-[#232428] px-3 py-1.5 text-xs text-[#b5bac1]';
-        caption.textContent = name;
+        const bar = document.createElement('figcaption');
+        bar.className = 'flex items-center gap-1 bg-[#232428] px-3 py-1.5 text-xs text-[#b5bac1]';
+        const button = (action, title, icon, danger = false) => `
+            <button type="button" data-tile-action="${action}" data-tile-id="${producerId}" data-peer="${peerId}"
+                title="${title}"
+                class="flex cursor-pointer items-center justify-center rounded p-1 text-[#b5bac1] transition-colors hover:bg-[#3f4147] ${danger ? 'hover:text-[#f23f43]' : 'hover:text-white'}">${icon}</button>
+        `;
 
-        tile.append(video, caption);
+        bar.innerHTML = `
+            <span class="truncate">${name}</span>
+            <span class="flex-1"></span>
+            ${button('mute', 'Mute this broadcast’s audio', ICONS.audioOn)}
+            <input type="range" min="0" max="100" value="100" data-tile-volume="${peerId}"
+                title="Broadcast volume"
+                class="h-1 w-16 cursor-pointer appearance-none rounded-full bg-[#4e5058] accent-[#5865f2]">
+            ${button('focus', 'View only this one (hide the others)', ICONS.focus)}
+            ${button('fullscreen', 'Fullscreen', ICONS.fullscreen)}
+            ${button('close', 'Stop watching (free bandwidth)', ICONS.close, true)}
+        `;
+
+        tile.append(video, bar);
         this.grid()?.appendChild(tile);
         this.layoutGrid();
     }
 
+    /**
+     * Tries native fullscreen; if the browser refuses (it requires a user gesture and
+     * not every context permits), falls back to an expanded CSS mode that always
+     * works. Escape exits both.
+     */
+    isFullscreen(element) {
+        return document.fullscreenElement === element || element?.dataset.expanded === 'true';
+    }
+
+    async toggleFullscreen(tile) {
+        if (document.fullscreenElement) {
+            await document.exitFullscreen().catch(() => {});
+
+            return;
+        }
+
+        if (tile.dataset.expanded === 'true') {
+            this.collapseTile(tile);
+
+            return;
+        }
+
+        try {
+            await tile.requestFullscreen();
+        } catch {
+            this.expandTile(tile);
+        }
+
+        this.layoutGrid();
+    }
+
+    expandTile(tile) {
+        tile.dataset.expanded = 'true';
+        tile.classList.add('fixed', 'inset-0', 'z-50', 'rounded-none', 'bg-[#1e1f22]');
+        document.addEventListener('keydown', this.escapeHandler);
+    }
+
+    collapseTile(tile) {
+        delete tile.dataset.expanded;
+        tile.classList.remove('fixed', 'inset-0', 'z-50', 'rounded-none', 'bg-[#1e1f22]');
+        document.removeEventListener('keydown', this.escapeHandler);
+        this.layoutGrid();
+    }
+
+    setControlsEnabled(enabled) {
+        for (const action of ['share', 'stop-share', 'toggle-mic', 'mic-settings']) {
+            const button = document.querySelector(`[data-action="${action}"]`);
+
+            if (button) {
+                button.disabled = ! enabled;
+                button.classList.toggle('opacity-50', ! enabled);
+                button.classList.toggle('cursor-not-allowed', ! enabled);
+            }
+        }
+    }
+
+    /**
+     * Reopens a broadcast you closed. Closing pauses the consumer on the server,
+     * so watching again resumes that consumer or creates a new one.
+     */
+    async watchAgain(producerId) {
+        if (! producerId || ! this.client?.recvTransport) {
+            return;
+        }
+
+        if (document.querySelector(`[data-tile="${producerId}"]`)) {
+            return;
+        }
+
+        const existing = [...this.client.consumers.values()].find(consumer => consumer.producerId === producerId);
+
+        try {
+            if (existing) {
+                await this.client.resumeConsumerById(existing.id);
+                const peer = this.client.peers.get(this.ownerOf(producerId)) ?? { name: 'broadcast' };
+
+                this.addTile(producerId, this.ownerOf(producerId), peer.name, existing.track, existing.id);
+
+                return;
+            }
+
+            await this.consume({ producerId, name: '' });
+        } catch (error) {
+            this.status(`could not reopen: ${error.message}`);
+        }
+    }
+
+    ownerOf(producerId) {
+        for (const [peerId, presence] of Object.entries(this.presenceState ?? {})) {
+            const member = presence.members.find(candidate => candidate.screenProducerId === producerId);
+
+            if (member) {
+                return member.peerId;
+            }
+
+            void peerId;
+        }
+
+        return '';
+    }
+
+    async applyQuality(profile) {
+        if (! this.client?.producers.has('screen')) {
+            return;
+        }
+
+        try {
+            await this.client.changeQuality(profile);
+            this.status(`quality at ${profile}p`);
+        } catch (error) {
+            this.status(`could not change quality: ${error.message}`);
+        }
+    }
+
+    async tileAction(action, button) {
+        if (action === 'mute') {
+            const audio = document.querySelector(`audio[data-peer="${button.dataset.peer}"]`);
+
+            if (!audio) {
+                this.status('this broadcast has no audio');
+
+                return;
+            }
+
+            audio.muted = !audio.muted;
+            button.innerHTML = audio.muted ? ICONS.audioOff : ICONS.audioOn;
+            button.classList.toggle('text-[#f23f43]', audio.muted);
+
+            return;
+        }
+
+        const tile = document.querySelector(`[data-tile="${button.dataset.tileId}"]`);
+
+        if (action === 'focus') {
+            this.focused = this.focused === button.dataset.tileId ? null : button.dataset.tileId;
+            this.layoutGrid();
+
+            return;
+        }
+
+        if (action === 'fullscreen' && tile) {
+            await this.toggleFullscreen(tile);
+
+            return;
+        }
+
+        if (action === 'close' && tile) {
+            await this.client.pauseConsumer(tile.dataset.consumer).catch(() => {});
+            tile.remove();
+            this.layoutGrid();
+        }
+    }
+
     removeTile(producerId) {
+        document.querySelectorAll(`[data-tile="${producerId}"][data-expanded="true"]`)
+            .forEach(tile => this.collapseTile(tile));
         document.querySelectorAll(`[data-tile="${producerId}"]`).forEach(element => element.remove());
         this.layoutGrid();
     }
 
     removePeerTiles(peerId) {
+        clearTimeout(this.reconnectDeadlines.get(peerId));
+        this.reconnectDeadlines.delete(peerId);
+        document.querySelectorAll(`[data-peer="${peerId}"][data-expanded="true"]`)
+            .forEach(tile => this.collapseTile(tile));
         document.querySelectorAll(`[data-peer="${peerId}"]`).forEach(element => element.remove());
         this.layoutGrid();
+    }
+
+    /**
+     * Broadcaster connection dropped: media stops but the last frame remains on screen.
+     * Without this notice, the viewer thinks the image froze on its own.
+     */
+    /**
+     * Se the broadcast does not return em RECONNECT_GRACE_MS, fecha o quadro. Deixar
+     * "reconnecting…" on screen until the server grace period expires gives the impression of
+     * a freeze — it is better to acknowledge that it dropped.
+     */
+    markTilesReconnecting(peerId, reconnecting) {
+        clearTimeout(this.reconnectDeadlines.get(peerId));
+
+        if (reconnecting) {
+            this.reconnectDeadlines.set(peerId, setTimeout(() => {
+                this.reconnectDeadlines.delete(peerId);
+                this.removePeerTiles(peerId);
+                this.status('the broadcast dropped and did not return');
+            }, VoiceStage.RECONNECT_GRACE_MS));
+        } else {
+            this.reconnectDeadlines.delete(peerId);
+        }
+
+        this.paintReconnecting(peerId, reconnecting);
+    }
+
+    paintReconnecting(peerId, reconnecting) {
+        document.querySelectorAll(`figure[data-peer="${peerId}"]`).forEach(tile => {
+            tile.classList.toggle('opacity-40', reconnecting);
+
+            const existing = tile.querySelector('[data-reconnect-overlay]');
+
+            if (! reconnecting) {
+                existing?.remove();
+
+                return;
+            }
+
+            if (existing) {
+                return;
+            }
+
+            const overlay = document.createElement('div');
+
+            overlay.dataset.reconnectOverlay = 'true';
+            overlay.className = 'pointer-events-none absolute inset-0 flex items-center justify-center gap-2 text-sm text-white';
+            overlay.innerHTML = '<span class="size-4 animate-spin rounded-full border-2 border-white/30 border-t-white"></span>reconectando…';
+            tile.appendChild(overlay);
+        });
     }
 
     layoutGrid() {
@@ -172,17 +657,65 @@ export class VoiceStage {
             return;
         }
 
-        const count = grid.querySelectorAll('figure').length;
+        const tiles = [...grid.querySelectorAll('figure')];
 
-        grid.style.gridTemplateColumns = count > 1 ? 'repeat(2, minmax(0, 1fr))' : '1fr';
+        if (this.focused && grid.querySelector(`[data-tile="${this.focused}"]`)) {
+            grid.style.gridTemplateColumns = '1fr';
+            tiles.forEach(tile => tile.classList.toggle('hidden', tile.dataset.tile !== this.focused));
+            document.querySelector('[data-voice-empty]')?.style.setProperty('display', 'none');
+
+            return;
+        }
+
+        // In fullscreen show at most 4: above that each frame is too small
+        // to be useful. The others continue receiving, but are not shown.
+        const emTelaCheia = this.isFullscreen(grid);
+        const visiveis = emTelaCheia ? tiles.slice(0, 4) : tiles;
+
+        tiles.forEach(tile => tile.classList.toggle('hidden', ! visiveis.includes(tile)));
+
+        const columns = visiveis.length <= 1 ? 1 : visiveis.length <= 4 ? 2 : 3;
+        const rows = Math.ceil(visiveis.length / columns);
+
+        grid.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
+        grid.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
+
+        const empty = document.querySelector('[data-voice-empty]');
+
+        if (empty) {
+            empty.style.display = tiles.length ? 'none' : '';
+        }
     }
 
-    showStage(visible) {
-        window.dispatchEvent(new CustomEvent('voice-state', { detail: { inCall: visible } }));
+    showStage(visible, channelName = null) {
+        window.dispatchEvent(new CustomEvent('voice-state', {
+            detail: { inCall: visible, channelName, channelId: visible ? this.channelId : '' },
+        }));
+    }
+
+    async announceLeave() {
+        await this.client?.leaveRoom();
+    }
+
+    startClock() {
+        this.joinedAt = Date.now();
+        this.clockTimer = setInterval(() => {
+            const seconds = Math.floor((Date.now() - this.joinedAt) / 1000);
+            const parts = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60];
+            const label = (parts[0] ? parts : parts.slice(1))
+                .map(value => String(value).padStart(2, '0'))
+                .join(':');
+
+            window.dispatchEvent(new CustomEvent('voice-clock', { detail: { label } }));
+        }, 1000);
     }
 
     async share() {
-        if (!this.client) {
+        // Clicking before the handshake finished made the error invisible: the join
+        // completed shortly afterward and overwrote the failure message.
+        if (! this.client?.sendTransport) {
+            this.status('wait for the connection to finish before sharing');
+
             return;
         }
 
@@ -191,14 +724,17 @@ export class VoiceStage {
                 profile: document.querySelector('[data-quality]')?.value ?? '1080',
                 codec: 'h264',
                 simulcast: false,
-                contentHint: 'detail',
+                // 'motion' + maintain-framerate: prioriza fluidez. Com 'detail' e
+                // maintain-resolution kept the image sharp by lowering FPS,
+                // which is the 5-to-60 fluctuation on screen.
+                contentHint: 'motion',
             });
 
             document.querySelector('[data-action="share"]')?.classList.add('hidden');
             document.querySelector('[data-action="stop-share"]')?.classList.remove('hidden');
-            this.status(hasAudio ? 'compartilhando com áudio' : 'compartilhando sem áudio do sistema');
+            this.status(hasAudio ? 'sharing with audio' : 'sharing without system audio');
         } catch (error) {
-            this.status(`não compartilhou: ${error.message}`);
+            this.status(`did not share: ${error.message}`);
         }
     }
 
@@ -208,14 +744,151 @@ export class VoiceStage {
         document.querySelector('[data-action="stop-share"]')?.classList.add('hidden');
     }
 
-    async toggleMicrophone() {
-        if (!this.client) {
+    /**
+     * Opens the microphone as soon as the call starts, the way Discord does. A refusal
+     * does not break anything else: the screen share is the important part, so the
+     * failure only reaches the button and the status line.
+     */
+    async openMicrophone() {
+        if (this.mic.active) {
             return;
         }
 
-        const on = await this.client.toggleMicrophone();
+        try {
+            const track = await this.mic.open();
 
-        document.querySelector('[data-action="toggle-mic"]')?.classList.toggle('text-[#f23f43]', !on);
+            await this.client.publishMicrophone(track);
+            this.paintMicrophone({ db: MicrophoneGate.FLOOR_DB, transmitting: false, muted: false });
+        } catch (error) {
+            this.micDenied = true;
+            this.status(`microphone unavailable: ${error.message}`);
+            this.paintMicrophone({ db: MicrophoneGate.FLOOR_DB, transmitting: false, muted: true });
+        }
+    }
+
+    /** Mute is the gate, not the producer: the call keeps the audio path warm. */
+    toggleMicrophone() {
+        if (! this.mic.active) {
+            this.status(this.micDenied ? 'the browser denied the microphone' : 'wait for the connection to finish');
+
+            return;
+        }
+
+        this.mic.setMuted(! this.mic.muted);
+    }
+
+    paintMicrophone({ transmitting, muted, db }) {
+        const button = document.querySelector('[data-action="toggle-mic"]');
+
+        if (button) {
+            button.innerHTML = muted ? ICONS.micOff : ICONS.micOn;
+            button.classList.toggle('text-[#f23f43]', muted);
+            // Green only while the audio is actually leaving: that is the whole point of
+            // the indicator — knowing whether the gate opened, not whether it could.
+            button.classList.toggle('text-[#23a55a]', ! muted && transmitting);
+        }
+
+        const meter = document.querySelector('[data-mic-meter]');
+
+        if (meter) {
+            meter.style.width = `${MicrophoneGate.toFraction(db) * 100}%`;
+            meter.classList.toggle('bg-[#23a55a]', transmitting);
+            meter.classList.toggle('bg-[#4e5058]', ! transmitting);
+        }
+    }
+
+    toggleMicPanel() {
+        if (this.micPanel) {
+            this.micPanel.remove();
+            this.micPanel = null;
+
+            return;
+        }
+
+        // The panel hangs off <body>, never off the Livewire markup: a re-render would
+        // wipe it mid-adjustment, the same reason the voice stage carries wire:ignore.
+        this.micPanel = this.buildMicPanel();
+        document.body.appendChild(this.micPanel);
+    }
+
+    buildMicPanel() {
+        const { mode, threshold, pushKey, noiseSuppression } = this.mic.settings;
+        const panel = document.createElement('div');
+
+        panel.className = 'fixed bottom-16 left-3 z-50 w-72 rounded-lg border border-[#2b2d31] bg-[#111214] p-4 text-sm text-[#dbdee1] shadow-xl';
+        panel.innerHTML = `
+            <div class="mb-3 flex items-center justify-between">
+                <span class="font-semibold text-white">Microfone</span>
+                <button type="button" data-mic-close class="cursor-pointer rounded p-1 text-[#949ba4] hover:bg-[#35373c] hover:text-white">${ICONS.close}</button>
+            </div>
+
+            <div class="mb-3 space-y-1">
+                <label class="flex cursor-pointer items-center gap-2">
+                    <input type="radio" name="mic-mode" value="voice" ${mode === 'voice' ? 'checked' : ''} class="accent-[#5865f2]">
+                    <span>Detecção de voz</span>
+                </label>
+                <label class="flex cursor-pointer items-center gap-2">
+                    <input type="radio" name="mic-mode" value="ptt" ${mode === 'ptt' ? 'checked' : ''} class="accent-[#5865f2]">
+                    <span>Apertar para falar</span>
+                </label>
+            </div>
+
+            <div data-mic-voice class="${mode === 'voice' ? '' : 'hidden'}">
+                <p class="mb-1 text-xs font-bold uppercase tracking-wide text-[#949ba4]">Sensibilidade de entrada</p>
+                <input type="range" data-mic-threshold min="-100" max="0" step="1" value="${threshold}" class="w-full accent-[#5865f2]">
+            </div>
+
+            <div data-mic-push class="${mode === 'ptt' ? '' : 'hidden'}">
+                <p class="mb-1 text-xs font-bold uppercase tracking-wide text-[#949ba4]">Tecla</p>
+                <button type="button" data-mic-key class="w-full cursor-pointer rounded bg-[#1e1f22] px-3 py-2 text-left hover:bg-[#2b2d31]">${pushKey}</button>
+                <p class="mt-1 text-xs text-[#949ba4]">Só funciona com esta janela em foco — o navegador não dá atalho global.</p>
+            </div>
+
+            <p class="mb-1 mt-3 text-xs font-bold uppercase tracking-wide text-[#949ba4]">Entrada</p>
+            <div class="relative h-2 overflow-hidden rounded bg-[#1e1f22]">
+                <div data-mic-meter class="h-full w-0 bg-[#4e5058] transition-[width] duration-75"></div>
+                <div data-mic-mark class="absolute top-0 h-full w-0.5 bg-white/70" style="left:${MicrophoneGate.toFraction(threshold) * 100}%"></div>
+            </div>
+
+            <label class="mt-4 flex cursor-pointer items-center gap-2">
+                <input type="checkbox" data-mic-noise ${noiseSuppression ? 'checked' : ''} class="accent-[#5865f2]">
+                <span>Supressão de ruído</span>
+            </label>
+        `;
+
+        panel.querySelector('[data-mic-close]').onclick = () => this.toggleMicPanel();
+
+        panel.querySelectorAll('input[name="mic-mode"]').forEach(radio => {
+            radio.onchange = () => {
+                this.mic.save({ mode: radio.value });
+                panel.querySelector('[data-mic-voice]').classList.toggle('hidden', radio.value !== 'voice');
+                panel.querySelector('[data-mic-push]').classList.toggle('hidden', radio.value !== 'ptt');
+            };
+        });
+
+        panel.querySelector('[data-mic-threshold]').oninput = event => {
+            const threshold = Number(event.target.value);
+
+            this.mic.save({ threshold });
+            panel.querySelector('[data-mic-mark]').style.left = `${MicrophoneGate.toFraction(threshold) * 100}%`;
+        };
+
+        panel.querySelector('[data-mic-noise]').onchange = event => this.mic.save({ noiseSuppression: event.target.checked });
+
+        const keyButton = panel.querySelector('[data-mic-key]');
+
+        keyButton.onclick = () => {
+            keyButton.textContent = 'pressione uma tecla…';
+
+            // `once` matters: without it every later keypress would keep rebinding.
+            window.addEventListener('keydown', event => {
+                event.preventDefault();
+                this.mic.save({ pushKey: event.code });
+                keyButton.textContent = event.code;
+            }, { once: true, capture: true });
+        };
+
+        return panel;
     }
 
     async refreshStats() {
@@ -242,17 +915,42 @@ export class VoiceStage {
     }
 
     async leave() {
+        this.forget();
+
         if (!this.client) {
             return;
         }
 
         await this.client.stopShare();
+        await this.announceLeave();
         this.client.disconnect();
         this.teardown();
     }
 
     teardown() {
         clearInterval(this.statsTimer);
+        clearInterval(this.clockTimer);
+        this.focused = null;
+
+        // Releasing the device is what turns off the operating system's microphone
+        // indicator. Leaving the track alive after the call would keep it lit.
+        this.mic.close();
+        this.micDenied = false;
+        this.micPanel?.remove();
+        this.micPanel = null;
+        this.paintMicrophone({ db: MicrophoneGate.FLOOR_DB, transmitting: false, muted: false });
+
+        const list = document.querySelector(`[data-voice-members="${this.channelId}"]`);
+
+        if (list) {
+            list.innerHTML = '';
+        }
+
+        for (const timer of this.reconnectDeadlines.values()) {
+            clearTimeout(timer);
+        }
+
+        this.reconnectDeadlines.clear();
         this.client = null;
         this.channelId = null;
         this.bytesMark.clear();
@@ -264,7 +962,8 @@ export class VoiceStage {
         }
 
         document.querySelectorAll('audio[data-tile]').forEach(element => element.remove());
+        this.setControlsEnabled(true);
         this.showStage(false);
-        this.status('Disponível');
+        this.status('Available');
     }
 }

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Unkvoid</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Update: runs before anything else, as in Discord -->
+<section class="fullscreen" id="update-screen">
+  <div class="card">
+    <h1>Unkvoid</h1>
+    <p id="update-status">Looking for updates…</p>
+    <div class="notice"><span class="spinner"></span></div>
+  </div>
+</section>
+
+<!-- Without a server the app is useless: block instead of pretending it works -->
+<section class="fullscreen" id="offline-screen" hidden>
+  <div class="card">
+    <h1>No connection</h1>
+    <p>Unkvoid needs the server to work. Reconnecting…</p>
+    <div class="notice"><span class="spinner"></span><span id="offline-attempt"></span></div>
+  </div>
+</section>
+
+<section class="fullscreen" id="login-screen" hidden>
+  <div class="card">
+    <h1>Sign in to your account</h1>
+    <p>Use the same login as discord.unkvoid.com</p>
+
+    <form id="login-form">
+      <div class="field">
+        <label for="email">Email address</label>
+        <input id="email" type="email" autocomplete="username" required>
+      </div>
+
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required>
+      </div>
+
+      <button type="submit" class="button" id="sign-in-button">Sign in</button>
+
+      <div style="display:flex;align-items:center;gap:12px;margin:20px 0 16px">
+        <span style="flex:1;height:1px;background:#3f4147"></span>
+        <span style="font-size:12px;color:#949ba4;text-transform:uppercase">or</span>
+        <span style="flex:1;height:1px;background:#3f4147"></span>
+      </div>
+
+      <button type="button" class="button neutral" id="google-button" style="width:100%">
+        Continue with Google
+      </button>
+
+      <p class="error" id="login-error"></p>
+    </form>
+  </div>
+</section>
+
+<nav class="server-rail" id="server-rail"></nav>
+
+<aside class="channels">
+  <header class="header"><span id="server-name">Home</span></header>
+
+  <div class="list" id="channel-list"></div>
+
+  <div class="voice" id="voice-bar" hidden>
+    <div class="voice-top">
+      <span class="avatar" style="background:var(--verde);width:8px;height:8px"></span>
+      <div class="voice-title">
+        Voice connected <span class="voice-channel" id="voice-clock"></span>
+        <div class="voice-channel" id="voice-channel"></div>
+      </div>
+      <button class="button neutral" id="mute" style="flex:0;padding:6px 10px">Mute</button>
+      <button class="button neutral" id="mic-settings" style="flex:0;padding:6px 10px" title="Microphone settings">Mic</button>
+      <button class="button neutral" id="leave-voice" style="flex:0;padding:6px 10px">Leave</button>
+    </div>
+
+    <div class="actions">
+      <select class="quality" id="quality">
+        <option value="720">720p</option>
+        <option value="1080" selected>1080p</option>
+        <option value="1440">1440p</option>
+      </select>
+      <button class="button" id="share">Share</button>
+      <button class="button danger" id="stop" hidden>Stop</button>
+    </div>
+
+    <div class="meter"><span data-meter></span></div>
+
+    <div class="mic-panel" id="mic-panel" hidden>
+      <label class="row"><input type="radio" name="mic-mode" value="voice"> Voice activity</label>
+      <label class="row"><input type="radio" name="mic-mode" value="ptt"> Push to talk</label>
+
+      <div id="mic-voice">
+        <p class="section">Input sensitivity</p>
+        <input type="range" id="mic-threshold" min="-100" max="0" step="1">
+      </div>
+
+      <div id="mic-key" hidden>
+        <p class="section">Key</p>
+        <button class="button neutral" id="mic-shortcut"></button>
+      </div>
+
+      <label class="row"><input type="checkbox" id="mic-noise"> Noise suppression</label>
+    </div>
+  </div>
+
+  <div class="user">
+    <span class="avatar large" id="my-avatar"></span>
+    <div style="flex:1;min-width:0">
+      <div class="name" id="my-name"></div>
+      <div class="state" id="my-state">Available</div>
+    </div>
+  </div>
+</aside>
+
+<main class="content">
+  <header class="header"><span id="channel-title">Select a channel</span></header>
+  <div class="stage" id="stage" hidden></div>
+  <div class="empty" id="empty">Choose a server to get started</div>
+</main>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

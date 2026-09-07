@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Unkvoid needs to record the screen so you can share it on a call.</string>
+
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Unkvoid needs the microphone so you can talk on a call.</string>
+
+    <key>NSCameraUsageDescription</key>
+    <string>Unkvoid needs the camera so you can appear on video.</string>
+</dict>
+</plist>

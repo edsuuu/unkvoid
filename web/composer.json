@@ -12,11 +12,13 @@
         "php": "^8.4",
         "laravel/fortify": "^1.34",
         "laravel/framework": "^13.7",
+        "laravel/reverb": "^1.11",
+        "laravel/sanctum": "^4.0",
+        "laravel/socialite": "^5.23",
         "laravel/tinker": "^3.0",
         "livewire/livewire": "^4.1",
         "lucascudo/laravel-pt-br-localization": "^3.0",
-        "opcodesio/log-viewer": "^3.24",
-        "laravel/socialite": "^5.23"
+        "opcodesio/log-viewer": "^3.24"
     },
     "require-dev": {
         "barryvdh/laravel-debugbar": "^4.2",

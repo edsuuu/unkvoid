@@ -1,0 +1,73 @@
+import { availableParallelism } from 'node:os';
+
+import type { RouterRtpCodecCapability, WorkerLogTag } from 'mediasoup/types';
+
+export const config = {
+    listenHost: process.env.SFU_HOST ?? '127.0.0.1',
+    listenPort: Number(process.env.SFU_PORT ?? 3000),
+    path: process.env.SFU_PATH ?? '/sfu',
+    announcedAddress: process.env.SFU_ANNOUNCED_ADDRESS ?? '127.0.0.1',
+    tokenSecret: process.env.SFU_SECRET ?? '',
+
+    // One port for all media (WebRtcServer multiplexes transports).
+    // mediasoup is ICE Lite: it never initiates a connection, only responds. Behind a firewall
+    // stateful, this means the port MUST allow inbound traffic.
+    mediaPort: Number(process.env.SFU_MEDIA_PORT ?? 40000),
+
+    // One worker per core. Each one uses a port starting at mediaPort.
+    workerCount: Number(process.env.SFU_WORKERS ?? availableParallelism()),
+
+    // Plain RTP ingest (the native app broadcasting to many viewers) needs one UDP port
+    // per broadcast, and those cannot share the WebRtcServer port. mediasoup would pick
+    // from 10000-59999 by default; a narrow band keeps the firewall rule to one line.
+    plainPortBase: Number(process.env.SFU_PLAIN_PORT ?? 41000),
+    plainPortsPerWorker: Number(process.env.SFU_PLAIN_PORTS ?? 8),
+
+    worker: {
+        logLevel: 'warn' as const,
+        logTags: ['info', 'ice', 'dtls', 'rtp', 'srtp', 'rtcp', 'bwe', 'score', 'simulcast', 'svc'] as WorkerLogTag[],
+    },
+
+    router: {
+        mediaCodecs: [
+            {
+                kind: 'audio',
+                mimeType: 'audio/opus',
+                clockRate: 48000,
+                channels: 2,
+                parameters: { useinbandfec: 1, usedtx: 1 },
+            },
+            {
+                kind: 'video',
+                mimeType: 'video/VP8',
+                clockRate: 90000,
+                parameters: { 'x-google-start-bitrate': 1000 },
+            },
+            {
+                kind: 'video',
+                mimeType: 'video/VP9',
+                clockRate: 90000,
+                parameters: { 'profile-id': 2, 'x-google-start-bitrate': 1000 },
+            },
+            {
+                kind: 'video',
+                mimeType: 'video/H264',
+                clockRate: 90000,
+                parameters: {
+                    'packetization-mode': 1,
+                    'profile-level-id': '42e01f',
+                    'level-asymmetry-allowed': 1,
+                    'x-google-start-bitrate': 1000,
+                },
+            },
+        ] as RouterRtpCodecCapability[],
+    },
+
+    transport: {
+        enableUdp: true,
+        enableTcp: true,
+        preferUdp: true,
+        initialAvailableOutgoingBitrate: 10_000_000,
+        maxIncomingBitrate: 12_000_000,
+    },
+} as const;

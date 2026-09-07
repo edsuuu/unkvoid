@@ -3,6 +3,14 @@
     <head>
         <meta charset="utf-8" />
         <meta name="csrf-token" content="{{ csrf_token() }}" />
+
+        {{-- Reverb no HTML e não no bundle: os assets são compilados nesta máquina e
+             enviados prontos, então uma variável de build viraria "localhost" em
+             produção. Lido em tempo de execução, o mesmo bundle serve os dois. --}}
+        <meta name="reverb-key" content="{{ config('broadcasting.connections.reverb.key') }}" />
+        <meta name="reverb-host" content="{{ config('broadcasting.connections.reverb.options.client_host', request()->getHost()) }}" />
+        <meta name="reverb-port" content="{{ config('broadcasting.connections.reverb.options.client_port', request()->getPort()) }}" />
+        <meta name="reverb-scheme" content="{{ config('broadcasting.connections.reverb.options.client_scheme', request()->getScheme()) }}" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
         <title>
