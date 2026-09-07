@@ -2,7 +2,7 @@ import type { WebSocket } from 'ws';
 
 type Watcher = { socket: WebSocket; serverId: string };
 
-type Membro = { name: string; avatar: string | null; joinedAt: number; sharing: boolean; screenProducerId: string | null };
+type Membro = { name: string; avatar: string | null; joinedAt: number; sharing: boolean; screenProducerId: string | null; reconnecting: boolean };
 
 type ChannelPresence = {
     members: ({ peerId: string } & Membro)[];
@@ -70,6 +70,7 @@ export class PresenceRegistry {
             joinedAt,
             sharing: anterior?.sharing ?? false,
             screenProducerId: anterior?.screenProducerId ?? null,
+            reconnecting: false,
         });
         this.channels.set(channelId, members);
         this.publish(channelId);
@@ -86,6 +87,17 @@ export class PresenceRegistry {
         member.sharing = sharing;
         // O id do producer vai junto para quem fechou a transmissão poder reabrir.
         member.screenProducerId = sharing ? screenProducerId : null;
+        this.publish(channelId);
+    }
+
+    setReconnecting(channelId: string, peerId: string, reconnecting: boolean): void {
+        const member = this.channels.get(channelId)?.get(peerId);
+
+        if (! member || member.reconnecting === reconnecting) {
+            return;
+        }
+
+        member.reconnecting = reconnecting;
         this.publish(channelId);
     }
 

@@ -145,6 +145,12 @@ janela **retoma** a sessão — a tela de quem estava assistindo nem pisca, e a 
 é avisada, porque ninguém saiu de fato. Só quando a carência estoura é que o
 participante sai e a sala pode ser liberada.
 
+**Quem assiste** é avisado na hora (`peerConnectionLost`): a tela esmaece e mostra
+"reconectando…" em vez de deixar o último quadro congelado passando por imagem viva.
+Se a pessoa volta, o aviso some (`peerReconnected`); se a carência estoura, o quadro
+é removido (`peerLeft`). Uma transmissão republicada substitui a antiga do mesmo
+participante, em vez de duplicar.
+
 **Cliente:** queda não intencional dispara reconexão com backoff exponencial
 (1s, 2s, 4s… até 10s, 8 tentativas). O token é buscado **na hora** de cada tentativa,
 porque o antigo pode ter expirado. O servidor responde se retomou:

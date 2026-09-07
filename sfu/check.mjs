@@ -161,6 +161,38 @@ const run = async () => {
     reply = await voltou.call('connectTransport', { transportId: transportAntes, dtlsParameters: { fingerprints: [], role: 'client' } });
     assert.notEqual(reply.status, 404, 'o transport de antes da queda ainda deve existir');
 
+    // Quem assiste precisa ser avisado na hora que a conexão de quem transmite caiu,
+    // senão fica com o último quadro congelado achando que travou.
+    const espectador = new Client();
+    await espectador.open();
+    await espectador.call('join', { token: mint({ sub: 'espectador-uuid', name: 'Espectador', room, role: 'member' }) });
+
+    const outro = new Client();
+    await outro.open();
+    await outro.call('join', { token: mint({ sub: 'quedavel-uuid', name: 'Quedável', room, role: 'member' }) });
+
+    espectador.events.length = 0;
+    outro.socket.close();
+    await new Promise(resolve => setTimeout(resolve, 900));
+
+    const avisoDeQueda = espectador.events.find(evento => evento.event === 'peerConnectionLost');
+    assert.ok(avisoDeQueda, 'a sala deve ser avisada quando a sinalização de alguém cai');
+    assert.equal(avisoDeQueda.data.peerId, 'quedavel-uuid');
+
+    const devolta = new Client();
+    await devolta.open();
+    espectador.events.length = 0;
+    await devolta.call('join', { token: mint({ sub: 'quedavel-uuid', name: 'Quedável', room, role: 'member' }), resume: true });
+    await new Promise(resolve => setTimeout(resolve, 600));
+
+    assert.ok(
+        espectador.events.some(evento => evento.event === 'peerReconnected'),
+        'a sala deve ser avisada quando a pessoa volta',
+    );
+
+    devolta.close();
+    espectador.close();
+
     // Sem pedir retomada (caso do F5: cliente novo, sem transports), tem que nascer sessão limpa.
     voltou.socket.close();
     await new Promise(resolve => setTimeout(resolve, 600));

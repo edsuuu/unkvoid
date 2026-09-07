@@ -291,6 +291,9 @@ export class VoiceStage {
         this.client.addEventListener('newProducer', event => this.consume(event.detail));
         this.client.addEventListener('producerClosed', event => this.removeTile(event.detail.producerId));
         this.client.addEventListener('peerProducersClosed', event => this.removePeerTiles(event.detail.peerId));
+        this.client.addEventListener('peerLeft', event => this.removePeerTiles(event.detail.peerId));
+        this.client.addEventListener('peerConnectionLost', event => this.markTilesReconnecting(event.detail.peerId, true));
+        this.client.addEventListener('peerReconnected', event => this.markTilesReconnecting(event.detail.peerId, false));
         this.client.addEventListener('broadcastStopped', event => this.status(`${event.detail.by} encerrou sua transmissão`));
         this.client.addEventListener('disconnected', event => {
             this.status(`${event.detail.by} tirou você da chamada`);
@@ -364,6 +367,10 @@ export class VoiceStage {
                 return;
             }
 
+            if (source === 'screen') {
+                this.removePeerTiles(peerId);
+            }
+
             this.addTile(producerId, peerId, name, consumer.track, consumer.id);
         } catch (error) {
             this.status(`erro ao receber vídeo: ${error.message}`);
@@ -372,7 +379,7 @@ export class VoiceStage {
 
     addTile(producerId, peerId, name, track, consumerId) {
         const tile = document.createElement('figure');
-        tile.className = 'group m-0 flex flex-col overflow-hidden rounded-lg bg-black';
+        tile.className = 'group relative m-0 flex flex-col overflow-hidden rounded-lg bg-black';
         tile.dataset.tile = producerId;
         tile.dataset.peer = peerId;
         tile.dataset.consumer = consumerId;
@@ -563,8 +570,39 @@ export class VoiceStage {
     }
 
     removePeerTiles(peerId) {
+        document.querySelectorAll(`[data-peer="${peerId}"][data-expanded="true"]`)
+            .forEach(tile => this.collapseTile(tile));
         document.querySelectorAll(`[data-peer="${peerId}"]`).forEach(element => element.remove());
         this.layoutGrid();
+    }
+
+    /**
+     * Conexão de quem transmite caiu: a mídia para mas o último quadro fica na tela.
+     * Sem este aviso o espectador acha que a imagem travou por conta própria.
+     */
+    markTilesReconnecting(peerId, reconnecting) {
+        document.querySelectorAll(`figure[data-peer="${peerId}"]`).forEach(tile => {
+            tile.classList.toggle('opacity-40', reconnecting);
+
+            const existente = tile.querySelector('[data-reconnect-overlay]');
+
+            if (! reconnecting) {
+                existente?.remove();
+
+                return;
+            }
+
+            if (existente) {
+                return;
+            }
+
+            const overlay = document.createElement('div');
+
+            overlay.dataset.reconnectOverlay = 'true';
+            overlay.className = 'pointer-events-none absolute inset-0 flex items-center justify-center gap-2 text-sm text-white';
+            overlay.innerHTML = '<span class="size-4 animate-spin rounded-full border-2 border-white/30 border-t-white"></span>reconectando…';
+            tile.appendChild(overlay);
+        });
     }
 
     layoutGrid() {

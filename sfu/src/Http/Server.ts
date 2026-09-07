@@ -94,6 +94,7 @@ export class Server {
         // reconectar a sinalização sem cair da chamada.
         session.room.onEvicted = room => this.registry.release(room);
         session.room.onPeerGone = (roomId, peerId) => this.presence.leave(roomId, peerId);
+        session.room.onPeerOrphaned = (roomId, peerId) => this.presence.setReconnecting(roomId, peerId, true);
         session.room.orphanPeer(session.peer);
     }
 }

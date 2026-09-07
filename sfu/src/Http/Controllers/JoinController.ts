@@ -33,6 +33,7 @@ export class JoinController {
 
         this.presence.link(room.id, claims.server);
         this.presence.enter(room.id, peer.id, peer.name, peer.avatar);
+        this.presence.setReconnecting(room.id, peer.id, false);
 
         // Retomada não é novidade para a sala: ninguém saiu, a sinalização só voltou.
         if (! resumed) {

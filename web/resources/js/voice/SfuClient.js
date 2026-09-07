@@ -128,6 +128,14 @@ export class SfuClient extends EventTarget {
             this.peers.delete(data.peerId);
         }
 
+        if (event === 'peerConnectionLost' || event === 'peerReconnected') {
+            const peer = this.peers.get(data.peerId);
+
+            if (peer) {
+                peer.reconnecting = event === 'peerConnectionLost';
+            }
+        }
+
         if (event === 'newProducer' && data.source === 'screen') {
             this.markSharing(data.peerId, true);
         }

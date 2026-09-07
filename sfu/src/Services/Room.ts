@@ -26,6 +26,9 @@ export class Room {
     /** Avisado quando alguém sai de verdade, para a presença do servidor atualizar. */
     public onPeerGone: ((roomId: string, peerId: string) => void) | null = null;
 
+    /** Avisado quando a sinalização de alguém cai, antes da carência estourar. */
+    public onPeerOrphaned: ((roomId: string, peerId: string) => void) | null = null;
+
     private readonly evictions = new Map<string, NodeJS.Timeout>();
 
     constructor(
@@ -55,6 +58,7 @@ export class Room {
         if (previous?.isOrphaned() && options.resume) {
             this.cancelEviction(id);
             previous.attachSocket(socket);
+            this.broadcast('peerReconnected', { peerId: id }, id);
 
             return { peer: previous, resumed: true };
         }
@@ -84,6 +88,11 @@ export class Room {
         }
 
         peer.orphanedAt = Date.now();
+
+        // Avisa a sala na hora: sem isto quem assistia ficava com o último quadro
+        // congelado, sem saber que a conexão de quem transmite caiu.
+        this.broadcast('peerConnectionLost', { peerId: peer.id }, peer.id);
+        this.onPeerOrphaned?.(this.id, peer.id);
 
         this.evictions.set(peer.id, setTimeout(() => {
             this.evictions.delete(peer.id);

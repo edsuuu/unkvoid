@@ -1,7 +1,7 @@
 <div class="flex h-screen w-screen gap-2 overflow-hidden bg-[#151619] p-2 text-[#dbdee1]"
      data-me="{{ auth()->user()->displayName() }}"
      @if ($this->currentServer) data-server-id="{{ $this->currentServer->id }}" @endif
-     data-me-avatar="{{ auth()->user()->avatar_url }}" x-data="{ invite: false, userMenu: false, inCall: false, connecting: false, viewing: 'text', members: (localStorage.getItem('ui:members') ?? '1') === '1', voiceChannel: '', voiceChannelId: '', voiceClock: '', voiceStatus: '{{ __('Disponível') }}' }"
+     data-me-avatar="{{ auth()->user()->avatar_url }}" x-data="{ invite: false, userMenu: false, inCall: false, connecting: false, viewing: 'text', members: (localStorage.getItem('ui:members') ?? '1') === '1', channels: (localStorage.getItem('ui:channels') ?? '1') === '1', voiceChannel: '', voiceChannelId: '', voiceClock: '', voiceStatus: '{{ __('Disponível') }}' }"
      x-on:voice-state.window="inCall = $event.detail.inCall; connecting = false; viewing = $event.detail.inCall ? 'voice' : 'text'; voiceChannel = $event.detail.channelName ?? voiceChannel; voiceChannelId = $event.detail.channelId ?? ''"
      x-on:voice-connecting.window="connecting = true; viewing = 'voice'"
      x-on:stage-changed.window="viewing = $event.detail.stage"
@@ -66,7 +66,17 @@
     </nav>
 
     {{-- Sidebar de canais --}}
-    <aside class="z-10 flex w-60 shrink-0 flex-col overflow-hidden rounded-lg bg-[#2b2d31]">
+    <aside
+        x-show="channels"
+        x-cloak
+        x-transition:enter="transition-all duration-200 ease-out"
+        x-transition:enter-start="w-0 opacity-0"
+        x-transition:enter-end="w-60 opacity-100"
+        x-transition:leave="transition-all duration-150 ease-in"
+        x-transition:leave-start="w-60 opacity-100"
+        x-transition:leave-end="w-0 opacity-0"
+        class="z-10 flex w-60 shrink-0 flex-col overflow-hidden rounded-lg bg-[#2b2d31]"
+    >
         <header class="flex h-12 shrink-0 items-center justify-between border-b border-[#26282c] px-4">
             <span class="truncate font-semibold text-white">{{ $this->currentServer?->name ?? __('Início') }}</span>
 
@@ -287,6 +297,18 @@
     {{-- Conteúdo --}}
     <main class="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-[#313338]">
         <header class="flex h-12 shrink-0 items-center gap-2 border-b border-[#3a3c41] px-4">
+            <button
+                type="button"
+                x-on:click="channels = ! channels; localStorage.setItem('ui:channels', channels ? '1' : '0')"
+                x-bind:title="channels ? '{{ __('Ocultar canais') }}' : '{{ __('Mostrar canais') }}'"
+                class="-ml-1 cursor-pointer rounded p-1.5 text-[#b5bac1] transition-colors hover:bg-[#35373c] hover:text-white"
+            >
+                <svg class="size-[18px]" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+                    <rect x="3" y="4" width="18" height="16" rx="2"/>
+                    <path d="M9 4v16" x-bind:class="channels ? '' : 'opacity-40'"/>
+                </svg>
+            </button>
+
             @if ($this->currentChannel)
                 <span class="text-xl text-[#80848e]">#</span>
                 <span class="font-semibold text-white">{{ $this->currentChannel->name }}</span>
