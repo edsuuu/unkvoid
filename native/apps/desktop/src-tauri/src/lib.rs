@@ -9,7 +9,7 @@ mod broadcast;
 mod settings;
 
 use broadcast::Broadcast;
-use capture::{CaptureConfig, CaptureEvent, PlatformCapturer, Quality};
+use capture::{CaptureConfig, CaptureEvent, CaptureSource, PlatformCapturer, Quality};
 use serde::Serialize;
 use settings::Settings;
 use tauri::{Emitter, State};
@@ -19,6 +19,16 @@ struct ActiveCapture(Mutex<Option<PlatformCapturer>>);
 
 #[derive(Default)]
 struct ActiveBroadcast(tokio::sync::Mutex<Option<Broadcast>>);
+
+/// A interface manda `display:<id>` ou `window:<id>`; qualquer outra coisa é o monitor
+/// principal, que é o caso em que ninguém escolheu nada.
+fn source_from(escolha: Option<&str>) -> CaptureSource {
+    match escolha.and_then(|texto| texto.split_once(':')) {
+        Some(("display", id)) => id.parse().map(CaptureSource::Display).unwrap_or_default(),
+        Some(("window", id)) => id.parse().map(CaptureSource::Window).unwrap_or_default(),
+        _ => CaptureSource::PrimaryDisplay,
+    }
+}
 
 fn quality_from(name: &str) -> Quality {
     match name {
@@ -84,11 +94,14 @@ fn list_windows() -> Result<Vec<WindowInfo>, String> {
 
 /// Starts broadcasting. Capture and the encoder start here; connections are created
 /// one per viewer in `offer_to`.
+///
+/// `source` vem como `display:<id>` ou `window:<id>`; ausente é o monitor principal.
 #[tauri::command]
 async fn start_broadcast(
     app: tauri::AppHandle,
     state: State<'_, ActiveBroadcast>,
     quality: String,
+    source: Option<String>,
     ice_servers: Vec<String>,
 ) -> Result<(), String> {
     let mut active = state.0.lock().await;
@@ -97,8 +110,12 @@ async fn start_broadcast(
         return Err("a stream is already in progress".into());
     }
 
-    let (broadcast, mut signals) =
-        Broadcast::start(quality_from(&quality), ice_servers).map_err(|error| error.to_string())?;
+    let (broadcast, mut signals) = Broadcast::start(
+        quality_from(&quality),
+        source_from(source.as_deref()),
+        ice_servers,
+    )
+    .map_err(|error| error.to_string())?;
 
     let handle = app.clone();
 

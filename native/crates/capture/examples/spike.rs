@@ -47,6 +47,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     let config = CaptureConfig {
+        source: capture::CaptureSource::PrimaryDisplay,
         quality,
         frame_rate: 60,
         capture_audio: true,

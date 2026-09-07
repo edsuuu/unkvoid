@@ -3,7 +3,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use screencapturekit::prelude::*;
 
-use crate::{AudioChunk, CaptureConfig, CaptureError, CaptureEvent, Display, VideoFrame, Window};
+use crate::{
+    AudioChunk, CaptureConfig, CaptureError, CaptureEvent, CaptureSource, Display, VideoFrame,
+    Window,
+};
 
 /// Capture via ScreenCaptureKit. Requires macOS 13+ for video and system audio.
 pub struct MacCapturer {
@@ -140,16 +143,36 @@ impl MacCapturer {
     {
         let content =
             SCShareableContent::get().map_err(|error| CaptureError::Platform(error.to_string()))?;
-        let display = content
-            .displays()
-            .into_iter()
-            .next()
-            .ok_or(CaptureError::NoDisplay)?;
 
-        let filter = SCContentFilter::create()
-            .with_display(&display)
-            .with_excluding_windows(&[])
-            .build();
+        // Uma janela específica em vez do monitor inteiro: quem escolheu compartilhar só
+        // o jogo não pode ter o e-mail aparecendo junto.
+        let filter = match config.source {
+            CaptureSource::Window(id) => {
+                let window = content
+                    .windows()
+                    .into_iter()
+                    .find(|window| window.window_id() == id)
+                    .ok_or(CaptureError::NoDisplay)?;
+
+                SCContentFilter::create().with_window(&window).build()
+            }
+            source => {
+                let displays = content.displays();
+
+                let display = match source {
+                    CaptureSource::Display(id) => displays
+                        .into_iter()
+                        .find(|display| display.display_id() == id),
+                    _ => displays.into_iter().next(),
+                }
+                .ok_or(CaptureError::NoDisplay)?;
+
+                SCContentFilter::create()
+                    .with_display(&display)
+                    .with_excluding_windows(&[])
+                    .build()
+            }
+        };
 
         let (width, height) = config.quality.dimensions();
 

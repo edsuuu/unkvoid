@@ -21,7 +21,25 @@ window.__TAURI__ = {
         invoke: async (comando, args) => {
             console.log('invoke', comando, args ?? '');
 
-            return { check_update: null, all_settings: [], autostart_enabled: false }[comando] ?? null;
+            // Telas e janelas de mentira: no navegador não existe sistema operacional
+            // para perguntar, e o que se quer testar aqui é o seletor.
+            const respostas = {
+                check_update: null,
+                all_settings: [],
+                autostart_enabled: false,
+                get_setting: null,
+                list_displays: [
+                    { id: 1, width: 3456, height: 2234 },
+                    { id: 2, width: 1920, height: 1080 },
+                ],
+                list_windows: [
+                    { id: 87, title: 'Arena Breakout', application: 'Steam' },
+                    { id: 91, title: 'Terminal', application: 'Terminal' },
+                    { id: 99, title: '', application: 'Dock' },
+                ],
+            };
+
+            return comando in respostas ? respostas[comando] : null;
         },
     },
     opener: { openUrl: async url => console.log('openUrl', url) },

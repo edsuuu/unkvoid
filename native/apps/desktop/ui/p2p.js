@@ -48,8 +48,8 @@ export class P2P {
      * about 139 ms instead of 20. Past that, it moves to the server, where the upload
      * stops depending on how many people are watching.
      */
-    async broadcast(quality, viewers) {
-        await invoke('start_broadcast', { quality, iceServers: STUN });
+    async broadcast(quality, source, viewers) {
+        await invoke('start_broadcast', { quality, source, iceServers: STUN });
 
         this.broadcasting = true;
 
