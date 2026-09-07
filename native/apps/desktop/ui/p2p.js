@@ -52,6 +52,7 @@ export class P2P {
         await invoke('start_broadcast', { quality, source, iceServers: STUN });
 
         this.broadcasting = true;
+        this.announceSharing(true);
 
         if (viewers.length > P2P.LIMITE_P2P) {
             await this.moveToSfu();
@@ -61,6 +62,28 @@ export class P2P {
 
         for (const espectador of viewers) {
             await this.offerTo(espectador);
+        }
+    }
+
+    /**
+     * Conta à sala que a transmissão começou (ou parou).
+     *
+     * Pelo SFU isso é automático: publicar um producer já marca quem compartilha. O
+     * caminho direto não publica nada no servidor, então ninguém ficava sabendo e a
+     * flag "ao vivo" nunca acendia para os outros.
+     */
+    announceSharing(on) {
+        const eu = this.sfu.peers?.get(this.sfu.peerId);
+
+        if (eu) {
+            eu.sharing = on;
+            this.sfu.emit('peersChanged', [...this.sfu.peers.entries()]);
+        }
+
+        for (const peerId of this.sfu.peers?.keys() ?? []) {
+            if (peerId !== this.sfu.peerId) {
+                void this.sfu.signal(peerId, 'sharing', { on }).catch(() => {});
+            }
         }
     }
 
@@ -138,6 +161,7 @@ export class P2P {
         this.broadcasting = false;
         this.onSfu = false;
         this.viewers.clear();
+        this.announceSharing(false);
 
         return invoke('stop_broadcast');
     }
@@ -151,6 +175,17 @@ export class P2P {
 
         if (kind === 'answer') {
             await invoke('accept_answer', { peerId: from, sdp: payload.sdp });
+
+            return;
+        }
+
+        if (kind === 'sharing') {
+            const peer = this.sfu.peers?.get(from);
+
+            if (peer) {
+                peer.sharing = Boolean(payload.on);
+                this.sfu.emit('peersChanged', [...this.sfu.peers.entries()]);
+            }
 
             return;
         }

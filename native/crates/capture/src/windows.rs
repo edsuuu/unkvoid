@@ -80,6 +80,12 @@ impl GraphicsCaptureApiHandler for Sink {
 }
 
 impl WindowsCapturer {
+    /// Sem miniatura fora do macOS ainda. Devolver vazio em vez de erro deixa o
+    /// seletor abrir listando os nomes — pior que com preview, melhor que quebrado.
+    pub fn preview(_source: crate::CaptureSource) -> Result<Vec<u8>, CaptureError> {
+        Ok(Vec::new())
+    }
+
     pub fn displays() -> Result<Vec<Display>, CaptureError> {
         let monitors =
             Monitor::enumerate().map_err(|error| CaptureError::Platform(error.to_string()))?;

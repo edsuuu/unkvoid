@@ -142,6 +142,10 @@
       </div>
 
       <label class="mt-3 flex cursor-pointer items-center gap-2"><input class="accent-brand" type="checkbox" id="mic-noise"> Supressão de ruído</label>
+
+      <div class="mt-3 border-t border-line pt-3">
+        <button class="w-full cursor-pointer rounded px-2 py-1.5 text-left text-sm text-danger transition-colors hover:bg-danger hover:text-white" id="logout" type="button">Sair da conta</button>
+      </div>
     </div>
   </div>
 
@@ -177,7 +181,12 @@
     <h2 class="text-xl font-semibold text-white">Compartilhar tela</h2>
     <p class="mt-1 text-sm text-ink">Escolha o que a sala vai ver.</p>
 
-    <div class="mt-5 min-h-0 flex-1 overflow-y-auto" id="share-sources"></div>
+    <div class="mt-5 flex gap-1 border-b border-line">
+      <button class="cursor-pointer border-b-2 px-4 py-2 text-sm font-medium transition-colors" data-tab="display" type="button">Telas</button>
+      <button class="cursor-pointer border-b-2 px-4 py-2 text-sm font-medium transition-colors" data-tab="window" type="button">Aplicativos</button>
+    </div>
+
+    <div class="mt-4 min-h-0 flex-1 overflow-y-auto" id="share-sources"></div>
 
     <div class="mt-5 flex items-center gap-3">
       <label class="text-xs font-bold uppercase tracking-wide text-ink-soft" for="quality">Qualidade</label>

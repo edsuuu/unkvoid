@@ -76,6 +76,25 @@ fn list_displays() -> Result<Vec<DisplayInfo>, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Miniatura do que será transmitido, como data URL para a interface mostrar.
+///
+/// Vazio quando a plataforma ainda não sabe gerar: o seletor abre sem imagem em vez de
+/// não abrir.
+#[tauri::command]
+fn source_preview(source: String) -> Result<String, String> {
+    let bytes =
+        PlatformCapturer::preview(source_from(Some(&source))).map_err(|error| error.to_string())?;
+
+    if bytes.is_empty() {
+        return Ok(String::new());
+    }
+
+    Ok(format!(
+        "data:image/jpeg;base64,{}",
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+    ))
+}
+
 #[tauri::command]
 fn list_windows() -> Result<Vec<WindowInfo>, String> {
     PlatformCapturer::windows()
@@ -460,6 +479,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_displays,
             list_windows,
+            source_preview,
             start_capture,
             capture_stats,
             stop_capture,

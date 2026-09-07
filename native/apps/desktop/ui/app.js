@@ -245,6 +245,20 @@ class App {
         el('share').onclick = () => this.openShareModal();
         el('share-cancel').onclick = () => this.closeShareModal();
 
+        el('logout').onclick = async () => {
+            await this.leaveVoice();
+            this.api.forget();
+            this.toggleMicPanel();
+            this.servers = [];
+            this.server = null;
+            this.channel = null;
+            el('channel-list').innerHTML = '';
+            el('server-rail').innerHTML = '';
+            el('chat').hidden = true;
+            el('empty').hidden = false;
+            this.askForLogin();
+        };
+
         el('share-confirm').onclick = async () => {
             this.closeShareModal();
             await this.share();
@@ -363,12 +377,20 @@ class App {
 
             linha.className = `flex items-center gap-2 rounded px-2 py-1 text-sm ${person.connecting ? 'text-ink-dim italic' : 'text-ink-soft'}`;
             linha.dataset.participant = person.id ?? '';
-            linha.innerHTML = '<span class="flex size-6 shrink-0 items-center justify-center rounded-full bg-brand text-[10px] font-semibold text-white ring-2 ring-transparent transition-[box-shadow]" data-avatar></span><span class="truncate"></span>';
+            linha.innerHTML = '<span class="flex size-6 shrink-0 items-center justify-center rounded-full bg-brand text-[10px] font-semibold text-white ring-2 ring-transparent transition-[box-shadow]" data-avatar></span>'
+                + '<span class="truncate"></span>'
+                + '<span class="ml-auto hidden shrink-0 items-center gap-1 rounded bg-danger px-1.5 py-0.5 text-[10px] font-bold uppercase leading-none text-white" data-live>'
+                + '<span class="size-1.5 rounded-full bg-white"></span>ao vivo</span>';
 
             const [avatar, nome] = linha.querySelectorAll('span');
 
             avatar.textContent = initials(person.name);
             nome.textContent = person.connecting ? `${person.name} · conectando…` : person.name;
+
+            // `hidden` do Tailwind é uma classe, não o atributo: alternar as duas
+            // deixaria o elemento visível com display:none.
+            linha.querySelector('[data-live]').classList.toggle('hidden', ! person.sharing);
+            linha.querySelector('[data-live]').classList.toggle('flex', Boolean(person.sharing));
 
             lista.appendChild(linha);
         }
@@ -391,7 +413,7 @@ class App {
         this.drawParticipants(
             this.voiceChannel.id,
             sala.length
-                ? sala.map(([id, peer]) => ({ id, name: peer.name }))
+                ? sala.map(([id, peer]) => ({ id, name: peer.name, sharing: peer.sharing }))
                 : [{ name: this.me }],
         );
 
@@ -836,11 +858,22 @@ class App {
         this.speaking.clear();
 
         if (this.voiceChannel) {
+            this.voiceChannelId = this.voiceChannel.id;
             this.drawParticipants(this.voiceChannel.id, []);
             this.voiceChannel = null;
         }
 
         clearInterval(this.clock);
+
+        if (this.voiceChannelId) {
+            const relogio = document.querySelector(`[data-clock="${this.voiceChannelId}"]`);
+
+            if (relogio) {
+                relogio.textContent = '';
+            }
+        }
+
+        this.voiceChannelId = null;
         await this.stopSharing();
         this.mic.close();
         this.micDenied = false;
@@ -870,82 +903,109 @@ class App {
             return;
         }
 
-        const lista = el('share-sources');
-
-        lista.innerHTML = '<p class="text-sm text-ink-soft">Procurando telas e janelas…</p>';
-        el('share-modal').hidden = false;
         this.shareSource = null;
-        this.speaking = new Map();
-        this.watchers = new Map();
         el('share-confirm').disabled = true;
+        el('share-modal').hidden = false;
 
+        for (const aba of document.querySelectorAll('[data-tab]')) {
+            aba.onclick = () => this.drawShareTab(aba.dataset.tab);
+        }
+
+        // A lista vem do sistema operacional, não de um palpite: são os mesmos dados
+        // que o macOS usa para montar o seletor dele.
         const [telas, janelas] = await Promise.all([
             invoke('list_displays').catch(() => []),
             invoke('list_windows').catch(() => []),
         ]);
 
-        lista.innerHTML = '';
-
-        const grupo = (titulo, itens) => {
-            if (! itens.length) {
-                return;
-            }
-
-            const cabecalho = document.createElement('p');
-
-            cabecalho.className = 'mb-2 mt-4 text-xs font-bold uppercase tracking-wide text-ink-soft first:mt-0';
-            cabecalho.textContent = titulo;
-            lista.appendChild(cabecalho);
-
-            for (const item of itens) {
-                const botao = document.createElement('button');
-
-                botao.type = 'button';
-                botao.dataset.source = item.value;
-                botao.className = 'mb-1 flex w-full cursor-pointer items-center gap-3 rounded px-3 py-2 text-left text-sm text-ink transition-colors hover:bg-line';
-                botao.innerHTML = '<span class="shrink-0 text-ink-dim"></span><span class="min-w-0 flex-1 truncate"></span><span class="shrink-0 text-xs text-ink-soft"></span>';
-
-                const [icone, nome, detalhe] = botao.querySelectorAll('span');
-
-                icone.textContent = item.icon;
-                nome.textContent = item.label;
-                detalhe.textContent = item.detail ?? '';
-
-                botao.onclick = () => this.pickShareSource(botao);
-                lista.appendChild(botao);
-            }
+        this.shareSources = {
+            display: telas.map(tela => ({
+                value: `display:${tela.id}`,
+                label: `Tela ${tela.id}`,
+                detail: `${tela.width}×${tela.height}`,
+            })),
+            // Janela sem título é painel de sistema: mostrar só polui a escolha.
+            window: janelas
+                .filter(janela => janela.title.trim())
+                .map(janela => ({
+                    value: `window:${janela.id}`,
+                    label: janela.title,
+                    detail: janela.application,
+                })),
         };
 
-        grupo('Telas', telas.map(tela => ({
-            value: `display:${tela.id}`,
-            icon: '🖥',
-            label: `Tela ${tela.id}`,
-            detail: `${tela.width}×${tela.height}`,
-        })));
-
-        // Janela sem título é painel de sistema: mostrar só polui a escolha.
-        grupo('Janelas', janelas
-            .filter(janela => janela.title.trim())
-            .map(janela => ({
-                value: `window:${janela.id}`,
-                icon: '🪟',
-                label: janela.title,
-                detail: janela.application,
-            })));
-
-        if (! lista.children.length) {
-            lista.innerHTML = '<p class="text-sm text-ink-soft">Nada para compartilhar. No macOS, autorize a gravação de tela nas Configurações do Sistema.</p>';
-        }
+        this.drawShareTab('display');
     }
 
-    pickShareSource(botao) {
-        for (const outro of el('share-sources').querySelectorAll('button')) {
-            outro.classList.toggle('bg-brand', outro === botao);
-            outro.classList.toggle('text-white', outro === botao);
+    /**
+     * Uma aba por vez, com miniatura de cada item.
+     *
+     * O nome sozinho não basta: duas janelas chamadas "Terminal" são indistinguíveis, e
+     * escolher errado manda para a sala o que a pessoa não queria mostrar.
+     */
+    drawShareTab(tab) {
+        const lista = el('share-sources');
+        const itens = this.shareSources?.[tab] ?? [];
+
+        for (const aba of document.querySelectorAll('[data-tab]')) {
+            const ativa = aba.dataset.tab === tab;
+
+            aba.classList.toggle('border-brand', ativa);
+            aba.classList.toggle('text-white', ativa);
+            aba.classList.toggle('border-transparent', ! ativa);
+            aba.classList.toggle('text-ink-soft', ! ativa);
         }
 
-        this.shareSource = botao.dataset.source;
-        el('share-confirm').disabled = false;
+        lista.innerHTML = '';
+
+        if (! itens.length) {
+            lista.innerHTML = tab === 'display'
+                ? '<p class="text-sm text-ink-soft">Nenhuma tela encontrada. No macOS, autorize a gravação de tela nas Configurações do Sistema.</p>'
+                : '<p class="text-sm text-ink-soft">Nenhuma janela aberta para compartilhar.</p>';
+
+            return;
+        }
+
+        lista.className = 'mt-4 grid min-h-0 flex-1 grid-cols-2 gap-3 overflow-y-auto';
+
+        for (const item of itens) {
+            const botao = document.createElement('button');
+
+            botao.type = 'button';
+            botao.dataset.source = item.value;
+            botao.className = 'cursor-pointer overflow-hidden rounded-lg border-2 border-transparent bg-rail text-left transition-colors hover:border-brand';
+            botao.innerHTML = '<div class="flex aspect-video items-center justify-center bg-black">'
+                + '<img class="size-full object-contain" alt="" hidden>'
+                + '<span class="text-xs text-ink-dim">sem prévia</span>'
+                + '</div>'
+                + '<div class="px-2.5 py-2">'
+                + '<p class="truncate text-sm text-white"></p>'
+                + '<p class="truncate text-xs text-ink-soft"></p>'
+                + '</div>';
+
+            const [nome, detalhe] = botao.querySelectorAll('p');
+
+            nome.textContent = item.label;
+            detalhe.textContent = item.detail ?? '';
+            botao.onclick = () => this.pickShareSource(botao);
+            lista.appendChild(botao);
+
+            // Uma miniatura por vez, sem travar a abertura do seletor: quem tem dez
+            // janelas abertas veria a lista congelar esperando todas.
+            void invoke('source_preview', { source: item.value })
+                .then(dados => {
+                    if (! dados) {
+                        return;
+                    }
+
+                    const imagem = botao.querySelector('img');
+
+                    imagem.src = dados;
+                    imagem.hidden = false;
+                    botao.querySelector('span').hidden = true;
+                })
+                .catch(() => {});
+        }
     }
 
     closeShareModal() {
