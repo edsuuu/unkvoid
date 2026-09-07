@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\DesktopAuthController;
 use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\ServerController;
 use App\Http\Controllers\PresenceTokenController;
@@ -10,6 +11,10 @@ use App\Http\Controllers\VoiceTokenController;
 use Illuminate\Support\Facades\Route;
 
 Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1')->name('api.login');
+
+// Google para o app desktop: sai pelo navegador do sistema e volta por deep link.
+Route::get('desktop/google', [DesktopAuthController::class, 'redirect'])->name('api.desktop.google');
+Route::get('desktop/google/callback', [DesktopAuthController::class, 'callback'])->name('api.desktop.google.callback');
 
 Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('me', [AuthController::class, 'me'])->name('api.me');

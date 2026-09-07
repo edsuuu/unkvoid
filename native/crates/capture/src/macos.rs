@@ -33,6 +33,7 @@ impl<F: Fn(CaptureEvent) + Send + Sync + 'static> SCStreamOutputTrait for Sink<F
                     width,
                     height,
                     timestamp_ns,
+                    surface: sample.image_buffer().and_then(|buffer| buffer.io_surface()),
                 }));
             }
             SCStreamOutputType::Audio => {

@@ -51,9 +51,9 @@ o design do web, e **captura a tela nativamente** — sem barra do Chrome.
 
 | Peça | Situação |
 |---|---|
-| **WebRTC no app desktop** | **nada.** A captura entrega quadros que morrem ali |
-| Encoder de vídeo | nenhum. Falta VideoToolbox (mac) / Media Foundation (win) |
-| P2P ponta a ponta | servidor pronto, cliente não começou |
+| **P2P ponta a ponta** | falta a interface trocar SDP pelo SFU e receber vídeo |
+| Recepção de vídeo | só envia; `on_track` do lado de quem assiste não existe |
+| Encoder no Windows | falta Media Foundation |
 | Captura no Linux | recusa com erro claro; falta consumir o nó do PipeWire |
 | Áudio de sistema no Windows | precisa de WASAPI loopback, separado do Graphics Capture |
 | Chat no desktop | lista mensagens em texto cru, sem enviar |
@@ -68,14 +68,23 @@ máquina; Windows e Linux só passaram por cross-compile (type-check, não execu
 
 O caminho de mídia do app, nesta ordem — cada etapa é verificável sozinha:
 
-1. **Encoder**: quadros BGRA da `capture` → H.264. `videotoolbox` no macOS.
-   Verificação: gravar 10s em arquivo e abrir.
-2. **PeerConnection** com a crate `webrtc` (0.21-rc), usando o relay `signal` do SFU
-   para trocar SDP e ICE. Verificação: dois apps na mesma sala, `connectionState`
-   virando `connected`.
-3. **Ligar encoder ao track** e assistir do outro lado.
-4. **Regra dos 3**: acima de 3 espectadores, cair para o SFU. O upload de quem
+1. **Fechar o P2P**: a interface precisa abrir o WebSocket do SFU, entrar na sala e
+   trocar `offer`/`answer`/`candidate` pela ação `signal`. Os comandos Rust já
+   existem: `start_broadcast` devolve a oferta, `accept_answer` e `add_candidate`
+   recebem o resto.
+2. **Receber vídeo**: hoje só envia. Falta tratar `on_track` e exibir.
+3. **Regra dos 3**: acima de 3 espectadores, cair para o SFU. O upload de quem
    compartilha multiplica no P2P (4 pessoas em 1080p ≈ 28 Mbps de subida).
+4. **Encoder no Windows** (Media Foundation) e captura no Linux (PipeWire).
+
+### Números já medidos do encoder
+
+| Resolução | ms/quadro | Orçamento a 60 fps | Uso |
+|---|---|---|---|
+| 1080p | 7,86 ms | 16,67 ms | 47% |
+| 1440p | 12,25 ms | 16,67 ms | 73% |
+
+Medido com superfície estática — tela real dá mais trabalho. 1440p60 é o limite.
 
 Por que P2P primeiro: a VPS está nos EUA e os usuários no Brasil — **139 ms de RTT
 medidos**. Dois brasileiros direto ficam em ~20 ms.

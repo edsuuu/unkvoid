@@ -5,12 +5,26 @@
 
 use std::sync::Mutex;
 
+mod broadcast;
+
+use broadcast::Broadcast;
 use capture::{CaptureConfig, CaptureEvent, PlatformCapturer, Quality};
 use serde::Serialize;
 use tauri::{Emitter, State};
 
 #[derive(Default)]
 struct ActiveCapture(Mutex<Option<PlatformCapturer>>);
+
+#[derive(Default)]
+struct ActiveBroadcast(tokio::sync::Mutex<Option<Broadcast>>);
+
+fn quality_from(nome: &str) -> Quality {
+    match nome {
+        "720" => Quality::Hd720,
+        "1440" => Quality::Qhd1440,
+        _ => Quality::Hd1080,
+    }
+}
 
 #[derive(Serialize)]
 struct DisplayInfo {
@@ -64,6 +78,77 @@ fn list_windows() -> Result<Vec<WindowInfo>, String> {
                 .collect()
         })
         .map_err(|error| error.to_string())
+}
+
+/// Começa a transmitir: captura, codifica por hardware e devolve a oferta SDP para
+/// a interface repassar pelo SFU. Os candidatos ICE chegam pelo evento `p2p:signal`.
+#[tauri::command]
+async fn start_broadcast(
+    app: tauri::AppHandle,
+    state: State<'_, ActiveBroadcast>,
+    quality: String,
+    ice_servers: Vec<String>,
+) -> Result<String, String> {
+    let mut ativo = state.0.lock().await;
+
+    if ativo.is_some() {
+        return Err("já existe uma transmissão em andamento".into());
+    }
+
+    let (transmissao, oferta, mut sinais) = Broadcast::start(quality_from(&quality), ice_servers)
+        .await
+        .map_err(|erro| erro.to_string())?;
+
+    let handle = app.clone();
+
+    tokio::spawn(async move {
+        while let Some(media::Signal::Candidate(json)) = sinais.recv().await {
+            let _ = handle.emit("p2p:signal", json);
+        }
+    });
+
+    *ativo = Some(transmissao);
+
+    Ok(oferta)
+}
+
+#[tauri::command]
+async fn accept_answer(state: State<'_, ActiveBroadcast>, sdp: String) -> Result<(), String> {
+    let ativo = state.0.lock().await;
+
+    ativo
+        .as_ref()
+        .ok_or_else(|| "nenhuma transmissão ativa".to_string())?
+        .accept_answer(sdp)
+        .await
+        .map_err(|erro| erro.to_string())
+}
+
+#[tauri::command]
+async fn add_candidate(state: State<'_, ActiveBroadcast>, candidate: String) -> Result<(), String> {
+    let ativo = state.0.lock().await;
+
+    ativo
+        .as_ref()
+        .ok_or_else(|| "nenhuma transmissão ativa".to_string())?
+        .add_candidate(candidate)
+        .await
+        .map_err(|erro| erro.to_string())
+}
+
+#[tauri::command]
+async fn stop_broadcast(state: State<'_, ActiveBroadcast>) -> Result<u64, String> {
+    let mut ativo = state.0.lock().await;
+
+    let Some(mut transmissao) = ativo.take() else {
+        return Ok(0);
+    };
+
+    let quadros = transmissao.frames();
+
+    transmissao.stop().await.map_err(|erro| erro.to_string())?;
+
+    Ok(quadros)
 }
 
 #[tauri::command]
@@ -167,8 +252,11 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .manage(ActiveCapture::default())
+        .manage(ActiveBroadcast::default())
         .invoke_handler(tauri::generate_handler![
             list_displays,
             list_windows,
@@ -176,7 +264,11 @@ pub fn run() {
             capture_stats,
             stop_capture,
             check_update,
-            restart
+            restart,
+            start_broadcast,
+            accept_answer,
+            add_candidate,
+            stop_broadcast
         ])
         .run(tauri::generate_context!())
         .expect("erro ao subir o app");

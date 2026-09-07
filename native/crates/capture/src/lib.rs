@@ -89,6 +89,11 @@ pub struct VideoFrame {
     pub height: u32,
     /// Nanossegundos desde o início da captura.
     pub timestamp_ns: u64,
+
+    /// Buffer da GPU com o quadro. Vai direto para o encoder por hardware, sem
+    /// cópia para a CPU — é o que permite 1440p60 sem derreter a máquina.
+    #[cfg(target_os = "macos")]
+    pub surface: Option<apple_cf::iosurface::IOSurface>,
 }
 
 pub struct AudioChunk {

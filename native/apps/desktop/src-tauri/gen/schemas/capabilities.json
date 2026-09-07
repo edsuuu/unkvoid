@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Permissões do app: atualização automática e reinício após instalar.","local":true,"windows":["main"],"permissions":["core:default","updater:default","process:allow-restart"]}}
+{"default":{"identifier":"default","description":"Permissões do app: atualização automática e reinício após instalar.","local":true,"windows":["main"],"permissions":["core:default","updater:default","process:allow-restart","deep-link:default","opener:allow-open-url"]}}

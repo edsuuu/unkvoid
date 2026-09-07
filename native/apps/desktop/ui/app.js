@@ -1,6 +1,8 @@
 import { Api } from './api.js';
 
 const { invoke } = window.__TAURI__.core;
+const { openUrl } = window.__TAURI__.opener;
+const { onOpenUrl } = window.__TAURI__.deepLink;
 
 const el = id => document.getElementById(id);
 const iniciais = nome => (nome ?? '?').slice(0, 2).toUpperCase();
@@ -78,6 +80,32 @@ class App {
 
     pedirLogin() {
         el('tela-login').hidden = false;
+
+        // O Google não abre dentro do app: vai para o navegador do sistema e volta
+        // por deep link. Assim a senha nunca passa pela janela do Discord 2.0.
+        el('botao-google').onclick = () => openUrl(`${Api.BASE}/api/desktop/google`);
+
+        onOpenUrl(async ([url]) => {
+            const parametros = new URL(url).searchParams;
+            const erro = parametros.get('erro');
+
+            if (erro) {
+                el('erro-login').textContent = erro;
+
+                return;
+            }
+
+            const token = parametros.get('token');
+
+            if (! token) {
+                return;
+            }
+
+            localStorage.setItem('api:token', token);
+            this.api.token = token;
+            el('tela-login').hidden = true;
+            await this.entrar();
+        });
 
         el('form-login').onsubmit = async evento => {
             evento.preventDefault();

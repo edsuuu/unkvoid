@@ -1,0 +1,32 @@
+[package]
+name = "media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Codificação de vídeo por hardware e transporte WebRTC"
+
+[dependencies]
+anyhow.workspace = true
+async-trait = "0.1.92"
+capture = { path = "../capture" }
+futures-util = "0.3.34"
+rtc = "0.20"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tokio-tungstenite = "0.30.0"
+tracing.workspace = true
+webrtc = "0.20"
+
+[[example]]
+name = "encoder"
+path = "examples/encoder.rs"
+
+[[example]]
+name = "peer"
+path = "examples/peer.rs"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+videotoolbox = "0.19"
+apple-cf = { version = "0.9", features = ["cv"] }
