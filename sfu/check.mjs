@@ -161,6 +161,36 @@ const run = async () => {
     reply = await voltou.call('connectTransport', { transportId: transportAntes, dtlsParameters: { fingerprints: [], role: 'client' } });
     assert.notEqual(reply.status, 404, 'o transport de antes da queda ainda deve existir');
 
+    // O relay P2P entrega de um participante a outro, e o remetente vem da sessão:
+    // ninguém consegue se passar por outra pessoa.
+    const alice = new Client();
+    await alice.open();
+    await alice.call('join', { token: mint({ sub: 'alice-uuid', name: 'Alice', room, role: 'member' }) });
+
+    const bob = new Client();
+    await bob.open();
+    await bob.call('join', { token: mint({ sub: 'bob-uuid', name: 'Bob', room, role: 'member' }) });
+
+    bob.events.length = 0;
+    reply = await alice.call('signal', { to: 'bob-uuid', kind: 'offer', payload: { sdp: 'v=0' } });
+    assert.equal(reply.ok, true, 'sinal deve ser entregue');
+    await new Promise(resolve => setTimeout(resolve, 400));
+
+    const sinal = bob.events.find(evento => evento.event === 'signal');
+    assert.ok(sinal, 'o destinatário deve receber o sinal');
+    assert.equal(sinal.data.from, 'alice-uuid', 'o remetente vem da sessão, não do corpo');
+    assert.equal(sinal.data.kind, 'offer');
+    assert.equal(sinal.data.payload.sdp, 'v=0');
+
+    reply = await alice.call('signal', { to: 'nao-existe', kind: 'offer', payload: {} });
+    assert.equal(reply.status, 404, 'sinalizar para quem não está na sala deve dar 404');
+
+    reply = await alice.call('signal', { to: 'bob-uuid', kind: 'invalido', payload: {} });
+    assert.equal(reply.status, 422, 'tipo de sinal desconhecido deve ser recusado');
+
+    alice.close();
+    bob.close();
+
     // Quem assiste precisa ser avisado na hora que a conexão de quem transmite caiu,
     // senão fica com o último quadro congelado achando que travou.
     const espectador = new Client();

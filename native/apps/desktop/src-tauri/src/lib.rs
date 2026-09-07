@@ -133,18 +133,50 @@ fn stop_capture(state: State<'_, ActiveCapture>) -> Result<(), String> {
     Ok(())
 }
 
+/// Procura, baixa e instala atualização antes de liberar o app — do jeito que o
+/// Discord faz. Falha de rede não trava a abertura: sem servidor a pessoa não vai
+/// conseguir usar mesmo, mas travar na tela de update seria pior que entrar e avisar.
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let updater = app.updater().map_err(|error| error.to_string())?;
+
+    let Some(update) = updater.check().await.map_err(|error| error.to_string())? else {
+        return Ok(None);
+    };
+
+    let versao = update.version.clone();
+
+    update
+        .download_and_install(|_baixado, _total| {}, || {})
+        .await
+        .map_err(|error| error.to_string())?;
+
+    Ok(Some(versao))
+}
+
+#[tauri::command]
+fn restart(app: tauri::AppHandle) {
+    app.restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt().with_env_filter("info").init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(ActiveCapture::default())
         .invoke_handler(tauri::generate_handler![
             list_displays,
             list_windows,
             start_capture,
             capture_stats,
-            stop_capture
+            stop_capture,
+            check_update,
+            restart
         ])
         .run(tauri::generate_context!())
         .expect("erro ao subir o app");

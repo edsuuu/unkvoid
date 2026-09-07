@@ -3,133 +3,93 @@
 <head>
 <meta charset="utf-8">
 <title>Discord 2.0</title>
-<style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; height: 100vh; display: flex; flex-direction: column;
-    background: #151619; color: #dbdee1;
-    font: 15px/1.5 ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif;
-  }
-  header {
-    display: flex; align-items: center; gap: 12px;
-    padding: 14px 20px; border-bottom: 1px solid #26282c; background: #1e1f22;
-  }
-  header h1 { margin: 0; font-size: 15px; font-weight: 600; }
-  header span { font-size: 12px; color: #949ba4; }
-  main { flex: 1; padding: 20px; overflow-y: auto; }
-  section { background: #2b2d31; border-radius: 8px; padding: 16px; margin-bottom: 14px; }
-  h2 { margin: 0 0 10px; font-size: 12px; font-weight: 700; text-transform: uppercase;
-       letter-spacing: .04em; color: #949ba4; }
-  button {
-    padding: 9px 16px; border: 0; border-radius: 6px; background: #5865f2;
-    color: #fff; font: 500 14px/1 inherit; cursor: pointer;
-  }
-  button:hover:not(:disabled) { background: #4752c4; }
-  button:disabled { opacity: .5; cursor: not-allowed; }
-  button.parar { background: #da373c; }
-  select { padding: 8px 10px; border: 0; border-radius: 6px; background: #1e1f22;
-           color: #dbdee1; font: inherit; cursor: pointer; }
-  ul { margin: 0; padding: 0; list-style: none; }
-  li { padding: 8px 10px; border-radius: 6px; font-size: 14px; }
-  li:nth-child(odd) { background: #313338; }
-  .linha { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .stats { margin-top: 12px; font: 12px/1.6 ui-monospace, Menlo, monospace; color: #949ba4; }
-  .erro { color: #f23f43; font-size: 13px; margin-top: 10px; }
-</style>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<header>
-  <h1>Discord 2.0</h1>
-  <span id="plataforma"></span>
-</header>
+<!-- Atualização: roda antes de qualquer coisa, como no Discord -->
+<section class="tela-cheia" id="tela-update">
+  <div class="cartao">
+    <h1>Discord 2.0</h1>
+    <p id="update-status">Procurando atualizações…</p>
+    <div class="aviso"><span class="girando"></span></div>
+  </div>
+</section>
 
-<main>
-  <section>
-    <h2>Compartilhar tela</h2>
-    <div class="linha">
-      <select id="qualidade">
+<!-- Sem servidor o app não serve para nada: bloqueia em vez de fingir que funciona -->
+<section class="tela-cheia" id="tela-offline" hidden>
+  <div class="cartao">
+    <h1>Sem conexão</h1>
+    <p>O Discord 2.0 precisa do servidor para funcionar. Reconectando…</p>
+    <div class="aviso"><span class="girando"></span><span id="offline-tentativa"></span></div>
+  </div>
+</section>
+
+<section class="tela-cheia" id="tela-login" hidden>
+  <div class="cartao">
+    <h1>Entrar na sua conta</h1>
+    <p>Use o mesmo login do discord.unkvoid.com</p>
+
+    <form id="form-login">
+      <div class="campo">
+        <label for="email">Endereço de e-mail</label>
+        <input id="email" type="email" autocomplete="username" required>
+      </div>
+
+      <div class="campo">
+        <label for="senha">Senha</label>
+        <input id="senha" type="password" autocomplete="current-password" required>
+      </div>
+
+      <button type="submit" class="botao" id="botao-entrar">Entrar</button>
+      <p class="erro" id="erro-login"></p>
+    </form>
+  </div>
+</section>
+
+<nav class="trilha" id="trilha"></nav>
+
+<aside class="canais">
+  <header class="cabecalho"><span id="nome-servidor">Início</span></header>
+
+  <div class="lista" id="lista-canais"></div>
+
+  <div class="voz" id="faixa-voz" hidden>
+    <div class="voz-topo">
+      <span class="avatar" style="background:var(--verde);width:8px;height:8px"></span>
+      <div class="voz-titulo">
+        Voz conectada <span class="voz-canal" id="voz-relogio"></span>
+        <div class="voz-canal" id="voz-canal"></div>
+      </div>
+      <button class="botao neutro" id="sair-voz" style="flex:0;padding:6px 10px">Sair</button>
+    </div>
+
+    <div class="acoes">
+      <select class="qualidade" id="qualidade">
         <option value="720">720p</option>
         <option value="1080" selected>1080p</option>
         <option value="1440">1440p</option>
       </select>
-      <button id="iniciar">Iniciar captura</button>
-      <button id="parar" class="parar" disabled>Parar</button>
+      <button class="botao" id="compartilhar">Compartilhar</button>
+      <button class="botao perigo" id="parar" hidden>Parar</button>
     </div>
-    <div class="stats" id="stats"></div>
-    <p class="erro" id="erro"></p>
-  </section>
+  </div>
 
-  <section>
-    <h2>Telas detectadas</h2>
-    <ul id="telas"><li>carregando…</li></ul>
-  </section>
+  <div class="usuario">
+    <span class="avatar grande" id="meu-avatar"></span>
+    <div style="flex:1;min-width:0">
+      <div class="nome" id="meu-nome"></div>
+      <div class="estado" id="meu-estado">Disponível</div>
+    </div>
+  </div>
+</aside>
+
+<main class="conteudo">
+  <header class="cabecalho"><span id="titulo-canal">Selecione um canal</span></header>
+  <div class="palco" id="palco" hidden></div>
+  <div class="vazio" id="vazio">Escolha um servidor para começar</div>
 </main>
 
-<script type="module">
-const { invoke } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
-
-const elemento = id => document.getElementById(id);
-const erro = texto => { elemento('erro').textContent = texto ?? ''; };
-
-let quadros = 0;
-let ultimoTamanho = '';
-let cronometro = null;
-
-const carregarTelas = async () => {
-    try {
-        const telas = await invoke('list_displays');
-
-        elemento('telas').innerHTML = telas.length
-            ? telas.map(tela => `<li>#${tela.id} — ${tela.width}×${tela.height}</li>`).join('')
-            : '<li>nenhuma tela listada (no Linux quem escolhe é o portal do sistema)</li>';
-    } catch (falha) {
-        elemento('telas').innerHTML = '<li>não foi possível listar</li>';
-        erro(String(falha));
-    }
-};
-
-listen('capture:frame', evento => {
-    quadros += 1;
-    ultimoTamanho = `${evento.payload[0]}×${evento.payload[1]}`;
-});
-
-elemento('iniciar').onclick = async () => {
-    erro('');
-    quadros = 0;
-
-    try {
-        await invoke('start_capture', { quality: elemento('qualidade').value });
-    } catch (falha) {
-        erro(String(falha));
-
-        return;
-    }
-
-    elemento('iniciar').disabled = true;
-    elemento('parar').disabled = false;
-
-    let anterior = 0;
-
-    cronometro = setInterval(() => {
-        elemento('stats').textContent = `${ultimoTamanho} · ${quadros - anterior} fps · ${quadros} quadros`;
-        anterior = quadros;
-    }, 1000);
-};
-
-elemento('parar').onclick = async () => {
-    clearInterval(cronometro);
-    await invoke('stop_capture').catch(falha => erro(String(falha)));
-    elemento('iniciar').disabled = false;
-    elemento('parar').disabled = true;
-};
-
-elemento('plataforma').textContent = navigator.userAgent.includes('Windows') ? 'Windows'
-    : navigator.userAgent.includes('Mac') ? 'macOS' : 'Linux';
-
-carregarTelas();
-</script>
+<script type="module" src="app.js"></script>
 </body>
 </html>

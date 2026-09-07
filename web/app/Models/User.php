@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Str;
 use Laravel\Fortify\TwoFactorAuthenticatable;
+use Laravel\Sanctum\HasApiTokens;
 use Override;
 
 #[Fillable(['name', 'nickname', 'email', 'password', 'avatar_url', 'google_id'])]
@@ -23,6 +24,7 @@ use Override;
 final class User extends Authenticatable implements MustVerifyEmail
 {
     /** @use HasFactory<UserFactory> */
+    use HasApiTokens;
     use HasFactory;
 
     use HasUuids;

@@ -6,6 +6,7 @@ import type { LeaveController } from './Controllers/LeaveController.js';
 import type { PresenceController } from './Controllers/PresenceController.js';
 import type { ModerationController } from './Controllers/ModerationController.js';
 import type { ProducerController } from './Controllers/ProducerController.js';
+import type { SignalController } from './Controllers/SignalController.js';
 import type { TransportController } from './Controllers/TransportController.js';
 import { ConsumeRequest } from './Requests/ConsumeRequest.js';
 import { ConsumerRequest } from './Requests/ConsumerRequest.js';
@@ -14,12 +15,14 @@ import { ModerationRequest } from './Requests/ModerationRequest.js';
 import { ProduceRequest } from './Requests/ProduceRequest.js';
 import { ProducerRequest } from './Requests/ProducerRequest.js';
 import { Request } from './Requests/Request.js';
+import { SignalRequest } from './Requests/SignalRequest.js';
 import { TransportRequest } from './Requests/TransportRequest.js';
 
 export type Controllers = {
     join: JoinController;
     leave: LeaveController;
     presence: PresenceController;
+    signal: SignalController;
     transport: TransportController;
     producer: ProducerController;
     consumer: ConsumerController;
@@ -50,6 +53,10 @@ export const routes = (controllers: Controllers): Record<ActionName, Route> => (
         guest: true,
         build: (data, session) => new JoinRequest(data, session),
         handle: request => controllers.presence.watch(request),
+    },
+    [Action.Signal]: {
+        build: (data, session) => new SignalRequest(data, session),
+        handle: request => controllers.signal.handle(request),
     },
     [Action.CreateTransport]: {
         build: (data, session) => new Request(data, session),

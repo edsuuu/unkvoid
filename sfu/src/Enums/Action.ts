@@ -1,6 +1,7 @@
 export const Action = {
     Join: 'join',
     Leave: 'leave',
+    Signal: 'signal',
     WatchServer: 'watchServer',
     CreateTransport: 'createTransport',
     ConnectTransport: 'connectTransport',
