@@ -1,102 +1,46 @@
 /**
- * Laravel API client. The app is useless without a server, so every network failure
- * sends it to the reconnect screen instead of letting the interface show stale data.
+ * O servidor, resumido ao que o app ainda precisa dele: emitir o token da sala.
+ *
+ * O token do SFU é assinado com um segredo que não pode viajar dentro do binário — daí
+ * o único endpoint. Não há conta, sessão nem cadastro: o app manda um nome e um código
+ * de sala, e recebe de volta a permissão de entrar naquela sala.
  */
 export class Api {
-    // VITE_API_BASE points a local build at a local stack; the localStorage override
-    // stays for poking at a shipped build without rebuilding it.
+    // VITE_API_BASE aponta um build local para uma pilha local; o override no
+    // localStorage serve para cutucar um build já pronto sem recompilar.
     static BASE = import.meta.env.VITE_API_BASE ?? localStorage.getItem('api:base') ?? 'https://discord.unkvoid.com';
 
     constructor(onOffline) {
-        this.token = localStorage.getItem('api:token');
         this.onOffline = onOffline;
     }
 
-    get authenticated() {
-        return Boolean(this.token);
-    }
-
-    async request(path, { method = 'GET', body } = {}) {
+    /** Sem `code`, o servidor sorteia uma sala nova e devolve o código dela. */
+    async room(name, code = null) {
         let answer;
 
         try {
-            answer = await fetch(`${Api.BASE}/api/${path}`, {
-                method,
-                headers: {
-                    Accept: 'application/json',
-                    'Content-Type': 'application/json',
-                    ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
-                },
-                body: body ? JSON.stringify(body) : undefined,
+            answer = await fetch(`${Api.BASE}/api/rooms`, {
+                method: 'POST',
+                headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, room: code }),
             });
         } catch {
             this.onOffline?.();
 
-            throw new Error('no connection to the server');
-        }
-
-        if (answer.status === 401) {
-            this.forget();
-
-            throw new Error('session expired');
+            throw new Error('sem conexão com o servidor');
         }
 
         const data = await answer.json().catch(() => ({}));
 
         if (! answer.ok) {
-            throw new Error(data.message ?? `the server rejected the request (${answer.status})`);
+            // 422 do Laravel traz o motivo por campo; a mensagem solta é genérica.
+            throw new Error(
+                Object.values(data.errors ?? {}).flat()[0]
+                ?? data.message
+                ?? `o servidor recusou (${answer.status})`,
+            );
         }
 
         return data;
-    }
-
-    async login(email, password) {
-        const data = await this.request('login', {
-            method: 'POST',
-            body: { email, password, device: `desktop-${navigator.platform}` },
-        });
-
-        this.token = data.token;
-        localStorage.setItem('api:token', data.token);
-
-        return data.user.data ?? data.user;
-    }
-
-    forget() {
-        this.token = null;
-        localStorage.removeItem('api:token');
-    }
-
-    me() {
-        return this.request('me').then(data => data.data);
-    }
-
-    servers() {
-        return this.request('servers').then(data => data.data);
-    }
-
-    server(id) {
-        return this.request(`servers/${id}`).then(data => data.data);
-    }
-
-    createServer(name) {
-        return this.request('servers', { method: 'POST', body: { name } }).then(data => data.data);
-    }
-
-    messages(channelId) {
-        return this.request(`channels/${channelId}/messages`).then(data => data.data);
-    }
-
-    sendMessage(channelId, content) {
-        return this.request(`channels/${channelId}/messages`, { method: 'POST', body: { content } })
-            .then(data => data.data);
-    }
-
-    voiceToken(channelId) {
-        return this.request(`voice/${channelId}/token`, { method: 'POST' });
-    }
-
-    presenceToken(serverId) {
-        return this.request(`servers/${serverId}/presence`, { method: 'POST' });
     }
 }

@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\DesktopAuthController;
 use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\ServerController;
 use App\Http\Controllers\PresenceTokenController;
+use App\Http\Controllers\RoomController;
 use App\Http\Controllers\VoiceTokenController;
 use Illuminate\Support\Facades\Route;
 
@@ -21,6 +22,15 @@ use Illuminate\Support\Facades\Route;
 Route::get('health', fn (): array => ['ok' => true])->name('api.health');
 
 Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1')->name('api.login');
+
+/**
+ * Entrar numa sala avulsa: um nome seu, um código de sala, e pronto.
+ *
+ * Pública porque é o ponto inteiro — a pessoa baixa o app e usa, sem criar conta. O
+ * limite é o que impede a rota de virar um varredor de códigos: com 20 por minuto,
+ * percorrer 2,8e14 combinações leva mais tempo do que o universo tem.
+ */
+Route::post('rooms', RoomController::class)->middleware('throttle:20,1')->name('api.rooms.join');
 
 /**
  * Google para o app desktop: abre no navegador do sistema e volta por deep link.
