@@ -1,27 +1,15 @@
 <!doctype html>
 <!--
-  Abre a UI do app num navegador comum, com a ponte do Tauri fingida.
+  Abre a UI do app num navegador comum, com a ponte do Tauri e o servidor fingidos.
 
   Existe porque a janela do app não tem console acessível: um erro de JavaScript deixa a
-  tela preta e não dá pista nenhuma. Aqui o mesmo bundle roda com devtools — foi assim
-  que apareceu um `this.update is not a function` que a tela preta escondia.
+  tela preta e não dá pista nenhuma. Aqui o mesmo bundle roda com devtools.
 
   python3 -m http.server 4599   (nesta pasta) e abra /harness.html
 -->
 <html lang="pt-BR"><head><meta charset="utf-8"><title>Unkvoid — harness</title></head>
 <body>
 <script>
-// Aponta para a pilha local e já entra logado: o objetivo é exercitar a interface,
-// não repetir o login a cada recarga.
-// O token NÃO fica aqui. Este arquivo é versionado, e um Bearer de produção commitado
-// vale para qualquer um que leia o repositório — foi o que aconteceu, e o token que
-// estava nesta linha teve de ser revogado. Cole o seu no console uma vez:
-//
-//   localStorage.setItem('api:token', 'SEU_TOKEN')
-//
-// Ele sobrevive ao reload e nunca entra no git.
-localStorage.setItem('api:base', 'http://localhost:8000');
-
 window.__TAURI__ = {
     core: {
         invoke: async (comando, args) => {
@@ -31,9 +19,6 @@ window.__TAURI__ = {
             // para perguntar, e o que se quer testar aqui é o seletor.
             const respostas = {
                 check_update: null,
-                all_settings: [],
-                autostart_enabled: false,
-                get_setting: null,
                 list_displays: [
                     { id: 1, width: 3456, height: 2234 },
                     { id: 2, width: 1920, height: 1080 },
@@ -43,27 +28,46 @@ window.__TAURI__ = {
                 list_windows: [
                     { id: 87, title: 'Arena Breakout', application: 'Steam' },
                     { id: 91, title: 'Terminal', application: 'Terminal' },
-                    { id: 92, title: 'Terminal', application: 'Terminal' },
-                    { id: 93, title: 'unkvoid — main — 180x50', application: 'Code' },
-                    { id: 94, title: 'Um título absurdamente longo de janela que não cabe', application: 'Navegador' },
+                    { id: 93, title: 'unkvoid — main', application: 'Code' },
                     { id: 95, title: 'WhatsApp', application: 'WhatsApp' },
-                    { id: 96, title: 'Spotify', application: 'Spotify' },
-                    { id: 99, title: '', application: 'Dock' },
                 ],
+                stop_broadcast: 1234,
+                sfu_offer: { ssrc: 7, payloadType: 96 },
             };
 
             return comando in respostas ? respostas[comando] : null;
         },
     },
-    opener: { openUrl: async url => console.log('openUrl', url) },
-    deepLink: { onOpenUrl: () => {} },
     event: { listen: async () => () => {} },
+};
+
+// Servidor fingido: `/api/health` responde, `/api/rooms` sorteia um código. O SFU de
+// verdade não entra aqui — o que se exercita é a interface.
+const fetchReal = window.fetch.bind(window);
+
+window.fetch = async (url, opcoes) => {
+    const texto = String(url);
+
+    if (texto.endsWith('/api/health')) {
+        return new Response('{"ok":true}', { status: 200 });
+    }
+
+    if (texto.endsWith('/api/rooms')) {
+        const corpo = JSON.parse(opcoes?.body ?? '{}');
+        const sala = corpo.room ?? [...crypto.getRandomValues(new Uint8Array(6))]
+            .map(b => b.toString(16).padStart(2, '0')).join('');
+
+        return new Response(JSON.stringify({ room: sala, url: 'ws://localhost:9999/sfu', token: 'fake' }), { status: 200 });
+    }
+
+    return fetchReal(url, opcoes);
 };
 </script>
 <script type="module">
 const html = await (await fetch('./dist/index.html')).text();
 
-document.body.insertAdjacentHTML('beforeend', html.replace(/[\s\S]*<body>/, '').replace(/<\/body>[\s\S]*/, '').replace(/<script[\s\S]*?<\/script>/g, ''));
+document.body.insertAdjacentHTML('beforeend', html.replace(/[\s\S]*<body[^>]*>/, '').replace(/<\/body>[\s\S]*/, '').replace(/<script[\s\S]*?<\/script>/g, ''));
+document.body.className = (html.match(/<body class="([^"]*)"/) ?? [, ''])[1];
 
 const folha = document.createElement('link');
 folha.rel = 'stylesheet';

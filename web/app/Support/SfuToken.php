@@ -26,6 +26,30 @@ final class SfuToken
     }
 
     /**
+     * Sala avulsa, sem conta por trás.
+     *
+     * O `sub` é sorteado a cada entrada porque não existe usuário para identificar — e
+     * é ele que o SFU usa como id do participante. Fixá-lo pelo nome faria duas pessoas
+     * chamadas "Edsu" derrubarem uma à outra da sala.
+     *
+     * `server` recebe o próprio código: é por ele que a presença agrupa os canais, e
+     * aqui a sala e o "servidor" são a mesma coisa.
+     */
+    public function issueGuest(string $room, string $name): string
+    {
+        return $this->sign([
+            'sub' => 'guest-'.bin2hex(random_bytes(8)),
+            'name' => $name,
+            'avatar' => null,
+            'room' => $room,
+            'server' => $room,
+            'role' => 'member',
+            'iat' => time(),
+            'exp' => time() + self::TTL_SECONDS,
+        ]);
+    }
+
+    /**
      * Presence-only token: lets you track who is in the voice channels of the
      * server without joining any of them.
      */
