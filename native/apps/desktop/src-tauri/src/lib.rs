@@ -47,7 +47,7 @@ struct DisplayInfo {
 
 #[derive(Serialize)]
 struct WindowInfo {
-    id: u32,
+    id: u64,
     title: String,
     application: String,
 }
