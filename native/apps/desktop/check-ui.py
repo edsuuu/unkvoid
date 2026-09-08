@@ -12,7 +12,9 @@ BASE = pathlib.Path(__file__).parent / 'ui'
 
 html = (BASE / 'index.html').read_text()
 css = (BASE / 'style.css').read_text()  # noqa: F841 — mantido para as cores do tema
-js = '\n'.join((BASE / f).read_text() for f in ['api.js', 'app.js', 'p2p.js'])
+# Todo o JavaScript da interface, sem lista fixa: um arquivo novo entra na conferencia
+# sozinho, e um que sai nao quebra o proprio verificador.
+js = '\n'.join(caminho.read_text() for caminho in sorted((BASE).glob('*.js')))
 
 ids_html = set(re.findall(r'id="([^"]+)"', html))
 dados_html = set(re.findall(r'\b(data-[a-z-]+)', html))
