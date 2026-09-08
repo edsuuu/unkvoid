@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "check": "python3 check-ui.py && node check-deeplink.mjs && node check-clock.mjs && node ../../../web/resources/js/voice/MicrophoneGate.check.mjs && node ../../../web/resources/js/voice/icons.check.mjs",
+    "check": "python3 check-ui.py && node check-deeplink.mjs && node check-clock.mjs && node check-broadcast.mjs && node ../../../web/resources/js/voice/MicrophoneGate.check.mjs && node ../../../web/resources/js/voice/icons.check.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -3,7 +3,7 @@ import { PresenceClient } from '@voice/PresenceClient.js';
 import { SfuClient } from '@voice/SfuClient.js';
 
 import { Api } from './api.js';
-import { P2P } from './p2p.js';
+import { Broadcast } from './broadcast.js';
 
 const el = id => document.getElementById(id);
 
@@ -71,7 +71,7 @@ class App {
         this.voice = null;
         this.voiceChannel = null;
         this.sfu = null;
-        this.p2p = null;
+        this.broadcast = null;
         this.participants = [];
 
         // O convite da presença vem por Bearer, e não por sessão do navegador: é a
@@ -792,14 +792,13 @@ class App {
             // A lista embaixo do canal acompanha quem entra e sai, sem F5.
             this.sfu.addEventListener('peersChanged', () => this.refreshParticipants());
 
-            this.p2p = new P2P(this.sfu, (from, stream) => this.showScreen(from, stream));
+            this.broadcast = new Broadcast(this.sfu);
 
             const joined = await this.sfu.connect(
                 this.voice.url,
                 async () => (await this.api.voiceToken(channel.id)).token,
             );
 
-            await this.p2p.attach();
 
             this.participants = joined.peers.map(peer => peer.peerId);
 
@@ -812,7 +811,7 @@ class App {
             await this.openMicrophone();
         } catch (failure) {
             el('my-state').textContent = `não deu para entrar na sala: ${failure.message}`;
-            this.p2p = null;
+            this.broadcast = null;
             this.sfu = null;
 
             return;
@@ -877,7 +876,7 @@ class App {
     }
 
     /**
-     * Voice goes through the SFU, not P2P: audio is cheap and the server already fans it
+     * Voice goes through the SFU: audio is cheap and the server already fans it
      * out to everyone in the room, so talking works with any number of people — while the
      * screen, which is expensive, stays direct between machines.
      */
@@ -920,7 +919,7 @@ class App {
                 return;
             }
 
-            // A web broadcaster publishes to the SFU, not P2P: this is how the desktop
+            // Toda transmissão publica no SFU, do app ou da web: é assim que o desktop
             // watches someone who is not using the app.
             this.showScreen(peerId, new MediaStream([consumer.track]));
         } catch (failure) {
@@ -1031,8 +1030,7 @@ class App {
         this.mutedShown = null;
         await this.sfu?.leaveRoom();
         this.sfu?.disconnect();
-        this.p2p?.close();
-        this.p2p = null;
+        this.broadcast = null;
         this.sfu = null;
         this.voice = null;
         document.querySelectorAll('audio[data-remote]').forEach(elemento => elemento.remove());
@@ -1049,7 +1047,7 @@ class App {
      * `list_windows` são os mesmos que o macOS usa para montar o seletor dele.
      */
     async openShareModal() {
-        if (! this.p2p) {
+        if (! this.sfu) {
             el('my-state').textContent = 'entre num canal de voz primeiro';
 
             return;
@@ -1184,14 +1182,14 @@ class App {
     }
 
     async share() {
-        if (! this.p2p) {
+        if (! this.sfu) {
             el('my-state').textContent = 'entre num canal de voz primeiro';
 
             return;
         }
 
         try {
-            await this.p2p.broadcast(el('quality').value, this.shareSource, this.participants);
+            await this.broadcast.start(el('quality').value, this.shareSource);
 
             this.paintSharing(true);
             el('my-state').textContent = this.participants.length
@@ -1213,12 +1211,11 @@ class App {
         el('stop').hidden = ! on;
         el('live-note').hidden = ! on;
 
-        this.p2p?.announceState({ sharing: on });
         this.refreshParticipants();
     }
 
     async stopSharing() {
-        const frames = await this.p2p?.stop().catch(() => 0);
+        const frames = await this.broadcast?.stop().catch(() => 0);
 
         this.paintSharing(false);
 
