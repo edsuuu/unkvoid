@@ -35,7 +35,9 @@ pub struct Display {
 /// A specific window. Sharing a window avoids showing what should remain private.
 #[derive(Debug, Clone)]
 pub struct Window {
-    pub id: u32,
+    /// Identificador do sistema. É `u64` porque no Windows ele é um `HWND`, que é um
+    /// ponteiro — no macOS é um `CGWindowID` de 32 bits e sobra espaço.
+    pub id: u64,
     pub title: String,
     pub application: String,
 }
@@ -74,7 +76,7 @@ pub enum CaptureSource {
     #[default]
     PrimaryDisplay,
     Display(u32),
-    Window(u32),
+    Window(u64),
 }
 
 #[derive(Debug, Clone)]

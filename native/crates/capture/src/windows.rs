@@ -11,9 +11,52 @@ use windows_capture::settings::{
 };
 use windows_capture::window::Window as CaptureWindow;
 
-use crate::{CaptureConfig, CaptureError, CaptureEvent, Display, VideoFrame, Window};
+use crate::{
+    CaptureConfig, CaptureError, CaptureEvent, CaptureSource, Display, VideoFrame, Window,
+};
 
 type EventSink = Arc<dyn Fn(CaptureEvent) + Send + Sync>;
+
+/// `HWND` é ponteiro, e o identificador que atravessa a interface é número. A Microsoft
+/// garante que handles cabem em 32 bits com sinal estendido justamente para poderem
+/// atravessar fronteiras de 32/64 bits, então a ida e a volta são seguras — e só valem
+/// dentro deste processo, que é onde a escolha é feita e usada.
+fn hwnd_para_id(hwnd: *mut std::ffi::c_void) -> u64 {
+    hwnd as usize as u64
+}
+
+fn id_para_hwnd(id: u64) -> *mut std::ffi::c_void {
+    id as usize as *mut std::ffi::c_void
+}
+
+/// Liga a captura no alvo escolhido. Genérica porque monitor e janela são tipos
+/// distintos para o `windows-capture`, mas produzem o mesmo controle.
+fn iniciar<T>(
+    alvo: T,
+    config: &CaptureConfig,
+    sink: EventSink,
+    frames: Arc<AtomicU64>,
+) -> Result<windows_capture::capture::CaptureControl<Sink, CaptureFailure>, CaptureError>
+where
+    T: TryInto<windows_capture::settings::GraphicsCaptureItemType> + Send + 'static,
+{
+    let settings = Settings::new(
+        alvo,
+        if config.show_cursor {
+            CursorCaptureSettings::WithCursor
+        } else {
+            CursorCaptureSettings::WithoutCursor
+        },
+        DrawBorderSettings::WithoutBorder,
+        SecondaryWindowSettings::Default,
+        MinimumUpdateIntervalSettings::Default,
+        DirtyRegionSettings::Default,
+        ColorFormat::Bgra8,
+        (sink, frames),
+    );
+
+    Sink::start_free_threaded(settings).map_err(|error| CaptureError::Platform(error.to_string()))
+}
 
 /// Capture via Windows Graphics Capture. Requires Windows 10 1903 or newer.
 pub struct WindowsCapturer {
@@ -111,7 +154,9 @@ impl WindowsCapturer {
                 let title = window.title().ok()?;
 
                 (!title.is_empty()).then(|| Window {
-                    id: 0,
+                    // O HWND é a identidade. Antes vinha `0` para todas, e escolher a
+                    // segunda janela da lista transmitia a primeira — ou o monitor.
+                    id: hwnd_para_id(window.as_raw_hwnd()),
                     application: window.process_name().unwrap_or_default(),
                     title,
                 })
@@ -123,27 +168,35 @@ impl WindowsCapturer {
     where
         F: Fn(CaptureEvent) + Send + Sync + 'static,
     {
-        let monitor = Monitor::primary().map_err(|_| CaptureError::NoDisplay)?;
         let frames = Arc::new(AtomicU64::new(0));
         let sink: EventSink = Arc::new(on_event);
 
-        let settings = Settings::new(
-            monitor,
-            if config.show_cursor {
-                CursorCaptureSettings::WithCursor
-            } else {
-                CursorCaptureSettings::WithoutCursor
-            },
-            DrawBorderSettings::WithoutBorder,
-            SecondaryWindowSettings::Default,
-            MinimumUpdateIntervalSettings::Default,
-            DirtyRegionSettings::Default,
-            ColorFormat::Bgra8,
-            (sink, frames.clone()),
-        );
+        // Monitor e janela são tipos diferentes, mas `iniciar` é genérico e devolve o
+        // mesmo controle para os dois.
+        let control = match config.source {
+            // Quem escolheu compartilhar só o jogo não pode ter o e-mail junto: antes
+            // isto era ignorado e ia sempre o monitor principal inteiro.
+            CaptureSource::Window(id) => {
+                let janela = CaptureWindow::from_raw_hwnd(id_para_hwnd(id));
 
-        let control = Sink::start_free_threaded(settings)
-            .map_err(|error| CaptureError::Platform(error.to_string()))?;
+                // A janela pode ter sido fechada entre escolher e transmitir.
+                if !janela.is_valid() {
+                    return Err(CaptureError::NoDisplay);
+                }
+
+                iniciar(janela, config, sink, frames.clone())?
+            }
+            source => {
+                let monitor = match source {
+                    // `displays()` numera a partir de zero; `from_index` conta de um.
+                    CaptureSource::Display(index) => Monitor::from_index(index as usize + 1),
+                    _ => Monitor::primary(),
+                }
+                .map_err(|_| CaptureError::NoDisplay)?;
+
+                iniciar(monitor, config, sink, frames.clone())?
+            }
+        };
 
         Ok(Self {
             control: Some(control),
