@@ -128,7 +128,7 @@ impl MacCapturer {
             .into_iter()
             .filter(|window| window.title().is_some_and(|title| !title.is_empty()))
             .map(|window| Window {
-                id: window.window_id(),
+                id: u64::from(window.window_id()),
                 title: window.title().unwrap_or_default(),
                 application: window
                     .owning_application()
@@ -158,7 +158,7 @@ impl MacCapturer {
                 let window = content
                     .windows()
                     .into_iter()
-                    .find(|window| window.window_id() == id)
+                    .find(|window| u64::from(window.window_id()) == id)
                     .ok_or(CaptureError::NoDisplay)?;
 
                 SCContentFilter::create().with_window(&window).build()
@@ -219,7 +219,7 @@ impl MacCapturer {
                 let window = content
                     .windows()
                     .into_iter()
-                    .find(|window| window.window_id() == id)
+                    .find(|window| u64::from(window.window_id()) == id)
                     .ok_or(CaptureError::NoDisplay)?;
 
                 SCContentFilter::create().with_window(&window).build()
