@@ -1,5 +1,12 @@
 # Unkvoid — arquitetura
 
+> ⚠️ **Desatualizado desde 07/09/2026.** Este documento descreve o modelo antigo —
+> conta, servidor, canal, chat e microfone. O app virou outra coisa: um nome, uma sala
+> por código, e só compartilhamento de tela. O que continua valendo aqui é a parte de
+> **mídia** (SFU, mediasoup, captura nativa, encoder); o resto é história.
+>
+> Para o que o projeto é hoje, veja [CONTINUIDADE.md](CONTINUIDADE.md).
+
 O que cada peça faz e **por que ela existe**. Para o estado do trabalho (o que falta, as
 armadilhas já pagas, o deploy), veja [CONTINUIDADE.md](CONTINUIDADE.md).
 
