@@ -10,6 +10,14 @@ const PROFILES = {
 
 export class SfuClient extends EventTarget {
     /**
+     * Quanto esperar por uma resposta do servidor de mídia.
+     *
+     * Generoso de propósito: 10s cobre uma rede ruim sem transformar lentidão em erro,
+     * e ainda assim não deixa nada pendurado.
+     */
+    static REQUEST_TIMEOUT_MS = 10_000;
+
+    /**
      * Qual implementação de WebRTC o mediasoup-client deve usar.
      *
      * Ele descobre isso farejando o user-agent, e o WKWebView do app **não põe o token
@@ -173,12 +181,38 @@ export class SfuClient extends EventTarget {
         }
     }
 
+    /**
+     * Uma requisição ao servidor de mídia.
+     *
+     * O prazo não é zelo: sem ele, um pedido que o servidor não responde fica pendurado
+     * para sempre com o socket aberto. Quando isso acontece com o `leave`, o
+     * `leaveVoice` trava antes do `disconnect()`, o socket segue vivo, e para todo mundo
+     * — inclusive para a web — você continua na sala. Não são os 45s de carência: é
+     * para sempre. Cair fora é melhor do que virar fantasma.
+     */
     request(action, data = {}) {
         const id = this.nextRequestId++;
 
         return new Promise((resolve, reject) => {
-            this.pending.set(id, { resolve, reject });
-            this.socket.send(JSON.stringify({ id, action, data }));
+            const prazo = setTimeout(() => {
+                this.pending.delete(id);
+                reject(new Error(`o servidor não respondeu a "${action}"`));
+            }, SfuClient.REQUEST_TIMEOUT_MS);
+
+            const encerrar = fim => valor => {
+                clearTimeout(prazo);
+                fim(valor);
+            };
+
+            this.pending.set(id, { resolve: encerrar(resolve), reject: encerrar(reject) });
+
+            try {
+                this.socket.send(JSON.stringify({ id, action, data }));
+            } catch (falha) {
+                clearTimeout(prazo);
+                this.pending.delete(id);
+                reject(falha);
+            }
         });
     }
 
