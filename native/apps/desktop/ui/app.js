@@ -1,4 +1,5 @@
 import { MicrophoneGate } from '@voice/MicrophoneGate.js';
+import { PresenceClient } from '@voice/PresenceClient.js';
 import { SfuClient } from '@voice/SfuClient.js';
 
 import { Api } from './api.js';
@@ -72,6 +73,11 @@ class App {
         this.sfu = null;
         this.p2p = null;
         this.participants = [];
+
+        // O convite da presença vem por Bearer, e não por sessão do navegador: é a
+        // única coisa que o app faz diferente da web aqui.
+        this.presence = new PresenceClient(id => this.api.presenceToken(id));
+        this.presence.addEventListener('presence', event => this.drawPresence(event.detail));
 
         this.mic = new MicrophoneGate(state => this.paintMicrophone(state));
         this.micDenied = false;
@@ -498,6 +504,40 @@ class App {
         }
     }
 
+    /**
+     * Quem está em cada canal de voz, direto do servidor.
+     *
+     * Vale para **todos** os canais, não só o seu. É por isto que você vê quem está numa
+     * conversa antes de entrar nela, e continua vendo quem ficou — mudo, surdo ou
+     * transmitindo — depois de sair. A lista da sua própria conexão morre junto com ela;
+     * esta não.
+     */
+    drawPresence(channels) {
+        for (const [channelId, presenca] of Object.entries(channels)) {
+            this.drawParticipants(channelId, presenca.members.map(pessoa => this.withMyState(pessoa)));
+        }
+
+        // Canal que esvaziou não vem na carga. Sem isto a lista velha ficava na tela.
+        for (const lista of document.querySelectorAll('[data-participants]')) {
+            if (! channels[lista.dataset.participants]) {
+                this.drawParticipants(lista.dataset.participants, []);
+            }
+        }
+
+        for (const [id, falando] of this.speaking) {
+            this.paintSpeaking(id, falando);
+        }
+    }
+
+    /** O seu estado é local e instantâneo; o que volta do servidor chega depois. */
+    withMyState(pessoa) {
+        const eu = pessoa.peerId === this.sfu?.peerId
+            ? { muted: this.mic.muted, deafened: this.deafened, sharing: this.sharing }
+            : {};
+
+        return { ...pessoa, ...eu, id: pessoa.peerId };
+    }
+
     /** Borda verde no avatar de quem está falando, como no Discord. */
     paintSpeaking(peerId, falando) {
         this.speaking.set(peerId, falando);
@@ -581,6 +621,11 @@ class App {
         el('empty').hidden = true;
         this.drawServerRail();
         this.drawChannels();
+
+        // Quem está em cada canal de voz vem do servidor, não da sua própria conexão
+        // com a sala: é isto que faz você continuar vendo quem ficou depois de sair da
+        // chamada — e ver quem está lá antes mesmo de entrar.
+        void this.presence.watch(id).catch(() => {});
 
         const text = this.server.channels.find(channel => channel.type === 'text');
 
@@ -904,7 +949,7 @@ class App {
         el('deafen').classList.toggle('text-danger', this.deafened);
         el('deafen').title = this.deafened ? 'Ouvir a sala de novo' : 'Silenciar o áudio da sala';
 
-        this.p2p?.announceState({ deafened: this.deafened });
+        this.sfu?.reportState(this.mic.muted, this.deafened);
         this.refreshParticipants();
     }
 
@@ -943,7 +988,7 @@ class App {
         // por segundo, e redesenhar a sala nesse ritmo é um piscar constante.
         if (muted !== this.mutedShown) {
             this.mutedShown = muted;
-            this.p2p?.announceState({ muted });
+            this.sfu?.reportState(muted, this.deafened);
             this.refreshParticipants();
         }
 

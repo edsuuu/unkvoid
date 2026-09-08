@@ -59,6 +59,16 @@ export class Request {
         return value as T;
     }
 
+    protected boolean(key: string): boolean {
+        const value = this.data[key];
+
+        if (typeof value !== 'boolean') {
+            throw new ValidationException(`field ${key} must be true or false`);
+        }
+
+        return value;
+    }
+
     protected integerOrNull(key: string): number | undefined {
         const value = this.data[key];
 

@@ -162,6 +162,15 @@ export class SfuClient extends EventTarget {
             }
         }
 
+        if (event === 'peerState') {
+            const peer = this.peers.get(data.peerId);
+
+            if (peer) {
+                peer.muted = data.muted;
+                peer.deafened = data.deafened;
+            }
+        }
+
         if (event === 'newProducer' && data.source === 'screen') {
             this.markSharing(data.peerId, true);
         }
@@ -171,6 +180,27 @@ export class SfuClient extends EventTarget {
         }
 
         this.emit('peersChanged', [...this.peers.entries()]);
+    }
+
+    /**
+     * Conta ao servidor que você está mudo (ou não).
+     *
+     * Mutar não fecha o producer — o áudio é cortado antes de sair — então ninguém
+     * descobre sozinho. Vai pelo servidor, e não de par em par, porque quem está fora do
+     * canal também precisa ver o ícone, e quem sai da chamada continua vendo quem ficou.
+     *
+     * Falhar aqui não pode derrubar nada: no pior caso o ícone de alguém fica velho.
+     */
+    reportState(muted, deafened) {
+        const eu = this.peers.get(this.peerId);
+
+        if (eu) {
+            eu.muted = muted;
+            eu.deafened = deafened;
+            this.emit('peersChanged', [...this.peers.entries()]);
+        }
+
+        return this.request('state', { muted, deafened }).catch(() => {});
     }
 
     markSharing(peerId, sharing) {

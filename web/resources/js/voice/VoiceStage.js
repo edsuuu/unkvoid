@@ -1,6 +1,7 @@
 import { MicrophoneGate } from './MicrophoneGate.js';
 import { PresenceClient } from './PresenceClient.js';
 import { SfuClient } from './SfuClient.js';
+import { stateBadges } from './icons.js';
 
 const ICONS = {
     audioOn: '<svg viewBox="0 0 24 24" fill="currentColor" class="size-4"><path d="M11.38 3.08A1 1 0 0 1 12 4v16a1 1 0 0 1-1.71.71L5.59 16H3a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1h2.59l4.7-4.71a1 1 0 0 1 1.09-.21zM16.5 7.5a1 1 0 0 1 1.41 0 6 6 0 0 1 0 8.49 1 1 0 1 1-1.41-1.42 4 4 0 0 0 0-5.65 1 1 0 0 1 0-1.42z"/></svg>',
@@ -26,6 +27,9 @@ export class VoiceStage {
         this.focused = null;
         this.bytesMark = new Map();
         this.presenceState = null;
+
+        /** Último `muted` já contado ao servidor — o medidor pinta 20x por segundo. */
+        this.mutedShown = null;
         this.reconnectDeadlines = new Map();
         this.mic = new MicrophoneGate(state => this.paintMicrophone(state));
         this.escapeHandler = event => {
@@ -107,9 +111,11 @@ export class VoiceStage {
                         ${member.avatar ? `<img src="${member.avatar}" alt="" class="size-6 object-cover">` : member.name.slice(0, 2).toUpperCase()}
                     </span>
                     <span class="truncate">${member.name}</span>
+                    <span class="ml-auto"></span>
+                    ${stateBadges(member)}
                     ${member.sharing ? `<button type="button" data-watch="${member.screenProducerId ?? ''}"
                         title="Watch broadcast"
-                        class="ml-auto flex shrink-0 cursor-pointer items-center gap-1 rounded bg-[#f23f43] px-1.5 py-0.5 text-[10px] font-bold uppercase leading-none text-white transition hover:bg-[#a12828]">
+                        class="flex shrink-0 cursor-pointer items-center gap-1 rounded bg-[#f23f43] px-1.5 py-0.5 text-[10px] font-bold uppercase leading-none text-white transition hover:bg-[#a12828]">
                         <span class="size-1.5 rounded-full bg-white"></span>live
                     </button>` : ''}
                 </div>
@@ -794,6 +800,16 @@ export class VoiceStage {
             meter.style.width = `${MicrophoneGate.toFraction(db) * 100}%`;
             meter.classList.toggle('bg-[#23a55a]', transmitting);
             meter.classList.toggle('bg-[#4e5058]', ! transmitting);
+        }
+
+        // Só quando muda de verdade: isto roda a cada quadro de áudio, e avisar o
+        // servidor vinte vezes por segundo seria pura conversa fiada.
+        //
+        // `deafened` vai sempre falso porque na web silenciar é por transmissão, no
+        // botão de cada tela — não existe um surdo geral como no app.
+        if (muted !== this.mutedShown) {
+            this.mutedShown = muted;
+            this.client?.reportState(muted, false);
         }
     }
 

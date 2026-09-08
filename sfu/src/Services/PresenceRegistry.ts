@@ -2,7 +2,7 @@ import type { WebSocket } from 'ws';
 
 type Watcher = { socket: WebSocket; serverId: string };
 
-type Membro = { name: string; avatar: string | null; joinedAt: number; sharing: boolean; screenProducerId: string | null; reconnecting: boolean };
+type Membro = { name: string; avatar: string | null; joinedAt: number; sharing: boolean; screenProducerId: string | null; reconnecting: boolean; muted: boolean; deafened: boolean };
 
 type ChannelPresence = {
     members: ({ peerId: string } & Membro)[];
@@ -71,6 +71,10 @@ export class PresenceRegistry {
             sharing: previous?.sharing ?? false,
             screenProducerId: previous?.screenProducerId ?? null,
             reconnecting: false,
+            // Entra mudo, como o app faz. Reconectar não pode reabrir o microfone de
+            // quem tinha fechado — por isso o estado anterior manda quando existe.
+            muted: previous?.muted ?? true,
+            deafened: previous?.deafened ?? false,
         });
         this.channels.set(channelId, members);
         this.publish(channelId);
@@ -87,6 +91,26 @@ export class PresenceRegistry {
         member.sharing = sharing;
         // The producer ID is included so someone who closed the broadcast can reopen it.
         member.screenProducerId = sharing ? screenProducerId : null;
+        this.publish(channelId);
+    }
+
+    /**
+     * Microfone e áudio mudos.
+     *
+     * Isto é estado de cliente — mutar não fecha o producer, só corta o áudio antes de
+     * sair. O servidor não tem como descobrir sozinho, então quem muda avisa. E precisa
+     * ficar aqui, e não só na sala: quem está fora do canal também vê os ícones, e quem
+     * sai da chamada continua vendo quem ficou.
+     */
+    setState(channelId: string, peerId: string, muted: boolean, deafened: boolean): void {
+        const member = this.channels.get(channelId)?.get(peerId);
+
+        if (! member || (member.muted === muted && member.deafened === deafened)) {
+            return;
+        }
+
+        member.muted = muted;
+        member.deafened = deafened;
         this.publish(channelId);
     }
 

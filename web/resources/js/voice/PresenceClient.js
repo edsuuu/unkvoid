@@ -1,6 +1,30 @@
 export class PresenceClient extends EventTarget {
-    constructor() {
+    /**
+     * Pede o convite da presença ao servidor: `{ url, token }`.
+     *
+     * A web fala por sessão e CSRF; o app fala por Bearer contra outro domínio. É a
+     * única diferença entre os dois, então é a única coisa que se injeta — o resto do
+     * socket, da reconexão e do desenho é igual nos dois.
+     */
+    static async webTicket(serverId) {
+        const response = await fetch(`/api/servidores/${serverId}/presenca`, {
+            method: 'POST',
+            headers: {
+                'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]')?.content ?? '',
+                Accept: 'application/json',
+            },
+        });
+
+        if (!response.ok) {
+            throw new Error(`presence rejected (${response.status})`);
+        }
+
+        return response.json();
+    }
+
+    constructor(ticket = PresenceClient.webTicket) {
         super();
+        this.ticket = ticket;
         this.socket = null;
         this.serverId = null;
         this.closedByUs = false;
@@ -37,19 +61,7 @@ export class PresenceClient extends EventTarget {
     }
 
     async open() {
-        const response = await fetch(`/api/servidores/${this.serverId}/presenca`, {
-            method: 'POST',
-            headers: {
-                'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]')?.content ?? '',
-                Accept: 'application/json',
-            },
-        });
-
-        if (!response.ok) {
-            throw new Error(`presence rejected (${response.status})`);
-        }
-
-        const { url, token } = await response.json();
+        const { url, token } = await this.ticket(this.serverId);
 
         await new Promise((resolve, reject) => {
             this.socket = new WebSocket(url);

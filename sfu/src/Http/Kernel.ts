@@ -10,6 +10,7 @@ import { PresenceController } from './Controllers/PresenceController.js';
 import { ModerationController } from './Controllers/ModerationController.js';
 import { ProducerController } from './Controllers/ProducerController.js';
 import { SignalController } from './Controllers/SignalController.js';
+import { StateController } from './Controllers/StateController.js';
 import { TransportController } from './Controllers/TransportController.js';
 import { routes } from './routes.js';
 import type { Session } from '../types.js';
@@ -25,6 +26,7 @@ export class Kernel {
             transport: new TransportController(),
             producer: new ProducerController(presence),
             signal: new SignalController(),
+            state: new StateController(presence),
             consumer: new ConsumerController(),
             moderation: new ModerationController((roomId, peerId) => presence.setSharing(roomId, peerId, false)),
         });
