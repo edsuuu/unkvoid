@@ -64,6 +64,7 @@ class App {
         this.shareSource = null;
         this.shareSources = null;
         this.previewTimers = new Set();
+        this.mediaStatsTimers = new Map();
 
         /** Grade mostra todos do mesmo tamanho; foco dá a tela toda a um só. */
         this.focused = null;
@@ -375,6 +376,8 @@ class App {
                 this.focused = null;
             }
 
+            clearInterval(this.mediaStatsTimers.get(from));
+            this.mediaStatsTimers.delete(from);
             this.paintLayout();
 
             return;
@@ -386,6 +389,7 @@ class App {
         quadro.innerHTML = '<video class="min-h-0 w-full flex-1 bg-black object-contain" autoplay playsinline></video>'
             + '<figcaption class="flex items-center gap-2 bg-panel px-3 py-1.5 text-xs text-ink">'
             + '<span class="truncate"></span>'
+            + '<span class="text-ink-dim" data-media-stats>ping -- · buffer -- · fps --</span>'
             + '<span class="flex-1"></span>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-focus type="button">Focar</button>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-fullscreen type="button">Tela cheia</button>'
@@ -400,7 +404,56 @@ class App {
             el('stage').appendChild(quadro);
         }
 
+        this.startMediaStats(from, quadro.querySelector('video'));
         this.paintLayout();
+    }
+
+    startMediaStats(peerId, video) {
+        clearInterval(this.mediaStatsTimers.get(peerId));
+
+        let frames = 0;
+        let lastFrames = 0;
+        let lastSample = performance.now();
+        const atualizar = () => {
+            const quadro = document.querySelector(`[data-screen="${peerId}"]`);
+            const stats = quadro?.querySelector('[data-media-stats]');
+
+            if (! quadro || ! stats) {
+                clearInterval(this.mediaStatsTimers.get(peerId));
+                this.mediaStatsTimers.delete(peerId);
+
+                return;
+            }
+
+            const agora = performance.now();
+            const decorrido = Math.max(agora - lastSample, 1);
+            const buffer = video.buffered.length
+                ? Math.max(0, video.buffered.end(video.buffered.length - 1) - video.currentTime)
+                : 0;
+            const fps = Math.round((frames - lastFrames) * 1000 / decorrido);
+
+            stats.textContent = `ping ${this.sfu?.lastRttMs ?? '--'} ms · buffer ${buffer.toFixed(1)} s · fps ${fps}`;
+            lastFrames = frames;
+            lastSample = agora;
+        };
+
+        const contarFrame = () => {
+            frames += 1;
+            if ('requestVideoFrameCallback' in video) {
+                video.requestVideoFrameCallback(contarFrame);
+            }
+        };
+
+        if ('requestVideoFrameCallback' in video) {
+            video.requestVideoFrameCallback(contarFrame);
+        } else {
+            const contar = () => { frames += 1; };
+            video.addEventListener('timeupdate', contar);
+        }
+
+        const timer = setInterval(atualizar, 1000);
+        this.mediaStatsTimers.set(peerId, timer);
+        atualizar();
     }
 
     /** Uma tela ocupando tudo, ou de volta para a grade. */
