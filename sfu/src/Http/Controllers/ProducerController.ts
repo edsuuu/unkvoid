@@ -8,6 +8,8 @@ import type { ProducerRequest } from '../Requests/ProducerRequest.js';
 import { PlainProducerResource } from '../Resources/PlainProducerResource.js';
 import { StatusResource } from '../Resources/StatusResource.js';
 
+const MEDIA_IDLE_MS = 30_000;
+
 export class ProducerController {
     /**
      * A transmissão chega como RTP puro, não por WebRTC. É assim que o app alcança mais
@@ -32,17 +34,11 @@ export class ProducerController {
     /** Registra o producer e conta para a sala. É isto que acende o "ao vivo" dos outros. */
     private announce(peer: Peer, room: Room, producer: Producer, source: SourceName): void {
         peer.addProducer(producer, source);
-        producer.on('transportclose', () => {
-            if (! peer.producers.delete(producer.id)) {
-                return;
-            }
+        let idleTimer = setTimeout(() => this.close(peer, room, producer), MEDIA_IDLE_MS);
 
-            room.broadcast('producerClosed', {
-                peerId: peer.id,
-                producerId: producer.id,
-                kind: producer.kind,
-                source: String(producer.appData.source),
-            }, peer.id);
+        producer.on('transportclose', () => {
+            clearTimeout(idleTimer);
+            peer.producers.delete(producer.id);
         });
 
         // O producer é declarado antes de um único pacote chegar, então até o score subir
@@ -59,6 +55,15 @@ export class ProducerController {
             peer.send('producerActive', { producerId: producer.id });
         });
 
+        producer.on('score', scores => {
+            if (! scores.some(entry => entry.score > 0)) {
+                return;
+            }
+
+            clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => this.close(peer, room, producer), MEDIA_IDLE_MS);
+        });
+
         room.broadcast('newProducer', {
             peerId: peer.id,
             name: peer.name,
@@ -69,24 +74,27 @@ export class ProducerController {
     }
 
     destroy(request: ProducerRequest): StatusResource {
-        const peer = request.peer();
-        const producer = peer.producers.get(request.producerId());
-
-        if (producer) {
-            producer.close();
-            peer.producers.delete(producer.id);
-            request.room().broadcast('producerClosed', {
-                peerId: peer.id,
-                producerId: producer.id,
-                kind: producer.kind,
-                source: String(producer.appData.source),
-            }, peer.id);
-
-            if (peer.producers.size === 0) {
-                peer.closePlainTransports();
-            }
-        }
+        this.close(request.peer(), request.room(), request.peer().producers.get(request.producerId()));
 
         return new StatusResource('closed');
+    }
+
+    private close(peer: Peer, room: Room, producer: Producer | undefined): void {
+        if (! producer || peer.producers.get(producer.id) !== producer) {
+            return;
+        }
+
+        producer.close();
+        peer.producers.delete(producer.id);
+        room.broadcast('producerClosed', {
+            peerId: peer.id,
+            producerId: producer.id,
+            kind: producer.kind,
+            source: String(producer.appData.source),
+        }, peer.id);
+
+        if (peer.producers.size === 0) {
+            peer.closePlainTransports();
+        }
     }
 }
