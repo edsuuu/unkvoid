@@ -4,6 +4,40 @@
 > O [README.md](README.md) diz o que o projeto é e como buildar. Este arquivo diz **onde
 > a coisa parou**, o que está provado, o que só compila, e o que ainda não existe.
 
+## Atualização de 09/09/2026 — controles da transmissão
+
+Foi publicada a correção no commit `90703f2`:
+
+- O controle de volume agora fica no mesmo grupo dos botões **Focar** e
+  **Tela cheia**, separado por transmissão.
+- O botão **Tela cheia** tenta, nesta ordem, o card da transmissão, o
+  elemento de vídeo e o fallback `webkitEnterFullscreen`, usado por alguns
+  WebViews/Tauri.
+- Quando o ambiente não suporta fullscreen ou a chamada falha, o erro é
+  registrado e exibido na interface em vez de falhar silenciosamente.
+
+Validações concluídas:
+
+- `npm run check`
+- `npm run build`
+- `node --check native/apps/desktop/ui/app.js`
+- `git diff --check`
+
+Também foi gerado um novo build Windows com NSIS e MSI. Os arquivos foram
+copiados para:
+
+```text
+C:\Users\edsu\Desktop\apps\Unkvoid_0.0.2_x64-setup.exe
+C:\Users\edsu\Desktop\apps\Unkvoid_0.0.2_x64_pt-BR.msi
+```
+
+O build gera os instaladores normalmente, mas termina com aviso/erro ao tentar
+criar artefatos do updater porque `TAURI_SIGNING_PRIVATE_KEY` ainda não está
+configurada. Portanto, os instaladores podem ser testados manualmente; a
+atualização automática só ficará completa depois que a chave privada de
+assinatura for configurada e os artefatos `.sig`/`latest.json` forem
+publicados.
+
 ## O objetivo, para não se perder
 
 Compartilhar a tela **sem perder fps no jogo**. Todo o resto é consequência disso.
