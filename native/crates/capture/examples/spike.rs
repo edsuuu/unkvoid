@@ -1,10 +1,10 @@
 //! Native capture spike.
 //!
-//! Same logic as the web spike: prove the riskiest part before building on it.
-//! The question here is whether native capture reliably provides frames and system
-//! audio without a browser bar or WKWebView's limit.
+//! A mesma ideia da sondagem web: provar a parte mais arriscada antes de construir em
+//! cima dela. A pergunta aqui é se a captura nativa entrega quadros e som do sistema de
+//! forma confiável, sem barra de navegador e sem o limite do WKWebView.
 //!
-//! Run with: cargo run -p capture --example spike -- [720|1080|1440] [seconds]
+//! Rode com: cargo run -p capture --example spike -- [720|1080|1440] [segundos]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};

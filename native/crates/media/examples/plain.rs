@@ -1,10 +1,10 @@
-//! Proves that the SFU actually receives what this side sends over plain RTP.
+//! Prova que o SFU recebe mesmo o que este lado manda por RTP puro.
 //!
-//! The unit tests already show that a frame becomes several protected packets on a real
-//! socket, but a packet that leaves is not a packet that is understood: the SSRC, the
-//! payload type and the SRTP key all have to match what the server was told. The only
-//! way to know is to ask the server, so this joins a room, declares the broadcast, sends
-//! synthetic H.264, and waits for the server to say it is receiving.
+//! Os testes de unidade já mostram que um quadro vira vários pacotes protegidos num
+//! socket, mas pacote que sai não é pacote entendido: o SSRC, o tipo de payload e a
+//! chave SRTP têm de bater com o que o servidor recebeu. O único jeito de saber é
+//! perguntar a ele, então isto entra numa sala, declara a transmissão, manda H.264 de
+//! mentira e espera o servidor dizer que está recebendo.
 //!
 //! cargo run -p media --example plain -- <ws-url> <sala>
 //!
@@ -18,7 +18,7 @@ use media::{EncodedFrame, PlainSender};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
-/// A NAL unit big enough to be split, so fragmentation is exercised too.
+/// Uma unidade NAL grande o bastante para ser quebrada, exercitando a fragmentação.
 fn frame(keyframe: bool, size: usize) -> EncodedFrame {
     let mut data = vec![0, 0, 0, 1, if keyframe { 0x65 } else { 0x41 }];
 
@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
             _ = tick.tick(), if sender.is_some() => {
                 let sender = sender.as_mut().expect("checked by the guard");
 
-                // A keyframe first: without it the server has nothing to score.
+                // Keyframe primeiro: sem ele o servidor não tem o que pontuar.
                 sender.send_frame(&frame(sent.is_multiple_of(60), 4_000), 30.0)?;
                 sent += 1;
             }
@@ -94,7 +94,7 @@ async fn main() -> Result<()> {
                     bail!("the SFU refused: {}", payload["error"]);
                 }
 
-                // The join reply is the first one with an id; ask for the ingest next.
+                // A resposta do join é a primeira com id; depois dela vem o ingest.
                 if payload["id"] == 1 {
                     println!("joined the room, declaring the broadcast…");
 
@@ -114,8 +114,8 @@ async fn main() -> Result<()> {
                         },
                     }))).await?;
 
-                    // Kept so the sender can be built with the same key once the server
-                    // answers with the address.
+                    // Guardada para montar o remetente com a mesma chave quando o
+                    // servidor responder com o endereço.
                     pending_key = Some(key);
 
                     continue;

@@ -1,7 +1,7 @@
-//! Bridge between the interface and native capture.
+//! A ponte entre a interface e a captura nativa.
 //!
-//! The interface never talks to the operating system: it calls these commands, and
-//! the `capture` crate handles what varies by platform.
+//! A interface nunca fala com o sistema operacional: ela chama estes comandos, e o
+//! crate `capture` cuida do que muda de plataforma para plataforma.
 
 mod broadcast;
 
@@ -130,7 +130,7 @@ async fn start_broadcast(
     Ok(())
 }
 
-/// What to send the server to open the plain ingest: codec, SSRC and the SRTP key.
+/// O que mandar ao servidor para abrir o ingest puro: codec, SSRC e a chave SRTP.
 #[tauri::command]
 async fn sfu_offer(
     state: State<'_, ActiveBroadcast>,
@@ -181,12 +181,12 @@ async fn broadcast_stats(state: State<'_, ActiveBroadcast>) -> Result<serde_json
         .unwrap_or_else(|| serde_json::json!({ "active": false })))
 }
 
-/// Checks for, downloads, and installs updates before opening the app — as Discord
-/// does. A network failure does not block startup: without a server the user cannot
-/// use the app anyway, but blocking on the update screen would be worse than warning them.
+/// Procura, baixa e instala a atualização antes de abrir o app, como o Discord faz.
+/// Falha de rede não impede a abertura: sem servidor a pessoa não usa o app de todo
+/// jeito, mas travar na tela de atualização seria pior do que avisar.
 ///
-/// The timeout is what keeps that promise: without it an endpoint that accepts the
-/// connection and never answers holds the splash screen until the OS gives up.
+/// O prazo é o que cumpre essa promessa: sem ele, um endereço que aceita a conexão e
+/// nunca responde segura a tela de abertura até o sistema desistir sozinho.
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_updater::UpdaterExt;

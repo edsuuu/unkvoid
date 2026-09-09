@@ -1,8 +1,8 @@
-//! Video encoding and transport.
+//! Codificação de vídeo e transporte.
 //!
-//! Encoding runs on the **media chip**, not the CPU: the frame leaves capture as a
-//! GPU buffer and goes directly to the encoder without a copy. This is what enables
-//! 1440p60 without overloading the broadcaster's machine.
+//! Quem codifica é o **chip de mídia**, não o processador: o quadro sai da captura como
+//! buffer de GPU e vai direto para o encoder, sem cópia. É isso que permite 1440p60 sem
+//! sobrecarregar a máquina de quem transmite.
 
 use capture::Quality;
 
@@ -36,7 +36,7 @@ pub type GpuSurface = capture::GpuSurface;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub type GpuSurface = ();
 
-/// An already-compressed frame, ready to become an RTP packet.
+/// Um quadro já comprimido, pronto para virar pacote RTP.
 pub struct EncodedFrame {
     pub data: Vec<u8>,
     pub keyframe: bool,
@@ -57,7 +57,7 @@ impl EncoderConfig {
     pub const FPS_MAX: u32 = 60;
 
     pub fn new(quality: Quality, frame_rate: u32) -> Self {
-        // Same values as the web app, where they have already been calibrated.
+        // Os mesmos valores do app web, onde já foram calibrados.
         let bitrate = match quality {
             Quality::Hd720 => 4_000_000,
             Quality::Hd1080 => 7_000_000,

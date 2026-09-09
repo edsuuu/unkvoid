@@ -14,13 +14,13 @@ export class RoomRegistry {
     private readonly slotByRoom = new Map<string, WorkerSlot>();
 
     /**
-     * A mediasoup worker is a separate, single-threaded C++ PROCESS — it saturates
-     * one core and stops. Node threads would not help: media never passes through
-     * JavaScript, only signaling does. Scaling here means one worker per core and
+     * Um worker do mediasoup é um PROCESSO C++ separado e de uma thread só — ele satura
+     * um núcleo e para por ali. Threads do Node não ajudariam: mídia nunca passa pelo
+     * JavaScript, só a sinalização passa. Escalar aqui é um worker por núcleo e
      * distribuir as salas entre eles.
      *
-     * Each worker needs its own media port because WebRtcServer is not
-     * shared between processes.
+     * Cada worker precisa da própria porta de mídia porque o WebRtcServer não é
+     * compartilhado entre processos.
      */
     async boot(): Promise<void> {
         for (let index = 0; index < config.workerCount; index += 1) {
@@ -54,7 +54,7 @@ export class RoomRegistry {
         console.log(`[INFO] ${this.slots.length} media workers on ports ${config.mediaPort}-${config.mediaPort + this.slots.length - 1} · plain RTP on ${config.plainPortBase}-${lastPlain}`);
     }
 
-    /** A new room goes to the worker with the fewest rooms. */
+    /** Sala nova vai para o worker com menos salas. */
     private leastLoadedSlot(): WorkerSlot {
         return this.slots.reduce((smallest, slot) => (slot.rooms < smallest.rooms ? slot : smallest));
     }

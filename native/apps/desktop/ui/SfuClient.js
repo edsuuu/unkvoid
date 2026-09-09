@@ -98,9 +98,9 @@ export class SfuClient extends EventTarget {
     }
 
     /**
-     * WebRTC media does not drop with signaling. So a socket drop is
-     * treated as a hiccup: it retries with backoff and, if the server still has the
-     * session, no one notices. If not, it republishes everything from scratch.
+     * A mídia do WebRTC não cai junto com a sinalização. Por isso um socket que cai é
+     * tratado como engasgo: tenta de novo com espera crescente e, se o servidor ainda
+     * tiver a sessão, ninguém percebe. Se não tiver, republica tudo do zero.
      */
     handleClose() {
         this.emit('diagnostic', { event: 'socket.close', data: { attempt: this.reconnectAttempt } });
@@ -311,8 +311,8 @@ export class SfuClient extends EventTarget {
         }
 
         this.consumers.clear();
-        // A failed initial setup can reconnect with a new peer id. Rebuild the
-        // participant map from the server snapshot instead of retaining stale sessions.
+        // Uma abertura que falhou pode reconectar com outro id. Remonta a lista de
+        // participantes pelo retrato do servidor em vez de guardar sessão velha.
         this.peers.clear();
         this.consumerPeers.clear();
         this.peerLatency.clear();
@@ -419,7 +419,7 @@ export class SfuClient extends EventTarget {
         }
     }
 
-    /** Explicit departure: without this, the server treats it as a drop and the person becomes a ghost. */
+    /** Sair de propósito: sem isto o servidor trata como queda e a pessoa vira fantasma. */
     async leaveRoom() {
         await this.request('leave').catch(() => {});
     }

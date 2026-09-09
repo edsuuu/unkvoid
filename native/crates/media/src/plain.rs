@@ -182,8 +182,8 @@ impl PlainSender {
                     "level-asymmetry-allowed": 1,
                     "profile-level-id": "42e01f",
                 },
-                // Without nack and pli a viewer that loses a packet stays with a broken
-                // imagem até o próximo keyframe — dois segundos de lixo.
+                // Sem nack e pli, quem assiste e perde um pacote fica com a imagem
+                // quebrada até o próximo keyframe — dois segundos de lixo.
                 "rtcpFeedback": [
                     { "type": "nack" },
                     { "type": "nack", "parameter": "pli" },

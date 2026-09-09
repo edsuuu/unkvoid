@@ -1,14 +1,14 @@
-//! Proves that the hardware encoder works without depending on capture.
+//! Prova que o encoder de hardware funciona sem depender da captura.
 //!
-//! Creates an IOSurface, encodes N frames, and reports bytes, keyframes, and time
-//! per frame. If `ms/frame` is well below the target FPS interval, there is headroom —
-//! a sign that it runs on the media chip rather than the CPU.
+//! Cria um IOSurface, codifica N quadros e informa bytes, keyframes e tempo por quadro.
+//! Se o tempo por quadro fica bem abaixo do intervalo do fps alvo, há folga — sinal de
+//! que ele roda no chip de mídia, e não no processador.
 //!
 //! cargo run -p media --example encoder -- [720|1080|1440] [frames]
 //!
-//! macOS only: it builds an IOSurface by hand. The stub below keeps the workspace
-//! compiling elsewhere — `cargo test` builds every example, so without it the whole
-//! suite fails on Linux and Windows for a file that could never run there anyway.
+//! Só macOS: ele monta um IOSurface à mão. O esqueleto abaixo mantém o workspace
+//! compilando nos outros sistemas — o `cargo test` constrói todo exemplo, e sem ele a
+//! suíte inteira falharia no Linux e no Windows por um arquivo que nunca rodaria lá.
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
