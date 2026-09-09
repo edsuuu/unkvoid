@@ -86,6 +86,14 @@ if [ -d "$DOWNLOADS" ]; then
     echo "[INFO] instaladores em $DOWNLOADS"
 fi
 
+# O repositório APT: é por ele que o Linux instala e atualiza, com `apt install unkvoid`.
+# O download solto continua existindo para quem só quer o arquivo.
+DEB=$(find ../../target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit 2>/dev/null || true)
+
+if [ -n "$DEB" ] && [ -d "${UNKVOID_APT:-/var/www/apt}" ]; then
+    ./apt-publish.sh "$DEB"
+fi
+
 # Com --dry-run o build para aqui: serve para gerar um instalador de teste sem mexer na
 # release, e sem exigir um gh autenticado nesta máquina.
 for arg in "$@"; do
