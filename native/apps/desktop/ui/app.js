@@ -48,6 +48,26 @@ class App {
     /** O último código fica como lembrete, mas não entra automaticamente na sala. */
     static ROOM_KEY = 'unkvoid:last-room';
 
+    /** Marca que a recarga em busca do WebRTC já foi tentada nesta abertura. */
+    static WEBRTC_RELOAD_KEY = 'unkvoid:webrtc-reload';
+
+    /**
+     * O que rodar quando falta uma peça do sistema.
+     *
+     * Só o Linux tem remédio por linha de comando: no macOS e no Windows o motor da
+     * janela vem com o sistema ou com o instalador, então não há pacote a instalar —
+     * o que resta ali é reinstalar o app, e é isso que a mensagem diz.
+     */
+    static REMEDIO = {
+        webrtc: 'sudo apt install -y gstreamer1.0-plugins-good gstreamer1.0-plugins-bad'
+            + ' gstreamer1.0-libav gstreamer1.0-nice',
+        h264: 'sudo apt install -y gstreamer1.0-libav gstreamer1.0-plugins-ugly',
+    };
+
+    static isLinux() {
+        return /Linux/i.test(navigator.platform) || /Linux/i.test(navigator.userAgent);
+    }
+
     /**
      * O único servidor. VITE_SERVER aponta um build local para uma pilha local, e o
      * override no localStorage serve para cutucar um build já pronto sem recompilar.
@@ -62,7 +82,14 @@ class App {
     constructor() {
         this.logs = [];
         this.logChars = 0;
-        this.log('app.start', { userAgent: navigator.userAgent, platform: navigator.platform });
+        // As duas perguntas que a janela do Linux não responde sozinha: o WebKitGTK
+        // entrega WebRTC desligado, e o H.264 só aparece se o GStreamer da distro tiver
+        // os plugins. Sem isto, os dois casos dão tela preta sem uma linha de pista.
+        this.log('app.start', {
+            userAgent: navigator.userAgent,
+            platform: navigator.platform,
+            hasWebRTC: typeof RTCPeerConnection !== 'undefined',
+        });
         this.name = '';
         this.room = null;
         this.sfu = null;
@@ -80,6 +107,12 @@ class App {
         this.consumingProducers = new Set();
         this.peopleStatsTimer = null;
 
+        /** Quem esta pausado nao gasta banda nem decoder: o servidor para de mandar. */
+        this.pausedPeers = new Set();
+
+        /** A propria tela, guardada para o botao poder mostrar e esconder sem reconsumir. */
+        this.selfStream = null;
+
         /** Grade mostra todos do mesmo tamanho; foco dá a tela toda a um só. */
         this.focused = null;
 
@@ -92,6 +125,22 @@ class App {
      * num app desatualizado ou sem servidor só produziria erro mais adiante.
      */
     async start() {
+        if (! this.hasWebRTC()) {
+            return;
+        }
+
+        // Fora do `wireRoom`: aquele roda a cada entrada em sala, e `addEventListener`
+        // soma em vez de substituir, ao contrário dos `onclick` do resto do arquivo.
+        document.addEventListener('click', event => {
+            const list = el('people-list');
+            const target = event.target;
+
+            if (! list.hidden && target instanceof Node
+                && ! list.contains(target) && target !== el('room-people')) {
+                list.hidden = true;
+            }
+        });
+
         this.showDownloadProgress();
 
         await this.serverAnswered();
@@ -105,6 +154,71 @@ class App {
         }
 
         this.showEntry();
+    }
+
+    /**
+     * Sem `RTCPeerConnection` não há o que fazer, e é preciso dizer isso na cara.
+     *
+     * No Linux a janela é WebKitGTK, que entrega o WebRTC desligado. O Rust liga a
+     * configuração na abertura, mas a página que nasceu antes disso continua sem o
+     * global — a configuração vale para a próxima. Daí a recarga única.
+     *
+     * Se depois dela ainda faltar, não é ordem de eventos: é o WebKit da distro
+     * compilado sem WebRTC. Aí entrar numa sala só produziria "device not supported"
+     * lá na frente, e a pessoa voltaria para a tela de nome sem entender nada — que foi
+     * exatamente o que aconteceu.
+     */
+    hasWebRTC() {
+        if (typeof RTCPeerConnection !== 'undefined') {
+            return true;
+        }
+
+        if (! sessionStorage.getItem(App.WEBRTC_RELOAD_KEY)) {
+            sessionStorage.setItem(App.WEBRTC_RELOAD_KEY, '1');
+            this.log('webrtc.reload');
+            location.reload();
+
+            return false;
+        }
+
+        this.log('webrtc.missing', { userAgent: navigator.userAgent });
+        this.showFix(
+            'Falta o WebRTC nesta máquina.',
+            App.isLinux() ? App.REMEDIO.webrtc : null,
+        );
+
+        return false;
+    }
+
+    /**
+     * Uma peça do sistema está faltando, e aqui está o que fazer.
+     *
+     * Sem o comando na tela a pessoa fica com "instale as dependências", que não é
+     * informação — foi assim que uma instalação que já tinha tudo passou por falta de
+     * biblioteca.
+     */
+    showFix(problem, command) {
+        el('update-screen').hidden = false;
+        el('update-status').textContent = command
+            ? `${problem} Rode isto no terminal:`
+            : `${problem} Reinstale o Unkvoid por cima para repor o que falta.`;
+
+        el('fix-block').hidden = ! command;
+
+        if (! command) {
+            return;
+        }
+
+        el('fix-command').textContent = command;
+        el('fix-copy').onclick = async () => {
+            try {
+                await navigator.clipboard.writeText(command);
+                el('fix-copy').textContent = 'Copiado!';
+            } catch {
+                // Sem área de transferência o texto continua na tela para copiar à mão.
+                el('fix-copy').textContent = 'Copie à mão';
+            }
+        };
     }
 
     /**
@@ -124,9 +238,10 @@ class App {
     /**
      * Procura, baixa e instala a versão nova — sem perguntar nada.
      *
-     * Roda na abertura e de tempos em tempos: o app inicia com o sistema e fica dias
-     * aberto na bandeja, então só olhar na abertura significaria esperar o próximo
-     * reinício da máquina para ver uma versão publicada hoje.
+     * Roda na abertura e de tempos em tempos: o app fica dias aberto na bandeja, então
+     * só olhar na abertura significaria esperar o próximo reinício da máquina para ver
+     * uma versão publicada hoje. (Iniciar junto com o sistema não existe: o plugin de
+     * autostart foi removido, e este comentário dizia o contrário.)
      */
     async update() {
         try {
@@ -200,8 +315,8 @@ class App {
         el('my-name').focus();
 
         el('create-room').onclick = () => {
-            const nome = el('room-code').value.trim().toLowerCase();
-            void this.enterRoom(nome || newRoomCode());
+            const label = el('room-code').value.trim().toLowerCase();
+            void this.enterRoom(label || newRoomCode());
         };
         el('join-form').onsubmit = event => {
             event.preventDefault();
@@ -251,6 +366,10 @@ class App {
         try {
             this.sfu = new SfuClient();
             this.sfu.addEventListener('diagnostic', event => this.log(event.detail.event, event.detail.data));
+            this.sfu.addEventListener('reconnecting', event => this.log('sfu.reconnecting', event.detail));
+            this.sfu.addEventListener('reconnected', event => void this.afterReconnect(event.detail));
+            // Sem isto, desistir de reconectar era uma tela parada e nenhuma palavra.
+            this.sfu.addEventListener('closed', () => this.fail('a conexão caiu e não voltou. Saia e entre na sala de novo.'));
             this.sfu.addEventListener('newProducer', event => this.consume(event.detail));
             this.sfu.addEventListener('peersChanged', () => this.refreshPeople());
             this.sfu.addEventListener('peerLeft', event => this.showScreen(event.detail.peerId, null));
@@ -278,6 +397,16 @@ class App {
                 }
             }
 
+            // O app transmite H.264. Se o WebKit desta máquina não anuncia o codec, o
+            // servidor recusa cada `consume` e a pessoa fica olhando para uma sala vazia
+            // sem um único erro na tela. É o modo de falha mais caro do Linux.
+            if (! this.sfu.videoCodecs.some(codec => /h264/i.test(codec))) {
+                this.log('device.h264.missing', { codecs: this.sfu.videoCodecs });
+                this.fail(App.isLinux()
+                    ? `sem H.264 nesta máquina — rode: ${App.REMEDIO.h264}`
+                    : 'esta máquina não decodifica H.264, e é assim que as telas chegam');
+            }
+
             this.refreshPeople();
             this.peopleStatsTimer = setInterval(() => {
                 void this.refreshPeopleStats();
@@ -291,24 +420,18 @@ class App {
     wireRoom() {
         el('copy-code').onclick = () => this.copyCode();
         el('room-people').onclick = () => {
-            const lista = el('people-list');
-            lista.hidden = ! lista.hidden;
-            if (! lista.hidden) {
+            const list = el('people-list');
+            list.hidden = ! list.hidden;
+            if (! list.hidden) {
                 this.drawPeopleList();
             }
         };
-        document.addEventListener('click', event => {
-            const lista = el('people-list');
-            const alvo = event.target;
-
-            if (! lista.hidden && alvo instanceof Node
-                && ! lista.contains(alvo) && alvo !== el('room-people')) {
-                lista.hidden = true;
-            }
-        });
         el('layout').onclick = () => this.toggleLayout();
         el('share').onclick = () => this.openShareModal();
         el('stop').onclick = () => this.stopSharing();
+        el('self-view').onclick = () => this.toggleSelfView();
+        el('watch-pending').onclick = () => this.refreshWatch();
+        el('people-refresh').onclick = () => this.refreshWatch();
         el('leave').onclick = () => this.leave();
         el('logs').onclick = () => this.openLogs();
         el('logs-close').onclick = () => { el('logs-modal').hidden = true; };
@@ -348,6 +471,9 @@ class App {
             .length || 1;
 
         el('room-people').textContent = total === 1 ? '1 pessoa' : `${total} pessoas`;
+        this.paintPing();
+
+        this.paintWatchPrompt();
 
         if (! el('people-list').hidden) {
             this.drawPeopleList();
@@ -355,39 +481,92 @@ class App {
     }
 
     drawPeopleList() {
-        const lista = el('people-list-items');
-        lista.innerHTML = '';
+        const list = el('people-list-items');
+        list.innerHTML = '';
 
-        const pessoas = [...(this.sfu?.peers?.values() ?? [])];
+        const people = [...(this.sfu?.peers?.values() ?? [])];
 
-        for (const pessoa of pessoas) {
+        for (const person of people) {
             const item = document.createElement('div');
 
             item.className = 'flex items-center gap-2 rounded px-2 py-1.5 text-sm text-white';
             item.innerHTML = '<span class="size-2 shrink-0 rounded-full bg-emerald-400"></span>'
                 + '<span class="min-w-0 flex-1 truncate"></span>'
-                + '<span class="text-xs text-ink-soft"></span>'
-                + '<button class="rounded px-1.5 py-0.5 text-xs text-danger hover:bg-line" type="button" hidden>Remover</button>';
-            item.querySelectorAll('span')[1].textContent = pessoa.name;
-            const info = pessoa.reconnecting
+                + '<span class="min-w-0 shrink truncate text-xs text-ink-soft"></span>'
+                + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-xs text-white ring-1 ring-inset ring-line hover:bg-line" data-watch type="button" hidden>Assistir</button>'
+                + '<button class="rounded px-1.5 py-0.5 text-xs text-danger hover:bg-line" data-remove type="button" hidden>Remover</button>';
+            item.querySelectorAll('span')[1].textContent = person.name;
+            const info = person.reconnecting
                 ? 'parado'
-                : `${this.sfu?.peerLatency?.get(pessoa.peerId) ?? '--'} ms`;
-            item.querySelectorAll('span')[2].textContent = pessoa.sharing ? `compartilhando · ${info}` : info;
-            item.querySelector('span').classList.toggle('bg-danger', Boolean(pessoa.reconnecting));
-            const remove = item.querySelector('button');
-            remove.hidden = !pessoa.reconnecting || pessoa.self;
-            remove.onclick = () => this.removeStoppedPeer(pessoa.peerId);
-            lista.appendChild(item);
+                : `${this.sfu?.peerLatency?.get(person.peerId) ?? '--'} ms`;
+            item.querySelectorAll('span')[2].textContent = person.sharing ? `compartilhando · ${info}` : info;
+            item.querySelector('span').classList.toggle('bg-danger', Boolean(person.reconnecting));
+            const remove = item.querySelector('[data-remove]');
+            remove.hidden = !person.reconnecting || person.self;
+            remove.onclick = () => this.removeStoppedPeer(person.peerId);
+
+            // Transmitindo e sem quadro na tela: o `newProducer` se perdeu, ou o consumo
+            // falhou. Sem este botao a unica saida era sair da sala e entrar de novo.
+            const watch = item.querySelector('[data-watch]');
+            watch.hidden = ! this.missingScreen(person);
+            watch.onclick = () => void this.watchPeer(person.peerId);
+
+            list.appendChild(item);
         }
 
-        if (! pessoas.length) {
-            lista.innerHTML = '<p class="text-sm text-ink-soft">Nenhuma pessoa conectada.</p>';
+        if (! people.length) {
+            list.innerHTML = '<p class="text-sm text-ink-soft">Nenhuma pessoa conectada.</p>';
         }
 
     }
 
     async refreshPeopleStats() {
         await this.sfu?.updatePeerLatency?.();
+        this.refreshPeople();
+    }
+
+    /**
+     * O ping na barra.
+     *
+     * Ele vivia só dentro do relógio das estatísticas da transmissão, então quem entrava
+     * numa sala e não compartilhava nada lia `ping --` para sempre — inclusive quem
+     * acabou de criar a sala, que é justamente quem quer saber se o servidor responde.
+     */
+    paintPing() {
+        const ping = this.sfu?.transportRttMs ?? this.sfu?.lastRttMs;
+
+        document.querySelector('[data-broadcast-stats]').textContent =
+            ping == null ? '--' : `${ping} ms`;
+    }
+
+    /**
+     * Voltou a falar com o servidor.
+     *
+     * Retomada mantém transportes, producers e consumers vivos: não há nada a fazer.
+     * Sem retomada a sessão é outra — peerId novo, nenhum consumer — e os quadros na
+     * tela viraram retrato de uma conexão que não existe mais. Antes ninguém escutava
+     * este evento, então a tela ficava congelada e o botão de assistir continuava
+     * escondido, porque o elemento antigo ainda estava lá.
+     */
+    async afterReconnect({ resumed, peers }) {
+        this.log('sfu.reconnected', { resumed, peers: peers?.length ?? 0 });
+
+        if (resumed) {
+            return;
+        }
+
+        for (const tile of [...el('stage').children]) {
+            this.showScreen(tile.dataset.screen, null);
+        }
+
+        this.selfStream = null;
+
+        for (const peer of peers ?? []) {
+            for (const producer of peer.producers ?? []) {
+                await this.consume({ producerId: producer.producerId, peerId: peer.peerId });
+            }
+        }
+
         this.refreshPeople();
     }
 
@@ -399,6 +578,122 @@ class App {
         } catch (error) {
             this.fail(`não foi possível remover: ${error.message ?? error}`);
         }
+    }
+
+    /** Esta compartilhando e mesmo assim nao ha nada desenhado por ela. */
+    missingScreen(peer) {
+        return Boolean(peer?.sharing) && ! document.querySelector(`[data-screen="${peer.peerId}"]`);
+    }
+
+    /** Acende o botao de fora quando alguem transmite e a tela nao abriu sozinha. */
+    paintWatchPrompt() {
+        const pending = [...(this.sfu?.peers?.values() ?? [])].some(peer => this.missingScreen(peer));
+
+        el('watch-pending').hidden = ! pending;
+        el('stage-empty').querySelector('p').textContent = pending
+            ? 'Alguém está compartilhando, mas a tela não abriu sozinha.'
+            : 'Ninguém está compartilhando ainda.';
+    }
+
+    /** Pega tudo o que uma pessoa publica e ainda nao esta na tela. */
+    async watchPeer(peerId) {
+        const peer = this.sfu?.peers?.get(peerId);
+
+        for (const producer of peer?.producers ?? []) {
+            await this.consume({ producerId: producer.producerId, peerId });
+        }
+
+        this.paintWatchPrompt();
+    }
+
+    /** O mesmo, para a sala inteira: o "atualizar" de quem abriu e nao viu nada. */
+    async refreshWatch() {
+        for (const peerId of [...(this.sfu?.peers?.keys() ?? [])]) {
+            await this.watchPeer(peerId);
+        }
+
+        this.refreshPeople();
+    }
+
+    /**
+     * Ver a propria transmissao, sem som.
+     *
+     * Vem do servidor como a de qualquer um: e a unica prova de que a sala esta mesmo
+     * recebendo alguma coisa. O audio fica de fora de proposito — devolver o som do jogo
+     * pela mesma maquina que o capturou e microfonia garantida.
+     *
+     * Esconder pausa no servidor em vez de descartar o consumer: o SFU nao tem acao de
+     * fechar consumer, e pausado ele ja para de gastar banda.
+     * ponytail: se um dia houver `closeConsumer`, esconder deveria fechar de vez.
+     */
+    async toggleSelfView() {
+        const peerId = this.sfu?.peerId;
+        const producerId = this.broadcast?.videoProducerId;
+
+        if (! peerId || ! producerId) {
+            return;
+        }
+
+        try {
+            if (document.querySelector(`[data-screen="${peerId}"]`)) {
+                await this.sfu.setPeerPaused(peerId, true);
+                this.showScreen(peerId, null);
+                el('self-view').textContent = 'Ver o que a sala vê';
+
+                return;
+            }
+
+            if (this.selfStream) {
+                await this.sfu.setPeerPaused(peerId, false);
+                this.showScreen(peerId, this.selfStream);
+            } else {
+                await this.consume({ producerId, peerId });
+                this.selfStream = document.querySelector(`[data-screen="${peerId}"] video`)?.srcObject ?? null;
+            }
+
+            el('self-view').textContent = 'Ocultar minha tela';
+        } catch (failure) {
+            this.fail(`não deu para ver a própria transmissão: ${failure.message ?? failure}`);
+        }
+    }
+
+    /**
+     * Para de receber sem sair da sala.
+     *
+     * Pausar so o `<video>` continuaria baixando e decodificando: o custo esta no
+     * decoder, e ele so descansa quando o pacote deixa de chegar.
+     */
+    async togglePause(peerId) {
+        const paused = ! this.pausedPeers.has(peerId);
+        const tile = document.querySelector(`[data-screen="${peerId}"]`);
+        const video = tile?.querySelector('video');
+        const audio = this.remoteAudios.get(peerId);
+
+        try {
+            await this.sfu.setPeerPaused(peerId, paused);
+        } catch (failure) {
+            this.fail(`não deu para ${paused ? 'pausar' : 'retomar'}: ${failure.message ?? failure}`);
+
+            return;
+        }
+
+        if (paused) {
+            this.pausedPeers.add(peerId);
+            video?.pause();
+            audio?.pause();
+        } else {
+            this.pausedPeers.delete(peerId);
+            void video?.play().catch(() => 0);
+            void audio?.play().catch(() => 0);
+        }
+
+        const toggle = tile?.querySelector('[data-pause]');
+
+        if (toggle) {
+            toggle.textContent = paused ? 'Retomar' : 'Pausar';
+        }
+
+        this.log('media.paused', { peerId, paused });
     }
 
     async consume({ producerId, peerId: ownerPeerId }) {
@@ -427,9 +722,9 @@ class App {
                 audio.dataset.remote = peerId;
                 document.body.appendChild(audio);
                 this.remoteAudios.set(peerId, audio);
-                const quadro = document.querySelector(`[data-screen="${peerId}"]`);
-                if (quadro) {
-                    this.attachAudioControl(peerId, quadro);
+                const tile = document.querySelector(`[data-screen="${peerId}"]`);
+                if (tile) {
+                    this.attachAudioControl(peerId, tile);
                 }
                 void audio.play().catch(error => this.log('media.audio.autoplay.error', {
                     peerId,
@@ -451,10 +746,16 @@ class App {
 
     /** Desenha (ou remove) a tela de quem está transmitindo. */
     showScreen(from, stream) {
-        const existente = document.querySelector(`[data-screen="${from}"]`);
+        const existing = document.querySelector(`[data-screen="${from}"]`);
 
         if (! stream) {
-            existente?.remove();
+            // Tirar o elemento não para o decoder: a faixa segue viva no transporte, e
+            // o app fica dias aberto. Cada transmissão encerrada deixava mais uma.
+            for (const media of [existing?.querySelector('video'), this.remoteAudios.get(from)]) {
+                media?.srcObject?.getTracks?.().forEach(track => track.stop());
+            }
+
+            existing?.remove();
             document.querySelector(`audio[data-remote="${from}"]`)?.remove();
             this.remoteAudios.delete(from);
 
@@ -469,10 +770,10 @@ class App {
             return;
         }
 
-        const quadro = existente ?? document.createElement('figure');
+        const tile = existing ?? document.createElement('figure');
 
-        quadro.dataset.screen = from;
-        quadro.innerHTML = '<video class="min-h-0 w-full flex-1 bg-black object-contain" autoplay playsinline></video>'
+        tile.dataset.screen = from;
+        tile.innerHTML = '<video class="min-h-0 w-full flex-1 bg-black object-contain" autoplay playsinline></video>'
             + '<figcaption class="flex items-center gap-2 bg-panel px-3 py-1.5 text-xs text-ink">'
             + '<span class="truncate"></span>'
             + '<span class="text-ink-dim" data-media-stats>buffer -- · fps --</span>'
@@ -482,15 +783,16 @@ class App {
             + '<input class="w-20 accent-brand" data-audio-volume type="range" min="0" max="100" value="100" aria-label="Volume desta transmissão">'
             + '<span data-audio-volume-value>100%</span>'
             + '</span>'
+            + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-pause type="button">Pausar</button>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-focus type="button">Focar</button>'
             + '<span class="flex items-center gap-1.5">'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-fullscreen type="button">Tela cheia</button>'
             + '</span>'
             + '</figcaption>';
 
-        const video = quadro.querySelector('video');
+        const video = tile.querySelector('video');
         video.srcObject = stream;
-        this.attachAudioControl(from, quadro);
+        this.attachAudioControl(from, tile);
         video.onerror = () => this.log('media.video.error', {
             peerId: from,
             message: video.error?.message ?? `media error ${video.error?.code ?? 'unknown'}`,
@@ -498,41 +800,74 @@ class App {
         video.onstalled = () => this.log('media.video.stalled', { peerId: from });
         video.onwaiting = () => this.log('media.video.waiting', { peerId: from });
         video.onended = () => this.log('media.video.ended', { peerId: from });
-        quadro.querySelector('span').textContent = this.sfu?.peers?.get(from)?.name ?? 'transmitindo';
-        quadro.querySelector('[data-focus]').onclick = () => this.focus(from);
-        quadro.querySelector('[data-fullscreen]').onclick = async () => {
-            try {
-                if (document.fullscreenElement) {
-                    await document.exitFullscreen();
-                    return;
-                }
+        const owner = this.sfu?.peers?.get(from);
 
-                if (quadro.requestFullscreen) {
-                    await quadro.requestFullscreen();
-                } else if (video.requestFullscreen) {
-                    await video.requestFullscreen();
-                } else if (video.webkitEnterFullscreen) {
-                    video.webkitEnterFullscreen();
-                } else {
-                    this.fail('tela cheia não é suportada neste ambiente');
-                }
-            } catch (error) {
-                this.log('media.fullscreen.error', { peerId: from, message: error.message ?? String(error) });
-                this.fail(`não foi possível abrir tela cheia: ${error.message ?? error}`);
-            }
-        };
+        tile.querySelector('span').textContent = owner?.self ? `${owner.name} (você, sem som)` : owner?.name ?? 'transmitindo';
 
-        if (! existente) {
-            el('stage').appendChild(quadro);
+        const toggle = tile.querySelector('[data-pause]');
+
+        toggle.textContent = this.pausedPeers.has(from) ? 'Retomar' : 'Pausar';
+        toggle.onclick = () => void this.togglePause(from);
+        tile.querySelector('[data-focus]').onclick = () => this.focus(from);
+        tile.querySelector('[data-fullscreen]').onclick = () => this.toggleFullscreen(tile, video, from);
+
+        if (! existing) {
+            el('stage').appendChild(tile);
         }
 
         this.startMediaStats(from, video);
         this.paintLayout();
     }
 
-    attachAudioControl(peerId, quadro) {
+    /**
+     * Tela cheia, tentando de verdade em vez de perguntar se o método existe.
+     *
+     * A versão anterior só caía para o próximo candidato quando a função **não existia**.
+     * No WebKitGTK ela existe e a promessa é rejeitada — "The object is in an invalid
+     * state" ao pedir num `<figure>` — então o primeiro erro ia direto para a mensagem
+     * de falha e os outros caminhos nunca eram tentados.
+     */
+    async toggleFullscreen(tile, video, peerId) {
+        if (document.fullscreenElement ?? document.webkitFullscreenElement) {
+            await (document.exitFullscreen?.() ?? document.webkitExitFullscreen?.());
+
+            return;
+        }
+
+        // O elemento de vídeo antes do cartão: é o que todo motor aceita. O último é o
+        // do iOS, que não devolve promessa nenhuma.
+        const candidates = [
+            [video, 'requestFullscreen'],
+            [video, 'webkitRequestFullscreen'],
+            [tile, 'requestFullscreen'],
+            [tile, 'webkitRequestFullscreen'],
+            [video, 'webkitEnterFullscreen'],
+        ];
+
+        const failures = [];
+
+        for (const [target, method] of candidates) {
+            if (typeof target[method] !== 'function') {
+                continue;
+            }
+
+            try {
+                await target[method]();
+                this.log('media.fullscreen.ok', { peerId, method });
+
+                return;
+            } catch (failure) {
+                failures.push(`${method}: ${failure.message ?? failure}`);
+            }
+        }
+
+        this.log('media.fullscreen.error', { peerId, failures });
+        this.fail(`não foi possível abrir tela cheia: ${failures[0] ?? 'nenhum modo suportado'}`);
+    }
+
+    attachAudioControl(peerId, tile) {
         const audio = this.remoteAudios.get(peerId);
-        const control = quadro.querySelector('[data-audio-control]');
+        const control = tile.querySelector('[data-audio-control]');
 
         if (! audio || ! control || control.dataset.ready === 'true') {
             if (audio && control) {
@@ -564,23 +899,29 @@ class App {
         let frames = 0;
         let lastFrames = 0;
         let lastSample = performance.now();
-        const atualizar = () => {
-            const quadro = document.querySelector(`[data-screen="${peerId}"]`);
-            const stats = quadro?.querySelector('[data-media-stats]');
+        const refreshPreview = () => {
+            const tile = document.querySelector(`[data-screen="${peerId}"]`);
+            const stats = tile?.querySelector('[data-media-stats]');
 
-            if (! quadro || ! stats) {
+            if (! tile || ! stats) {
                 clearInterval(this.mediaStatsTimers.get(peerId));
                 this.mediaStatsTimers.delete(peerId);
 
                 return;
             }
 
-            const agora = performance.now();
-            const decorrido = Math.max(agora - lastSample, 1);
+            if (this.pausedPeers.has(peerId)) {
+                stats.textContent = 'pausado';
+
+                return;
+            }
+
+            const now = performance.now();
+            const elapsedMs = Math.max(now - lastSample, 1);
             const buffer = video.buffered.length
                 ? Math.max(0, video.buffered.end(video.buffered.length - 1) - video.currentTime)
                 : 0;
-            const fps = Math.round((frames - lastFrames) * 1000 / decorrido);
+            const fps = Math.round((frames - lastFrames) * 1000 / elapsedMs);
             const quality = video.getVideoPlaybackQuality?.();
 
             stats.textContent = `buffer ${buffer.toFixed(1)} s · fps ${fps}`;
@@ -593,26 +934,26 @@ class App {
                 framesDecoded: quality?.totalVideoFrames ?? null,
             });
             lastFrames = frames;
-            lastSample = agora;
+            lastSample = now;
         };
 
-        const contarFrame = () => {
+        const countFrame = () => {
             frames += 1;
             if ('requestVideoFrameCallback' in video) {
-                video.requestVideoFrameCallback(contarFrame);
+                video.requestVideoFrameCallback(countFrame);
             }
         };
 
         if ('requestVideoFrameCallback' in video) {
-            video.requestVideoFrameCallback(contarFrame);
+            video.requestVideoFrameCallback(countFrame);
         } else {
-            const contar = () => { frames += 1; };
-            video.addEventListener('timeupdate', contar);
+            const count = () => { frames += 1; };
+            video.addEventListener('timeupdate', count);
         }
 
-        const timer = setInterval(atualizar, 1000);
+        const timer = setInterval(refreshPreview, 1000);
         this.mediaStatsTimers.set(peerId, timer);
-        atualizar();
+        refreshPreview();
     }
 
     /** Uma tela ocupando tudo, ou de volta para a grade. */
@@ -622,9 +963,9 @@ class App {
     }
 
     toggleLayout() {
-        const primeira = el('stage').firstElementChild?.dataset.screen ?? null;
+        const first = el('stage').firstElementChild?.dataset.screen ?? null;
 
-        this.focused = this.focused ? null : primeira;
+        this.focused = this.focused ? null : first;
         this.paintLayout();
     }
 
@@ -635,21 +976,22 @@ class App {
      * 9 em 3. Fixar em 2 colunas deixava cinco telas em fileiras finas e ilegíveis.
      */
     paintLayout() {
-        const quadros = [...el('stage').children];
+        const tiles = [...el('stage').children];
 
-        el('stage').hidden = ! quadros.length;
-        el('stage-empty').hidden = Boolean(quadros.length);
+        el('stage').hidden = ! tiles.length;
+        el('stage-empty').hidden = Boolean(tiles.length);
         el('layout-icon').innerHTML = this.focused ? FOCUS_ICON : GRID_ICON;
 
-        const colunas = Math.ceil(Math.sqrt(quadros.length || 1));
+        const columns = Math.ceil(Math.sqrt(tiles.length || 1));
 
-        el('stage').style.gridTemplateColumns = `repeat(${this.focused ? 1 : colunas}, minmax(0, 1fr))`;
+        el('stage').style.gridTemplateColumns = `repeat(${this.focused ? 1 : columns}, minmax(0, 1fr))`;
+        this.paintWatchPrompt();
 
-        for (const quadro of quadros) {
-            const escondido = Boolean(this.focused) && quadro.dataset.screen !== this.focused;
+        for (const tile of tiles) {
+            const hidden = Boolean(this.focused) && tile.dataset.screen !== this.focused;
 
-            quadro.className = LOOK.tile;
-            quadro.hidden = escondido;
+            tile.className = LOOK.tile;
+            tile.hidden = hidden;
         }
     }
 
@@ -664,33 +1006,61 @@ class App {
         el('share-confirm').disabled = true;
         el('share-modal').hidden = false;
 
-        for (const aba of document.querySelectorAll('[data-tab]')) {
-            aba.onclick = () => this.drawShareTab(aba.dataset.tab);
+        for (const tab of document.querySelectorAll('[data-tab]')) {
+            tab.onclick = () => this.drawShareTab(tab.dataset.tab);
         }
 
-        const [telas, janelas] = await Promise.all([
+        el('share-audio').onchange = () => this.paintAudioOptions();
+        el('mute-calls').onchange = () => this.paintAudioOptions();
+        this.paintAudioOptions();
+
+        const [displays, appWindows] = await Promise.all([
             invoke('list_displays').catch(() => []),
             invoke('list_windows').catch(() => []),
         ]);
 
         this.shareSources = {
-            display: telas.map(tela => ({
-                value: `display:${tela.id}`,
-                label: `Tela ${tela.id}`,
-                detail: `${tela.width}×${tela.height}`,
+            display: displays.map(display => ({
+                value: `display:${display.id}`,
+                label: `Tela ${display.id}`,
+                detail: `${display.width}×${display.height}`,
             })),
             // Janela sem título é painel de sistema: mostrar só polui a escolha.
-            window: janelas
-                .filter(janela => janela.title.trim())
+            window: appWindows
+                .filter(appWindow => appWindow.title.trim())
                 .slice(0, App.MAX_WINDOW_SOURCES)
-                .map(janela => ({
-                    value: `window:${janela.id}`,
-                    label: janela.title,
-                    detail: janela.application,
+                .map(appWindow => ({
+                    value: `window:${appWindow.id}`,
+                    label: appWindow.title,
+                    detail: appWindow.application,
                 })),
         };
 
         this.drawShareTab('display');
+    }
+
+    /**
+     * O que dá e o que não dá em áudio, dito antes de transmitir.
+     *
+     * Sem isto a pessoa marca "sem o áudio do Discord", compartilha a tela inteira no
+     * Windows, e a conversa vai junto mesmo assim — sem nada na tela explicando por quê.
+     * O sistema só deixa excluir uma árvore de processos por captura, e ela já é a nossa.
+     */
+    paintAudioOptions() {
+        const audio = el('share-audio').checked;
+        const isWindows = /Win/i.test(navigator.platform);
+        const isDisplay = ! this.shareSource || this.shareSource.startsWith('display:');
+
+        el('mute-calls').disabled = ! audio;
+
+        const note = App.isLinux()
+            ? 'O Linux ainda não captura áudio do sistema: a transmissão vai sem som.'
+            : audio && el('mute-calls').checked && isWindows && isDisplay
+                ? 'Na tela inteira o Windows não separa o áudio por aplicativo. Escolha a janela do jogo em Aplicativos para deixar o Discord de fora.'
+                : '';
+
+        el('audio-note').textContent = note;
+        el('audio-note').hidden = ! note;
     }
 
     /**
@@ -700,39 +1070,43 @@ class App {
      * escolher errado manda para a sala o que a pessoa não queria mostrar.
      */
     drawShareTab(tab) {
-        const lista = el('share-sources');
-        const itens = this.shareSources?.[tab] ?? [];
+        const list = el('share-sources');
+        const items = this.shareSources?.[tab] ?? [];
 
-        for (const aba of document.querySelectorAll('[data-tab]')) {
-            const ativa = aba.dataset.tab === tab;
+        for (const tab of document.querySelectorAll('[data-tab]')) {
+            const active = tab.dataset.tab === tab;
 
-            aba.classList.toggle('border-brand', ativa);
-            aba.classList.toggle('text-white', ativa);
-            aba.classList.toggle('border-transparent', ! ativa);
-            aba.classList.toggle('text-ink-soft', ! ativa);
+            tab.classList.toggle('border-brand', active);
+            tab.classList.toggle('text-white', active);
+            tab.classList.toggle('border-transparent', ! active);
+            tab.classList.toggle('text-ink-soft', ! active);
         }
 
         this.shareSource = null;
         el('share-confirm').disabled = true;
-        lista.innerHTML = '';
+        list.innerHTML = '';
 
-        if (! itens.length) {
-            lista.innerHTML = tab === 'display'
-                ? '<p class="text-sm text-ink-soft">Nenhuma tela encontrada. No macOS, autorize a gravação de tela nas Configurações do Sistema.</p>'
+        if (! items.length) {
+            const reason = navigator.platform.startsWith('Linux')
+                ? 'Compartilhar a tela ainda não funciona no Linux. Dá para assistir quem transmite.'
+                : 'Nenhuma tela encontrada. No macOS, autorize a gravação de tela nas Configurações do Sistema.';
+
+            list.innerHTML = tab === 'display'
+                ? `<p class="text-sm text-ink-soft">${reason}</p>`
                 : '<p class="text-sm text-ink-soft">Nenhuma janela aberta para compartilhar.</p>';
 
             return;
         }
 
-        lista.className = 'mt-4 grid min-h-0 flex-1 auto-rows-min grid-cols-2 content-start gap-3 overflow-y-auto';
+        list.className = 'mt-4 grid min-h-0 flex-1 auto-rows-min grid-cols-2 content-start gap-3 overflow-y-auto';
 
-        for (const item of itens) {
-            const botao = document.createElement('button');
+        for (const item of items) {
+            const button = document.createElement('button');
 
-            botao.type = 'button';
-            botao.dataset.source = item.value;
-            botao.className = 'cursor-pointer overflow-hidden rounded-lg border-2 border-transparent bg-rail text-left transition-colors hover:border-brand';
-            botao.innerHTML = '<div class="flex aspect-video items-center justify-center bg-black">'
+            button.type = 'button';
+            button.dataset.source = item.value;
+            button.className = 'cursor-pointer overflow-hidden rounded-lg border-2 border-transparent bg-rail text-left transition-colors hover:border-brand';
+            button.innerHTML = '<div class="flex aspect-video items-center justify-center bg-black">'
                 + '<img class="size-full object-contain" alt="" hidden>'
                 + '<span class="text-xs text-ink-dim">sem prévia</span>'
                 + '</div>'
@@ -741,20 +1115,20 @@ class App {
                 + '<p class="truncate text-xs text-ink-soft"></p>'
                 + '</div>';
 
-            const [nome, detalhe] = botao.querySelectorAll('p');
+            const [label, detail] = button.querySelectorAll('p');
 
-            nome.textContent = item.label;
-            detalhe.textContent = item.detail ?? '';
-            botao.onclick = () => this.pickShareSource(botao);
-            lista.appendChild(botao);
+            label.textContent = item.label;
+            detail.textContent = item.detail ?? '';
+            button.onclick = () => this.pickShareSource(button);
+            list.appendChild(button);
 
             // Limita previews de aplicativos: cada uma inicia uma captura nativa e
             // muitas janelas ao mesmo tempo congelam o seletor no Windows.
-            if (tab === 'window' && itens.indexOf(item) >= App.MAX_WINDOW_PREVIEWS) {
+            if (tab === 'window' && items.indexOf(item) >= App.MAX_WINDOW_PREVIEWS) {
                 continue;
             }
 
-            const atualizar = async () => {
+            const refreshPreview = async () => {
                 if (this.previewInFlight.has(item.value)) {
                     return;
                 }
@@ -762,17 +1136,17 @@ class App {
                 this.previewInFlight.add(item.value);
 
                 try {
-                    const dados = await invoke('source_preview', { source: item.value });
+                    const data = await invoke('source_preview', { source: item.value });
 
-                    if (! dados || ! botao.isConnected) {
+                    if (! data || ! button.isConnected) {
                         return;
                     }
 
-                    const imagem = botao.querySelector('img');
+                    const image = button.querySelector('img');
 
-                    imagem.src = dados;
-                    imagem.hidden = false;
-                    botao.querySelector('span').hidden = true;
+                    image.src = data;
+                    image.hidden = false;
+                    button.querySelector('span').hidden = true;
                 } catch {
                     // A janela pode desaparecer enquanto o seletor está aberto.
                 } finally {
@@ -780,7 +1154,7 @@ class App {
                 }
             };
 
-            void atualizar();
+            void refreshPreview();
         }
     }
 
@@ -788,16 +1162,17 @@ class App {
      * Marca o escolhido pela borda, não pelo fundo: o card é quase todo miniatura, e
      * pintar o fundo não aparece atrás da imagem.
      */
-    pickShareSource(botao) {
-        for (const outro of el('share-sources').querySelectorAll('button')) {
-            const escolhido = outro === botao;
+    pickShareSource(button) {
+        for (const other of el('share-sources').querySelectorAll('button')) {
+            const chosen = other === button;
 
-            outro.classList.toggle('border-brand', escolhido);
-            outro.classList.toggle('border-transparent', ! escolhido);
+            other.classList.toggle('border-brand', chosen);
+            other.classList.toggle('border-transparent', ! chosen);
         }
 
-        this.shareSource = botao.dataset.source;
+        this.shareSource = button.dataset.source;
         el('share-confirm').disabled = false;
+        this.paintAudioOptions();
     }
 
     closeShareModal() {
@@ -810,9 +1185,24 @@ class App {
     }
 
     async share() {
-        this.log('broadcast.start', { quality: el('quality').value, fps: el('fps').value, source: this.shareSource });
+        const audio = el('share-audio').checked;
+        const muteCalls = audio && el('mute-calls').checked;
+
+        this.log('broadcast.start', {
+            quality: el('quality').value,
+            fps: el('fps').value,
+            source: this.shareSource,
+            audio,
+            muteCalls,
+        });
         try {
-            await this.broadcast.start(el('quality').value, Number(el('fps').value), this.shareSource);
+            await this.broadcast.start(
+                el('quality').value,
+                Number(el('fps').value),
+                this.shareSource,
+                audio,
+                muteCalls,
+            );
             this.broadcastStatsTimer = setInterval(() => {
                 void invoke('broadcast_stats')
                     .then(stats => this.updateBroadcastStats(stats))
@@ -833,12 +1223,21 @@ class App {
         this.sharing = on;
         el('share').hidden = on;
         el('stop').hidden = ! on;
+        el('self-view').hidden = ! on;
         if (! on) {
+            // A propria tela some junto: o servidor nao manda `producerClosed` para quem
+            // fechou o producer, entao o quadro ficaria congelado para sempre.
+            if (this.sfu?.peerId) {
+                this.showScreen(this.sfu.peerId, null);
+            }
+
+            this.selfStream = null;
+            el('self-view').textContent = 'Ver o que a sala vê';
             clearInterval(this.broadcastStatsTimer);
             this.broadcastStatsTimer = null;
             this.lastBroadcastStats = null;
             this.broadcastStatsAt = 0;
-            document.querySelector('[data-broadcast-stats]').textContent = 'ping --';
+            this.paintPing();
         }
     }
 
@@ -853,8 +1252,9 @@ class App {
         const fps = previous
             ? Math.round((stats.captured - previous.captured) * 1000 / elapsed)
             : '--';
-        const ping = this.sfu?.lastRttMs ?? '--';
-        document.querySelector('[data-broadcast-stats]').textContent = `ping ${ping} ms`;
+        const ping = this.sfu?.transportRttMs ?? this.sfu?.lastRttMs ?? '--';
+
+        this.paintPing();
         this.log('broadcast.stats', { ...stats, pingMs: ping, fps });
 
         if (previous) {
@@ -899,6 +1299,8 @@ class App {
         this.broadcast = null;
         this.room = null;
         this.remoteAudios.clear();
+        this.pausedPeers.clear();
+        this.selfStream = null;
         this.focused = null;
         el('people-list').hidden = true;
 

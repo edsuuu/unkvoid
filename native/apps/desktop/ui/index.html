@@ -12,6 +12,16 @@
 <section class="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-back" id="update-screen">
   <h1 class="text-2xl font-semibold text-white">Unkvoid</h1>
   <p class="text-sm text-ink-soft" id="update-status">Procurando atualizações…</p>
+
+  <!-- Quando falta algo no sistema, o app precisa dizer O QUE rodar. Mandar a pessoa
+       "instalar as dependências" sem o comando é o mesmo que não dizer nada. -->
+  <div class="w-full max-w-xl px-6" id="fix-block" hidden>
+    <div class="mt-2 flex items-center gap-2 rounded-md bg-rail p-3 ring-1 ring-inset ring-line">
+      <code class="min-w-0 flex-1 overflow-x-auto whitespace-pre font-mono text-xs text-white" id="fix-command"></code>
+      <button class="shrink-0 cursor-pointer rounded bg-brand px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-dark" id="fix-copy" type="button">Copiar</button>
+    </div>
+    <p class="mt-3 text-center text-xs text-ink-dim">Rode o comando, feche o Unkvoid e abra de novo.</p>
+  </div>
 </section>
 
 <section class="fixed inset-0 z-40 flex flex-col items-center justify-center gap-3 bg-back" id="offline-screen" hidden>
@@ -56,8 +66,11 @@
 
     <button class="cursor-pointer rounded px-2 py-1 text-[13px] text-ink-soft transition-colors hover:bg-line hover:text-white"
             id="room-people" title="Ver quem está na sala"></button>
-    <div class="absolute left-20 top-11 z-30 w-64 rounded-lg border border-line bg-content p-3 shadow-xl" id="people-list" hidden>
-      <p class="mb-2 text-xs font-bold uppercase tracking-wide text-ink-soft">Na sala</p>
+    <div class="absolute left-20 top-11 z-30 w-80 rounded-lg border border-line bg-content p-3 shadow-xl" id="people-list" hidden>
+      <div class="mb-2 flex items-center gap-2">
+        <p class="flex-1 text-xs font-bold uppercase tracking-wide text-ink-soft">Na sala</p>
+        <button class="cursor-pointer rounded px-1.5 py-0.5 text-xs text-ink-soft transition-colors hover:bg-line hover:text-white" id="people-refresh" type="button" title="Procurar de novo quem está transmitindo">Atualizar</button>
+      </div>
       <div class="space-y-1" id="people-list-items"></div>
     </div>
 
@@ -67,9 +80,11 @@
       <svg class="size-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" id="layout-icon"></svg>
     </button>
 
+    <button class="cursor-pointer rounded bg-online px-3 py-1.5 text-sm font-medium text-white transition-colors hover:brightness-110" id="watch-pending" type="button" hidden>Assistir</button>
     <button class="cursor-pointer rounded bg-brand px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-brand-dark" id="share">Compartilhar tela</button>
     <button class="cursor-pointer rounded bg-danger px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-danger-dark" id="stop" hidden>Parar</button>
-    <span class="min-w-0 truncate text-[11px] text-ink-dim" data-broadcast-stats>ping --</span>
+    <button class="cursor-pointer rounded px-3 py-1.5 text-sm text-ink-soft ring-1 ring-inset ring-line transition-colors hover:bg-line hover:text-white" id="self-view" type="button" hidden>Ver o que a sala vê</button>
+    <span class="min-w-0 truncate text-[11px] text-ink-dim" data-broadcast-stats>--</span>
 
     <button class="cursor-pointer rounded px-3 py-1.5 text-sm text-ink-soft transition-colors hover:bg-line hover:text-danger" id="leave">Sair</button>
     <button class="cursor-pointer rounded px-2 py-1.5 text-xs text-ink-soft transition-colors hover:bg-line hover:text-white" id="logs">Logs</button>
@@ -104,7 +119,7 @@
 <!-- Escolher O QUE transmitir antes de transmitir: mandar a tela inteira quando a
      pessoa queria só o jogo mostra e-mail e conversa para a sala toda. -->
 <section class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6" id="share-modal" hidden>
-  <div class="flex max-h-[80vh] w-full max-w-lg flex-col rounded-lg bg-content p-6">
+  <div class="flex max-h-[80vh] w-full max-w-lg flex-col rounded-xl bg-content p-6 shadow-2xl ring-1 ring-line">
     <h2 class="text-xl font-semibold text-white">Compartilhar tela</h2>
     <p class="mt-1 text-sm text-ink">Escolha o que a sala vai ver.</p>
 
@@ -115,24 +130,48 @@
 
     <div class="mt-4 min-h-0 flex-1 overflow-y-auto" id="share-sources"></div>
 
-    <div class="mt-5 flex items-center gap-3">
-      <label class="text-xs font-bold uppercase tracking-wide text-ink-soft" for="quality">Qualidade</label>
-      <select class="cursor-pointer rounded border-0 bg-rail px-2 py-1.5 text-sm text-ink focus:ring-0" id="quality">
-        <option value="720">720p</option>
-        <option value="1080" selected>1080p</option>
-        <option value="1440">1440p</option>
-      </select>
+    <div class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-line pt-4">
+      <label class="flex cursor-pointer items-center gap-2 text-sm text-ink">
+        <input class="size-4 cursor-pointer accent-brand" id="share-audio" type="checkbox" checked>
+        Transmitir o áudio
+      </label>
 
-      <label class="text-xs font-bold uppercase tracking-wide text-ink-soft" for="fps">FPS</label>
-      <select class="cursor-pointer rounded border-0 bg-rail px-2 py-1.5 text-sm text-ink focus:ring-0" id="fps">
-        <option value="30">30</option>
-        <option value="60" selected>60</option>
-      </select>
+      <label class="flex cursor-pointer items-center gap-2 text-sm text-ink">
+        <input class="size-4 cursor-pointer accent-brand" id="mute-calls" type="checkbox" checked>
+        Sem o áudio do Discord
+      </label>
+
+      <span class="basis-full text-xs text-ink-dim" id="audio-note" hidden></span>
+    </div>
+
+    <div class="mt-4 flex flex-wrap items-end gap-x-3 gap-y-4 border-t border-line pt-4">
+      <label class="flex w-28 shrink-0 flex-col gap-1.5">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-ink-soft">Qualidade</span>
+        <span class="relative block">
+          <select class="w-full cursor-pointer appearance-none rounded-md bg-rail py-2 pl-3 pr-9 text-sm font-medium text-white ring-1 ring-inset ring-line transition-colors hover:bg-line focus:outline-none focus:ring-2 focus:ring-brand" id="quality">
+            <option value="720">720p</option>
+            <option value="1080" selected>1080p</option>
+            <option value="1440">1440p</option>
+          </select>
+          <svg class="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-ink-soft" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>
+        </span>
+      </label>
+
+      <label class="flex w-24 shrink-0 flex-col gap-1.5">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-ink-soft">FPS</span>
+        <span class="relative block">
+          <select class="w-full cursor-pointer appearance-none rounded-md bg-rail py-2 pl-3 pr-9 text-sm font-medium text-white ring-1 ring-inset ring-line transition-colors hover:bg-line focus:outline-none focus:ring-2 focus:ring-brand" id="fps">
+            <option value="30">30</option>
+            <option value="60" selected>60</option>
+          </select>
+          <svg class="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-ink-soft" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>
+        </span>
+      </label>
 
       <span class="flex-1"></span>
 
-      <button class="cursor-pointer rounded px-4 py-2 text-sm text-ink hover:text-white" id="share-cancel" type="button">Cancelar</button>
-      <button class="cursor-pointer rounded bg-brand px-5 py-2 text-sm font-medium text-white hover:bg-brand-dark disabled:opacity-50" id="share-confirm" type="button" disabled>Transmitir</button>
+      <button class="cursor-pointer rounded-md px-4 py-2.5 text-sm font-medium text-ink-soft ring-1 ring-inset ring-line transition-colors hover:bg-line hover:text-white" id="share-cancel" type="button">Cancelar</button>
+      <button class="cursor-pointer rounded-md bg-brand px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand/20 transition-colors hover:bg-brand-dark disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none" id="share-confirm" type="button" disabled>Transmitir</button>
     </div>
   </div>
 </section>

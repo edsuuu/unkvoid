@@ -22,9 +22,9 @@ export class SfuClient extends EventTarget {
      */
     static handler() {
         const agent = navigator.userAgent;
-        const webkitSemChrome = /AppleWebKit/i.test(agent) && ! /Chrome|Chromium|Edg/i.test(agent);
+        const webkitWithoutChrome = /AppleWebKit/i.test(agent) && ! /Chrome|Chromium|Edg/i.test(agent);
 
-        return webkitSemChrome && ! /\bSafari\b/i.test(agent) ? { handlerName: 'Safari12' } : {};
+        return webkitWithoutChrome && ! /\bSafari\b/i.test(agent) ? { handlerName: 'Safari12' } : {};
     }
 
     constructor() {
@@ -42,11 +42,17 @@ export class SfuClient extends EventTarget {
         this.identity = null;
         this.resumeKey = null;
         this.url = null;
+
+        /** Os codecs de vídeo que esta máquina aceita. Sem H.264 aqui, não há imagem. */
+        this.videoCodecs = [];
         this.closedByUs = false;
         this.reconnectAttempt = 0;
         this.reconnectTimer = null;
         this.socketGeneration = 0;
         this.lastRttMs = null;
+
+        /** Ida e volta do transporte de mídia. É este o ping que a barra mostra. */
+        this.transportRttMs = null;
     }
 
     emit(name, detail) {
@@ -141,7 +147,7 @@ export class SfuClient extends EventTarget {
             const joined = await this.setup();
 
             this.reconnectAttempt = 0;
-            this.emit('reconnected', { resumed: joined.resumed });
+            this.emit('reconnected', { resumed: joined.resumed, peers: joined.peers ?? [] });
         } catch (error) {
             this.emit('reconnecting', { attempt: this.reconnectAttempt, error: error.message });
             this.scheduleReconnect();
@@ -171,7 +177,7 @@ export class SfuClient extends EventTarget {
 
     trackPeers(event, data) {
         if (event === 'peerJoined') {
-            this.peers.set(data.peerId, { peerId: data.peerId, name: data.name, sharing: false });
+            this.peers.set(data.peerId, { peerId: data.peerId, name: data.name, sharing: false, producers: [] });
         }
 
         if (event === 'peerLeft') {
@@ -186,12 +192,12 @@ export class SfuClient extends EventTarget {
             }
         }
 
-        if (event === 'newProducer' && data.source === 'screen') {
-            this.markSharing(data.peerId, true);
+        if (event === 'newProducer') {
+            this.trackProducer(data.peerId, data);
         }
 
-        if (event === 'producerClosed' && data.source === 'screen') {
-            this.markSharing(data.peerId, false);
+        if (event === 'producerClosed') {
+            this.forgetProducer(data.peerId, data.producerId);
         }
 
         if (event === 'consumerClosed') {
@@ -202,12 +208,51 @@ export class SfuClient extends EventTarget {
         this.emit('peersChanged', [...this.peers.entries()]);
     }
 
-    markSharing(peerId, sharing) {
+    /**
+     * A lista de producers de cada pessoa, mantida viva.
+     *
+     * `newProducer` chega uma vez e nunca mais. Quem perdeu esse instante — porque o
+     * consumo falhou, porque a pessoa pausou — nao tinha como voltar a pedir a tela sem
+     * sair e entrar na sala de novo. Guardar o id e o que deixa o botao "assistir" existir.
+     */
+    trackProducer(peerId, { producerId, kind, source }) {
         const peer = this.peers.get(peerId);
 
-        if (peer) {
-            peer.sharing = sharing;
+        if (! peer) {
+            return;
         }
+
+        peer.producers = [...(peer.producers ?? []).filter(item => item.producerId !== producerId), { producerId, kind, source }];
+        peer.sharing = peer.producers.some(item => item.source === 'screen');
+    }
+
+    forgetProducer(peerId, producerId) {
+        const peer = this.peers.get(peerId);
+
+        if (! peer) {
+            return;
+        }
+
+        peer.producers = (peer.producers ?? []).filter(item => item.producerId !== producerId);
+        peer.sharing = peer.producers.some(item => item.source === 'screen');
+    }
+
+    /** Os consumers que carregam a midia de uma pessoa — o que pausar quando ninguem quer ver. */
+    consumersOf(peerId) {
+        return [...this.consumerPeers].filter(([, owner]) => owner === peerId).map(([consumerId]) => consumerId);
+    }
+
+    /**
+     * Pausa no servidor, nao so no elemento `<video>`.
+     *
+     * Parar o video sozinho continuaria baixando e decodificando tudo: o custo que
+     * incomoda quem so quer ouvir esta no decoder, e ele so para quando o pacote deixa
+     * de chegar. `pauseConsumer` e o unico jeito de o pacote deixar de chegar.
+     */
+    async setPeerPaused(peerId, paused) {
+        const action = paused ? 'pauseConsumer' : 'resumeConsumer';
+
+        await Promise.all(this.consumersOf(peerId).map(consumerId => this.request(action, { consumerId })));
     }
 
     /**
@@ -224,25 +269,25 @@ export class SfuClient extends EventTarget {
         const startedAt = performance.now();
 
         return new Promise((resolve, reject) => {
-            const prazo = setTimeout(() => {
+            const deadline = setTimeout(() => {
                 this.pending.delete(id);
                 reject(new Error(`o servidor não respondeu a "${action}"`));
             }, SfuClient.REQUEST_TIMEOUT_MS);
 
-            const encerrar = fim => valor => {
-                clearTimeout(prazo);
+            const settle = finish => value => {
+                clearTimeout(deadline);
                 this.lastRttMs = Math.round(performance.now() - startedAt);
-                fim(valor);
+                finish(value);
             };
 
-            this.pending.set(id, { resolve: encerrar(resolve), reject: encerrar(reject) });
+            this.pending.set(id, { resolve: settle(resolve), reject: settle(reject) });
 
             try {
                 this.socket.send(JSON.stringify({ id, action, data }));
-            } catch (falha) {
-                clearTimeout(prazo);
+            } catch (failure) {
+                clearTimeout(deadline);
                 this.pending.delete(id);
-                reject(falha);
+                reject(failure);
             }
         });
     }
@@ -271,18 +316,31 @@ export class SfuClient extends EventTarget {
         this.peers.clear();
         this.consumerPeers.clear();
         this.peerLatency.clear();
-        this.peers.set(joined.peerId, { peerId: joined.peerId, name: joined.name, self: true, sharing: false });
+        this.peers.set(joined.peerId, { peerId: joined.peerId, name: joined.name, self: true, sharing: false, producers: [] });
 
         for (const peer of joined.peers) {
             this.peers.set(peer.peerId, {
                 peerId: peer.peerId,
                 name: peer.name,
+                producers: peer.producers,
                 sharing: peer.producers.some(producer => producer.source === 'screen'),
             });
         }
 
         this.device = new Device(SfuClient.handler());
         await this.device.load({ routerRtpCapabilities: joined.routerRtpCapabilities });
+
+        // Se o H.264 não estiver aqui, o servidor recusa o `consume` e a tela fica preta
+        // sem erro nenhum. É o modo de falha mais caro do projeto no Linux, e a única
+        // forma de vê-lo é esta linha no diagnóstico.
+        this.videoCodecs = this.device.rtpCapabilities.codecs
+            .filter(codec => codec.kind === 'video')
+            .map(codec => codec.mimeType);
+
+        this.emit('diagnostic', {
+            event: 'device.ready',
+            data: { handler: this.device.handlerName, video: this.videoCodecs },
+        });
 
         this.recvTransport = await this.createTransport();
 
@@ -327,7 +385,7 @@ export class SfuClient extends EventTarget {
         });
 
         this.consumers.set(consumer.id, consumer);
-        this.consumerPeers.set(consumer.id, peerId);
+        this.consumerPeers.set(consumer.id, params.peerId);
         await this.request('resumeConsumer', { consumerId: consumer.id });
 
         return { consumer, ...params };
@@ -347,8 +405,10 @@ export class SfuClient extends EventTarget {
             report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated);
         const rtt = transport?.currentRoundTripTime;
 
+        this.transportRttMs = rtt != null ? Math.round(rtt * 1000) : null;
+
         for (const peerId of this.peers.keys()) {
-            this.peerLatency.set(peerId, rtt != null ? Math.round(rtt * 1000) : null);
+            this.peerLatency.set(peerId, this.transportRttMs);
         }
 
         for (const [consumerId, peerId] of this.consumerPeers) {

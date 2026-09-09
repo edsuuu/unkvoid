@@ -17,10 +17,13 @@ export class Broadcast {
         this.broadcasting = false;
         this.nativeActive = false;
         this.producerIds = [];
+
+        /** O video que a sala recebe. E por ele que quem transmite consegue se ver. */
+        this.videoProducerId = null;
     }
 
-    async start(quality, fps, source) {
-        await invoke('start_broadcast', { quality, fps, source });
+    async start(quality, fps, source, audio, muteCalls) {
+        await invoke('start_broadcast', { quality, fps, source, audio, muteCalls });
         this.nativeActive = true;
 
         // Vídeo e áudio caem no mesmo transport do servidor, então o endereço é um só —
@@ -40,6 +43,11 @@ export class Broadcast {
                 });
 
                 this.producerIds.push(producer.producerId);
+
+                if (kind === 'video') {
+                    this.videoProducerId = producer.producerId;
+                }
+
                 target = producer;
             }
 
@@ -60,6 +68,8 @@ export class Broadcast {
         this.broadcasting = false;
 
         const producerIds = this.producerIds.splice(0);
+
+        this.videoProducerId = null;
 
         // Parar a captura não fecha os producers já registrados no mediasoup. Fechá-los
         // primeiro avisa todos os espectadores imediatamente, sem esperar o socket cair.
