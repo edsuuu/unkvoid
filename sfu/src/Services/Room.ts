@@ -17,7 +17,7 @@ export type JoinOutcome = { peer: Peer; resumed: boolean };
  * the WebSocket, so keeping the participant here turns a network drop into a
  * hiccup instead of a call drop.
  */
-const GRACE_MS = 45_000;
+const GRACE_MS = 30_000;
 
 export class Room {
     public readonly peers = new Map<string, Peer>();

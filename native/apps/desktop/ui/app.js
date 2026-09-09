@@ -185,7 +185,10 @@ class App {
         el('room-code').value = localStorage.getItem(App.ROOM_KEY) ?? '';
         el('my-name').focus();
 
-        el('create-room').onclick = () => this.enterRoom(newRoomCode());
+        el('create-room').onclick = () => {
+            const nome = el('room-code').value.trim().toLowerCase();
+            void this.enterRoom(nome || newRoomCode());
+        };
         el('join-form').onsubmit = event => {
             event.preventDefault();
             void this.enterRoom(el('room-code').value.trim().toLowerCase());
@@ -206,7 +209,7 @@ class App {
         }
 
         if (! isRoomCode(code)) {
-            el('entry-error').textContent = 'O código tem 12 caracteres, entre letras e números.';
+            el('entry-error').textContent = 'Use 3–32 caracteres: letras, números e hífens (sem hífen no começo ou fim).';
             el('room-code').focus();
 
             return;

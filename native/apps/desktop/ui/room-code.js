@@ -6,15 +6,21 @@
  * códigos é o teto de conexões por IP do SFU, não quem sorteou a string.
  */
 
-/** 12 caracteres de a-z0-9 ≈ 4,7e18 combinações. Curto para colar no WhatsApp. */
+/** Códigos legíveis podem ser digitados nos dois ambientes; os sorteados continuam longos. */
 export const CODE_LENGTH = 12;
+export const ROOM_CODE_MIN = 3;
+export const ROOM_CODE_MAX = 32;
 
 const ALFABETO = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 /** O maior múltiplo de 36 que cabe num byte. Acima disto, o byte é descartado. */
 const LIMITE = ALFABETO.length * Math.floor(256 / ALFABETO.length);
 
-export const isRoomCode = valor => new RegExp(`^[a-z0-9]{${CODE_LENGTH}}$`).test(valor);
+export const isRoomCode = valor =>
+    typeof valor === 'string'
+    && valor.length >= ROOM_CODE_MIN
+    && valor.length <= ROOM_CODE_MAX
+    && /^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(valor);
 
 export function newRoomCode() {
     const codigo = [];
