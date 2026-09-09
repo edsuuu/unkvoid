@@ -36,6 +36,10 @@ class App {
     /** De quanto em quanto tempo procurar versão nova com o app já aberto. */
     static UPDATE_EVERY_MS = 6 * 60 * 60 * 1000;
 
+    /** Mantém o diagnóstico recente pequeno para o modal abrir sem travar o WebView. */
+    static MAX_LOG_ENTRIES = 250;
+    static MAX_LOG_CHARS = 64 * 1024;
+
     /** Onde o nome fica entre uma abertura e outra. Ninguém quer redigitar todo dia. */
     static NAME_KEY = 'unkvoid:name';
 
@@ -55,6 +59,7 @@ class App {
 
     constructor() {
         this.logs = [];
+        this.logChars = 0;
         this.log('app.start', { userAgent: navigator.userAgent, platform: navigator.platform });
         this.name = '';
         this.room = null;
@@ -69,6 +74,7 @@ class App {
         this.lastBroadcastStats = null;
         this.broadcastStatsAt = 0;
         this.mediaStatsTimers = new Map();
+        this.remoteAudios = new Map();
         this.consumingProducers = new Set();
 
         /** Grade mostra todos do mesmo tamanho; foco dá a tela toda a um só. */
@@ -291,13 +297,12 @@ class App {
         el('leave').onclick = () => this.leave();
         el('logs').onclick = () => this.openLogs();
         el('logs-close').onclick = () => { el('logs-modal').hidden = true; };
-        el('logs-clear').onclick = () => { this.logs = []; this.renderLogs(); };
-        el('logs-copy').onclick = () => this.copyLogs();
-        el('remote-volume').oninput = event => {
-            const volume = Number(event.target.value);
-            el('remote-volume-value').textContent = `${volume}%`;
-            this.setRemoteVolume(volume / 100);
+        el('logs-clear').onclick = () => {
+            this.logs = [];
+            this.logChars = 0;
+            this.renderLogs();
         };
+        el('logs-copy').onclick = () => this.copyLogs();
         el('share-cancel').onclick = () => this.closeShareModal();
         el('share-confirm').onclick = async () => {
             this.closeShareModal();
@@ -375,7 +380,7 @@ class App {
 
                 audio.srcObject = new MediaStream([consumer.track]);
                 audio.autoplay = true;
-                audio.volume = Number(el('remote-volume').value) / 100;
+                audio.volume = 1;
                 audio.onplay = () => this.log('media.audio.playing', { peerId });
                 audio.onerror = () => this.log('media.audio.error', {
                     peerId,
@@ -383,6 +388,11 @@ class App {
                 });
                 audio.dataset.remote = peerId;
                 document.body.appendChild(audio);
+                this.remoteAudios.set(peerId, audio);
+                const quadro = document.querySelector(`[data-screen="${peerId}"]`);
+                if (quadro) {
+                    this.attachAudioControl(peerId, quadro);
+                }
                 void audio.play().catch(error => this.log('media.audio.autoplay.error', {
                     peerId,
                     message: error.message ?? String(error),
@@ -408,6 +418,7 @@ class App {
         if (! stream) {
             existente?.remove();
             document.querySelector(`audio[data-remote="${from}"]`)?.remove();
+            this.remoteAudios.delete(from);
 
             if (this.focused === from) {
                 this.focused = null;
@@ -426,7 +437,12 @@ class App {
         quadro.innerHTML = '<video class="min-h-0 w-full flex-1 bg-black object-contain" autoplay playsinline></video>'
             + '<figcaption class="flex items-center gap-2 bg-panel px-3 py-1.5 text-xs text-ink">'
             + '<span class="truncate"></span>'
-            + '<span class="text-ink-dim" data-media-stats>ping -- · buffer -- · fps --</span>'
+            + '<span class="text-ink-dim" data-media-stats>buffer -- · fps --</span>'
+            + '<span class="flex items-center gap-1.5 text-ink-soft" data-audio-control hidden>'
+            + '<span aria-hidden="true">🔊</span>'
+            + '<input class="w-20 accent-brand" data-audio-volume type="range" min="0" max="100" value="100" aria-label="Volume desta transmissão">'
+            + '<span data-audio-volume-value>100%</span>'
+            + '</span>'
             + '<span class="flex-1"></span>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-focus type="button">Focar</button>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-fullscreen type="button">Tela cheia</button>'
@@ -434,6 +450,7 @@ class App {
 
         const video = quadro.querySelector('video');
         video.srcObject = stream;
+        this.attachAudioControl(from, quadro);
         video.onerror = () => this.log('media.video.error', {
             peerId: from,
             message: video.error?.message ?? `media error ${video.error?.code ?? 'unknown'}`,
@@ -464,6 +481,34 @@ class App {
         this.paintLayout();
     }
 
+    attachAudioControl(peerId, quadro) {
+        const audio = this.remoteAudios.get(peerId);
+        const control = quadro.querySelector('[data-audio-control]');
+
+        if (! audio || ! control || control.dataset.ready === 'true') {
+            if (audio && control) {
+                control.hidden = false;
+            }
+
+            return;
+        }
+
+        const input = control.querySelector('[data-audio-volume]');
+        const value = control.querySelector('[data-audio-volume-value]');
+        const volume = Math.round(audio.volume * 100);
+
+        input.value = String(volume);
+        value.textContent = `${volume}%`;
+        input.oninput = event => {
+            const next = Number(event.target.value);
+            audio.volume = next / 100;
+            value.textContent = `${next}%`;
+            this.log('media.audio.volume', { peerId, volume: next / 100 });
+        };
+        control.dataset.ready = 'true';
+        control.hidden = false;
+    }
+
     startMediaStats(peerId, video) {
         clearInterval(this.mediaStatsTimers.get(peerId));
 
@@ -489,7 +534,7 @@ class App {
             const fps = Math.round((frames - lastFrames) * 1000 / decorrido);
             const quality = video.getVideoPlaybackQuality?.();
 
-            stats.textContent = `ping ${this.sfu?.lastRttMs ?? '--'} ms · buffer ${buffer.toFixed(1)} s · fps ${fps}`;
+            stats.textContent = `buffer ${buffer.toFixed(1)} s · fps ${fps}`;
             this.log('media.stats', {
                 peerId,
                 pingMs: this.sfu?.lastRttMs ?? null,
@@ -519,13 +564,6 @@ class App {
         const timer = setInterval(atualizar, 1000);
         this.mediaStatsTimers.set(peerId, timer);
         atualizar();
-    }
-
-    setRemoteVolume(volume) {
-        document.querySelectorAll('audio[data-remote]').forEach(audio => {
-            audio.volume = volume;
-        });
-        this.log('media.audio.volume', { volume });
     }
 
     /** Uma tela ocupando tudo, ou de volta para a grade. */
@@ -749,7 +787,7 @@ class App {
             this.broadcastStatsTimer = null;
             this.lastBroadcastStats = null;
             this.broadcastStatsAt = 0;
-            document.querySelector('[data-broadcast-stats]').textContent = 'ping -- · buffer -- · fps --';
+            document.querySelector('[data-broadcast-stats]').textContent = 'ping --';
         }
     }
 
@@ -765,7 +803,7 @@ class App {
             ? Math.round((stats.captured - previous.captured) * 1000 / elapsed)
             : '--';
         const ping = this.sfu?.lastRttMs ?? '--';
-        document.querySelector('[data-broadcast-stats]').textContent = `ping ${ping} ms · buffer -- · fps ${fps}`;
+        document.querySelector('[data-broadcast-stats]').textContent = `ping ${ping} ms`;
         this.log('broadcast.stats', { ...stats, pingMs: ping, fps });
 
         if (previous) {
@@ -807,6 +845,7 @@ class App {
         this.sfu = null;
         this.broadcast = null;
         this.room = null;
+        this.remoteAudios.clear();
         this.focused = null;
         el('people-list').hidden = true;
 
@@ -818,9 +857,13 @@ class App {
     }
 
     log(event, data = {}) {
-        this.logs.push(`${new Date().toISOString()} ${event} ${JSON.stringify(data)}`);
-        if (this.logs.length > 500) {
-            this.logs.shift();
+        const line = `${new Date().toISOString()} ${event} ${JSON.stringify(data)}`;
+        this.logs.push(line);
+        this.logChars += line.length + (this.logs.length > 1 ? 1 : 0);
+
+        while (this.logs.length > App.MAX_LOG_ENTRIES || this.logChars > App.MAX_LOG_CHARS) {
+            const removed = this.logs.shift();
+            this.logChars -= removed.length + 1;
         }
     }
 
