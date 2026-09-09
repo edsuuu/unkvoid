@@ -1,6 +1,7 @@
 export const Action = {
     Join: 'join',
     Leave: 'leave',
+    RemovePeer: 'removePeer',
     CreateTransport: 'createTransport',
     ConnectTransport: 'connectTransport',
     ProducePlain: 'producePlain',

@@ -35,6 +35,8 @@ export class SfuClient extends EventTarget {
         this.pending = new Map();
         this.nextRequestId = 1;
         this.consumers = new Map();
+        this.consumerPeers = new Map();
+        this.peerLatency = new Map();
         this.peerId = null;
         this.peers = new Map();
         this.identity = null;
@@ -169,7 +171,7 @@ export class SfuClient extends EventTarget {
 
     trackPeers(event, data) {
         if (event === 'peerJoined') {
-            this.peers.set(data.peerId, { name: data.name, sharing: false });
+            this.peers.set(data.peerId, { peerId: data.peerId, name: data.name, sharing: false });
         }
 
         if (event === 'peerLeft') {
@@ -194,6 +196,7 @@ export class SfuClient extends EventTarget {
 
         if (event === 'consumerClosed') {
             this.consumers.delete(data.consumerId);
+            this.consumerPeers.delete(data.consumerId);
         }
 
         this.emit('peersChanged', [...this.peers.entries()]);
@@ -263,10 +266,11 @@ export class SfuClient extends EventTarget {
         }
 
         this.consumers.clear();
-        this.peers.set(joined.peerId, { name: joined.name, self: true, sharing: false });
+        this.peers.set(joined.peerId, { peerId: joined.peerId, name: joined.name, self: true, sharing: false });
 
         for (const peer of joined.peers) {
             this.peers.set(peer.peerId, {
+                peerId: peer.peerId,
                 name: peer.name,
                 sharing: peer.producers.some(producer => producer.source === 'screen'),
             });
@@ -318,6 +322,7 @@ export class SfuClient extends EventTarget {
         });
 
         this.consumers.set(consumer.id, consumer);
+        this.consumerPeers.set(consumer.id, peerId);
         await this.request('resumeConsumer', { consumerId: consumer.id });
 
         return { consumer, ...params };
@@ -325,6 +330,28 @@ export class SfuClient extends EventTarget {
 
     consumersHasProducer(producerId) {
         return [...this.consumers.values()].some(consumer => consumer.producerId === producerId);
+    }
+
+    async updatePeerLatency() {
+        if (! this.recvTransport) {
+            return;
+        }
+
+        const stats = await this.recvTransport.getStats();
+        const transport = [...stats.values()].find(report =>
+            report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated);
+        const rtt = transport?.currentRoundTripTime;
+
+        for (const peerId of this.peers.keys()) {
+            this.peerLatency.set(peerId, rtt != null ? Math.round(rtt * 1000) : null);
+        }
+
+        for (const [consumerId, peerId] of this.consumerPeers) {
+            const inbound = [...stats.values()].find(report =>
+                report.type === 'inbound-rtp' && report.ssrc === this.consumers.get(consumerId)?.rtpParameters?.encodings?.[0]?.ssrc);
+            const jitter = inbound?.jitter;
+            this.peerLatency.set(peerId, rtt != null ? Math.round(rtt * 1000) : jitter != null ? Math.round(jitter * 2000) : null);
+        }
     }
 
     /** Explicit departure: without this, the server treats it as a drop and the person becomes a ghost. */
@@ -340,5 +367,7 @@ export class SfuClient extends EventTarget {
         this.socket?.close();
         this.recvTransport?.close();
         this.consumers.clear();
+        this.consumerPeers.clear();
+        this.peerLatency.clear();
     }
 }
