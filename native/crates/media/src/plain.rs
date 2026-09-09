@@ -14,20 +14,23 @@
 //!
 //! SRTP is not optional: without it a screen share crosses the internet in the clear.
 
+use std::io::ErrorKind;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::thread;
+use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use rtc::rtp::codec::h264::H264Payloader;
 use rtc::rtp::codec::opus::OpusPayloader;
 use rtc::rtp::packetizer::Payloader;
-use rtc::rtp::packetizer::{Packetizer, new_packetizer};
-use rtc::rtp::sequence::{Sequencer, new_random_sequencer};
+use rtc::rtp::packetizer::{new_packetizer, Packetizer};
+use rtc::rtp::sequence::{new_random_sequencer, Sequencer};
 use rtc::shared::marshal::Marshal;
 use rtc::srtp::context::Context as SrtpContext;
 use rtc::srtp::protection_profile::ProtectionProfile;
 
-use crate::{EncodedFrame, FRAME_MS, audio::CHANNELS, audio::SAMPLE_RATE};
+use crate::{audio::CHANNELS, audio::SAMPLE_RATE, EncodedFrame, FRAME_MS};
 
 /// SSRCs the server is told about before a single packet is sent.
 pub const SSRC_VIDEO: u32 = 0x2234_5678;
@@ -43,6 +46,11 @@ const VIDEO_CLOCK: u32 = 90_000;
 /// Under the 1500-byte Ethernet MTU with room for IP, UDP and the SRTP tag. Going over
 /// it means IP fragmentation, and a single lost fragment costs the whole frame.
 const MTU: usize = 1200;
+
+/// A full local UDP buffer is transient: retrying briefly preserves a complete H.264
+/// frame, while a permanent network error still returns immediately.
+const SEND_RETRIES: usize = 8;
+const SEND_RETRY_DELAY: Duration = Duration::from_millis(2);
 
 /// The one crypto suite negotiated with the server. `AES_CM_128_HMAC_SHA1_80` on the
 /// mediasoup side: a 16-byte key plus a 14-byte salt, exchanged base64 as one blob.
@@ -233,9 +241,19 @@ impl PlainSender {
                 .encrypt_rtp(&plain)
                 .map_err(|error| anyhow!("could not protect RTP: {error}"))?;
 
-            socket
-                .send(&protected)
-                .context("could not send RTP to the SFU")?;
+            for attempt in 0..=SEND_RETRIES {
+                match socket.send(&protected) {
+                    Ok(_) => break,
+                    Err(error)
+                        if error.kind() == ErrorKind::WouldBlock && attempt < SEND_RETRIES =>
+                    {
+                        thread::sleep(SEND_RETRY_DELAY);
+                    }
+                    Err(error) => {
+                        return Err(error).context("could not send RTP to the SFU");
+                    }
+                }
+            }
         }
 
         Ok(())
