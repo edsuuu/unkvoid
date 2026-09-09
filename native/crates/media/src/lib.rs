@@ -7,14 +7,12 @@
 use capture::Quality;
 
 mod audio;
-mod peer;
 mod plain;
 
 #[cfg(target_os = "macos")]
 mod macos;
 
 pub use audio::{AudioEncoder, FRAME_MS};
-pub use peer::{PeerLink, Signal};
 pub use plain::PlainSender;
 
 #[cfg(target_os = "macos")]

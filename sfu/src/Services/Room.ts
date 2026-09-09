@@ -1,3 +1,5 @@
+import { randomUUID, randomBytes } from 'node:crypto';
+
 import type { PlainTransport, Producer, Router, SrtpParameters, WebRtcServer, WebRtcTransport, Worker } from 'mediasoup/types';
 import type { WebSocket } from 'ws';
 
@@ -20,14 +22,8 @@ const GRACE_MS = 45_000;
 export class Room {
     public readonly peers = new Map<string, Peer>();
 
-    /** Notified when an orphan’s grace period expires so the room can be released. */
+    /** Devolve a sala ao registro quando ela esvazia. O registro é quem ignora se não esvaziou. */
     public onEvicted: ((room: Room) => void) | null = null;
-
-    /** Notified when someone truly leaves so server presence can update. */
-    public onPeerGone: ((roomId: string, peerId: string) => void) | null = null;
-
-    /** Notified when someone’s signaling drops, before the grace period expires. */
-    public onPeerOrphaned: ((roomId: string, peerId: string) => void) | null = null;
 
     private readonly evictions = new Map<string, NodeJS.Timeout>();
 
@@ -44,38 +40,47 @@ export class Room {
     }
 
     /**
-     * Three paths: resume an orphaned session (media intact), terminate a session
-     * from another tab, or create one from scratch.
+     * Três caminhos: retomar uma sessão órfã (mídia intacta), encerrar a sessão anterior
+     * da mesma pessoa, ou criar uma do zero.
+     *
+     * Quem prova ser a mesma pessoa é a `resumeKey`, e não o `peerId`: o id a sala
+     * inteira recebe no `peerJoined`, então aceitá-lo como identidade deixaria qualquer
+     * um derrubar qualquer um só entrando com o id alheio.
      */
     addPeer(
-        id: string,
         name: string,
         socket: WebSocket,
-        options: { role?: Peer['role']; avatar?: string | null; resume?: boolean },
+        options: { resumeKey?: string | null; resume?: boolean } = {},
     ): JoinOutcome {
-        const previous = this.peers.get(id);
+        const previous = options.resumeKey ? this.findByResumeKey(options.resumeKey) : null;
 
         if (previous?.isOrphaned() && options.resume) {
-            this.cancelEviction(id);
+            this.cancelEviction(previous.id);
             previous.attachSocket(socket);
-            this.broadcast('peerReconnected', { peerId: id }, id);
+            this.broadcast('peerReconnected', { peerId: previous.id }, previous.id);
 
             return { peer: previous, resumed: true };
         }
 
         if (previous) {
-            this.cancelEviction(id);
-            previous.send('replaced', { reason: 'you joined this channel in another tab' });
-            this.peers.delete(id);
+            this.cancelEviction(previous.id);
+            previous.send('replaced', { reason: 'you opened this room in another window' });
+            this.peers.delete(previous.id);
             previous.close();
             previous.socket.close();
         }
 
-        const peer = new Peer(id, name, socket, options);
+        const peer = new Peer(randomUUID(), name, socket, randomBytes(16).toString('hex'));
 
         this.peers.set(peer.id, peer);
 
         return { peer, resumed: false };
+    }
+
+    private findByResumeKey(resumeKey: string): Peer | null {
+        // Varredura porque sala é coisa de dezenas, não de milhares: um índice a mais
+        // seria outra estrutura para manter em sincronia com esta.
+        return [...this.peers.values()].find(peer => peer.resumeKey === resumeKey) ?? null;
     }
 
     /**
@@ -92,14 +97,12 @@ export class Room {
         // Notify the room immediately: without this, viewers were left with the last frame
         // frozen, unaware that the broadcaster’s connection dropped.
         this.broadcast('peerConnectionLost', { peerId: peer.id }, peer.id);
-        this.onPeerOrphaned?.(this.id, peer.id);
 
         this.evictions.set(peer.id, setTimeout(() => {
             this.evictions.delete(peer.id);
 
             if (this.peers.get(peer.id) === peer && peer.isOrphaned()) {
                 this.removePeer(peer);
-                this.onEvicted?.(this);
             }
         }, GRACE_MS));
     }
@@ -140,7 +143,11 @@ export class Room {
         peer.close();
         this.peers.delete(peer.id);
         this.broadcast('peerLeft', { peerId: peer.id }, peer.id);
-        this.onPeerGone?.(this.id, peer.id);
+
+        // Sair de propósito também esvazia a sala. Sem isto, só a expiração da carência
+        // devolvia o router ao registro, e uma sala de onde todo mundo saiu no botão
+        // ficava alocada até o processo reiniciar.
+        this.onEvicted?.(this);
     }
 
     describePeers(exceptPeerId?: string): PeerDescription[] {
@@ -149,8 +156,6 @@ export class Room {
             .map(peer => ({
                 peerId: peer.id,
                 name: peer.name,
-                avatar: peer.avatar,
-                role: peer.role,
                 producers: peer.describeProducers(),
             }));
     }
@@ -178,21 +183,17 @@ export class Room {
     }
 
     /**
-     * Ingest for a broadcaster that is not a browser: the native app already encodes
-     * H.264 on the GPU and sends RTP straight to this port, with no ICE and no DTLS.
+     * Ingest de quem não é navegador: o app já codificou H.264 na GPU e manda RTP direto
+     * nesta porta, sem ICE e sem DTLS.
      *
-     * `comedia` means the transport learns the sender's address from the first packet,
-     * so the app does not need a reachable port of its own — which is the whole point,
-     * since it sits behind a home router. SRTP is not optional here: without it the
-     * screen would cross the internet in the clear.
-     */
-    /**
-     * Uma transmissão, um transport — vídeo e áudio compartilham.
+     * `comedia` faz o transport aprender o endereço do remetente no primeiro pacote, então
+     * o app não precisa de porta alcançável — que é o ponto, já que ele vive atrás do
+     * roteador de casa. SRTP não é opcional: sem ele a tela atravessaria a internet limpa.
      *
-     * O mediasoup aceita vários `produce()` no mesmo transport, e o app manda os dois de
-     * um socket só: o SSRC e o payload type já distinguem um do outro. Um transport por
-     * mídia gastava o dobro de portas UDP sem ganhar nada, e cada porta a mais é uma
-     * linha a mais na regra de firewall que alguém tem que criar à mão.
+     * Uma transmissão, um transport: vídeo e áudio dividem. O mediasoup aceita vários
+     * `produce()` no mesmo transport e o SSRC já distingue um do outro — um transport por
+     * mídia gastaria o dobro de portas UDP, e cada porta a mais é uma linha a mais na
+     * regra de firewall que alguém cria à mão.
      */
     async plainTransportFor(peer: Peer, srtpParameters: SrtpParameters): Promise<PlainTransport> {
         const existing = [...peer.plainTransports.values()].at(0);

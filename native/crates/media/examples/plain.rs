@@ -6,9 +6,9 @@
 //! way to know is to ask the server, so this joins a room, declares the broadcast, sends
 //! synthetic H.264, and waits for the server to say it is receiving.
 //!
-//! cargo run -p media --example plain -- <ws-url> <token>
+//! cargo run -p media --example plain -- <ws-url> <sala>
 //!
-//! The token is the same one the web app mints for a voice channel.
+//! A sala é um código de 12 caracteres a-z0-9, o mesmo que o app sorteia.
 
 use std::time::Duration;
 
@@ -34,8 +34,8 @@ fn frame(keyframe: bool, size: usize) -> EncodedFrame {
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let url = args.next().context("usage: plain <ws-url> <token>")?;
-    let token = args.next().context("usage: plain <ws-url> <token>")?;
+    let url = args.next().context("usage: plain <ws-url> <sala>")?;
+    let room = args.next().context("usage: plain <ws-url> <sala>")?;
 
     let (mut socket, _) = tokio_tungstenite::connect_async(&url)
         .await
@@ -53,7 +53,9 @@ async fn main() -> Result<()> {
         )
     };
 
-    socket.send(call("join", json!({ "token": token }))).await?;
+    socket
+        .send(call("join", json!({ "room": room, "name": "plain-check" })))
+        .await?;
 
     let mut sender: Option<PlainSender> = None;
     let mut pending_key: Option<[u8; 30]> = None;

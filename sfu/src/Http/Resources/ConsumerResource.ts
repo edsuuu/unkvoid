@@ -17,7 +17,6 @@ export class ConsumerResource implements Resource {
             rtpParameters: this.consumer.rtpParameters,
             peerId: this.owner.peer.id,
             name: this.owner.peer.name,
-            avatar: this.owner.peer.avatar,
             source: String(this.owner.producer.appData.source),
         };
     }

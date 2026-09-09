@@ -1,21 +1,5 @@
-const { existsSync, readFileSync } = require('node:fs');
-const { join } = require('node:path');
-
-// Secrets live in the adjacent .env (outside the repo), not in this versioned file.
-const envPath = join(__dirname, '.env');
-const fromFile = existsSync(envPath)
-    ? Object.fromEntries(
-        readFileSync(envPath, 'utf8')
-            .split('\n')
-            .filter(line => line.trim() && ! line.startsWith('#'))
-            .map(line => {
-                const index = line.indexOf('=');
-
-                return [line.slice(0, index), line.slice(index + 1)];
-            }),
-    )
-    : {};
-
+// Não há mais segredo para guardar fora do repositório: a sala é anônima e o SFU não
+// verifica assinatura nenhuma. Tudo o que ele precisa está aqui.
 module.exports = {
     apps: [
         {
@@ -31,10 +15,9 @@ module.exports = {
                 SFU_PORT: '3000',
                 SFU_ANNOUNCED_ADDRESS: '144.126.133.10',
                 SFU_MEDIA_PORT: '40000',
-                // One worker per core (the VPS has 4). Each one uses a port starting
-                // from SFU_MEDIA_PORT: 40000-40003, all allowed through the firewall.
+                // Um worker por core (a VPS tem 4). Cada um usa uma porta a partir de
+                // SFU_MEDIA_PORT: 40000-40003, todas liberadas no firewall.
                 SFU_WORKERS: '4',
-                ...fromFile,
             },
         },
     ],

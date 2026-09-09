@@ -68,10 +68,4 @@ export class Request {
 
         return value;
     }
-
-    protected integerOrNull(key: string): number | undefined {
-        const value = this.data[key];
-
-        return Number.isInteger(value) ? (value as number) : undefined;
-    }
 }

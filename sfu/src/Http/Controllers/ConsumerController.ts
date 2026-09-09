@@ -44,13 +44,4 @@ export class ConsumerController {
 
         return new StatusResource('paused');
     }
-
-    async setPreferredLayers(request: ConsumerRequest): Promise<StatusResource> {
-        await request.peer().getConsumer(request.consumerId()).setPreferredLayers({
-            spatialLayer: request.spatialLayer(),
-            temporalLayer: request.temporalLayer(),
-        });
-
-        return new StatusResource('layers-set');
-    }
 }

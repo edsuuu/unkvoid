@@ -1,54 +1,37 @@
-//! Connects capture, encoding, and transport.
+//! Liga captura, encoder e transporte.
 //!
-//! One encoder feeds N connections: the frame is compressed **once** and sent to
-//! every viewer. Encoding per viewer would overwhelm the broadcaster's machine —
-//! P2P costs upload bandwidth, not CPU.
+//! O quadro é codificado **uma vez**, na placa de vídeo, e sobe **uma vez** para o
+//! servidor, que replica para quantas pessoas estiverem assistindo. São essas duas vezes
+//! que fazem transmitir enquanto se joga não custar fps: a CPU não codifica, e o upload
+//! não cresce com a plateia.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use capture::{CaptureConfig, CaptureEvent, CaptureSource, PlatformCapturer, Quality};
-use media::{
-    AudioEncoder, EncodedFrame, EncoderConfig, PeerLink, PlainSender, PlatformEncoder, Signal,
-};
-use tokio::sync::{Mutex, mpsc};
+use media::{AudioEncoder, EncoderConfig, PlainSender, PlatformEncoder};
 
-/// Above this limit, the broadcaster's upload multiplies: 4 viewers at 1080p
-/// already need ~28 Mbps upstream. Beyond this, the SFU is more efficient.
-pub const LIMITE_P2P: usize = 3;
-
-type Peers = Arc<Mutex<HashMap<String, PeerLink>>>;
-type Sfu = Arc<Mutex<Option<PlainSender>>>;
+/// O destino, compartilhado entre quem transmite (a thread da captura) e quem o define
+/// (o comando `use_sfu`, vindo da interface).
+type Destino = Arc<Mutex<Option<PlainSender>>>;
 
 pub struct Broadcast {
     capturer: PlatformCapturer,
-    peers: Peers,
-    sfu: Sfu,
+    sfu: Destino,
     sfu_key: [u8; 30],
-    ice_servers: Vec<String>,
-    frame_rate: f64,
-    signals: mpsc::Sender<(String, Signal)>,
 }
 
 impl Broadcast {
-    /// Starts capture and the encoder. Connections are created afterward, one per viewer.
-    pub fn start(
-        quality: Quality,
-        source: CaptureSource,
-        ice_servers: Vec<String>,
-    ) -> anyhow::Result<(Self, mpsc::Receiver<(String, Signal)>)> {
+    /// Começa a capturar e a codificar. O destino entra depois, no `use_sfu`.
+    pub fn start(quality: Quality, source: CaptureSource) -> anyhow::Result<Self> {
         let encoder_config = EncoderConfig::for_quality(quality);
-        let peers: Peers = Arc::new(Mutex::new(HashMap::new()));
-
-        // The capture callback is Fn: the encoder keeps state between frames and
-        // needs interior mutability.
-        let encoder = std::sync::Mutex::new(PlatformEncoder::new(&encoder_config)?);
-        let audio = std::sync::Mutex::new(AudioEncoder::new(96_000)?);
-        let sfu: Sfu = Arc::new(Mutex::new(None));
-        let target = Arc::clone(&peers);
-        let sfu_target = Arc::clone(&sfu);
-        let runtime = tokio::runtime::Handle::current();
         let frame_rate = encoder_config.frame_rate;
+
+        // O callback da captura é `Fn`: o encoder guarda estado entre quadros e precisa
+        // de mutabilidade interior.
+        let encoder = Mutex::new(PlatformEncoder::new(&encoder_config)?);
+        let audio = Mutex::new(AudioEncoder::new(96_000)?);
+        let sfu: Destino = Arc::new(Mutex::new(None));
+        let destino_da_captura = Arc::clone(&sfu);
 
         let capturer = PlatformCapturer::start(
             &CaptureConfig {
@@ -70,14 +53,13 @@ impl Broadcast {
 
                         drop(audio);
 
-                        if packets.is_empty() {
-                            return;
+                        if let Ok(mut destino) = destino_da_captura.lock()
+                            && let Some(sender) = destino.as_mut()
+                        {
+                            for packet in &packets {
+                                let _ = sender.send_audio(packet);
+                            }
                         }
-
-                        let peers = Arc::clone(&target);
-                        let sfu = Arc::clone(&sfu_target);
-
-                        runtime.spawn(async move { fan_out_audio(&peers, &sfu, packets).await });
 
                         return;
                     }
@@ -98,86 +80,28 @@ impl Broadcast {
                     }
                 };
 
-                let peers = Arc::clone(&target);
-                let sfu = Arc::clone(&sfu_target);
-
-                runtime.spawn(async move { fan_out(&peers, &sfu, encoded, frame_rate).await });
+                // Enviado aqui mesmo, na thread da captura: mandar UDP é uma syscall, e
+                // o socket é não-bloqueante, então o pior caso é perder um pacote em vez
+                // de segurar o próximo quadro. Antes cada quadro nascia uma task do
+                // tokio, sessenta vezes por segundo, para fazer isto.
+                if let Ok(mut destino) = destino_da_captura.lock()
+                    && let Some(sender) = destino.as_mut()
+                {
+                    let _ = sender.send_frame(&encoded, frame_rate);
+                }
             },
         )?;
 
-        let (emissor, receptor) = mpsc::channel(128);
-
-        Ok((
-            Self {
-                capturer,
-                peers,
-                sfu,
-                sfu_key: PlainSender::generate_key(),
-                ice_servers,
-                frame_rate: encoder_config.frame_rate,
-                signals: emissor,
-            },
-            receptor,
-        ))
+        Ok(Self {
+            capturer,
+            sfu,
+            sfu_key: PlainSender::generate_key(),
+        })
     }
 
-    /// Creates a viewer connection and returns the offer they need to receive.
-    pub async fn offer_to(&self, peer_id: String) -> anyhow::Result<String> {
-        let mut peers = self.peers.lock().await;
-
-        if peers.len() >= LIMITE_P2P {
-            anyhow::bail!("P2P supports only {LIMITE_P2P} viewers — use the SFU above that limit");
-        }
-
-        let (peer, mut signals) =
-            PeerLink::connect(self.ice_servers.clone(), self.frame_rate).await?;
-        let offer = peer.create_offer().await?;
-
-        peers.insert(peer_id.clone(), peer);
-
-        // Each connection has its own candidates, and each goes only to its owner.
-        let out = self.signals.clone();
-
-        tokio::spawn(async move {
-            while let Some(signal) = signals.recv().await {
-                if out.send((peer_id.clone(), signal)).await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        Ok(offer)
-    }
-
-    pub async fn accept_answer(&self, peer_id: &str, sdp: String) -> anyhow::Result<()> {
-        let mut peers = self.peers.lock().await;
-
-        peers
-            .get_mut(peer_id)
-            .ok_or_else(|| anyhow::anyhow!("no connection for {peer_id}"))?
-            .accept_answer(sdp)
-            .await
-    }
-
-    pub async fn add_candidate(&self, peer_id: &str, json: String) -> anyhow::Result<()> {
-        let peers = self.peers.lock().await;
-
-        peers
-            .get(peer_id)
-            .ok_or_else(|| anyhow::anyhow!("no connection for {peer_id}"))?
-            .add_candidate(json)
-            .await
-    }
-
-    pub async fn drop_peer(&self, peer_id: &str) {
-        if let Some(peer) = self.peers.lock().await.remove(peer_id) {
-            let _ = peer.close().await;
-        }
-    }
-
-    /// What the server needs before the first packet, including the key that protects
-    /// it. The key is generated when the broadcast starts and never changes: it is the
-    /// same context that numbers the packets.
+    /// O que o servidor precisa saber antes do primeiro pacote, inclusive a chave que o
+    /// protege. A chave nasce com a transmissão e não muda: é o mesmo contexto que
+    /// numera os pacotes.
     pub fn sfu_offer(&self, kind: &str) -> serde_json::Value {
         serde_json::json!({
             "rtpParameters": PlainSender::rtp_parameters(kind),
@@ -188,66 +112,29 @@ impl Broadcast {
         })
     }
 
-    /// Switches the broadcast to the server. From here the upload is constant no matter
-    /// how many people watch — which is the whole reason to give up the direct path.
-    pub async fn use_sfu(&self, address: String) -> anyhow::Result<()> {
+    /// Aponta a transmissão para a porta que o servidor devolveu.
+    pub fn use_sfu(&self, address: String) -> anyhow::Result<()> {
         let sender = PlainSender::connect(address.as_str(), &self.sfu_key)?;
 
-        *self.sfu.lock().await = Some(sender);
-
-        for (_, peer) in self.peers.lock().await.drain() {
-            let _ = peer.close().await;
-        }
+        *self
+            .sfu
+            .lock()
+            .map_err(|_| anyhow::anyhow!("broadcast state is poisoned"))? = Some(sender);
 
         Ok(())
-    }
-
-    pub async fn viewers(&self) -> usize {
-        self.peers.lock().await.len()
     }
 
     pub fn frames(&self) -> u64 {
         self.capturer.frames_captured()
     }
 
-    pub async fn stop(&mut self) -> anyhow::Result<()> {
+    pub fn stop(&mut self) -> anyhow::Result<()> {
         self.capturer.stop()?;
 
-        for (_, peer) in self.peers.lock().await.drain() {
-            let _ = peer.close().await;
+        if let Ok(mut destino) = self.sfu.lock() {
+            *destino = None;
         }
-
-        *self.sfu.lock().await = None;
 
         Ok(())
-    }
-}
-
-/// The same frame goes to everyone. A failure for one viewer does not affect the others.
-///
-/// Only one of the two paths is ever populated: turning on the SFU closes the direct
-/// connections, because uploading to both is exactly the cost the SFU exists to avoid.
-async fn fan_out(peers: &Peers, sfu: &Sfu, frame: EncodedFrame, frame_rate: f64) {
-    for peer in peers.lock().await.values() {
-        let _ = peer.send_frame(&frame).await;
-    }
-
-    if let Some(sender) = sfu.lock().await.as_mut() {
-        let _ = sender.send_frame(&frame, frame_rate);
-    }
-}
-
-/// Audio follows the same path: compressed once and sent to everyone.
-async fn fan_out_audio(peers: &Peers, sfu: &Sfu, packets: Vec<Vec<u8>>) {
-    for peer in peers.lock().await.values() {
-        for packet in &packets {
-            let _ = peer.send_audio(packet).await;
-        }
-    }
-
-    if let Some(sender) = sfu.lock().await.as_mut() {
-        for packet in &packets {
-            let _ = sender.send_audio(packet);
-        }
     }
 }
