@@ -69,7 +69,7 @@ fn interleave(sample: &CMSampleBuffer) -> Option<Vec<f32>> {
         return None;
     }
 
-    let planos: Vec<&[f32]> = (0..channels)
+    let planes: Vec<&[f32]> = (0..channels)
         .filter_map(|index| list.buffer(index))
         .map(|buffer| {
             let bytes = buffer.data();
@@ -85,16 +85,16 @@ fn interleave(sample: &CMSampleBuffer) -> Option<Vec<f32>> {
         })
         .collect();
 
-    let frames = planos.iter().map(|plano| plano.len()).min()?;
-    let mut intercalado = Vec::with_capacity(frames * planos.len());
+    let frames = planes.iter().map(|plano| plano.len()).min()?;
+    let mut interleaved = Vec::with_capacity(frames * planes.len());
 
     for frame in 0..frames {
-        for plano in &planos {
-            intercalado.push(plano[frame]);
+        for plano in &planes {
+            interleaved.push(plano[frame]);
         }
     }
 
-    Some(intercalado)
+    Some(interleaved)
 }
 
 fn frame_size(sample: &CMSampleBuffer) -> (u32, u32) {
@@ -190,18 +190,18 @@ impl MacCapturer {
 
         // O macOS já sabe codificar JPEG; escrever um encoder aqui seria refazer o que
         // o sistema faz melhor. O arquivo é temporário e some logo em seguida.
-        let caminho =
+        let path =
             std::env::temp_dir().join(format!("unkvoid-preview-{}.jpg", std::process::id()));
-        let texto = caminho.to_string_lossy().to_string();
+        let path_text = path.to_string_lossy().to_string();
 
         image
-            .save(&texto, ImageFormat::Jpeg(0.7))
+            .save(&path_text, ImageFormat::Jpeg(0.7))
             .map_err(|error| CaptureError::Platform(error.to_string()))?;
 
         let bytes =
-            std::fs::read(&caminho).map_err(|error| CaptureError::Platform(error.to_string()))?;
+            std::fs::read(&path).map_err(|error| CaptureError::Platform(error.to_string()))?;
 
-        let _ = std::fs::remove_file(&caminho);
+        let _ = std::fs::remove_file(&path);
 
         Ok(bytes)
     }
@@ -236,10 +236,36 @@ impl MacCapturer {
                 }
                 .ok_or(CaptureError::NoDisplay)?;
 
-                SCContentFilter::create()
+                // Só o filtro de display aceita exclusão por aplicativo. Quem escolheu
+                // uma janela só já não leva a do Discord junto de qualquer jeito.
+                let muted_apps: Vec<SCRunningApplication> = if config.mute_listed_apps {
+                    content
+                        .applications()
+                        .into_iter()
+                        .filter(|app| {
+                            CaptureConfig::MUTED_APPS.contains(&app.bundle_identifier().as_str())
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+                let muted_refs: Vec<&SCRunningApplication> = muted_apps.iter().collect();
+
+                let filter_builder = SCContentFilter::create()
                     .with_display(&display)
-                    .with_excluding_windows(&[])
-                    .build()
+                    .with_excluding_windows(&[]);
+
+                if muted_refs.is_empty() {
+                    filter_builder.build()
+                } else {
+                    tracing::info!(
+                        aplicativos = muted_refs.len(),
+                        "silenciando o áudio de aplicativos da transmissão",
+                    );
+
+                    filter_builder.with_excluding_applications(&muted_refs, &[]).build()
+                }
             }
         };
 
