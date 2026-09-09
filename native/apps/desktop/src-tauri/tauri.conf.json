@@ -43,8 +43,8 @@
       "icons/icon.ico"
     ],
     "category": "SocialNetworking",
-    "shortDescription": "Voice, video, and screen sharing",
-    "longDescription": "Unkvoid: desktop client with native screen capture, no browser bar, and system audio.",
+    "shortDescription": "Compartilhar a tela sem perder fps",
+    "longDescription": "Unkvoid: um nome, um codigo de sala, e a tela. Captura nativa, encoder da placa de video, sem barra de navegador.",
     "macOS": {
       "minimumSystemVersion": "13.0"
     },
@@ -72,13 +72,6 @@
       ],
       "windows": {
         "installMode": "passive"
-      }
-    },
-    "deep-link": {
-      "desktop": {
-        "schemes": [
-          "discord2"
-        ]
       }
     }
   }

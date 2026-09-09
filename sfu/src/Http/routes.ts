@@ -3,34 +3,22 @@ import type { Resource, Session } from '../types.js';
 import type { ConsumerController } from './Controllers/ConsumerController.js';
 import type { JoinController } from './Controllers/JoinController.js';
 import type { LeaveController } from './Controllers/LeaveController.js';
-import type { PresenceController } from './Controllers/PresenceController.js';
-import type { ModerationController } from './Controllers/ModerationController.js';
 import type { ProducerController } from './Controllers/ProducerController.js';
-import type { StateController } from './Controllers/StateController.js';
-import type { SignalController } from './Controllers/SignalController.js';
 import type { TransportController } from './Controllers/TransportController.js';
 import { ConsumeRequest } from './Requests/ConsumeRequest.js';
 import { ConsumerRequest } from './Requests/ConsumerRequest.js';
 import { JoinRequest } from './Requests/JoinRequest.js';
-import { ModerationRequest } from './Requests/ModerationRequest.js';
-import { ProduceRequest } from './Requests/ProduceRequest.js';
 import { ProducePlainRequest } from './Requests/ProducePlainRequest.js';
 import { ProducerRequest } from './Requests/ProducerRequest.js';
 import { Request } from './Requests/Request.js';
-import { SignalRequest } from './Requests/SignalRequest.js';
-import { StateRequest } from './Requests/StateRequest.js';
 import { TransportRequest } from './Requests/TransportRequest.js';
 
 export type Controllers = {
     join: JoinController;
     leave: LeaveController;
-    presence: PresenceController;
-    signal: SignalController;
-    state: StateController;
     transport: TransportController;
     producer: ProducerController;
     consumer: ConsumerController;
-    moderation: ModerationController;
 };
 
 type Route = {
@@ -53,19 +41,6 @@ export const routes = (controllers: Controllers): Record<ActionName, Route> => (
         build: (data, session) => new Request(data, session),
         handle: request => controllers.leave.handle(request),
     },
-    [Action.WatchServer]: {
-        guest: true,
-        build: (data, session) => new JoinRequest(data, session),
-        handle: request => controllers.presence.watch(request),
-    },
-    [Action.State]: {
-        build: (data, session) => new StateRequest(data, session),
-        handle: request => controllers.state.handle(request),
-    },
-    [Action.Signal]: {
-        build: (data, session) => new SignalRequest(data, session),
-        handle: request => controllers.signal.handle(request),
-    },
     [Action.CreateTransport]: {
         build: (data, session) => new Request(data, session),
         handle: request => controllers.transport.create(request),
@@ -73,10 +48,6 @@ export const routes = (controllers: Controllers): Record<ActionName, Route> => (
     [Action.ConnectTransport]: {
         build: (data, session) => new TransportRequest(data, session),
         handle: request => controllers.transport.connect(request),
-    },
-    [Action.Produce]: {
-        build: (data, session) => new ProduceRequest(data, session),
-        handle: request => controllers.producer.store(request),
     },
     [Action.ProducePlain]: {
         build: (data, session) => new ProducePlainRequest(data, session),
@@ -97,17 +68,5 @@ export const routes = (controllers: Controllers): Record<ActionName, Route> => (
     [Action.PauseConsumer]: {
         build: (data, session) => new ConsumerRequest(data, session),
         handle: request => controllers.consumer.pause(request),
-    },
-    [Action.SetPreferredLayers]: {
-        build: (data, session) => new ConsumerRequest(data, session),
-        handle: request => controllers.consumer.setPreferredLayers(request),
-    },
-    [Action.StopBroadcast]: {
-        build: (data, session) => new ModerationRequest(data, session),
-        handle: request => controllers.moderation.stopBroadcast(request),
-    },
-    [Action.DisconnectPeer]: {
-        build: (data, session) => new ModerationRequest(data, session),
-        handle: request => controllers.moderation.disconnect(request),
     },
 });

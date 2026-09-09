@@ -1,48 +1,31 @@
 import { ValidationException } from '../../Exceptions/ApiException.js';
-import type { PresenceRegistry } from '../../Services/PresenceRegistry.js';
 import type { RoomRegistry } from '../../Services/RoomRegistry.js';
-import type { TokenVerifier } from '../../Services/TokenVerifier.js';
 import type { JoinRequest } from '../Requests/JoinRequest.js';
 import { JoinResource } from '../Resources/JoinResource.js';
 
 export class JoinController {
-    constructor(
-        private readonly registry: RoomRegistry,
-        private readonly tokens: TokenVerifier,
-        private readonly presence: PresenceRegistry,
-    ) {}
+    constructor(private readonly registry: RoomRegistry) {}
 
     async handle(request: JoinRequest): Promise<JoinResource> {
-        // Without this guard, rejoining on the same socket would make session replacement
-        // close its own socket before responding.
+        // Sem esta guarda, entrar de novo no mesmo socket faria a substituição de sessão
+        // fechar o próprio socket antes de responder.
         if (request.session.peer) {
             throw new ValidationException('this socket has already joined a room');
         }
 
-        const claims = this.tokens.verify(request.token());
-        const room = await this.registry.findOrCreate(claims.room);
+        const room = await this.registry.findOrCreate(request.roomCode());
 
-        const { peer, resumed } = room.addPeer(claims.sub, claims.name ?? 'anonymous', request.session.socket, {
-            role: claims.role,
-            avatar: claims.avatar ?? null,
+        const { peer, resumed } = room.addPeer(request.name(), request.session.socket, {
+            resumeKey: request.resumeKey(),
             resume: request.wantsResume(),
         });
 
         request.session.room = room;
         request.session.peer = peer;
 
-        this.presence.link(room.id, claims.server);
-        this.presence.enter(room.id, peer.id, peer.name, peer.avatar);
-        this.presence.setReconnecting(room.id, peer.id, false);
-
-        // A resume is not new to the room: nobody left; signaling simply returned.
+        // Retomada não é novidade para a sala: ninguém saiu, a sinalização é que voltou.
         if (! resumed) {
-            room.broadcast('peerJoined', {
-                peerId: peer.id,
-                name: peer.name,
-                avatar: peer.avatar,
-                role: peer.role,
-            }, peer.id);
+            room.broadcast('peerJoined', { peerId: peer.id, name: peer.name }, peer.id);
         }
 
         return new JoinResource(peer, room, resumed);

@@ -1,7 +1,7 @@
-import { SfuClient } from '@voice/SfuClient.js';
+import { SfuClient } from './SfuClient.js';
 
-import { Api } from './api.js';
 import { Broadcast } from './broadcast.js';
+import { isRoomCode, newRoomCode } from './room-code.js';
 
 const el = id => document.getElementById(id);
 
@@ -39,9 +39,19 @@ class App {
     /** Onde o nome fica entre uma abertura e outra. Ninguém quer redigitar todo dia. */
     static NAME_KEY = 'unkvoid:name';
 
-    constructor() {
-        this.api = new Api(() => this.showOffline());
+    /**
+     * O único servidor. VITE_SERVER aponta um build local para uma pilha local, e o
+     * override no localStorage serve para cutucar um build já pronto sem recompilar.
+     */
+    static SERVER = import.meta.env.VITE_SERVER ?? localStorage.getItem('server') ?? 'https://discord.unkvoid.com';
 
+    /** A sinalização mora no mesmo host, atrás do mesmo TLS. */
+    static socketUrl() {
+        return `${App.SERVER.replace(/^http/, 'ws')}/sfu`;
+    }
+
+    constructor() {
+        this.name = '';
         this.room = null;
         this.sfu = null;
         this.broadcast = null;
@@ -123,7 +133,7 @@ class App {
 
     async serverAnswered() {
         try {
-            const response = await fetch(`${Api.BASE}/api/health`);
+            const response = await fetch(`${App.SERVER}/health`);
 
             if (! response.ok) {
                 throw new Error(`o servidor respondeu ${response.status}`);
@@ -160,14 +170,14 @@ class App {
         el('my-name').value = localStorage.getItem(App.NAME_KEY) ?? '';
         el('my-name').focus();
 
-        el('create-room').onclick = () => this.enterRoom(null);
+        el('create-room').onclick = () => this.enterRoom(newRoomCode());
         el('join-form').onsubmit = event => {
             event.preventDefault();
             void this.enterRoom(el('room-code').value.trim().toLowerCase());
         };
     }
 
-    /** Sem código, o servidor sorteia uma sala nova. Com código, entra na de alguém. */
+    /** Criar sorteia um código novo; entrar usa o que a pessoa colou. */
     async enterRoom(code) {
         const name = el('my-name').value.trim();
 
@@ -180,15 +190,17 @@ class App {
             return;
         }
 
-        localStorage.setItem(App.NAME_KEY, name);
-
-        try {
-            this.room = await this.api.room(name, code || null);
-        } catch (failure) {
-            el('entry-error').textContent = failure.message;
+        if (! isRoomCode(code)) {
+            el('entry-error').textContent = 'O código tem 12 caracteres, entre letras e números.';
+            el('room-code').focus();
 
             return;
         }
+
+        localStorage.setItem(App.NAME_KEY, name);
+
+        this.name = name;
+        this.room = code;
 
         await this.connect();
     }
@@ -196,8 +208,8 @@ class App {
     async connect() {
         el('entry-screen').hidden = true;
         el('room').hidden = false;
-        el('copy-code').textContent = this.room.room;
-        el('empty-code').textContent = this.room.room;
+        el('copy-code').textContent = this.room;
+        el('empty-code').textContent = this.room;
         el('room-people').textContent = 'conectando…';
 
         this.paintLayout();
@@ -211,10 +223,7 @@ class App {
 
             this.broadcast = new Broadcast(this.sfu);
 
-            const joined = await this.sfu.connect(
-                this.room.url,
-                async () => (await this.api.room(el('my-name').value.trim(), this.room.room)).token,
-            );
+            const joined = await this.sfu.connect(App.socketUrl(), { room: this.room, name: this.name });
 
             // Quem já estava transmitindo antes de você chegar não emite `newProducer`:
             // sem varrer a lista inicial, você entra numa sala com telas ao vivo e não vê
@@ -248,9 +257,9 @@ class App {
     /** O código só serve se chegar ao amigo, então copiar é um clique e um aviso. */
     async copyCode() {
         try {
-            await navigator.clipboard.writeText(this.room.room);
+            await navigator.clipboard.writeText(this.room);
             el('copy-code').textContent = 'copiado!';
-            setTimeout(() => { el('copy-code').textContent = this.room.room; }, 1200);
+            setTimeout(() => { el('copy-code').textContent = this.room; }, 1200);
         } catch {
             this.fail('não deu para copiar — selecione o código à mão.');
         }

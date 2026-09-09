@@ -2,18 +2,14 @@ import type { Request } from '../Requests/Request.js';
 import { StatusResource } from '../Resources/StatusResource.js';
 
 export class LeaveController {
-    constructor(private readonly onPeerGone: (roomId: string, peerId: string) => void) {}
-
     /**
-     * Intentional departure. Without this, the server would treat it as a drop and the person would remain
-     * a ghost in the list for the 45-second grace period.
+     * Saída de propósito. Sem isto o servidor trataria como queda e a pessoa continuaria
+     * fantasma na lista pelos 45 segundos de carência.
      */
     handle(request: Request): StatusResource {
         const room = request.room();
-        const peer = request.peer();
 
-        room.onPeerGone = this.onPeerGone;
-        room.removePeer(peer);
+        room.removePeer(request.peer());
         request.session.room = null;
         request.session.peer = null;
 

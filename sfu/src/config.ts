@@ -7,7 +7,11 @@ export const config = {
     listenPort: Number(process.env.SFU_PORT ?? 3000),
     path: process.env.SFU_PATH ?? '/sfu',
     announcedAddress: process.env.SFU_ANNOUNCED_ADDRESS ?? '127.0.0.1',
-    tokenSecret: process.env.SFU_SECRET ?? '',
+
+    // Teto de conexões novas por IP por minuto. A sala é anônima, então o que impede
+    // varrer códigos é o custo de tentar — cada tentativa precisa de um socket novo.
+    // A verificação sobe um punhado de clientes de uma vez e levanta este número.
+    connectionsPerMinute: Number(process.env.SFU_CONNECTIONS_PER_MINUTE ?? 20),
 
     // One port for all media (WebRtcServer multiplexes transports).
     // mediasoup is ICE Lite: it never initiates a connection, only responds. Behind a firewall

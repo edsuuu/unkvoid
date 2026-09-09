@@ -1,14 +1,8 @@
 import type { Consumer, PlainTransport, Producer, WebRtcTransport } from 'mediasoup/types';
 import type { WebSocket } from 'ws';
 
-import { canModerate, Role, type RoleName } from '../Enums/Role.js';
 import { NotFoundException } from '../Exceptions/ApiException.js';
 import type { ProducerDescription } from '../types.js';
-
-type PeerOptions = {
-    role?: RoleName;
-    avatar?: string | null;
-};
 
 export class Peer {
     public socket: WebSocket;
@@ -25,19 +19,14 @@ export class Peer {
 
     public readonly consumers = new Map<string, Consumer>();
 
-    public readonly role: RoleName;
-
-    public readonly avatar: string | null;
-
     constructor(
         public readonly id: string,
         public readonly name: string,
         socket: WebSocket,
-        options: PeerOptions = {},
+        /** Segredo desta sessão: quem o apresenta de volta é a mesma pessoa, e mais ninguém. */
+        public readonly resumeKey: string,
     ) {
         this.socket = socket;
-        this.role = options.role ?? Role.Member;
-        this.avatar = options.avatar ?? null;
     }
 
     /**
@@ -92,10 +81,6 @@ export class Peer {
             kind: producer.kind,
             source: String(producer.appData.source),
         }));
-    }
-
-    canModerate(): boolean {
-        return canModerate(this.role);
     }
 
     closeProducers(): void {

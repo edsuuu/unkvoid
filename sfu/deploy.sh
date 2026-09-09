@@ -11,7 +11,7 @@ pnpm run build
 
 echo "[INFO] uploading to $REMOTE:$TARGET"
 rsync -az --exclude node_modules \
-    ./dist ./check.mjs ./.env.example ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ./ecosystem.config.cjs \
+    ./dist ./check.mjs ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ./ecosystem.config.cjs \
     "$REMOTE:$TARGET/"
 
 # Note: pnpm 11 ignores onlyBuiltDependencies and still EXITS WITH AN ERROR for this,

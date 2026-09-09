@@ -41,23 +41,13 @@ window.__TAURI__ = {
     event: { listen: async () => () => {} },
 };
 
-// Servidor fingido: `/api/health` responde, `/api/rooms` sorteia um código. O SFU de
+// Servidor fingido: só o `/health`, que é tudo o que o app pede por HTTP. O SFU de
 // verdade não entra aqui — o que se exercita é a interface.
 const fetchReal = window.fetch.bind(window);
 
 window.fetch = async (url, opcoes) => {
-    const texto = String(url);
-
-    if (texto.endsWith('/api/health')) {
+    if (String(url).endsWith('/health')) {
         return new Response('{"ok":true}', { status: 200 });
-    }
-
-    if (texto.endsWith('/api/rooms')) {
-        const corpo = JSON.parse(opcoes?.body ?? '{}');
-        const sala = corpo.room ?? [...crypto.getRandomValues(new Uint8Array(6))]
-            .map(b => b.toString(16).padStart(2, '0')).join('');
-
-        return new Response(JSON.stringify({ room: sala, url: 'ws://localhost:9999/sfu', token: 'fake' }), { status: 200 });
     }
 
     return fetchReal(url, opcoes);

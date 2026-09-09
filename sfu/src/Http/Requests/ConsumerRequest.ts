@@ -8,12 +8,4 @@ export class ConsumerRequest extends Request {
     consumerId(): string {
         return this.string('consumerId');
     }
-
-    spatialLayer(): number {
-        return this.integerOrNull('spatialLayer') ?? 2;
-    }
-
-    temporalLayer(): number | undefined {
-        return this.integerOrNull('temporalLayer');
-    }
 }

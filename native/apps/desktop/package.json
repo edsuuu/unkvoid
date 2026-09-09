@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "check": "python3 check-ui.py && node check-broadcast.mjs",
+    "check": "python3 check-ui.py && node check-room-code.mjs && node check-broadcast.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

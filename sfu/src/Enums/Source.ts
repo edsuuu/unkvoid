@@ -1,6 +1,4 @@
 export const Source = {
-    Microphone: 'mic',
-    Camera: 'camera',
     Screen: 'screen',
     ScreenAudio: 'screenAudio',
 } as const;

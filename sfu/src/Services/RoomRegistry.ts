@@ -73,6 +73,8 @@ export class RoomRegistry {
         const slot = this.leastLoadedSlot();
         const room = await Room.create(slot.worker, slot.webRtcServer, roomId);
 
+        room.onEvicted = empty => this.release(empty);
+
         slot.rooms += 1;
         this.rooms.set(roomId, room);
         this.slotByRoom.set(roomId, slot);

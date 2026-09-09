@@ -1,28 +1,24 @@
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage } from 'node:http';
 
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 
 import { config } from '../config.js';
-import { PresenceRegistry } from '../Services/PresenceRegistry.js';
 import { RoomRegistry } from '../Services/RoomRegistry.js';
-import { TokenVerifier } from '../Services/TokenVerifier.js';
 import type { Session } from '../types.js';
 import { Kernel } from './Kernel.js';
 
 type Payload = { id?: number; action?: string; data?: Record<string, unknown> };
 
+const WINDOW_MS = 60_000;
+
 export class Server {
     private readonly registry = new RoomRegistry();
 
-    private readonly presence = new PresenceRegistry();
-
-    private readonly kernel: Kernel;
+    private readonly kernel = new Kernel(this.registry);
 
     private readonly sessions = new Map<WebSocket, Session>();
 
-    constructor() {
-        this.kernel = new Kernel(this.registry, new TokenVerifier(config.tokenSecret), this.presence);
-    }
+    private readonly recent = new Map<string, number[]>();
 
     async start(): Promise<void> {
         await this.registry.boot();
@@ -39,20 +35,46 @@ export class Server {
         });
 
         new WebSocketServer({ server: http, path: config.path })
-            .on('connection', socket => this.accept(socket));
+            .on('connection', (socket, request) => this.accept(socket, request));
 
         http.listen(config.listenPort, config.listenHost, () =>
             console.log(`[INFO] SFU em ${config.listenHost}:${config.listenPort}${config.path} · media on port ${config.mediaPort}`));
     }
 
-    private accept(socket: WebSocket): void {
-        const session: Session = { socket, room: null, peer: null, watching: null };
+    private accept(socket: WebSocket, request: IncomingMessage): void {
+        if (this.tooMany(addressOf(request))) {
+            socket.close(1013, 'too many connections — try again in a minute');
+
+            return;
+        }
+
+        const session: Session = { socket, room: null, peer: null };
 
         this.sessions.set(socket, session);
 
         socket.on('message', raw => void this.handle(session, raw));
         socket.on('close', () => this.release(session));
         socket.on('error', error => console.error('[ERROR] socket', error.message));
+    }
+
+    private tooMany(address: string): boolean {
+        const now = Date.now();
+        const hits = (this.recent.get(address) ?? []).filter(at => now - at < WINDOW_MS);
+
+        hits.push(now);
+        this.recent.set(address, hits);
+
+        // ponytail: varre o mapa inteiro quando ele cresce. Um LRU só valeria a pena na
+        // ordem de milhares de IPs por minuto, que não é o tamanho disto.
+        if (this.recent.size > 1000) {
+            for (const [known, times] of this.recent) {
+                if (times.every(at => now - at >= WINDOW_MS)) {
+                    this.recent.delete(known);
+                }
+            }
+        }
+
+        return hits.length > config.connectionsPerMinute;
     }
 
     private async handle(session: Session, raw: RawData): Promise<void> {
@@ -82,19 +104,23 @@ export class Server {
     private release(session: Session): void {
         this.sessions.delete(session.socket);
 
-        if (session.watching) {
-            this.presence.unwatch(session.socket, session.watching);
-        }
-
         if (! session.room || ! session.peer) {
             return;
         }
 
-        // Do not destroy immediately: media remains alive and the person has a window to
-        // reconnect signaling without dropping from the call.
-        session.room.onEvicted = room => this.registry.release(room);
-        session.room.onPeerGone = (roomId, peerId) => this.presence.leave(roomId, peerId);
-        session.room.onPeerOrphaned = (roomId, peerId) => this.presence.setReconnecting(roomId, peerId, true);
+        // Não destrói na hora: a mídia continua viva e a pessoa tem uma janela para
+        // reconectar a sinalização sem cair da chamada.
         session.room.orphanPeer(session.peer);
     }
 }
+
+/**
+ * O IP de verdade vem do nginx. Confiar no cabeçalho só é seguro porque o SFU escuta em
+ * 127.0.0.1: quem chega aqui já passou pelo proxy, e ninguém fala com ele direto.
+ */
+const addressOf = (request: IncomingMessage): string => {
+    const forwarded = request.headers['x-forwarded-for'];
+    const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim();
+
+    return first || request.socket.remoteAddress || 'desconhecido';
+};

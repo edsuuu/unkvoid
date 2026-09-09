@@ -96,6 +96,13 @@ impl PlainSender {
             .connect(server)
             .context("could not point the socket at the SFU")?;
 
+        // Quem manda é a thread da captura. Se o buffer do socket encher, bloquear ali
+        // seguraria o próximo quadro — e para vídeo ao vivo perder um pacote custa muito
+        // menos do que perder fps.
+        socket
+            .set_nonblocking(true)
+            .context("could not put the SFU socket in non-blocking mode")?;
+
         let srtp = SrtpContext::new(
             &key[..KEY_LEN],
             &key[KEY_LEN..],

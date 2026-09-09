@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "src/server.js",
+  "description": "Unkvoid: o relé de mídia (SFU)",
+  "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
@@ -14,12 +15,6 @@
     "mediasoup": "^3.26.0",
     "ws": "^8.18.0"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "mediasoup"
-    ]
-  },
-  "description": "Unkvoid centralised media API (SFU)",
   "devDependencies": {
     "typescript": "^5.9.0",
     "@types/node": "^24.0.0",

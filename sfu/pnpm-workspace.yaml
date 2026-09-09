@@ -1,2 +1,4 @@
-onlyBuiltDependencies:
-  - mediasoup
+# O mediasoup compila um binário C++ na instalação. Sem esta permissão o pnpm pula o
+# passo em silêncio e o worker não existe — o SFU sobe e morre no primeiro `boot()`.
+allowBuilds:
+  mediasoup: true

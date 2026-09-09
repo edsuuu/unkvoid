@@ -17,11 +17,5 @@ apple-cf = { version = "0.9", features = ["cv"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-capture = "2"
 
-
-
 [dev-dependencies]
 tracing-subscriber.workspace = true
-
-[[example]]
-name = "spike"
-path = "examples/spike.rs"

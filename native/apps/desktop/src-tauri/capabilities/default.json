@@ -8,12 +8,6 @@
   "permissions": [
     "core:default",
     "updater:default",
-    "process:allow-restart",
-    "deep-link:default",
-    "opener:allow-open-url",
-    "opener:allow-default-urls",
-    "autostart:allow-enable",
-    "autostart:allow-disable",
-    "autostart:allow-is-enabled"
+    "process:allow-restart"
   ]
 }
