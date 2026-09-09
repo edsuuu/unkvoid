@@ -1,0 +1,250 @@
+# Estado do projeto — o que falta e por quê
+
+> Escrito em 08/09/2026, no fim de uma sessão longa, para quem pegar o trabalho depois.
+> O [README.md](README.md) diz o que o projeto é e como buildar. Este arquivo diz **onde
+> a coisa parou**, o que está provado, o que só compila, e o que ainda não existe.
+
+## O objetivo, para não se perder
+
+Compartilhar a tela **sem perder fps no jogo**. Todo o resto é consequência disso.
+
+No navegador o encoder de vídeo roda na CPU, então o jogo e a compressão disputam o mesmo
+processador e a transmissão cai para 1 fps. O app existe para usar o chip de codificação
+da placa de vídeo. A linha de montagem é:
+
+```
+captura → textura na GPU → encoder de hardware → 1 quadro → SFU → N espectadores
+```
+
+O quadro nunca desce para a memória do processador antes de ser comprimido, é comprimido
+**uma vez** e sobe **uma vez**. Qualquer mudança que quebre uma dessas três coisas está
+desfazendo o projeto.
+
+## Onde o trabalho está
+
+Branch **`limpeza-so-o-sfu`**, empurrada para o GitHub. Dois commits sobre a `main`:
+
+| Commit | O quê |
+|---|---|
+| `7c6dcc1` | Sai o Laravel, sai o P2P, e a reconexão passa a funcionar |
+| `d3629f4` | Windows enfim transmite: encoder de hardware por Media Foundation |
+
+A `main` **não** foi mexida. Para juntar: `git checkout main && git merge limpeza-so-o-sfu`.
+
+## O que mudou nesta sessão
+
+### 1. O Laravel morreu, e com ele o token
+
+O app pedia ao Laravel um token para entrar na sala: 112 arquivos e ~7.900 linhas de PHP,
+mais MySQL, Reverb e PHP-FPM, para servir dois endpoints. **Não existe mais endpoint
+nenhum.** O código da sala é sorteado no cliente e o `join` recebe `{room, name}` direto
+pelo WebSocket que já existia.
+
+Tirar o token foi consequência, não economia: o SFU passaria a assinar o que ele mesmo
+verifica. No lugar dele, quem prova identidade entre uma queda e a volta é uma
+**`resumeKey`** secreta, devolvida só na resposta do `join`. O `peerId` não serve para
+isso — a sala inteira o recebe no `peerJoined`, então aceitá-lo como identidade deixaria
+qualquer um derrubar qualquer um. Há teste para esse caso no `sfu/check.mjs`.
+
+Isso **consertou a reconexão, que nunca funcionou**: o `resume` casa pelo id do
+participante, mas o emissor de token sorteava um `sub` novo a cada chamada e o cliente
+pedia um token novo a cada reconexão. Quem caía nunca retomava — republicava tudo do zero
+e ficava fantasma por 45 segundos.
+
+O `throttle:20,1` do Laravel virou **teto de conexões novas por IP no próprio SFU**
+(`SFU_CONNECTIONS_PER_MINUTE`, padrão 20). Com sala anônima nada prova quem entra; o que
+impede varrer códigos é o custo de tentar. É por isso que o nginx precisa mandar o
+`X-Forwarded-For` — sem ele, todo mundo vira o mesmo cliente `127.0.0.1`.
+
+Também saiu, por não ter chamador nenhum: o caminho P2P em Rust (`peer.rs`, `PeerLink`,
+quatro comandos do Tauri, as deps `webrtc` e `async-trait`), ~350 linhas de SFU da era
+Discord (presença entre canais, moderação, mudo/surdo, relé de sinalização, `produce` por
+WebRTC), os plugins `deep-link`/`opener`/`autostart`, o `settings.rs` (SQLite — nada usava,
+o nome mora no `localStorage`) e o `.github/`.
+
+### 2. O envio deixou de nascer uma task por quadro
+
+Com um destino só, mandar o quadro virou síncrono na própria thread da captura, e o socket
+UDP ficou não-bloqueante. Antes cada quadro nascia uma task do tokio, sessenta vezes por
+segundo. Para vídeo ao vivo, perder um pacote custa menos do que perder fps.
+
+### 3. O Windows ganhou a estação que faltava
+
+Duas metades da mesma coisa faltavam:
+
+- A captura pegava os quadros e **jogava os pixels fora** (`surface: None`), porque não
+  havia encoder para recebê-los.
+- O `PlatformEncoder` fora do macOS era um stub que recusava iniciar — então o botão
+  Transmitir falhava antes de qualquer quadro existir.
+
+Agora `capture::GpuSurface` no Windows é a textura do Direct3D **com o device e o contexto
+que a criaram**. Os três andam juntos porque a textura pertence à rotação interna da
+captura: só o device dela sabe lê-la, e ela vale apenas durante o callback.
+
+O encoder (`native/crates/media/src/windows.rs`, 729 linhas) é o MFT de H.264 por
+hardware — o mesmo caminho que NVENC (NVIDIA), QuickSync (Intel) e VCE (AMD) expõem ao
+Windows. Mesmas decisões do VideoToolbox no macOS: tempo real, sem B-frames, keyframe a
+cada 2 segundos.
+
+**São dois devices do Direct3D, e não um.** O da captura nasce sem
+`D3D11_CREATE_DEVICE_VIDEO_SUPPORT` (a crate `windows-capture` não expõe as flags), e sem
+isso não há VideoProcessor nem gerente de device para o Media Foundation. A ponte entre os
+dois é uma textura compartilhada com keyed mutex — e é nela que a conversão acontece: a
+captura entrega **BGRA no tamanho nativo do monitor**, o encoder quer **NV12 no tamanho
+escolhido**, e um blit do VideoProcessor faz as duas coisas na GPU. Escalar isso na CPU
+devolveria exatamente o problema de fps que o app existe para resolver.
+
+Encoder de hardware tem fila: os primeiros quadros entram sem nada sair. Por isso a saída é
+uma `VecDeque` interna e `encode` devolve `NeedsMoreInput` enquanto ela está vazia, em vez
+de fingir 1-entra-1-sai.
+
+E o **fps deixou de ser 60 fixo**: a interface oferece 30 e 60, o número atravessa até a
+captura (`MinimumUpdateIntervalSettings`) e até o encoder, e os dois concordam. Se
+discordassem, o vídeo chegaria acelerado ou aos trancos. Metade dos quadros também custa
+perto de metade da banda, então o bitrate acompanha.
+
+## O que está provado, e o que só compila
+
+**Provado, rodando de verdade:**
+
+- **SFU**: `pnpm run check` contra um servidor local — o protocolo inteiro, incluindo a
+  tentativa de retomar sessão com o id alheio e o ingest de RTP puro sendo consumido.
+- **Teto por IP**: testado à mão, fecha com `1013` ao estourar.
+- **Interface**: `npm run check` (ids, sorteio do código de sala, ordem da transmissão) e
+  `vite build` fechando limpo.
+- **Rust no Windows**: `cargo check --workspace --all-targets`, `cargo clippy -- -D
+  warnings` e `cargo test --workspace` (11 testes) passam.
+- **Deploy do SFU**: no ar em produção, `{"ok":true,...,"workers":[0,0,0,0]}`.
+
+**Só compila — nunca executou:**
+
+> ⚠️ **O encoder do Windows nunca rodou com captura real.** Ele type-checa, passa no
+> clippy e está inteiro, mas nenhum quadro de verdade passou por ele. O primeiro teste de
+> verdade é o item 1 da lista abaixo. Espere encontrar coisa: o `AcquireSync`/`ReleaseSync`
+> do keyed mutex, o laço de eventos do MFT assíncrono e a criação das views do
+> VideoProcessor são os três lugares onde erro de COM aparece só em execução.
+
+## O que falta, em ordem
+
+### 1. Rodar o encoder do Windows com captura real — **é o próximo passo**
+
+Nada mais importa até isso acontecer. O caminho mais curto é o exemplo que já existe:
+
+```powershell
+cargo run -p capture --example spike -- 1080 10
+```
+
+Depois, o app inteiro: `npx tauri build` e clicar em Transmitir. Se falhar, o erro aparece
+na tela (o caminho de erro já está certo). Os suspeitos, em ordem:
+
+- `MFCreateDXGISurfaceBuffer` recusando a textura NV12 (device errado no gerente).
+- O laço `bombear()` recebendo um evento que não é `NeedInput` nem `HaveOutput`.
+- `CreateVideoProcessorInputView` reclamando do formato BGRA.
+
+### 2. Áudio do sistema no Windows
+
+`WindowsCapturer::audio_chunks_captured()` devolve `0` fixo. Áudio de sistema no Windows é
+**WASAPI loopback**, não vem pelo Graphics Capture. O caminho depois disso já existe
+inteiro: `AudioEncoder` (Opus em blocos de 20 ms) e o RTP puro. Falta só a fonte.
+
+### 3. Menu hambúrguer com quem está na sala e quem está ao vivo
+
+O dado já existe e chega: `sfu.peers` é um `Map` de `{name, sharing}` e o evento
+`peersChanged` dispara a cada mudança. Hoje a interface só mostra a contagem — "N pessoas"
+(`ui/app.js`, `refreshPeople`). É trabalho de interface, nada de protocolo.
+
+### 4. Mutar o áudio de quem se assiste
+
+Os elementos `<audio>` são criados em `App.consume` (`ui/app.js`). O jeito preguiçoso é
+`audio.muted = true` num botão por quadro. O jeito certo é `pauseConsumer` — a ação já
+existe no SFU e está testada —, que também para de gastar banda com um áudio que ninguém
+ouve.
+
+### 5. Miniatura do seletor no Windows
+
+`WindowsCapturer::preview` devolve vazio. O seletor abre listando os nomes, sem imagem.
+Cosmético.
+
+### 6. Linux
+
+`LinuxCapturer::start` recusa com erro claro. Falta consumir o nó do PipeWire que o portal
+XDG devolve. Só se alguém quiser.
+
+### 7. Pendências fora do código
+
+- **nginx em produção ainda não foi trocado.** A config nova está em
+  `/tmp/unkvoid-nginx.conf` na VPS e o backup em `/etc/nginx/sites-available/discord.bak`.
+  **Sem isso o app novo não funciona**: ele pergunta `GET /health` antes de deixar entrar
+  numa sala, e hoje esse caminho cai no Laravel e devolve 404 — a tela fica em
+  "Reconectando…" para sempre.
+
+  ```bash
+  ssh vps 'sudo cp /tmp/unkvoid-nginx.conf /etc/nginx/sites-available/discord && sudo nginx -t'
+  ssh vps 'sudo systemctl reload nginx'
+  ```
+
+- **`pm2 delete reverb`** — o processo continua rodando e serve o Laravel que já não existe.
+- **Instaladores.** Nenhum foi gerado. `.msi` só sai no Windows, `.dmg` só no macOS. E a
+  chave de assinatura (`~/.tauri/unkvoid.key`) está **no Mac**: sem ela o instalador sai,
+  mas ninguém se atualiza sozinho. A chave pública já está no `tauri.conf.json` e as duas
+  precisam bater.
+
+## Esta máquina — o que já está montado
+
+Isto poupa uma hora de quem chegar agora. O desenvolvimento é em **WSL (Ubuntu 26.04)**,
+com o repositório em `/var/www/projects/unkvoid`, mas o Rust do Windows precisa rodar do
+lado de lá.
+
+**Instalado nesta sessão, do zero:**
+
+| Onde | O quê |
+|---|---|
+| Windows | Visual Studio Build Tools 2022 (carga C++), MSVC 14.44, Windows SDK 10.0.26100 |
+| Windows | Rust 1.98.1 (`C:\Users\edsu\.cargo\bin\cargo.exe`), Node 24.19 |
+| WSL | Rust 1.98.1 + alvo `x86_64-pc-windows-msvc` |
+
+**Como compilar o código do Windows, de dentro do WSL:**
+
+```bash
+cd /mnt/c && cmd.exe /c "C:\Users\edsu\cargo-win.cmd check --workspace --all-targets"
+cd /mnt/c && cmd.exe /c "C:\Users\edsu\cargo-win.cmd clippy --workspace --all-targets -- -D warnings"
+cd /mnt/c && cmd.exe /c "C:\Users\edsu\cargo-win.cmd test --workspace"
+```
+
+O `cargo-win.cmd` faz três coisas que **não são opcionais**: mapeia o repositório da WSL
+para `Y:` (o `cmd.exe` não aceita caminho UNC como diretório atual), põe o CMake que veio
+dentro do Build Tools no PATH (o `opusic-sys` precisa dele e ele não está no PATH do
+sistema), e aponta `CARGO_TARGET_DIR` para `C:\Users\edsu\unkvoid-target` — compilar dentro
+da WSL pelo `Y:` falha no lock do compilador incremental.
+
+Do lado do WSL dá para conferir só o `capture`, que é puro Rust:
+
+```bash
+cd native && cargo check --target x86_64-pc-windows-msvc -p capture
+```
+
+O `media` **não** dá: o `opusic-sys` compila C e precisa do MSVC, que não existe no Linux.
+
+**Servidor:** a chave SSH está em `~/.ssh/vps` e o alias `vps` no `~/.ssh/config` do WSL.
+Ela veio de `/mnt/c/Users/edsu/.ssh/nome_da_chave` — que é **diferente** da chave de mesmo
+nome que já estava no WSL; só a do Windows autentica.
+
+## Armadilhas já pagas
+
+- **`npm run check` antes de qualquer commit no desktop.** Três vezes um script de
+  substituição em bloco apagou um método inteiro do `app.js`. O sintoma é tela preta.
+- **Teste no `harness.html`, não na janela do app.** A janela do Tauri não tem console: um
+  erro de JS vira tela preta sem pista.
+- **`use_sfu` só depois de declarar vídeo E áudio.** Ao contrário, o Rust manda RTP de um
+  SSRC que o servidor ainda não conhece e ele descarta calado: a transmissão "funciona" e
+  ninguém vê nada. O `check-broadcast.mjs` guarda essa ordem.
+- **O crate `capture` tem um módulo chamado `windows`.** Dentro dele, `windows::Win32::…`
+  acha o módulo local em vez da crate da Microsoft. Precisa de `::windows::`.
+- **Ponteiro COM não é `Send`.** O encoder atravessa uma vez para a thread da captura, e há
+  um `unsafe impl Send` com a justificativa escrita. Não é preguiça: os objetos do D3D11
+  (com proteção multithread ligada) e o MFT assíncrono são livres de apartamento.
+- **`hidden` do Tailwind é classe, não atributo.**
+- **`build.rs` tem `cargo:rerun-if-changed=../dist`.** Sem isso o app sai com a interface
+  da última vez que o Rust mudou.
+- **Release não pode ser pré-lançamento.** O auto-update lê
+  `/releases/latest/download/latest.json`, e o "latest" do GitHub ignora pré-lançamentos.
