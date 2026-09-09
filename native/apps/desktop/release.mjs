@@ -22,62 +22,80 @@ const REPO = 'edsuuu/unkvoid';
 
 // A chave que o app usa para se reconhecer. Tem que bater com o alvo em que o
 // instalador foi gerado, senão o cliente baixa e recusa.
-const PLATAFORMAS = {
-    msi: 'windows-x86_64',
-    nsis: 'windows-x86_64',
-    deb: 'linux-x86_64',
-    appimage: 'linux-x86_64',
+//
+// O sufixo do instalador não é enfeite. O updater procura `{os}-{arch}-{instalador}` e
+// só depois `{os}-{arch}`. Enquanto `deb` e `appimage` dividiam a chave `linux-x86_64`,
+// o último do laço sobrescrevia o outro: quem instalou pelo .deb baixava o AppImage,
+// o `is_deb` dos bytes dava falso e a atualização morria com `InvalidUpdaterFormat` —
+// engolida num `console.warn`, numa janela que não tem console. O mesmo valia para
+// msi contra nsis no Windows.
+const PLATFORMS = {
+    msi: 'windows-x86_64-msi',
+    nsis: 'windows-x86_64-nsis',
+    deb: 'linux-x86_64-deb',
+    appimage: 'linux-x86_64-appimage',
     macos: 'darwin-aarch64',
 };
 
-const seco = process.argv.includes('--dry-run');
+/**
+ * Quem responde quando o app não sabe dizer por qual instalador foi instalado.
+ *
+ * Os dois escolhidos são os que se viram sozinhos: o NSIS não precisa do Windows
+ * Installer, e o AppImage não pede senha de root para se substituir.
+ */
+const FALLBACK = {
+    'windows-x86_64-nsis': 'windows-x86_64',
+    'linux-x86_64-appimage': 'linux-x86_64',
+};
+
+const dryRun = process.argv.includes('--dry-run');
 const gh = (...args) => execFileSync('gh', args, { encoding: 'utf8' });
 
 const { version } = JSON.parse(readFileSync(new URL('./src-tauri/tauri.conf.json', import.meta.url)));
 const tag = `v${version}`;
 
 /** Instaladores desta máquina, com a assinatura ao lado quando ela existe. */
-const achados = Object.entries(PLATAFORMAS).flatMap(([pasta, alvo]) => {
-    let arquivos;
+const found = Object.entries(PLATFORMS).flatMap(([pasta, alvo]) => {
+    let files;
 
     try {
-        arquivos = readdirSync(join(RAIZ, pasta));
+        files = readdirSync(join(RAIZ, pasta));
     } catch {
         return [];
     }
 
-    return arquivos
+    return files
         // O `.tar.gz` do macOS é o que o updater baixa; o `.app` solto não serve.
-        .filter(nome => ! nome.endsWith('.sig') && (pasta !== 'macos' || nome.endsWith('.tar.gz')))
-        .map(nome => ({
+        .filter(name => ! name.endsWith('.sig') && (pasta !== 'macos' || name.endsWith('.tar.gz')))
+        .map(name => ({
             alvo,
-            nome,
-            caminho: join(RAIZ, pasta, nome),
-            assinatura: arquivos.includes(`${nome}.sig`)
-                ? readFileSync(join(RAIZ, pasta, `${nome}.sig`), 'utf8').trim()
+            name,
+            path: join(RAIZ, pasta, name),
+            signature: files.includes(`${name}.sig`)
+                ? readFileSync(join(RAIZ, pasta, `${name}.sig`), 'utf8').trim()
                 : null,
         }));
 });
 
-if (! achados.length) {
+if (! found.length) {
     console.error(`Nenhum instalador em ${RAIZ} — rode \`npx tauri build\` primeiro.`);
     process.exit(1);
 }
 
-for (const item of achados) {
-    const mb = (statSync(item.caminho).size / 1024 / 1024).toFixed(1);
+for (const item of found) {
+    const mb = (statSync(item.path).size / 1024 / 1024).toFixed(1);
 
-    console.log(`${item.alvo.padEnd(15)} ${item.nome} (${mb} MB)${item.assinatura ? '' : '  SEM ASSINATURA'}`);
+    console.log(`${item.alvo.padEnd(24)} ${item.nome} (${mb} MB)${item.assinatura ? '' : '  SEM ASSINATURA'}`);
 }
 
 // O que já está publicado manda: uma plataforma que esta máquina não gera não pode
 // sumir do manifesto só porque foi outra máquina que a subiu.
-let manifesto = { version, notes: `Unkvoid ${tag}`, pub_date: new Date().toISOString(), platforms: {} };
+let manifest = { version, notes: `Unkvoid ${tag}`, pub_date: new Date().toISOString(), platforms: {} };
 
 try {
-    const publicado = gh('release', 'download', tag, '--repo', REPO, '--pattern', 'latest.json', '--output', '-');
+    const published = gh('release', 'download', tag, '--repo', REPO, '--pattern', 'latest.json', '--output', '-');
 
-    manifesto.platforms = JSON.parse(publicado).platforms ?? {};
+    manifest.platforms = JSON.parse(published).platforms ?? {};
     console.log(`\nlatest.json publicado tem: ${Object.keys(manifesto.platforms).join(', ') || '(nada)'}`);
 } catch {
     // Release ou manifesto ainda não existem: começa vazio mesmo.
@@ -85,31 +103,37 @@ try {
 
 const base = `https://github.com/${REPO}/releases/download/${tag}`;
 
-for (const item of achados.filter(item => item.assinatura)) {
-    manifesto.platforms[item.alvo] = { signature: item.assinatura, url: `${base}/${item.nome}` };
+for (const item of found.filter(item => item.signature)) {
+    const entry = { signature: item.signature, url: `${base}/${item.nome}` };
+
+    manifest.platforms[item.alvo] = entry;
+
+    if (FALLBACK[item.alvo]) {
+        manifest.platforms[FALLBACK[item.alvo]] = entry;
+    }
 }
 
-if (! Object.keys(manifesto.platforms).length) {
+if (! Object.keys(manifest.platforms).length) {
     console.warn('\nNenhuma assinatura: a release sai, mas ninguém se atualiza sozinho para ela.');
     console.warn('Para assinar, defina TAURI_SIGNING_PRIVATE_KEY e refaça o build.\n');
 }
 
-const arquivos = achados.map(item => item.caminho);
+const files = found.map(item => item.path);
 
-if (Object.keys(manifesto.platforms).length) {
+if (Object.keys(manifest.platforms).length) {
     writeFileSync('latest.json', `${JSON.stringify(manifesto, null, 2)}\n`);
-    arquivos.push('latest.json');
+    files.push('latest.json');
     console.log(`\nlatest.json com: ${Object.keys(manifesto.platforms).join(', ')}`);
 }
 
-if (seco) {
-    console.log(`\n[dry-run] publicaria ${tag} com ${arquivos.length} arquivo(s).`);
+if (dryRun) {
+    console.log(`\n[dry-run] publicaria ${tag} com ${files.length} arquivo(s).`);
     process.exit(0);
 }
 
 // `--clobber` porque subir a segunda plataforma numa release que já existe é o caso
 // normal aqui, não um erro.
-const existe = (() => {
+const exists = (() => {
     try {
         gh('release', 'view', tag, '--repo', REPO);
 
@@ -119,13 +143,13 @@ const existe = (() => {
     }
 })();
 
-if (existe) {
-    gh('release', 'upload', tag, ...arquivos, '--repo', REPO, '--clobber');
+if (exists) {
+    gh('release', 'upload', tag, ...files, '--repo', REPO, '--clobber');
 } else {
     // NÃO marcar como pré-lançamento: o app procura em /releases/latest/, e o "latest"
     // do GitHub ignora pré-lançamentos — foi o que fez a v0.2.0 até a v0.7.0 nunca
     // atualizarem ninguém.
-    gh('release', 'create', tag, ...arquivos, '--repo', REPO,
+    gh('release', 'create', tag, ...files, '--repo', REPO,
         '--title', `Unkvoid ${version}`, '--notes', `Unkvoid ${tag}`, '--latest');
 }
 

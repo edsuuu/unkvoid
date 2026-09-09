@@ -11,7 +11,7 @@
     "build:windows": "tauri build --bundles nsis,msi",
     "build:mac": "tauri build --bundles app,dmg",
     "build:linux": "tauri build --bundles deb,appimage",
-    "check": "python3 check-ui.py && node check-room-code.mjs && node check-broadcast.mjs",
+    "check": "python3 check-language.py && python3 check-ui.py && node check-room-code.mjs && node check-broadcast.mjs && node check-consume.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

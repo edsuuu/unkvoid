@@ -1,0 +1,63 @@
+# Os builds que a VPS não consegue fazer.
+#
+# A VPS é Linux e gera .deb e .AppImage sozinha (native/apps/desktop/build-vps.sh). O
+# .dmg exige um Mac por licença da Apple e o .msi exige o WiX rodando no Windows, então
+# essas duas plataformas saem daqui, em runners de verdade.
+#
+# Os dois trabalhos são encadeados de propósito. O `release.mjs` publica lendo o
+# `latest.json` que já está lá e mesclando o próprio alvo por cima; rodando em paralelo,
+# os dois leriam o mesmo manifesto antigo e o segundo apagaria a plataforma do primeiro.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: native/apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm run check
+      - run: npx tauri build --bundles app,dmg
+        env:
+          # Sem a chave o bundle sai sem `.sig`: a release funciona e a atualização
+          # automática não. É o erro que passou meses sem ninguém notar.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - run: node release.mjs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  windows:
+    needs: macos
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: native/apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm run check
+      - run: npx tauri build --bundles nsis,msi
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - run: node release.mjs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
