@@ -295,6 +295,15 @@ class App {
                 this.drawPeopleList();
             }
         };
+        document.addEventListener('click', event => {
+            const lista = el('people-list');
+            const alvo = event.target;
+
+            if (! lista.hidden && alvo instanceof Node
+                && ! lista.contains(alvo) && alvo !== el('room-people')) {
+                lista.hidden = true;
+            }
+        });
         el('layout').onclick = () => this.toggleLayout();
         el('share').onclick = () => this.openShareModal();
         el('stop').onclick = () => this.stopSharing();
