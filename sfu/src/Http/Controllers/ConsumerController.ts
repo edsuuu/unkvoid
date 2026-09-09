@@ -31,7 +31,10 @@ export class ConsumerController {
                 consumerId: consumer.id,
                 producerId: consumer.producerId,
                 kind: consumer.kind,
-                peerId: peer.id,
+                // De quem era a tela, não de quem estava assistindo. Mandar o próprio id
+                // fazia o cliente apagar o quadro errado — invisível enquanto ninguém
+                // tinha quadro com o próprio id, e visível no instante em que passou a ter.
+                peerId: owner.peer.id,
                 source: String(owner.producer.appData.source),
             });
         });

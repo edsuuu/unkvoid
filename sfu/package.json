@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
-    "check": "node check.mjs",
+    "check": "node check.mjs && node check-heartbeat.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
