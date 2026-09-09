@@ -7,12 +7,16 @@ export const config = {
     listenPort: Number(process.env.SFU_PORT ?? 3000),
     path: process.env.SFU_PATH ?? '/sfu',
     announcedAddress: process.env.SFU_ANNOUNCED_ADDRESS ?? '127.0.0.1',
-    appVersion: process.env.SFU_APP_VERSION ?? '0.0.2',
+    appVersion: process.env.SFU_APP_VERSION ?? '0.0.3',
 
     // Teto de conexões novas por IP por minuto. A sala é anônima, então o que impede
     // varrer códigos é o custo de tentar — cada tentativa precisa de um socket novo.
     // A verificação sobe um punhado de clientes de uma vez e levanta este número.
     connectionsPerMinute: Number(process.env.SFU_CONNECTIONS_PER_MINUTE ?? 20),
+
+    // De quanto em quanto tempo perguntar a cada socket se ele continua vivo. Só é
+    // configurável para a conferência poder rodar em menos de um segundo.
+    heartbeatMs: Number(process.env.SFU_HEARTBEAT_MS ?? 15_000),
 
     // One port for all media (WebRtcServer multiplexes transports).
     // mediasoup is ICE Lite: it never initiates a connection, only responds. Behind a firewall
@@ -26,11 +30,13 @@ export const config = {
     // a porta do WebRtcServer, e o mediasoup sortearia de 10000-59999 por padrão — uma
     // faixa estreita mantém a regra de firewall em uma linha só.
     //
-    // Uma porta por worker: vídeo e áudio de uma transmissão dividem o mesmo transport,
-    // então isto é uma transmissão simultânea por worker. Subir o número aqui é barato,
-    // mas cada porta a mais é uma regra de firewall que alguém abre à mão.
+    // Uma porta por transmissão: vídeo e áudio dividem o mesmo transport. Isto era 1, e
+    // como a sala inteira mora num worker só, o segundo a clicar em "compartilhar"
+    // recebia `no more available ports` — duas pessoas nunca conseguiram transmitir na
+    // mesma sala. Oito é o teto de transmissões simultâneas por worker; cada porta a
+    // mais é uma linha na regra de firewall, então a faixa continua contígua e curta.
     plainPortBase: Number(process.env.SFU_PLAIN_PORT ?? 41000),
-    plainPortsPerWorker: Number(process.env.SFU_PLAIN_PORTS ?? 1),
+    plainPortsPerWorker: Number(process.env.SFU_PLAIN_PORTS ?? 8),
 
     worker: {
         logLevel: 'warn' as const,

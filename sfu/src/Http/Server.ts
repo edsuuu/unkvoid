@@ -11,6 +11,15 @@ type Payload = { id?: number; action?: string; data?: Record<string, unknown> };
 
 const WINDOW_MS = 60_000;
 
+/**
+ * Um socket meio aberto — tampa do notebook fechada, Wi-Fi trocado por 4G — nunca manda
+ * FIN nem RST. Sem perguntar de tempos em tempos se ele continua vivo, o `close` não
+ * dispara, a pessoa fica eternamente ativa na sala, `activeCount()` nunca zera e o
+ * router do mediasoup nunca é devolvido. As portas de RTP puro que ela segurava também
+ * não voltam. É o vazamento que acaba batendo no `max_memory_restart` do pm2 e
+ * derrubando a chamada de todo mundo.
+ */
+
 export class Server {
     private readonly registry = new RoomRegistry();
 
@@ -19,6 +28,9 @@ export class Server {
     private readonly sessions = new Map<WebSocket, Session>();
 
     private readonly recent = new Map<string, number[]>();
+
+    /** Quem respondeu ao último ping. Quem não respondeu perde a conexão no próximo. */
+    private readonly alive = new WeakSet<WebSocket>();
 
     async start(): Promise<void> {
         await this.registry.boot();
@@ -34,8 +46,24 @@ export class Server {
             response.end(JSON.stringify({ ok: true, appVersion: config.appVersion, ...this.registry.stats() }));
         });
 
-        new WebSocketServer({ server: http, path: config.path })
-            .on('connection', (socket, request) => this.accept(socket, request));
+        const websockets = new WebSocketServer({ server: http, path: config.path });
+
+        websockets.on('connection', (socket, request) => this.accept(socket, request));
+
+        setInterval(() => {
+            for (const socket of websockets.clients) {
+                if (! this.alive.has(socket)) {
+                    // `terminate` fecha na marra e dispara o `close`, que é o que põe a
+                    // carência de 30 segundos para andar.
+                    socket.terminate();
+
+                    continue;
+                }
+
+                this.alive.delete(socket);
+                socket.ping();
+            }
+        }, config.heartbeatMs).unref();
 
         http.listen(config.listenPort, config.listenHost, () =>
             console.log(`[INFO] SFU em ${config.listenHost}:${config.listenPort}${config.path} · media on port ${config.mediaPort}`));
@@ -52,6 +80,8 @@ export class Server {
 
         this.sessions.set(socket, session);
 
+        this.alive.add(socket);
+        socket.on('pong', () => this.alive.add(socket));
         socket.on('message', raw => void this.handle(session, raw));
         socket.on('close', () => this.release(session));
         socket.on('error', error => console.error('[ERROR] socket', error.message));

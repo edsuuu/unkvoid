@@ -4,7 +4,7 @@ import type { PlainTransport, Producer, Router, SrtpParameters, WebRtcServer, We
 import type { WebSocket } from 'ws';
 
 import { config } from '../config.js';
-import { NotFoundException } from '../Exceptions/ApiException.js';
+import { NotFoundException, ValidationException } from '../Exceptions/ApiException.js';
 import type { PeerDescription } from '../types.js';
 import { Peer } from './Peer.js';
 
@@ -203,12 +203,18 @@ export class Room {
             return existing;
         }
 
+        // `no more available ports` é o texto do mediasoup, e ele não diz nada a quem
+        // só clicou em compartilhar. O limite é real: a faixa de portas do worker.
         const transport = await this.router.createPlainTransport({
             listenInfo: { protocol: 'udp', ip: '0.0.0.0', announcedAddress: config.announcedAddress },
             rtcpMux: true,
             comedia: true,
             enableSrtp: true,
             srtpCryptoSuite: srtpParameters.cryptoSuite,
+        }).catch(failure => {
+            throw /no more available ports/i.test(String(failure))
+                ? new ValidationException(`o servidor já está no limite de ${config.plainPortsPerWorker} transmissões ao mesmo tempo — peça para alguém parar de compartilhar`)
+                : failure;
         });
 
         await transport.connect({ srtpParameters });
