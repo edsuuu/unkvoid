@@ -4,6 +4,89 @@
 > O [README.md](README.md) diz o que o projeto é e como buildar. Este arquivo diz **onde
 > a coisa parou**, o que está provado, o que só compila, e o que ainda não existe.
 
+## Atualização de 09/09/2026 (tarde) — o que foi corrigido e o que falta
+
+> Escrito para continuar no Windows. O que está aqui é o estado real: o que foi
+> provado em hardware, o que só compila, e o que não existe.
+
+### O achado que muda a leitura do projeto
+
+**Compartilhar tela do macOS nunca funcionou.** O VideoToolbox devolve H.264 em
+AVCC, com prefixo de tamanho em cada NAL, e guarda SPS e PPS na descrição de
+formato. O empacotador RTP só quebra Annex-B e só aprende os parameter sets se
+eles passarem por ele. O quadro saía perfeito da GPU e chegava do outro lado como
+um NAL de tipo 0, que nenhum decodificador exibe — com todo contador marcando
+saúde. Corrigido e verificado em hardware: o exemplo `cargo run -p media --example
+encoder` afirma que o keyframe sai com start code, SPS, PPS e IDR.
+
+### Corrigido nesta sessão
+
+| Onde | O quê |
+|---|---|
+| macOS | Bitstream AVCC → Annex-B com SPS/PPS |
+| Transporte | Relógio RTP do vídeo derivava a cada quadro perdido |
+| Transporte | Retry dormia até 512 ms na thread da captura |
+| Windows | `METransformNeedInput` perdido pendurava a captura para sempre |
+| Windows | Não capturava áudio nenhum; agora há WASAPI por processo |
+| SFU | Sem heartbeat, socket meio aberto vazava sala até estourar a memória |
+| SFU | Uma porta de RTP por worker: dois numa sala davam `no more available ports` |
+| Cliente | `consume` usava variável não declarada, e a tela nunca era desenhada |
+| Cliente | Ninguém escutava `closed`/`reconnected`: travava calado |
+| Linux | WebKitGTK entrega WebRTC desligado; agora é ligado no Rust |
+| Linux | Bandeja que falha derrubava o app inteiro na abertura |
+
+### O estado por sistema
+
+- **macOS** — transmite e assiste. Provado em hardware.
+- **Windows** — compila para o alvo, mas **nada foi executado lá**. As correções
+  do encoder e o áudio WASAPI foram escritos e type-checados, não testados. É o
+  primeiro trabalho de quem pegar a máquina Windows.
+- **Linux** — só assiste. A captura é um esqueleto de 48 linhas e o encoder
+  também. Instala por `apt install unkvoid`.
+
+### O que NÃO existe: servidores com salas
+
+Foi pedido e **não foi feito**. O modelo continua sendo sala e mais nada: no SFU
+há `Room`, `Peer` e `RoomRegistry`, sem nenhum conceito acima da sala, e a
+interface ainda é "criar uma sala" ou colar um código.
+
+Ficou por último de propósito: era a única frente que não consertava nada, e na
+época o macOS não transmitia, o Windows congelava e duas pessoas não conseguiam
+compartilhar na mesma sala. A fundação agora está diferente.
+
+O desenho mínimo seria um código de servidor com nome e convite, várias salas
+dentro dele, e a pessoa entrando uma vez e circulando sem digitar código de novo.
+Mexe no SFU, no protocolo de sinalização e na tela de entrada inteira.
+
+**A pergunta que decide o tamanho:** o servidor precisa sobreviver a reinício do
+processo? Hoje nada é guardado — sala existe enquanto tem gente dentro, e o
+README trata isso como característica, não como falta. Servidor com nome, membros
+e canais fixos precisa de armazenamento, e aí entra um banco de dados que o
+projeto não tem.
+
+### Publicação, hoje
+
+- **Auto-update**: ver [AUTO-UPDATE.md](AUTO-UPDATE.md). A chave privada está em
+  `~/.tauri/unkvoid.key` no Mac e bate com a pública do app — ninguém precisa
+  reinstalar.
+- **Linux**: `sudo apt install unkvoid`, repositório em
+  <https://discord.unkvoid.com/apt/>, índice refeito a cada `make build-vps`.
+- **macOS e Windows**: `.github/workflows/release.yml`, disparado por tag `v*`.
+  Falta cadastrar o segredo `TAURI_SIGNING_PRIVATE_KEY` no GitHub.
+
+### Pendências conhecidas
+
+1. **Rodar no Windows.** Nada do que foi escrito para lá foi executado.
+2. **Contador de fps mente no Linux.** Sem `requestVideoFrameCallback`, o
+   fallback conta eventos a 4/s e grava esse número no log de diagnóstico.
+3. **H.264 pode não ser anunciado no Linux** se o GStreamer da distro exigir
+   encoder além de decoder. Sintoma: tela preta sem erro. O log `device.ready`
+   mostra os codecs.
+4. **Falta `BUILD-LINUX.md`.** O README manda instalar quatro pacotes para
+   compilar e faltam cinco, inclusive o `cmake`.
+5. **Histórico do git** ainda tem 60 commits com linha de co-autor. A reescrita
+   foi aprovada e não foi executada; exige force-push e re-clone.
+
 ## Atualização de 09/09/2026 — controles da transmissão
 
 Foi publicada a correção no commit `90703f2`:
