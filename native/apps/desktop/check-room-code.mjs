@@ -10,11 +10,11 @@ import { CODE_LENGTH, isRoomCode, newRoomCode } from './ui/room-code.js';
 
 const AMOSTRA = 20_000;
 
-const codigos = Array.from({ length: AMOSTRA }, newRoomCode);
+const codes = Array.from({ length: AMOSTRA }, newRoomCode);
 
-for (const codigo of codigos) {
-    assert.equal(codigo.length, CODE_LENGTH, `código com tamanho errado: ${codigo}`);
-    assert.ok(isRoomCode(codigo), `código fora do formato aceito pelo servidor: ${codigo}`);
+for (const code of codes) {
+    assert.equal(code.length, CODE_LENGTH, `código com tamanho errado: ${code}`);
+    assert.ok(isRoomCode(code), `código fora do formato aceito pelo servidor: ${code}`);
 }
 
 assert.ok(! isRoomCode(''), 'vazio não é código');
@@ -26,13 +26,13 @@ assert.ok(! isRoomCode('A'.repeat(CODE_LENGTH)), 'maiúscula não é código —
 assert.ok(! isRoomCode('sala-'), 'hífen no fim não é código');
 
 // Repetição em vinte mil sorteios seria sorte grande demais para ser sorte.
-assert.equal(new Set(codigos).size, AMOSTRA, 'dois códigos iguais em uma amostra pequena');
+assert.equal(new Set(codes).size, AMOSTRA, 'dois códigos iguais em uma amostra pequena');
 
 // Viés: com rejeição, nenhuma letra pode aparecer muito mais que as outras. O esperado
 // por caractere é AMOSTRA * CODE_LENGTH / 36; 15% de folga cobre a variação normal.
 const contagem = new Map();
 
-for (const caractere of codigos.join('')) {
+for (const caractere of codes.join('')) {
     contagem.set(caractere, (contagem.get(caractere) ?? 0) + 1);
 }
 

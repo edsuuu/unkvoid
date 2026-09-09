@@ -10,22 +10,22 @@
  */
 import assert from 'node:assert/strict';
 
-const chamadas = [];
-const argumentos = new Map();
+const calls = [];
+const callArgs = new Map();
 
 // `broadcast.js` lê a ponte do Tauri ao carregar, então ela precisa existir antes.
 globalThis.window = {
     __TAURI__: {
         core: {
-            invoke: async (comando, args) => {
-                chamadas.push(comando);
-                argumentos.set(comando, args);
+            invoke: async (command, args) => {
+                calls.push(command);
+                callArgs.set(command, args);
 
-                if (comando === 'sfu_offer') {
+                if (command === 'sfu_offer') {
                     return { ssrc: 7, payloadType: 96 };
                 }
 
-                return comando === 'stop_broadcast' ? 4242 : null;
+                return command === 'stop_broadcast' ? 4242 : null;
             },
         },
     },
@@ -33,10 +33,10 @@ globalThis.window = {
 
 const { Broadcast } = await import('./ui/broadcast.js');
 
-const pedidos = [];
+const requests = [];
 const sfu = {
     request: async (acao, dados) => {
-    pedidos.push(`${acao}:${dados.kind ?? dados.producerId ?? ''}/${dados.source ?? ''}`);
+    requests.push(`${acao}:${dados.kind ?? dados.producerId ?? ''}/${dados.source ?? ''}`);
 
     return {
         producerId: dados.kind ? `${dados.kind}-producer` : undefined,
@@ -46,28 +46,31 @@ const sfu = {
     },
 };
 
-const transmissao = new Broadcast(sfu);
+const broadcast = new Broadcast(sfu);
 
-await transmissao.start('1080', 30, 'window:87');
+await broadcast.start('1080', 30, 'window:87', true, true);
 
-assert.deepEqual(chamadas, ['start_broadcast', 'sfu_offer', 'sfu_offer', 'use_sfu']);
-assert.equal(chamadas.indexOf('use_sfu'), chamadas.length - 1, 'use_sfu é o último');
+assert.deepEqual(calls, ['start_broadcast', 'sfu_offer', 'sfu_offer', 'use_sfu']);
+assert.equal(calls.indexOf('use_sfu'), calls.length - 1, 'use_sfu é o último');
 
-// Qualidade e fps são escolha de quem transmite e precisam chegar inteiros ao Rust: o
-// encoder e a captura são configurados com eles, e um `undefined` aqui vira 1 fps lá.
-assert.deepEqual(argumentos.get('start_broadcast'), {
+// Qualidade, fps e as duas opções de áudio são escolha de quem transmite e precisam
+// chegar inteiras ao Rust: o encoder e a captura são configurados com elas, e um
+// `undefined` aqui vira 1 fps lá, ou o áudio da chamada do Discord na transmissão.
+assert.deepEqual(callArgs.get('start_broadcast'), {
     quality: '1080',
     fps: 30,
     source: 'window:87',
+    audio: true,
+    muteCalls: true,
 });
 
 // Vídeo primeiro, e os dois declarados — o áudio da tela ia junto e era esquecido.
-assert.deepEqual(pedidos, ['producePlain:video/screen', 'producePlain:audio/screenAudio']);
-assert.equal(transmissao.broadcasting, true);
+assert.deepEqual(requests, ['producePlain:video/screen', 'producePlain:audio/screenAudio']);
+assert.equal(broadcast.broadcasting, true);
 
-assert.equal(await transmissao.stop(), 4242, 'stop devolve os quadros transmitidos');
-assert.equal(transmissao.broadcasting, false);
-assert.deepEqual(pedidos, [
+assert.equal(await broadcast.stop(), 4242, 'stop devolve os quadros transmitidos');
+assert.equal(broadcast.broadcasting, false);
+assert.deepEqual(requests, [
     'producePlain:video/screen',
     'producePlain:audio/screenAudio',
     'closeProducer:video-producer/',
@@ -76,14 +79,14 @@ assert.deepEqual(pedidos, [
 
 // Parar duas vezes não pode mandar um segundo `stop_broadcast`: o Rust responde erro e
 // a mensagem de encerramento viraria uma falha na cara de quem só clicou uma vez.
-const antes = chamadas.length;
+const before = calls.length;
 
-assert.equal(await transmissao.stop(), 0);
-assert.equal(chamadas.length, antes, 'parar de novo não fala com o Rust');
+assert.equal(await broadcast.stop(), 0);
+assert.equal(calls.length, before, 'parar de novo não fala com o Rust');
 
 // Uma falha depois de iniciar a captura também precisa liberar o estado nativo, para
 // que a próxima tentativa não receba "a stream is already in progress".
-const falhaSfu = {
+const failingSfu = {
     request: async (acao, dados) => {
         if (acao === 'producePlain' && dados.kind === 'audio') {
             throw new Error('SFU indisponível');
@@ -92,9 +95,9 @@ const falhaSfu = {
         return { producerId: 'partial-producer', ip: '10.0.0.1', port: 41000 };
     },
 };
-const parcial = new Broadcast(falhaSfu);
-await assert.rejects(() => parcial.start('1080', 30, 'display:1'), /SFU indisponível/);
-assert.equal(parcial.nativeActive, false);
-assert.deepEqual(parcial.producerIds, []);
+const partial = new Broadcast(failingSfu);
+await assert.rejects(() => partial.start('1080', 30, 'display:1', true, false), /SFU indisponível/);
+assert.equal(partial.nativeActive, false);
+assert.deepEqual(partial.producerIds, []);
 
 console.log('transmissão: ok — ordem e encerramento');
