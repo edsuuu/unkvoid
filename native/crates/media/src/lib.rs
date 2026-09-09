@@ -121,7 +121,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bitrate_sobe_junto_com_a_resolucao() {
+    fn bitrate_rises_with_resolution() {
         let baixo = EncoderConfig::new(Quality::Hd720, 60).bitrate;
         let medio = EncoderConfig::new(Quality::Hd1080, 60).bitrate;
         let alto = EncoderConfig::new(Quality::Qhd1440, 60).bitrate;
@@ -130,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn metade_dos_quadros_custa_perto_de_metade_da_banda() {
+    fn half_the_frames_cost_about_half_the_bandwidth() {
         let cheio = EncoderConfig::new(Quality::Hd1080, 60);
         let metade = EncoderConfig::new(Quality::Hd1080, 30);
 
@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn fps_fora_da_faixa_e_puxado_para_dentro() {
+    fn fps_out_of_range_is_clamped() {
         // A interface oferece 30 a 60, mas quem chama é o Rust: um valor solto vindo de
         // fora não pode virar captura de 1 fps nem encoder pedindo 240.
         assert_eq!(EncoderConfig::new(Quality::Hd1080, 5).frame_rate, 30.0);
