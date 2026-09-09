@@ -26,6 +26,8 @@ pub struct Broadcast {
     sent: Arc<AtomicU64>,
     encode_errors: Arc<AtomicU64>,
     send_errors: Arc<AtomicU64>,
+    audio_packets: Arc<AtomicU64>,
+    audio_errors: Arc<AtomicU64>,
 }
 
 impl Broadcast {
@@ -48,11 +50,15 @@ impl Broadcast {
         let sent = Arc::new(AtomicU64::new(0));
         let encode_errors = Arc::new(AtomicU64::new(0));
         let send_errors = Arc::new(AtomicU64::new(0));
+        let audio_packets = Arc::new(AtomicU64::new(0));
+        let audio_errors = Arc::new(AtomicU64::new(0));
         let captured_callback = Arc::clone(&captured);
         let encoded_callback = Arc::clone(&encoded);
         let sent_callback = Arc::clone(&sent);
         let encode_errors_callback = Arc::clone(&encode_errors);
         let send_errors_callback = Arc::clone(&send_errors);
+        let audio_packets_callback = Arc::clone(&audio_packets);
+        let audio_errors_callback = Arc::clone(&audio_errors);
 
         let capturer = PlatformCapturer::start(
             &CaptureConfig {
@@ -69,11 +75,16 @@ impl Broadcast {
                     }
                     CaptureEvent::Audio(block) => {
                         let Ok(mut audio) = audio.lock() else {
+                            audio_errors_callback.fetch_add(1, Ordering::Relaxed);
                             return;
                         };
 
-                        let Ok(packets) = audio.push(&block) else {
-                            return;
+                        let packets = match audio.push(&block) {
+                            Ok(packets) => packets,
+                            Err(_) => {
+                                audio_errors_callback.fetch_add(1, Ordering::Relaxed);
+                                return;
+                            }
                         };
 
                         drop(audio);
@@ -82,7 +93,14 @@ impl Broadcast {
                             && let Some(sender) = destino.as_mut()
                         {
                             for packet in &packets {
-                                let _ = sender.send_audio(packet);
+                                match sender.send_audio(packet) {
+                                    Ok(()) => {
+                                        audio_packets_callback.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    Err(_) => {
+                                        audio_errors_callback.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
                             }
                         }
 
@@ -139,6 +157,8 @@ impl Broadcast {
             sent,
             encode_errors,
             send_errors,
+            audio_packets,
+            audio_errors,
         })
     }
 
@@ -173,11 +193,14 @@ impl Broadcast {
 
     pub fn stats(&self) -> serde_json::Value {
         serde_json::json!({
+            "active": true,
             "captured": self.captured.load(Ordering::Relaxed),
             "encoded": self.encoded.load(Ordering::Relaxed),
             "sent": self.sent.load(Ordering::Relaxed),
             "encodeErrors": self.encode_errors.load(Ordering::Relaxed),
             "sendErrors": self.send_errors.load(Ordering::Relaxed),
+            "audioPackets": self.audio_packets.load(Ordering::Relaxed),
+            "audioErrors": self.audio_errors.load(Ordering::Relaxed),
         })
     }
 

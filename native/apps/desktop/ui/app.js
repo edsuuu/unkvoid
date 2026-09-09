@@ -66,6 +66,8 @@ class App {
         this.previewTimers = new Set();
         this.previewInFlight = new Set();
         this.broadcastStatsTimer = null;
+        this.lastBroadcastStats = null;
+        this.broadcastStatsAt = 0;
         this.mediaStatsTimers = new Map();
 
         /** Grade mostra todos do mesmo tamanho; foco dá a tela toda a um só. */
@@ -400,7 +402,15 @@ class App {
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-fullscreen type="button">Tela cheia</button>'
             + '</figcaption>';
 
-        quadro.querySelector('video').srcObject = stream;
+        const video = quadro.querySelector('video');
+        video.srcObject = stream;
+        video.onerror = () => this.log('media.video.error', {
+            peerId: from,
+            message: video.error?.message ?? `media error ${video.error?.code ?? 'unknown'}`,
+        });
+        video.onstalled = () => this.log('media.video.stalled', { peerId: from });
+        video.onwaiting = () => this.log('media.video.waiting', { peerId: from });
+        video.onended = () => this.log('media.video.ended', { peerId: from });
         quadro.querySelector('span').textContent = this.sfu?.peers?.get(from)?.name ?? 'transmitindo';
         quadro.querySelector('[data-focus]').onclick = () => this.focus(from);
         quadro.querySelector('[data-fullscreen]').onclick = () => quadro.requestFullscreen?.();
@@ -409,7 +419,7 @@ class App {
             el('stage').appendChild(quadro);
         }
 
-        this.startMediaStats(from, quadro.querySelector('video'));
+        this.startMediaStats(from, video);
         this.paintLayout();
     }
 
@@ -436,8 +446,17 @@ class App {
                 ? Math.max(0, video.buffered.end(video.buffered.length - 1) - video.currentTime)
                 : 0;
             const fps = Math.round((frames - lastFrames) * 1000 / decorrido);
+            const quality = video.getVideoPlaybackQuality?.();
 
             stats.textContent = `ping ${this.sfu?.lastRttMs ?? '--'} ms · buffer ${buffer.toFixed(1)} s · fps ${fps}`;
+            this.log('media.stats', {
+                peerId,
+                pingMs: this.sfu?.lastRttMs ?? null,
+                bufferSeconds: Number(buffer.toFixed(2)),
+                fps,
+                framesDropped: quality?.droppedVideoFrames ?? null,
+                framesDecoded: quality?.totalVideoFrames ?? null,
+            });
             lastFrames = frames;
             lastSample = agora;
         };
@@ -659,9 +678,10 @@ class App {
             await this.broadcast.start(el('quality').value, Number(el('fps').value), this.shareSource);
             this.broadcastStatsTimer = setInterval(() => {
                 void invoke('broadcast_stats')
-                    .then(stats => this.log('broadcast.stats', stats))
-                    .catch(error => this.log('broadcast.stats.error', { message: error.message }));
+                    .then(stats => this.updateBroadcastStats(stats))
+                    .catch(error => this.log('broadcast.stats.error', { message: error.message ?? String(error) }));
             }, 1000);
+            void invoke('broadcast_stats').then(stats => this.updateBroadcastStats(stats));
             this.paintSharing(true);
         } catch (failure) {
             this.log('broadcast.start.error', { message: failure.message ?? String(failure) });
@@ -676,6 +696,47 @@ class App {
         this.sharing = on;
         el('share').hidden = on;
         el('stop').hidden = ! on;
+        if (! on) {
+            clearInterval(this.broadcastStatsTimer);
+            this.broadcastStatsTimer = null;
+            this.lastBroadcastStats = null;
+            this.broadcastStatsAt = 0;
+            document.querySelector('[data-broadcast-stats]').textContent = 'ping -- · buffer -- · fps --';
+        }
+    }
+
+    updateBroadcastStats(stats) {
+        if (! stats?.active) {
+            return;
+        }
+
+        const now = performance.now();
+        const previous = this.lastBroadcastStats;
+        const elapsed = this.broadcastStatsAt ? Math.max(now - this.broadcastStatsAt, 1) : 1000;
+        const fps = previous
+            ? Math.round((stats.captured - previous.captured) * 1000 / elapsed)
+            : '--';
+        const ping = this.sfu?.lastRttMs ?? '--';
+        document.querySelector('[data-broadcast-stats]').textContent = `ping ${ping} ms · buffer -- · fps ${fps}`;
+        this.log('broadcast.stats', { ...stats, pingMs: ping, fps });
+
+        if (previous) {
+            const errors = {
+                encodeErrors: stats.encodeErrors - previous.encodeErrors,
+                sendErrors: stats.sendErrors - previous.sendErrors,
+                audioErrors: stats.audioErrors - previous.audioErrors,
+            };
+            if (Object.values(errors).some(value => value > 0)) {
+                this.log('broadcast.error', {
+                    reason: 'media pipeline error',
+                    ...errors,
+                    totals: stats,
+                });
+            }
+        }
+
+        this.lastBroadcastStats = stats;
+        this.broadcastStatsAt = now;
     }
 
     async stopSharing() {
