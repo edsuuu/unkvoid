@@ -76,6 +76,7 @@ class App {
         this.mediaStatsTimers = new Map();
         this.remoteAudios = new Map();
         this.consumingProducers = new Set();
+        this.peopleStatsTimer = null;
 
         /** Grade mostra todos do mesmo tamanho; foco dá a tela toda a um só. */
         this.focused = null;
@@ -276,6 +277,9 @@ class App {
             }
 
             this.refreshPeople();
+            this.peopleStatsTimer = setInterval(() => {
+                void this.refreshPeopleStats();
+            }, 2000);
         } catch (failure) {
             this.fail(`não deu para entrar na sala: ${failure.message}`);
             await this.leave();
@@ -343,8 +347,7 @@ class App {
         const lista = el('people-list-items');
         lista.innerHTML = '';
 
-        const pessoas = [...(this.sfu?.peers?.values() ?? [])]
-            .filter(peer => ! peer.reconnecting);
+        const pessoas = [...(this.sfu?.peers?.values() ?? [])];
 
         for (const pessoa of pessoas) {
             const item = document.createElement('div');
@@ -352,14 +355,38 @@ class App {
             item.className = 'flex items-center gap-2 rounded px-2 py-1.5 text-sm text-white';
             item.innerHTML = '<span class="size-2 shrink-0 rounded-full bg-emerald-400"></span>'
                 + '<span class="min-w-0 flex-1 truncate"></span>'
-                + '<span class="text-xs text-ink-soft"></span>';
+                + '<span class="text-xs text-ink-soft"></span>'
+                + '<button class="rounded px-1.5 py-0.5 text-xs text-danger hover:bg-line" type="button" hidden>Remover</button>';
             item.querySelectorAll('span')[1].textContent = pessoa.name;
-            item.querySelectorAll('span')[2].textContent = pessoa.sharing ? 'compartilhando' : '';
+            const info = pessoa.reconnecting
+                ? 'parado'
+                : `${this.sfu?.peerLatency?.get(pessoa.peerId) ?? '--'} ms`;
+            item.querySelectorAll('span')[2].textContent = pessoa.sharing ? `compartilhando · ${info}` : info;
+            item.querySelector('span').classList.toggle('bg-danger', Boolean(pessoa.reconnecting));
+            const remove = item.querySelector('button');
+            remove.hidden = !pessoa.reconnecting || pessoa.self;
+            remove.onclick = () => this.removeStoppedPeer(pessoa.peerId);
             lista.appendChild(item);
         }
 
         if (! pessoas.length) {
             lista.innerHTML = '<p class="text-sm text-ink-soft">Nenhuma pessoa conectada.</p>';
+        }
+
+    }
+
+    async refreshPeopleStats() {
+        await this.sfu?.updatePeerLatency?.();
+        this.refreshPeople();
+    }
+
+    async removeStoppedPeer(peerId) {
+        try {
+            el('people-list').hidden = true;
+            await this.sfu.request('removePeer', { peerId });
+            this.log('peer.removed', { peerId });
+        } catch (error) {
+            this.fail(`não foi possível remover: ${error.message ?? error}`);
         }
     }
 
@@ -841,6 +868,8 @@ class App {
         // fantasma na sala até o servidor desistir sozinho.
         await this.sfu?.leaveRoom();
         this.sfu?.disconnect();
+        clearInterval(this.peopleStatsTimer);
+        this.peopleStatsTimer = null;
 
         this.sfu = null;
         this.broadcast = null;
