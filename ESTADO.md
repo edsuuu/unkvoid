@@ -184,10 +184,49 @@ XDG devolve. Só se alguém quiser.
   ```
 
 - **`pm2 delete reverb`** — o processo continua rodando e serve o Laravel que já não existe.
-- **Instaladores.** Nenhum foi gerado. `.msi` só sai no Windows, `.dmg` só no macOS. E a
-  chave de assinatura (`~/.tauri/unkvoid.key`) está **no Mac**: sem ela o instalador sai,
-  mas ninguém se atualiza sozinho. A chave pública já está no `tauri.conf.json` e as duas
-  precisam bater.
+- **Instalador do macOS.** Falta. `.dmg` só sai no macOS: lá, `cd native/apps/desktop &&
+  npx tauri build --bundles app dmg`, e o resultado vai para `dist/`.
+- **Assinatura.** Os instaladores em `dist/` saíram **sem assinatura**, porque a chave
+  privada (`~/.tauri/unkvoid.key`) está no Mac. Eles instalam e rodam; o que não fazem é
+  servir de alvo para a atualização automática. Veja [dist/README.md](dist/README.md).
+
+## Como gerar os instaladores do Windows
+
+Existem **duas cópias do repositório** nesta máquina, e a razão importa:
+
+- `/var/www/projects/unkvoid` — no WSL. É o repositório de verdade, onde se edita e se
+  commita.
+- `C:\Users\edsu\unkvoid-build` — só o `native/`, no disco C:. É de onde o instalador sai.
+
+A cópia existe porque o `node_modules` do WSL traz o `@tauri-apps/cli` **de Linux**: rodar
+`npx tauri build` de lá pelo Windows não funciona. Na cópia, um `npm ci` do lado do Windows
+traz o binário certo. Ela é descartável — para atualizar:
+
+```bash
+rsync -a --delete --exclude node_modules --exclude target --exclude dist \
+    /var/www/projects/unkvoid/native/ /mnt/c/Users/edsu/unkvoid-build/native/
+```
+
+Depois, no PowerShell:
+
+```powershell
+cd C:\Users\edsu\unkvoid-build\native\apps\desktop
+npm ci
+npx tauri build --bundles nsis,msi
+```
+
+Sai em `native\target\release\bundle\` — o `-setup.exe` (NSIS) e o `.msi` —, e o app
+solto, que roda sem instalar, em `native\target\release\unkvoid-desktop.exe`. Copie os
+três para o `dist/` do repositório.
+
+**Sem a chave de assinatura, acrescente `--config "{\"bundle\":{\"createUpdaterArtifacts\":false}}"`**
+— o Tauri recusa gerar artefato de update sem a chave privada, e ela está no Mac.
+
+Do WSL, o mesmo script chamado por fora:
+
+```bash
+cd /mnt/c && cmd.exe /c "C:\Users\edsu\build-msi.cmd"
+```
 
 ## Esta máquina — o que já está montado
 
@@ -203,13 +242,23 @@ lado de lá.
 | Windows | Rust 1.98.1 (`C:\Users\edsu\.cargo\bin\cargo.exe`), Node 24.19 |
 | WSL | Rust 1.98.1 + alvo `x86_64-pc-windows-msvc` |
 
-**Como compilar o código do Windows, de dentro do WSL:**
+**Como compilar o código do Windows.** O trabalho todo é `C:\Users\edsu\cargo-win.cmd`,
+que aceita os mesmos argumentos do cargo. Direto no PowerShell ou no cmd do Windows:
+
+```powershell
+C:\Users\edsu\cargo-win.cmd check --workspace --all-targets
+C:\Users\edsu\cargo-win.cmd clippy --workspace --all-targets -- -D warnings
+C:\Users\edsu\cargo-win.cmd test --workspace
+```
+
+De dentro do WSL, onde o repositório mora, é o mesmo script chamado por fora:
 
 ```bash
 cd /mnt/c && cmd.exe /c "C:\Users\edsu\cargo-win.cmd check --workspace --all-targets"
-cd /mnt/c && cmd.exe /c "C:\Users\edsu\cargo-win.cmd clippy --workspace --all-targets -- -D warnings"
-cd /mnt/c && cmd.exe /c "C:\Users\edsu\cargo-win.cmd test --workspace"
 ```
+
+O `cd /mnt/c` é do **bash do WSL** e não existe no PowerShell — lá ele vira
+`C:\mnt\c` e o comando falha antes de começar. No PowerShell, use a primeira forma.
 
 O `cargo-win.cmd` faz três coisas que **não são opcionais**: mapeia o repositório da WSL
 para `Y:` (o `cmd.exe` não aceita caminho UNC como diretório atual), põe o CMake que veio
