@@ -1,5 +1,22 @@
-// Não há mais segredo para guardar fora do repositório: a sala é anônima e o SFU não
-// verifica assinatura nenhuma. Tudo o que ele precisa está aqui.
+const { existsSync, readFileSync } = require('node:fs');
+const { join } = require('node:path');
+
+// O `.env` ao lado (fora do repositório) vence o que está aqui: é assim que esta máquina
+// tem endereço e portas próprios sem editar um arquivo versionado. Veja o `.env.example`.
+const envPath = join(__dirname, '.env');
+const doArquivo = existsSync(envPath)
+    ? Object.fromEntries(
+        readFileSync(envPath, 'utf8')
+            .split('\n')
+            .filter(linha => linha.trim() && ! linha.startsWith('#'))
+            .map(linha => {
+                const igual = linha.indexOf('=');
+
+                return [linha.slice(0, igual).trim(), linha.slice(igual + 1).trim()];
+            }),
+    )
+    : {};
+
 module.exports = {
     apps: [
         {
@@ -18,6 +35,7 @@ module.exports = {
                 // Um worker por core (a VPS tem 4). Cada um usa uma porta a partir de
                 // SFU_MEDIA_PORT: 40000-40003, todas liberadas no firewall.
                 SFU_WORKERS: '4',
+                ...doArquivo,
             },
         },
     ],
