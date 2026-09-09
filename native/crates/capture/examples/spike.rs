@@ -51,6 +51,7 @@ fn main() -> anyhow::Result<()> {
         quality,
         frame_rate: 60,
         capture_audio: true,
+        mute_listed_apps: true,
         show_cursor: true,
     };
 

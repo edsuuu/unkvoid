@@ -16,7 +16,22 @@ apple-cf = { version = "0.9", features = ["cv"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-capture = "2"
-windows = { version = "0.62", features = ["Win32_Graphics_Direct3D11"] }
+windows = { version = "0.62", features = [
+    "Win32_Graphics_Direct3D11",
+    # O áudio do sistema: laço por processo, para não gravar o que o próprio app toca.
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_System_Threading",
+    "Win32_Security",
+    # Descobrir de qual processo é a janela escolhida, para gravar só o som dele.
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# O `#[implement]` gera caminhos `windows_core::`, então a crate precisa estar aqui pelo
+# nome dela — o reexport em `windows::core` não serve para o que a macro escreve.
+windows-core = "0.62"
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

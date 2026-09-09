@@ -12,6 +12,9 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
+#[cfg(target_os = "windows")]
+mod windows_audio;
+
 #[cfg(target_os = "linux")]
 mod linux;
 
@@ -101,6 +104,13 @@ pub struct CaptureConfig {
     /// Frame-rate ceiling. The actual floor is the encoder and transport's responsibility.
     pub frame_rate: u32,
     pub capture_audio: bool,
+
+    /// Se o som dos aplicativos de `MUTED_APPS` deve ficar de fora da transmissão.
+    ///
+    /// É escolha de quem transmite, no momento de escolher o que compartilhar: quem usa
+    /// o Discord para conversar quase nunca quer a conversa junto, mas quem está
+    /// mostrando o próprio Discord para alguém quer.
+    pub mute_listed_apps: bool,
     pub show_cursor: bool,
 }
 
@@ -112,6 +122,26 @@ impl CaptureConfig {
     /// operating system handles this by filtering per process, more reliably
     /// than trying to guess in our code where the sound came from.
     pub const EXCLUI_AUDIO_DO_APP: bool = true;
+
+    /// Aplicativos cujo som nunca sobe junto com a tela, identificados pelo bundle.
+    ///
+    /// Quem compartilha aqui quase sempre está falando pelo Discord ao mesmo tempo. Sem
+    /// isto, a voz de todo mundo da chamada de lá entra na transmissão: quem está nos
+    /// dois lugares ouve cada pessoa duas vezes, a segunda com o atraso do salto pelo
+    /// servidor. O sistema filtra por processo, que é mais confiável do que tentar
+    /// adivinhar aqui de onde veio cada som.
+    ///
+    /// No macOS o filtro do ScreenCaptureKit é um só para vídeo e áudio, então a janela
+    /// do app silenciado também sai da imagem. Para o Discord isso é ganho duplo: a
+    /// conversa privada não vaza para a sala.
+    ///
+    /// No Windows esta lista ainda não vale: o laço por processo do WASAPI exclui uma
+    /// árvore só, e ela já é a nossa — ver o cabeçalho de `windows_audio.rs`.
+    pub const MUTED_APPS: &'static [&'static str] = &[
+        "com.hnc.Discord",
+        "com.hnc.DiscordPTB",
+        "com.hnc.DiscordCanary",
+    ];
 }
 
 impl Default for CaptureConfig {
@@ -121,6 +151,7 @@ impl Default for CaptureConfig {
             quality: Quality::Hd1080,
             frame_rate: 60,
             capture_audio: true,
+            mute_listed_apps: true,
             show_cursor: true,
         }
     }
@@ -187,19 +218,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn qualidade_mapeia_para_as_resolucoes_combinadas() {
+    fn quality_maps_to_the_agreed_resolutions() {
         assert_eq!(Quality::Hd720.dimensions(), (1280, 720));
         assert_eq!(Quality::Hd1080.dimensions(), (1920, 1080));
         assert_eq!(Quality::Qhd1440.dimensions(), (2560, 1440));
     }
 
     #[test]
-    fn padrao_captura_audio_do_sistema() {
+    fn default_captures_system_audio() {
         // This is why the native app exists: in a browser this depends on the OS
         // and version. If someone disables it accidentally, the test reports it.
         let config = CaptureConfig::default();
 
         assert!(config.capture_audio);
+        assert!(config.mute_listed_apps, "o áudio de chamada fica de fora até alguém pedir o contrário");
         assert_eq!(config.quality, Quality::Hd1080);
         assert_eq!(config.frame_rate, 60);
     }
