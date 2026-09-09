@@ -43,6 +43,7 @@ export class SfuClient extends EventTarget {
         this.closedByUs = false;
         this.reconnectAttempt = 0;
         this.reconnectTimer = null;
+        this.lastRttMs = null;
     }
 
     emit(name, detail) {
@@ -190,6 +191,7 @@ export class SfuClient extends EventTarget {
      */
     request(action, data = {}) {
         const id = this.nextRequestId++;
+        const startedAt = performance.now();
 
         return new Promise((resolve, reject) => {
             const prazo = setTimeout(() => {
@@ -199,6 +201,7 @@ export class SfuClient extends EventTarget {
 
             const encerrar = fim => valor => {
                 clearTimeout(prazo);
+                this.lastRttMs = Math.round(performance.now() - startedAt);
                 fim(valor);
             };
 
