@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict';
 
 const chamadas = [];
+const argumentos = new Map();
 
 // `broadcast.js` lê a ponte do Tauri ao carregar, então ela precisa existir antes.
 globalThis.window = {
@@ -18,6 +19,7 @@ globalThis.window = {
         core: {
             invoke: async (comando, args) => {
                 chamadas.push(comando);
+                argumentos.set(comando, args);
 
                 if (comando === 'sfu_offer') {
                     return { ssrc: 7, payloadType: 96 };
@@ -42,10 +44,18 @@ const sfu = {
 
 const transmissao = new Broadcast(sfu);
 
-await transmissao.start('1080', 'window:87');
+await transmissao.start('1080', 30, 'window:87');
 
 assert.deepEqual(chamadas, ['start_broadcast', 'sfu_offer', 'sfu_offer', 'use_sfu']);
 assert.equal(chamadas.indexOf('use_sfu'), chamadas.length - 1, 'use_sfu é o último');
+
+// Qualidade e fps são escolha de quem transmite e precisam chegar inteiros ao Rust: o
+// encoder e a captura são configurados com eles, e um `undefined` aqui vira 1 fps lá.
+assert.deepEqual(argumentos.get('start_broadcast'), {
+    quality: '1080',
+    fps: 30,
+    source: 'window:87',
+});
 
 // Vídeo primeiro, e os dois declarados — o áudio da tela ia junto e era esquecido.
 assert.deepEqual(pedidos, ['producePlain:video/screen', 'producePlain:audio/screenAudio']);

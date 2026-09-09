@@ -22,8 +22,11 @@ pub struct Broadcast {
 
 impl Broadcast {
     /// Começa a capturar e a codificar. O destino entra depois, no `use_sfu`.
-    pub fn start(quality: Quality, source: CaptureSource) -> anyhow::Result<Self> {
-        let encoder_config = EncoderConfig::for_quality(quality);
+    pub fn start(quality: Quality, frame_rate: u32, source: CaptureSource) -> anyhow::Result<Self> {
+        let encoder_config = EncoderConfig::new(quality, frame_rate);
+
+        // Quem manda no número é o encoder: ele já limitou o pedido à faixa que aceita, e
+        // captura e encoder discordarem faria o vídeo chegar acelerado ou aos trancos.
         let frame_rate = encoder_config.frame_rate;
 
         // O callback da captura é `Fn`: o encoder guarda estado entre quadros e precisa
@@ -37,6 +40,7 @@ impl Broadcast {
             &CaptureConfig {
                 quality,
                 source,
+                frame_rate: frame_rate as u32,
                 ..CaptureConfig::default()
             },
             move |event| {

@@ -17,8 +17,8 @@ export class Broadcast {
         this.broadcasting = false;
     }
 
-    async start(quality, source) {
-        await invoke('start_broadcast', { quality, source });
+    async start(quality, fps, source) {
+        await invoke('start_broadcast', { quality, fps, source });
 
         // Vídeo e áudio caem no mesmo transport do servidor, então o endereço é um só —
         // e é por isso que o `use_sfu` vem depois dos dois: mandar RTP antes de declarar

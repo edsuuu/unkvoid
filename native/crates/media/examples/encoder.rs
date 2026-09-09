@@ -40,7 +40,7 @@ fn main() -> anyhow::Result<()> {
         .and_then(|value| value.parse().ok())
         .unwrap_or(120);
     let (width, height) = quality.dimensions();
-    let config = EncoderConfig::for_quality(quality);
+    let config = EncoderConfig::new(quality, 60);
 
     println!(
         "encoder H.264 · {width}x{height} · {} Mbps · alvo {} fps\n",
