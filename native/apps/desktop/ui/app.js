@@ -260,6 +260,13 @@ class App {
 
     wireRoom() {
         el('copy-code').onclick = () => this.copyCode();
+        el('room-people').onclick = () => {
+            const lista = el('people-list');
+            lista.hidden = ! lista.hidden;
+            if (! lista.hidden) {
+                this.drawPeopleList();
+            }
+        };
         el('layout').onclick = () => this.toggleLayout();
         el('share').onclick = () => this.openShareModal();
         el('stop').onclick = () => this.stopSharing();
@@ -292,7 +299,35 @@ class App {
             .filter(peer => ! peer.reconnecting)
             .length || 1;
 
-        el('room-people').textContent = total > 1 ? `${total} pessoas` : 'só você por aqui';
+        el('room-people').textContent = total === 1 ? '1 pessoa' : `${total} pessoas`;
+
+        if (! el('people-list').hidden) {
+            this.drawPeopleList();
+        }
+    }
+
+    drawPeopleList() {
+        const lista = el('people-list-items');
+        lista.innerHTML = '';
+
+        const pessoas = [...(this.sfu?.peers?.values() ?? [])]
+            .filter(peer => ! peer.reconnecting);
+
+        for (const pessoa of pessoas) {
+            const item = document.createElement('div');
+
+            item.className = 'flex items-center gap-2 rounded px-2 py-1.5 text-sm text-white';
+            item.innerHTML = '<span class="size-2 shrink-0 rounded-full bg-emerald-400"></span>'
+                + '<span class="min-w-0 flex-1 truncate"></span>'
+                + '<span class="text-xs text-ink-soft"></span>';
+            item.querySelectorAll('span')[1].textContent = pessoa.name;
+            item.querySelectorAll('span')[2].textContent = pessoa.sharing ? 'compartilhando' : '';
+            lista.appendChild(item);
+        }
+
+        if (! pessoas.length) {
+            lista.innerHTML = '<p class="text-sm text-ink-soft">Nenhuma pessoa conectada.</p>';
+        }
     }
 
     async consume({ producerId }) {
@@ -563,6 +598,7 @@ class App {
         this.broadcast = null;
         this.room = null;
         this.focused = null;
+        el('people-list').hidden = true;
 
         el('stage').innerHTML = '';
         el('room-error').hidden = true;

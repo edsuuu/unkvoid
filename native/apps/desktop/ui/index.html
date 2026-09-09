@@ -48,13 +48,18 @@
 
 <!-- A sala. Uma barra fina em cima, e o resto é tela. -->
 <section class="flex min-h-0 flex-1 flex-col" id="room" hidden>
-  <header class="flex h-12 shrink-0 items-center gap-3 border-b border-row px-3">
+  <header class="relative flex h-12 shrink-0 items-center gap-3 border-b border-row px-3">
     <span class="text-xs font-bold uppercase tracking-wide text-ink-soft">Sala</span>
 
     <button class="cursor-pointer rounded bg-rail px-2.5 py-1 font-mono text-sm text-white transition-colors hover:bg-line"
             id="copy-code" title="Copiar o código para mandar a alguém"></button>
 
-    <span class="text-[13px] text-ink-soft" id="room-people"></span>
+    <button class="cursor-pointer rounded px-2 py-1 text-[13px] text-ink-soft transition-colors hover:bg-line hover:text-white"
+            id="room-people" title="Ver quem está na sala"></button>
+    <div class="absolute left-20 top-11 z-30 w-64 rounded-lg border border-line bg-content p-3 shadow-xl" id="people-list" hidden>
+      <p class="mb-2 text-xs font-bold uppercase tracking-wide text-ink-soft">Na sala</p>
+      <div class="space-y-1" id="people-list-items"></div>
+    </div>
 
     <span class="flex-1"></span>
 
