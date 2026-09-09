@@ -54,6 +54,8 @@ class App {
     }
 
     constructor() {
+        this.logs = [];
+        this.log('app.start', { userAgent: navigator.userAgent, platform: navigator.platform });
         this.name = '';
         this.room = null;
         this.sfu = null;
@@ -230,6 +232,7 @@ class App {
 
         try {
             this.sfu = new SfuClient();
+            this.sfu.addEventListener('diagnostic', event => this.log(event.detail.event, event.detail.data));
             this.sfu.addEventListener('newProducer', event => this.consume(event.detail));
             this.sfu.addEventListener('peersChanged', () => this.refreshPeople());
             this.sfu.addEventListener('peerLeft', event => this.showScreen(event.detail.peerId, null));
@@ -270,6 +273,10 @@ class App {
         el('share').onclick = () => this.openShareModal();
         el('stop').onclick = () => this.stopSharing();
         el('leave').onclick = () => this.leave();
+        el('logs').onclick = () => this.openLogs();
+        el('logs-close').onclick = () => { el('logs-modal').hidden = true; };
+        el('logs-clear').onclick = () => { this.logs = []; this.renderLogs(); };
+        el('logs-copy').onclick = () => this.copyLogs();
         el('share-cancel').onclick = () => this.closeShareModal();
         el('share-confirm').onclick = async () => {
             this.closeShareModal();
@@ -289,6 +296,7 @@ class App {
     }
 
     fail(mensagem) {
+        this.log('ui.error', { message: mensagem });
         el('room-error').textContent = mensagem;
         el('room-error').hidden = false;
     }
@@ -330,6 +338,7 @@ class App {
     }
 
     async consume({ producerId }) {
+        this.log('media.consume.start', { producerId });
         try {
             const { consumer, peerId } = await this.sfu.consume(producerId);
 
@@ -347,7 +356,9 @@ class App {
             }
 
             this.showScreen(peerId, new MediaStream([consumer.track]));
+            this.log('media.consume.ready', { producerId, peerId, kind: consumer.kind });
         } catch (failure) {
+            this.log('media.consume.error', { producerId, message: failure.message });
             console.warn('não deu para receber a mídia:', failure);
         }
     }
@@ -545,7 +556,9 @@ class App {
             };
 
             void atualizar();
-            this.previewTimers.add(setInterval(() => void atualizar(), 1000));
+            // O seletor mostra uma prévia viva, não um único snapshot. O intervalo
+            // acompanha 30 FPS; o sistema pode entregar menos quadros se estiver ocupado.
+            this.previewTimers.add(setInterval(() => void atualizar(), 1000 / 30));
         }
     }
 
@@ -574,10 +587,12 @@ class App {
     }
 
     async share() {
+        this.log('broadcast.start', { quality: el('quality').value, fps: el('fps').value, source: this.shareSource });
         try {
             await this.broadcast.start(el('quality').value, Number(el('fps').value), this.shareSource);
             this.paintSharing(true);
         } catch (failure) {
+            this.log('broadcast.start.error', { message: failure.message ?? String(failure) });
             // Falhar calado deixava a barra sem botão nenhum: quem tentou compartilhar
             // via o modal fechar e mais nada.
             this.paintSharing(false);
@@ -592,11 +607,13 @@ class App {
     }
 
     async stopSharing() {
+        this.log('broadcast.stop');
         await this.broadcast?.stop().catch(() => 0);
         this.paintSharing(false);
     }
 
     async leave() {
+        this.log('room.leave');
         await this.stopSharing();
 
         // `leaveRoom` antes de `disconnect`: fechar o socket sem avisar deixa você como
@@ -615,6 +632,30 @@ class App {
         document.querySelectorAll('audio[data-remote]').forEach(audio => audio.remove());
 
         this.showEntry();
+    }
+
+    log(event, data = {}) {
+        this.logs.push(`${new Date().toISOString()} ${event} ${JSON.stringify(data)}`);
+        if (this.logs.length > 500) {
+            this.logs.shift();
+        }
+    }
+
+    renderLogs() {
+        el('logs-output').value = this.logs.join('\n');
+        el('logs-output').scrollTop = el('logs-output').scrollHeight;
+    }
+
+    openLogs() {
+        el('logs-modal').hidden = false;
+        this.renderLogs();
+    }
+
+    async copyLogs() {
+        this.renderLogs();
+        await navigator.clipboard.writeText(el('logs-output').value);
+        el('logs-copy').textContent = 'Copiado!';
+        setTimeout(() => { el('logs-copy').textContent = 'Copiar logs'; }, 1200);
     }
 }
 
