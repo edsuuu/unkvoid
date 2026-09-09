@@ -68,6 +68,7 @@ export class Room {
             this.peers.delete(previous.id);
             previous.close();
             previous.socket.close();
+            this.broadcast('peerLeft', { peerId: previous.id }, previous.id);
         }
 
         const peer = new Peer(randomUUID(), name, socket, randomBytes(16).toString('hex'));

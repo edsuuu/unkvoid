@@ -266,6 +266,11 @@ export class SfuClient extends EventTarget {
         }
 
         this.consumers.clear();
+        // A failed initial setup can reconnect with a new peer id. Rebuild the
+        // participant map from the server snapshot instead of retaining stale sessions.
+        this.peers.clear();
+        this.consumerPeers.clear();
+        this.peerLatency.clear();
         this.peers.set(joined.peerId, { peerId: joined.peerId, name: joined.name, self: true, sharing: false });
 
         for (const peer of joined.peers) {
