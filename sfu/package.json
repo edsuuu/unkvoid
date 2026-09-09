@@ -3,21 +3,33 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Unkvoid: o relé de mídia (SFU)",
+  "description": "Unkvoid: o rel\u00e9 de m\u00eddia (SFU)",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
-    "check": "node check.mjs && node check-heartbeat.mjs",
-    "typecheck": "tsc --noEmit"
+    "check": "npm run lint && node check.mjs && node check-heartbeat.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
+    "format": "prettier --write \"src/**/*.ts\""
   },
   "dependencies": {
     "mediasoup": "^3.26.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "typescript": "^5.9.0",
+    "@eslint/js": "^9.18.0",
     "@types/node": "^24.0.0",
-    "@types/ws": "^8.18.0"
+    "@types/ws": "^8.18.0",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-import-resolver-typescript": "^4.4.5",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-prettier": "^5.2.1",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.20.0"
   }
 }

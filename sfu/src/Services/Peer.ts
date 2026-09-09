@@ -19,7 +19,7 @@ export class Peer {
 
     public readonly consumers = new Map<string, Consumer>();
 
-    constructor(
+    public constructor(
         public readonly id: string,
         public readonly name: string,
         socket: WebSocket,
@@ -33,57 +33,61 @@ export class Peer {
      * Troca a sinalização sem tocar na mídia: transports, producers e consumers seguem
      * vivos, então a tela de quem assiste não pisca.
      */
-    attachSocket(socket: WebSocket): void {
+    public attachSocket(socket: WebSocket): void {
         this.socket = socket;
         this.orphanedAt = null;
     }
 
-    isOrphaned(): boolean {
+    public isOrphaned(): boolean {
         return this.orphanedAt !== null;
     }
 
-    addTransport(transport: WebRtcTransport): void {
+    public addTransport(transport: WebRtcTransport): void {
         this.transports.set(transport.id, transport);
     }
 
-    addPlainTransport(transport: PlainTransport): void {
+    public addPlainTransport(transport: PlainTransport): void {
         this.plainTransports.set(transport.id, transport);
     }
 
-    getTransport(transportId: string): WebRtcTransport {
+    public getTransport(transportId: string): WebRtcTransport {
         const transport = this.transports.get(transportId);
 
         if (!transport) {
-            throw new NotFoundException(`transport ${transportId} does not exist for this participant`);
+            throw new NotFoundException(
+                `transport ${transportId} does not exist for this participant`,
+            );
         }
 
         return transport;
     }
 
-    getConsumer(consumerId: string): Consumer {
+    public getConsumer(consumerId: string): Consumer {
         const consumer = this.consumers.get(consumerId);
 
         if (!consumer) {
-            throw new NotFoundException(`consumer ${consumerId} does not exist for this participant`);
+            throw new NotFoundException(
+                `consumer ${consumerId} does not exist for this participant`,
+            );
         }
 
         return consumer;
     }
 
-    addProducer(producer: Producer, source: string): void {
+    public addProducer(producer: Producer, source: string): void {
         producer.appData.source = source;
         this.producers.set(producer.id, producer);
     }
 
-    describeProducers(): ProducerDescription[] {
-        return [...this.producers.values()].map(producer => ({
+    public describeProducers(): ProducerDescription[] {
+        return [...this.producers.values()].map((producer) => ({
             producerId: producer.id,
             kind: producer.kind,
             source: String(producer.appData.source),
         }));
     }
 
-    closeProducers(): void {
+    public closeProducers(): void {
         for (const producer of this.producers.values()) {
             producer.close();
         }
@@ -92,7 +96,7 @@ export class Peer {
         this.producers.clear();
     }
 
-    closePlainTransports(): void {
+    public closePlainTransports(): void {
         // Um plain transport existe só para carregar uma transmissão: deixá-lo aberto
         // seguraria uma porta UDP de uma faixa estreita pelo resto da vida do processo.
         for (const transport of this.plainTransports.values()) {
@@ -102,7 +106,7 @@ export class Peer {
         this.plainTransports.clear();
     }
 
-    send(event: string, data: unknown): void {
+    public send(event: string, data: unknown): void {
         if (this.socket.readyState !== this.socket.OPEN) {
             return;
         }
@@ -110,7 +114,7 @@ export class Peer {
         this.socket.send(JSON.stringify({ event, data }));
     }
 
-    close(): void {
+    public close(): void {
         for (const transport of [...this.transports.values(), ...this.plainTransports.values()]) {
             transport.close();
         }

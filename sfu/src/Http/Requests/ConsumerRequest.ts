@@ -5,7 +5,7 @@ export class ConsumerRequest extends Request {
         this.string('consumerId');
     }
 
-    consumerId(): string {
+    public consumerId(): string {
         return this.string('consumerId');
     }
 }

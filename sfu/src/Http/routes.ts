@@ -3,8 +3,8 @@ import type { Resource, Session } from '../types.js';
 import type { ConsumerController } from './Controllers/ConsumerController.js';
 import type { JoinController } from './Controllers/JoinController.js';
 import type { LeaveController } from './Controllers/LeaveController.js';
-import type { ProducerController } from './Controllers/ProducerController.js';
 import type { PeerController } from './Controllers/PeerController.js';
+import type { ProducerController } from './Controllers/ProducerController.js';
 import type { TransportController } from './Controllers/TransportController.js';
 import { ConsumeRequest } from './Requests/ConsumeRequest.js';
 import { ConsumerRequest } from './Requests/ConsumerRequest.js';
@@ -38,42 +38,42 @@ export const routes = (controllers: Controllers): Record<ActionName, Route> => (
     [Action.Join]: {
         guest: true,
         build: (data, session) => new JoinRequest(data, session),
-        handle: request => controllers.join.handle(request),
+        handle: (request) => controllers.join.handle(request),
     },
     [Action.Leave]: {
         build: (data, session) => new Request(data, session),
-        handle: request => controllers.leave.handle(request),
+        handle: (request) => controllers.leave.handle(request),
     },
     [Action.RemovePeer]: {
         build: (data, session) => new RemovePeerRequest(data, session),
-        handle: request => controllers.peer.remove(request),
+        handle: (request) => controllers.peer.remove(request),
     },
     [Action.CreateTransport]: {
         build: (data, session) => new Request(data, session),
-        handle: request => controllers.transport.create(request),
+        handle: (request) => controllers.transport.create(request),
     },
     [Action.ConnectTransport]: {
         build: (data, session) => new TransportRequest(data, session),
-        handle: request => controllers.transport.connect(request),
+        handle: (request) => controllers.transport.connect(request),
     },
     [Action.ProducePlain]: {
         build: (data, session) => new ProducePlainRequest(data, session),
-        handle: request => controllers.producer.storePlain(request),
+        handle: (request) => controllers.producer.storePlain(request),
     },
     [Action.CloseProducer]: {
         build: (data, session) => new ProducerRequest(data, session),
-        handle: request => controllers.producer.destroy(request),
+        handle: (request) => controllers.producer.destroy(request),
     },
     [Action.Consume]: {
         build: (data, session) => new ConsumeRequest(data, session),
-        handle: request => controllers.consumer.store(request),
+        handle: (request) => controllers.consumer.store(request),
     },
     [Action.ResumeConsumer]: {
         build: (data, session) => new ConsumerRequest(data, session),
-        handle: request => controllers.consumer.resume(request),
+        handle: (request) => controllers.consumer.resume(request),
     },
     [Action.PauseConsumer]: {
         build: (data, session) => new ConsumerRequest(data, session),
-        handle: request => controllers.consumer.pause(request),
+        handle: (request) => controllers.consumer.pause(request),
     },
 });

@@ -5,11 +5,16 @@ import { ConsumerResource } from '../Resources/ConsumerResource.js';
 import { StatusResource } from '../Resources/StatusResource.js';
 
 export class ConsumerController {
-    async store(request: ConsumeRequest): Promise<ConsumerResource> {
+    public async store(request: ConsumeRequest): Promise<ConsumerResource> {
         const room = request.room();
         const peer = request.peer();
 
-        if (! room.router.canConsume({ producerId: request.producerId(), rtpCapabilities: request.rtpCapabilities() })) {
+        if (
+            !room.router.canConsume({
+                producerId: request.producerId(),
+                rtpCapabilities: request.rtpCapabilities(),
+            })
+        ) {
             throw new ValidationException('this participant cannot receive this media');
         }
 
@@ -42,7 +47,7 @@ export class ConsumerController {
         return new ConsumerResource(consumer, owner);
     }
 
-    async resume(request: ConsumerRequest): Promise<StatusResource> {
+    public async resume(request: ConsumerRequest): Promise<StatusResource> {
         const consumer = request.peer().getConsumer(request.consumerId());
         await consumer.resume();
 
@@ -56,7 +61,7 @@ export class ConsumerController {
         return new StatusResource('resumed');
     }
 
-    async pause(request: ConsumerRequest): Promise<StatusResource> {
+    public async pause(request: ConsumerRequest): Promise<StatusResource> {
         await request.peer().getConsumer(request.consumerId()).pause();
 
         return new StatusResource('paused');

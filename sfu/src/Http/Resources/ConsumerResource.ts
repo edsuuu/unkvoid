@@ -4,12 +4,12 @@ import type { Peer } from '../../Services/Peer.js';
 import type { Resource } from '../../types.js';
 
 export class ConsumerResource implements Resource {
-    constructor(
+    public constructor(
         private readonly consumer: Consumer,
         private readonly owner: { peer: Peer; producer: Producer },
     ) {}
 
-    toArray(): Record<string, unknown> {
+    public toArray(): Record<string, unknown> {
         return {
             consumerId: this.consumer.id,
             producerId: this.consumer.producerId,

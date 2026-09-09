@@ -4,9 +4,9 @@ import type { JoinRequest } from '../Requests/JoinRequest.js';
 import { JoinResource } from '../Resources/JoinResource.js';
 
 export class JoinController {
-    constructor(private readonly registry: RoomRegistry) {}
+    public constructor(private readonly registry: RoomRegistry) {}
 
-    async handle(request: JoinRequest): Promise<JoinResource> {
+    public async handle(request: JoinRequest): Promise<JoinResource> {
         // Sem esta guarda, entrar de novo no mesmo socket faria a substituição de sessão
         // fechar o próprio socket antes de responder.
         if (request.session.peer) {
@@ -24,7 +24,7 @@ export class JoinController {
         request.session.peer = peer;
 
         // Retomada não é novidade para a sala: ninguém saiu, a sinalização é que voltou.
-        if (! resumed) {
+        if (!resumed) {
             room.broadcast('peerJoined', { peerId: peer.id, name: peer.name }, peer.id);
         }
 

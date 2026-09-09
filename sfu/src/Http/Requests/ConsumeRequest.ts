@@ -9,15 +9,15 @@ export class ConsumeRequest extends Request {
         this.object('rtpCapabilities');
     }
 
-    transportId(): string {
+    public transportId(): string {
         return this.string('transportId');
     }
 
-    producerId(): string {
+    public producerId(): string {
         return this.string('producerId');
     }
 
-    rtpCapabilities(): RtpCapabilities {
+    public rtpCapabilities(): RtpCapabilities {
         return this.object<RtpCapabilities>('rtpCapabilities');
     }
 }

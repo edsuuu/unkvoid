@@ -6,7 +6,7 @@ export class LeaveController {
      * Saída de propósito. Sem isto o servidor trataria como queda e a pessoa continuaria
      * fantasma na lista pelos 45 segundos de carência.
      */
-    handle(request: Request): StatusResource {
+    public handle(request: Request): StatusResource {
         const room = request.room();
 
         room.removePeer(request.peer());

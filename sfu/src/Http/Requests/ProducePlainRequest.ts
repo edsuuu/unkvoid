@@ -1,10 +1,15 @@
 import type { MediaKind, RtpParameters, SrtpParameters } from 'mediasoup/types';
 
+import { Request } from './Request.js';
 import { SOURCES, type SourceName } from '../../Enums/Source.js';
 import { ValidationException } from '../../Exceptions/ApiException.js';
-import { Request } from './Request.js';
 
-const SUITES = ['AEAD_AES_256_GCM', 'AEAD_AES_128_GCM', 'AES_CM_128_HMAC_SHA1_80', 'AES_CM_128_HMAC_SHA1_32'] as const;
+const SUITES = [
+    'AEAD_AES_256_GCM',
+    'AEAD_AES_128_GCM',
+    'AES_CM_128_HMAC_SHA1_80',
+    'AES_CM_128_HMAC_SHA1_32',
+] as const;
 
 /**
  * Uma transmissão que chega como RTP puro, vinda do app nativo e não de um navegador.
@@ -20,8 +25,10 @@ export class ProducePlainRequest extends Request {
 
         const srtp = this.object<Record<string, unknown>>('srtpParameters');
 
-        if (! (SUITES as readonly unknown[]).includes(srtp.cryptoSuite)) {
-            throw new ValidationException(`field srtpParameters.cryptoSuite must be one of: ${SUITES.join(', ')}`);
+        if (!(SUITES as readonly unknown[]).includes(srtp.cryptoSuite)) {
+            throw new ValidationException(
+                `field srtpParameters.cryptoSuite must be one of: ${SUITES.join(', ')}`,
+            );
         }
 
         if (typeof srtp.keyBase64 !== 'string' || srtp.keyBase64.trim() === '') {
@@ -29,19 +36,19 @@ export class ProducePlainRequest extends Request {
         }
     }
 
-    kind(): MediaKind {
+    public kind(): MediaKind {
         return this.oneOf('kind', ['audio', 'video'] as const);
     }
 
-    source(): SourceName {
+    public source(): SourceName {
         return this.oneOf('source', SOURCES);
     }
 
-    rtpParameters(): RtpParameters {
+    public rtpParameters(): RtpParameters {
         return this.object<RtpParameters>('rtpParameters');
     }
 
-    srtpParameters(): SrtpParameters {
+    public srtpParameters(): SrtpParameters {
         return this.object<SrtpParameters>('srtpParameters');
     }
 }

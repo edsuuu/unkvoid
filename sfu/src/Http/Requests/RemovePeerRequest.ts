@@ -1,17 +1,17 @@
+import { Request } from './Request.js';
 import { ValidationException } from '../../Exceptions/ApiException.js';
 import type { Peer } from '../../Services/Peer.js';
 import type { Room } from '../../Services/Room.js';
-import { Request } from './Request.js';
 
 export class RemovePeerRequest extends Request {
-    peerId(): string {
+    public peerId(): string {
         return this.string('peerId');
     }
 
-    target(room: Room): Peer {
+    public target(room: Room): Peer {
         const target = room.peers.get(this.peerId());
 
-        if (! target) {
+        if (!target) {
             throw new ValidationException('participant does not exist');
         }
 

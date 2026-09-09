@@ -1,5 +1,4 @@
 import { createServer, type IncomingMessage } from 'node:http';
-
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 
 import { config } from '../config.js';
@@ -32,7 +31,7 @@ export class Server {
     /** Quem respondeu ao último ping. Quem não respondeu perde a conexão no próximo. */
     private readonly alive = new WeakSet<WebSocket>();
 
-    async start(): Promise<void> {
+    public async start(): Promise<void> {
         await this.registry.boot();
 
         const http = createServer((request, response) => {
@@ -43,7 +42,13 @@ export class Server {
             }
 
             response.writeHead(200, { 'content-type': 'application/json' });
-            response.end(JSON.stringify({ ok: true, appVersion: config.appVersion, ...this.registry.stats() }));
+            response.end(
+                JSON.stringify({
+                    ok: true,
+                    appVersion: config.appVersion,
+                    ...this.registry.stats(),
+                }),
+            );
         });
 
         const websockets = new WebSocketServer({ server: http, path: config.path });
@@ -52,7 +57,7 @@ export class Server {
 
         setInterval(() => {
             for (const socket of websockets.clients) {
-                if (! this.alive.has(socket)) {
+                if (!this.alive.has(socket)) {
                     // `terminate` fecha na marra e dispara o `close`, que é o que põe a
                     // carência de 30 segundos para andar.
                     socket.terminate();
@@ -66,7 +71,10 @@ export class Server {
         }, config.heartbeatMs).unref();
 
         http.listen(config.listenPort, config.listenHost, () =>
-            console.log(`[INFO] SFU em ${config.listenHost}:${config.listenPort}${config.path} · media on port ${config.mediaPort}`));
+            console.log(
+                `[INFO] SFU em ${config.listenHost}:${config.listenPort}${config.path} · media on port ${config.mediaPort}`,
+            ),
+        );
     }
 
     private accept(socket: WebSocket, request: IncomingMessage): void {
@@ -82,14 +90,14 @@ export class Server {
 
         this.alive.add(socket);
         socket.on('pong', () => this.alive.add(socket));
-        socket.on('message', raw => void this.handle(session, raw));
+        socket.on('message', (raw) => void this.handle(session, raw));
         socket.on('close', () => this.release(session));
-        socket.on('error', error => console.error('[ERROR] socket', error.message));
+        socket.on('error', (error) => console.error('[ERROR] socket', error.message));
     }
 
     private tooMany(address: string): boolean {
         const now = Date.now();
-        const hits = (this.recent.get(address) ?? []).filter(at => now - at < WINDOW_MS);
+        const hits = (this.recent.get(address) ?? []).filter((at) => now - at < WINDOW_MS);
 
         hits.push(now);
         this.recent.set(address, hits);
@@ -98,7 +106,7 @@ export class Server {
         // ordem de milhares de IPs por minuto, que não é o tamanho disto.
         if (this.recent.size > 1000) {
             for (const [known, times] of this.recent) {
-                if (times.every(at => now - at >= WINDOW_MS)) {
+                if (times.every((at) => now - at >= WINDOW_MS)) {
                     this.recent.delete(known);
                 }
             }
@@ -127,14 +135,16 @@ export class Server {
             const message = exception instanceof Error ? exception.message : 'unexpected error';
 
             console.error(`[ERROR] ${payload.action} (${status}): ${message}`);
-            session.socket.send(JSON.stringify({ id: payload.id, ok: false, status, error: message }));
+            session.socket.send(
+                JSON.stringify({ id: payload.id, ok: false, status, error: message }),
+            );
         }
     }
 
     private release(session: Session): void {
         this.sessions.delete(session.socket);
 
-        if (! session.room || ! session.peer) {
+        if (!session.room || !session.peer) {
             return;
         }
 
