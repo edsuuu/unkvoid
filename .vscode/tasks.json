@@ -1,0 +1,18 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Unkvoid: Tauri dev",
+      "type": "shell",
+      "command": "make dev",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Unkvoid: Rust check",
+      "type": "shell",
+      "command": "make rust-check",
+      "problemMatcher": "$rustc"
+    }
+  ]
+}
