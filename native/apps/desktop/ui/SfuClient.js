@@ -160,6 +160,10 @@ export class SfuClient extends EventTarget {
             this.markSharing(data.peerId, false);
         }
 
+        if (event === 'consumerClosed') {
+            this.consumers.delete(data.consumerId);
+        }
+
         this.emit('peersChanged', [...this.peers.entries()]);
     }
 
