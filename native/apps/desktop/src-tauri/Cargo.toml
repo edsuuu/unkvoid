@@ -23,6 +23,12 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-process = "2.3.1"
 tauri-plugin-single-instance = "2.4.4"
 tauri-plugin-updater = "2.11.0"
+
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+# O WebKitGTK entrega WebRTC desligado. Sem mexer nesta configuração, a janela do app no
+# Linux não tem `RTCPeerConnection` e o mediasoup morre antes de entrar na sala.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "2.0", features = ["v2_38"] }
