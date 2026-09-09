@@ -7,12 +7,12 @@ import type { ProducerDescription } from '../types.js';
 export class Peer {
     public socket: WebSocket;
 
-    /** Time when the socket dropped. Null while signaling is alive. */
+    /** Quando o socket caiu. Nulo enquanto a sinalização está viva. */
     public orphanedAt: number | null = null;
 
     public readonly transports = new Map<string, WebRtcTransport>();
 
-    /** Plain RTP ingest from the native app. Separate map: it has no DTLS to connect. */
+    /** O ingest de RTP puro do app nativo. Mapa separado: não tem DTLS a conectar. */
     public readonly plainTransports = new Map<string, PlainTransport>();
 
     public readonly producers = new Map<string, Producer>();
@@ -30,8 +30,8 @@ export class Peer {
     }
 
     /**
-     * Switches signaling without touching media: transports, producers, and consumers
-     * remain alive, so the viewer’s screen does not flicker.
+     * Troca a sinalização sem tocar na mídia: transports, producers e consumers seguem
+     * vivos, então a tela de quem assiste não pisca.
      */
     attachSocket(socket: WebSocket): void {
         this.socket = socket;
@@ -93,8 +93,8 @@ export class Peer {
     }
 
     closePlainTransports(): void {
-        // A plain transport exists only to carry one broadcast: leaving it open would
-        // hold a UDP port from a small band for the rest of the process's life.
+        // Um plain transport existe só para carregar uma transmissão: deixá-lo aberto
+        // seguraria uma porta UDP de uma faixa estreita pelo resto da vida do processo.
         for (const transport of this.plainTransports.values()) {
             transport.close();
         }

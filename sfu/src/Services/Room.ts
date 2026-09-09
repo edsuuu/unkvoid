@@ -13,9 +13,9 @@ type ProducerOwner = { peer: Peer; producer: Producer };
 export type JoinOutcome = { peer: Peer; resumed: boolean };
 
 /**
- * How long the session survives without signaling. WebRTC media does not drop with
- * the WebSocket, so keeping the participant here turns a network drop into a
- * hiccup instead of a call drop.
+ * Quanto tempo a sessão sobrevive sem sinalização. A mídia do WebRTC não cai junto com
+ * o WebSocket, então segurar a pessoa aqui transforma uma queda de rede em engasgo em
+ * vez de queda de chamada.
  */
 const GRACE_MS = 30_000;
 
@@ -85,8 +85,8 @@ export class Room {
     }
 
     /**
-     * Signaling dropped: hold the participant for GRACE_MS before destroying it. Only
-     * notify the room when the grace period truly expires.
+     * A sinalização caiu: segura a pessoa por GRACE_MS antes de destruir. A sala só é
+     * avisada quando a carência expira de verdade.
      */
     orphanPeer(peer: Peer): void {
         if (this.peers.get(peer.id) !== peer) {
@@ -95,8 +95,8 @@ export class Room {
 
         peer.orphanedAt = Date.now();
 
-        // Notify the room immediately: without this, viewers were left with the last frame
-        // frozen, unaware that the broadcaster’s connection dropped.
+        // Avisa a sala na hora: sem isto, quem assistia ficava com o último quadro
+        // congelado, sem saber que a conexão de quem transmitia tinha caído.
         this.broadcast('peerConnectionLost', { peerId: peer.id }, peer.id);
 
         this.evictions.set(peer.id, setTimeout(() => {
@@ -117,7 +117,7 @@ export class Room {
         }
     }
 
-    /** Participants with live signaling. Orphans do not count when closing the room. */
+    /** Quem tem sinalização viva. Órfãos não contam na hora de fechar a sala. */
     activeCount(): number {
         return [...this.peers.values()].filter(peer => ! peer.isOrphaned()).length;
     }
@@ -133,8 +133,8 @@ export class Room {
     }
 
     /**
-     * Takes the object, not the ID: closing the socket of a replaced session must not
-     * terminate the new session, which carries the same participant ID.
+     * Recebe o objeto, não o id: fechar o socket de uma sessão substituída não pode
+     * encerrar a sessão nova, que carrega o mesmo id de participante.
      */
     removePeer(peer: Peer): void {
         if (this.peers.get(peer.id) !== peer) {

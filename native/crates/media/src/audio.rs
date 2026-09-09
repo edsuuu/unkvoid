@@ -3,7 +3,7 @@ use opus::{Application, Channels, Encoder};
 
 use crate::EncoderError;
 
-/// Opus at 48 kHz stereo — what WebRTC expects and capture provides.
+/// Opus a 48 kHz estéreo — o que o WebRTC espera e o que a captura entrega.
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: u16 = 2;
 
@@ -14,9 +14,9 @@ const FRAME_SAMPLES: usize = (SAMPLE_RATE as usize / 1000) * FRAME_MS as usize *
 
 /// Compresses system audio into Opus.
 ///
-/// Capture already provides audio **without our own app's output** — the operating
-/// system filters it per process. Without this, sharing audio would send back a
-/// caller's voice and create feedback.
+/// A captura já entrega o som **sem o que o próprio app toca** — quem filtra por
+/// processo é o sistema operacional. Sem isso, compartilhar áudio devolveria a voz de
+/// quem está na chamada e criaria realimentação.
 pub struct AudioEncoder {
     encoder: Encoder,
     pending: Vec<f32>,
@@ -37,8 +37,8 @@ impl AudioEncoder {
         })
     }
 
-    /// Opus accepts only fixed-duration blocks, but capture provides variable-sized
-    /// chunks. Remainders are saved for the next block.
+    /// O Opus só aceita blocos de duração fixa, e a captura entrega pedaços de tamanho
+    /// variável. O que sobra fica guardado para o bloco seguinte.
     pub fn push(&mut self, chunk: &AudioChunk) -> Result<Vec<Vec<u8>>, EncoderError> {
         self.pending.extend_from_slice(&chunk.samples);
 
@@ -78,7 +78,7 @@ mod tests {
 
         assert!(encoder.push(&metade).expect("push").is_empty());
 
-        // The other half completes the block and produces a packet.
+        // A outra metade fecha o bloco e produz um pacote.
         assert_eq!(encoder.push(&metade).expect("push").len(), 1);
     }
 

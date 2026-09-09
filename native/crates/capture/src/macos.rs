@@ -10,7 +10,7 @@ use crate::{
     Window,
 };
 
-/// Capture via ScreenCaptureKit. Requires macOS 13+ for video and system audio.
+/// Captura pelo ScreenCaptureKit. Vídeo e som do sistema exigem macOS 13 ou mais novo.
 pub struct MacCapturer {
     stream: SCStream,
     frames: Arc<AtomicU64>,
@@ -59,8 +59,8 @@ impl<F: Fn(CaptureEvent) + Send + Sync + 'static> SCStreamOutputTrait for Sink<F
     }
 }
 
-/// ScreenCaptureKit provides one float32 buffer per channel. Opus and WebRTC
-/// require interleaved samples (L, R, L, R...), so conversion happens here.
+/// O ScreenCaptureKit entrega um buffer de float32 por canal. O Opus e o WebRTC querem
+/// amostras intercaladas (L, R, L, R...), então a conversão acontece aqui.
 fn interleave(sample: &CMSampleBuffer) -> Option<Vec<f32>> {
     let list = sample.audio_buffer_list()?;
     let channels = list.num_buffers();
@@ -74,8 +74,8 @@ fn interleave(sample: &CMSampleBuffer) -> Option<Vec<f32>> {
         .map(|buffer| {
             let bytes = buffer.data();
 
-            // SAFETY: ScreenCaptureKit is configured for float32, and the
-            // AudioBufferList reporta o tamanho real em bytes.
+            // SEGURANÇA: o ScreenCaptureKit está configurado para float32, e o
+            // AudioBufferList informa o tamanho real em bytes.
             unsafe {
                 std::slice::from_raw_parts(
                     bytes.as_ptr().cast::<f32>(),
@@ -279,8 +279,8 @@ impl MacCapturer {
             .with_minimum_frame_interval(&CMTime::new(1, config.frame_rate as i32))
             .with_queue_depth(3)
             .with_captures_audio(config.capture_audio)
-            // Our process's audio is excluded: this prevents sending back the voice
-            // of someone in the call.
+            // O som do nosso processo fica de fora: é o que impede devolver a voz de
+            // quem está na chamada.
             .with_excludes_current_process_audio(CaptureConfig::EXCLUI_AUDIO_DO_APP)
             .with_sample_rate(48_000)
             .with_channel_count(2);
@@ -292,8 +292,8 @@ impl MacCapturer {
         let on_event = Arc::new(on_event);
         let started_at = std::time::Instant::now();
 
-        // Video and audio are separate ScreenCaptureKit outputs and each needs its
-        // own handler. Registering only the screen handler silently omitted audio.
+        // Vídeo e áudio são saídas separadas do ScreenCaptureKit, e cada uma precisa do
+        // próprio tratador. Registrar só o da tela deixava o som de fora, calado.
         for kind in [SCStreamOutputType::Screen, SCStreamOutputType::Audio] {
             if kind == SCStreamOutputType::Audio && !config.capture_audio {
                 continue;

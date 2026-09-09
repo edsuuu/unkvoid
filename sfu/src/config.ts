@@ -18,12 +18,12 @@ export const config = {
     // configurável para a conferência poder rodar em menos de um segundo.
     heartbeatMs: Number(process.env.SFU_HEARTBEAT_MS ?? 15_000),
 
-    // One port for all media (WebRtcServer multiplexes transports).
-    // mediasoup is ICE Lite: it never initiates a connection, only responds. Behind a firewall
-    // stateful, this means the port MUST allow inbound traffic.
+    // Uma porta para toda a mídia (o WebRtcServer multiplexa os transports).
+    // O mediasoup é ICE Lite: ele nunca inicia conexão, só responde. Atrás de um
+    // firewall com estado, isso significa que a porta PRECISA aceitar tráfego de entrada.
     mediaPort: Number(process.env.SFU_MEDIA_PORT ?? 40000),
 
-    // One worker per core. Each one uses a port starting at mediaPort.
+    // Um worker por núcleo. Cada um usa uma porta a partir de mediaPort.
     workerCount: Number(process.env.SFU_WORKERS ?? availableParallelism()),
 
     // Ingest de RTP puro (o app nativo transmitindo para muita gente). Não pode dividir

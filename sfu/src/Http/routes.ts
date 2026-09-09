@@ -31,8 +31,8 @@ type Route = {
 };
 
 /**
- * SFU API routes. `guest: true` is the only open action — all others
- * require a session, just as an auth middleware would.
+ * As rotas da API do SFU. `guest: true` é a única ação aberta — todas as outras
+ * exigem sessão, como faria um middleware de autenticação.
  */
 export const routes = (controllers: Controllers): Record<ActionName, Route> => ({
     [Action.Join]: {

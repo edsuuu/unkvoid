@@ -1,8 +1,8 @@
-//! Screen and system audio capture.
+//! Captura de tela e do som do sistema.
 //!
-//! The reason this exists: browser sharing always includes Chrome's bar, and on macOS
-//! WKWebView does not even provide `getDisplayMedia`. Capture is native here, so
-//! there is no bar and system audio works on every OS.
+//! O motivo de existir: compartilhar pelo navegador leva sempre a barra do Chrome
+//! junto, e no macOS o WKWebView nem oferece `getDisplayMedia`. Aqui a captura é
+//! nativa, então não há barra e o som do sistema funciona em todo sistema.
 
 use std::fmt;
 
@@ -35,7 +35,7 @@ pub struct Display {
     pub height: u32,
 }
 
-/// A specific window. Sharing a window avoids showing what should remain private.
+/// Uma janela específica. Compartilhar só ela evita mostrar o que era para ficar privado.
 #[derive(Debug, Clone)]
 pub struct Window {
     /// Identificador do sistema. É `u64` porque no Windows ele é um `HWND`, que é um
@@ -101,7 +101,7 @@ pub enum CaptureSource {
 pub struct CaptureConfig {
     pub quality: Quality,
     pub source: CaptureSource,
-    /// Frame-rate ceiling. The actual floor is the encoder and transport's responsibility.
+    /// Teto de quadros por segundo. O piso de verdade é problema do encoder e do transporte.
     pub frame_rate: u32,
     pub capture_audio: bool,
 
@@ -115,12 +115,12 @@ pub struct CaptureConfig {
 }
 
 impl CaptureConfig {
-    /// Output from our own app **never** enters the capture.
+    /// O som que o próprio app toca **nunca** entra na captura.
     ///
-    /// Without this, sharing system audio would capture the voice of someone in
-    /// the call and send it back to them — the classic feedback loop. The
-    /// operating system handles this by filtering per process, more reliably
-    /// than trying to guess in our code where the sound came from.
+    /// Sem isto, compartilhar o áudio do sistema gravaria a voz de quem está na
+    /// chamada e a devolveria para ela — a realimentação clássica. Quem resolve é o
+    /// sistema operacional, filtrando por processo, o que é mais confiável do que
+    /// tentar adivinhar aqui de onde veio cada som.
     pub const EXCLUI_AUDIO_DO_APP: bool = true;
 
     /// Aplicativos cujo som nunca sobe junto com a tela, identificados pelo bundle.
@@ -157,8 +157,8 @@ impl Default for CaptureConfig {
     }
 }
 
-/// Output from capture. Video and audio are intentionally separate: their
-/// encoders are independent, and combining them here would only get in the way.
+/// O que sai da captura. Vídeo e áudio são separados de propósito: os encoders dos
+/// dois são independentes, e juntá-los aqui só atrapalharia.
 pub enum CaptureEvent {
     Video(VideoFrame),
     Audio(AudioChunk),
@@ -170,11 +170,11 @@ pub struct VideoFrame {
     /// Nanoseconds since capture began.
     pub timestamp_ns: u64,
 
-    /// GPU buffer containing the frame. It goes directly to the hardware encoder
-    /// without a CPU copy — this is what makes 1440p60 possible without overload.
+    /// O buffer de GPU com o quadro. Ele vai direto para o encoder de hardware, sem
+    /// cópia pela CPU — é isso que torna 1440p60 possível sem sobrecarregar a máquina.
     ///
-    /// This field exists on every platform so the app compiles everywhere; only
-    /// the type inside it changes. Outside macOS it is always empty for now.
+    /// O campo existe em todos os sistemas para o app compilar em qualquer um; só o
+    /// tipo lá dentro muda. Fora do macOS ele ainda vem sempre vazio.
     pub surface: Option<GpuSurface>,
 }
 
@@ -226,8 +226,8 @@ mod tests {
 
     #[test]
     fn default_captures_system_audio() {
-        // This is why the native app exists: in a browser this depends on the OS
-        // and version. If someone disables it accidentally, the test reports it.
+        // É por isto que o app nativo existe: no navegador isso depende do sistema e
+        // da versão. Se alguém desligar sem querer, o teste avisa.
         let config = CaptureConfig::default();
 
         assert!(config.capture_audio);

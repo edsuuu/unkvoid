@@ -3,9 +3,9 @@ import type { PlainTransport, Producer } from 'mediasoup/types';
 import type { Resource } from '../../types.js';
 
 /**
- * Where to send the RTP, and with which key it comes back protected. The address is
- * what the native app needs; everything else about the broadcast it already knows,
- * because it chose the SSRC and the payload type itself.
+ * Para onde mandar o RTP, e com que chave ele volta protegido. O endereço é o que o
+ * app nativo precisa; o resto da transmissão ele já sabe, porque foi ele que escolheu
+ * o SSRC e o tipo de payload.
  */
 export class PlainProducerResource implements Resource {
     constructor(

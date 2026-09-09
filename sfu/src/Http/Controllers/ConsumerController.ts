@@ -15,8 +15,8 @@ export class ConsumerController {
 
         const owner = room.findProducerOwner(request.producerId());
 
-        // It starts paused intentionally: resume only after the client confirms the
-        // the consumer avoids losing the initial keyframe and showing a black screen.
+        // Nasce pausado de propósito: retomar só depois de o cliente confirmar o
+        // consumer evita perder o primeiro keyframe e mostrar tela preta.
         const consumer = await peer.getTransport(request.transportId()).consume({
             producerId: request.producerId(),
             rtpCapabilities: request.rtpCapabilities(),
@@ -46,9 +46,9 @@ export class ConsumerController {
         const consumer = request.peer().getConsumer(request.consumerId());
         await consumer.resume();
 
-        // A new consumer may start on a delta frame. Requesting an IDR immediately
-        // avoids waiting for the encoder's periodic keyframe and removes the common
-        // "connected but black" delay after joining or reconnecting.
+        // Um consumer novo pode começar num quadro parcial. Pedir um IDR na hora evita
+        // esperar o keyframe periódico do encoder e tira aquele atraso de "conectado
+        // mas preto" logo depois de entrar ou reconectar.
         if (consumer.kind === 'video') {
             await consumer.requestKeyFrame();
         }

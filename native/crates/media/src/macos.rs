@@ -22,8 +22,8 @@ unsafe extern "C" {
     ) -> i32;
 }
 
-/// Hardware H.264 encoder. On Apple Silicon it runs on the media engine — the CPU
-/// only supplies the buffer and receives the bytes back.
+/// Encoder H.264 de hardware. No Apple Silicon ele roda no chip de mídia — o
+/// processador só entrega o buffer e recebe os bytes de volta.
 pub struct VideoToolboxEncoder {
     session: CompressionSession,
     frame_rate: f64,
@@ -37,13 +37,13 @@ impl VideoToolboxEncoder {
         let session = CompressionSession::builder(width as i32, height as i32, Codec::H264)
             // Real time: prioritize low latency over compression ratio.
             .with_real_time(true)
-            // No B-frames. They compress better, but require reordering frames, which
-            // adds latency — unacceptable in a call.
+            // Sem quadros B. Eles comprimem melhor, mas exigem reordenar quadros, o que
+            // acrescenta latência — inaceitável numa chamada.
             .with_allow_frame_reordering(false)
             .with_average_bit_rate(config.bitrate as i32)
             .with_expected_frame_rate(config.frame_rate)
-            // Keyframe every second: a lost RTP fragment recovers quickly instead of
-            // freezing the viewer until a two-second GOP completes.
+            // Um keyframe por segundo: um fragmento RTP perdido se recupera rápido, em
+            // vez de congelar quem assiste até um GOP de dois segundos fechar.
             .with_max_keyframe_interval(config.frame_rate as i32)
             .build()
             .map_err(|error| EncoderError::Start(error.to_string()))?;
@@ -55,7 +55,7 @@ impl VideoToolboxEncoder {
         })
     }
 
-    /// Encodes a frame. `surface` comes directly from capture without passing through the CPU.
+    /// Codifica um quadro. A `surface` vem da captura sem passar pelo processador.
     ///
     /// O VideoToolbox devolve AVCC: cada NAL vem com um prefixo de tamanho, e SPS/PPS
     /// ficam guardados na descrição de formato, nunca no meio dos bytes. O empacotador

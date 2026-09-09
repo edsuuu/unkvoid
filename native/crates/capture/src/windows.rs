@@ -346,8 +346,8 @@ impl WindowsCapturer {
         self.frames.load(Ordering::Relaxed)
     }
 
-    /// System audio on Windows comes through WASAPI loopback, not Graphics Capture.
-    /// It joins the media path.
+    /// O som do sistema no Windows vem pelo laço do WASAPI, não pelo Graphics
+    /// Capture. Ele entra no caminho da mídia mais adiante.
     pub fn audio_chunks_captured(&self) -> u64 {
         self.audio.as_ref().map_or(0, SystemAudio::chunks_captured)
     }
