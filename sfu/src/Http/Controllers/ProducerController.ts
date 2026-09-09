@@ -70,18 +70,6 @@ export class ProducerController {
             peer.send('producerActive', { producerId: producer.id });
         });
 
-        producer.on('score', scores => {
-            if (receiving || ! scores.some(entry => entry.score > 0)) {
-                return;
-            }
-
-            receiving = true;
-            if (idleTimer) {
-                clearTimeout(idleTimer);
-                idleTimer = undefined;
-            }
-        });
-
         room.broadcast('newProducer', {
             peerId: peer.id,
             name: peer.name,
