@@ -5,6 +5,8 @@
 
 mod broadcast;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use broadcast::Broadcast;
 use capture::{CaptureSource, PlatformCapturer, Quality};
 use serde::Serialize;
@@ -105,6 +107,8 @@ async fn start_broadcast(
     quality: String,
     fps: u32,
     source: Option<String>,
+    audio: bool,
+    mute_calls: bool,
 ) -> Result<(), String> {
     let mut active = state.0.lock().await;
 
@@ -113,8 +117,14 @@ async fn start_broadcast(
     }
 
     *active = Some(
-        Broadcast::start(quality_from(&quality), fps, source_from(source.as_deref()))
-            .map_err(|error| error.to_string())?,
+        Broadcast::start(
+            quality_from(&quality),
+            fps,
+            source_from(source.as_deref()),
+            audio,
+            mute_calls,
+        )
+        .map_err(|error| error.to_string())?,
     );
 
     Ok(())
@@ -223,6 +233,9 @@ fn app_version(app: tauri::AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
+/// Se a bandeja existe nesta máquina. É o que decide se fechar a janela esconde ou sai.
+struct HasTray(AtomicBool);
+
 /// Ícone na bandeja: fechar a janela esconde o app em vez de matá-lo.
 ///
 /// Sair de verdade é uma escolha explícita no menu do botão direito. Sem isto, fechar a
@@ -263,6 +276,52 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Liga o WebRTC do WebKitGTK.
+///
+/// No Linux a janela do app é WebKitGTK, e ele entrega WebRTC **desligado**: sem isto
+/// `RTCPeerConnection` não existe na página, o mediasoup-client falha ao montar o
+/// transporte, e a pessoa não consegue nem assistir. Nada disso aparece como erro de
+/// permissão ou de rede — a API simplesmente não está lá.
+///
+/// `enable_media_stream` vai junto porque é o que libera `getUserMedia` e as faixas de
+/// mídia; ligar um sem o outro deixa a metade do caminho aberta.
+#[cfg(target_os = "linux")]
+fn enable_webrtc(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    use webkit2gtk::{SettingsExt, WebViewExt};
+
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    // O `with_webview` enfileira a closure no laço do GTK, que só começa a rodar
+    // depois do `setup`. Ou seja: isto acontece DEPOIS de a página já ter nascido, e a
+    // página que nasceu sem WebRTC continua sem ele — a configuração vale para a
+    // próxima carga. Por isso a interface recarrega uma vez quando não acha o
+    // `RTCPeerConnection`, e por isso estas linhas de log existem: sem elas não há como
+    // saber, de fora, se o problema foi a ordem ou o WebKit da distro.
+    let outcome = window.with_webview(|webview| match WebViewExt::settings(&webview.inner()) {
+        Some(settings) => {
+            settings.set_enable_webrtc(true);
+            settings.set_enable_media_stream(true);
+
+            tracing::info!(
+                webrtc = settings.enables_webrtc(),
+                media_stream = settings.enables_media_stream(),
+                "configuração do WebKitGTK aplicada",
+            );
+        }
+        None => tracing::error!("a webview do WebKitGTK não devolveu configuração"),
+    });
+
+    if let Err(failure) = outcome {
+        tracing::error!(failure = %failure, "não deu para falar com a webview do WebKitGTK");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn enable_webrtc(_app: &tauri::AppHandle) {}
+
 fn show_main_window(app: &tauri::AppHandle) {
     use tauri::Manager;
 
@@ -299,15 +358,33 @@ pub fn run() {
             stop_broadcast,
             broadcast_stats
         ])
+        .manage(HasTray(AtomicBool::new(false)))
         .setup(|app| {
-            build_tray(app)?;
+            use tauri::Manager;
+
+            // A bandeja não pode derrubar o app. No GNOME sem a extensão de
+            // AppIndicator ela simplesmente não existe, e propagar o erro daqui fazia o
+            // `run` entrar em pânico: nenhuma janela, nenhuma mensagem, nada.
+            match build_tray(app) {
+                Ok(()) => app.state::<HasTray>().0.store(true, Ordering::Relaxed),
+                Err(failure) => tracing::error!(failure = %failure, "sem ícone na bandeja"),
+            }
+
+            enable_webrtc(app.handle());
 
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Fechar esconde; quem quer sair usa o menu da bandeja. Sem o prevent_close
-            // o processo morre e a chamada cai junto.
+            use tauri::Manager;
+
+            // Fechar esconde, porque matar o processo derrubaria a transmissão junto —
+            // mas só quando existe bandeja para trazer a janela de volta. Sem ela,
+            // esconder deixava um processo invisível que só morria no `kill`.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if ! window.state::<HasTray>().0.load(Ordering::Relaxed) {
+                    return;
+                }
+
                 api.prevent_close();
                 let _ = window.hide();
             }
