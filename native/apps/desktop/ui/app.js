@@ -39,6 +39,9 @@ class App {
     /** Onde o nome fica entre uma abertura e outra. Ninguém quer redigitar todo dia. */
     static NAME_KEY = 'unkvoid:name';
 
+    /** O último código fica como lembrete, mas não entra automaticamente na sala. */
+    static ROOM_KEY = 'unkvoid:last-room';
+
     /**
      * O único servidor. VITE_SERVER aponta um build local para uma pilha local, e o
      * override no localStorage serve para cutucar um build já pronto sem recompilar.
@@ -73,7 +76,7 @@ class App {
     async start() {
         this.showDownloadProgress();
 
-        await this.update();
+        await this.serverAnswered();
 
         el('update-screen').hidden = true;
 
@@ -139,6 +142,13 @@ class App {
                 throw new Error(`o servidor respondeu ${response.status}`);
             }
 
+            const health = await response.json();
+            const localVersion = await invoke('app_version');
+
+            if (health.appVersion && health.appVersion !== localVersion) {
+                await this.update();
+            }
+
             return true;
         } catch {
             this.showOffline();
@@ -168,6 +178,7 @@ class App {
         el('room').hidden = true;
 
         el('my-name').value = localStorage.getItem(App.NAME_KEY) ?? '';
+        el('room-code').value = localStorage.getItem(App.ROOM_KEY) ?? '';
         el('my-name').focus();
 
         el('create-room').onclick = () => this.enterRoom(newRoomCode());
@@ -198,6 +209,7 @@ class App {
         }
 
         localStorage.setItem(App.NAME_KEY, name);
+        localStorage.setItem(App.ROOM_KEY, code);
 
         this.name = name;
         this.room = code;

@@ -30,6 +30,7 @@ module.exports = {
                 NODE_ENV: 'production',
                 SFU_HOST: '127.0.0.1',
                 SFU_PORT: '3000',
+                SFU_APP_VERSION: '0.0.2',
                 SFU_ANNOUNCED_ADDRESS: '144.126.133.10',
                 SFU_MEDIA_PORT: '40000',
                 // Um worker por core (a VPS tem 4). Cada um usa uma porta a partir de

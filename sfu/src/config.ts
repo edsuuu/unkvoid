@@ -7,6 +7,7 @@ export const config = {
     listenPort: Number(process.env.SFU_PORT ?? 3000),
     path: process.env.SFU_PATH ?? '/sfu',
     announcedAddress: process.env.SFU_ANNOUNCED_ADDRESS ?? '127.0.0.1',
+    appVersion: process.env.SFU_APP_VERSION ?? '0.0.2',
 
     // Teto de conexões novas por IP por minuto. A sala é anônima, então o que impede
     // varrer códigos é o custo de tentar — cada tentativa precisa de um socket novo.

@@ -31,7 +31,7 @@ export class Server {
             }
 
             response.writeHead(200, { 'content-type': 'application/json' });
-            response.end(JSON.stringify({ ok: true, ...this.registry.stats() }));
+            response.end(JSON.stringify({ ok: true, appVersion: config.appVersion, ...this.registry.stats() }));
         });
 
         new WebSocketServer({ server: http, path: config.path })
