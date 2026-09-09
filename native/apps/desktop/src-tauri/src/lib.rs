@@ -161,6 +161,16 @@ async fn stop_broadcast(state: State<'_, ActiveBroadcast>) -> Result<u64, String
     Ok(frames)
 }
 
+#[tauri::command]
+async fn broadcast_stats(state: State<'_, ActiveBroadcast>) -> Result<serde_json::Value, String> {
+    let active = state.0.lock().await;
+
+    Ok(active
+        .as_ref()
+        .map(Broadcast::stats)
+        .unwrap_or_else(|| serde_json::json!({ "active": false })))
+}
+
 /// Checks for, downloads, and installs updates before opening the app — as Discord
 /// does. A network failure does not block startup: without a server the user cannot
 /// use the app anyway, but blocking on the update screen would be worse than warning them.
@@ -286,7 +296,8 @@ pub fn run() {
             start_broadcast,
             sfu_offer,
             use_sfu,
-            stop_broadcast
+            stop_broadcast,
+            broadcast_stats
         ])
         .setup(|app| {
             build_tray(app)?;

@@ -5,7 +5,10 @@
 //! que fazem transmitir enquanto se joga não custar fps: a CPU não codifica, e o upload
 //! não cresce com a plateia.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 
 use capture::{CaptureConfig, CaptureEvent, CaptureSource, PlatformCapturer, Quality};
 use media::{AudioEncoder, EncoderConfig, PlainSender, PlatformEncoder};
@@ -18,6 +21,11 @@ pub struct Broadcast {
     capturer: PlatformCapturer,
     sfu: Destino,
     sfu_key: [u8; 30],
+    captured: Arc<AtomicU64>,
+    encoded: Arc<AtomicU64>,
+    sent: Arc<AtomicU64>,
+    encode_errors: Arc<AtomicU64>,
+    send_errors: Arc<AtomicU64>,
 }
 
 impl Broadcast {
@@ -35,6 +43,16 @@ impl Broadcast {
         let audio = Mutex::new(AudioEncoder::new(96_000)?);
         let sfu: Destino = Arc::new(Mutex::new(None));
         let destino_da_captura = Arc::clone(&sfu);
+        let captured = Arc::new(AtomicU64::new(0));
+        let encoded = Arc::new(AtomicU64::new(0));
+        let sent = Arc::new(AtomicU64::new(0));
+        let encode_errors = Arc::new(AtomicU64::new(0));
+        let send_errors = Arc::new(AtomicU64::new(0));
+        let captured_callback = Arc::clone(&captured);
+        let encoded_callback = Arc::clone(&encoded);
+        let sent_callback = Arc::clone(&sent);
+        let encode_errors_callback = Arc::clone(&encode_errors);
+        let send_errors_callback = Arc::clone(&send_errors);
 
         let capturer = PlatformCapturer::start(
             &CaptureConfig {
@@ -45,7 +63,10 @@ impl Broadcast {
             },
             move |event| {
                 let frame = match event {
-                    CaptureEvent::Video(frame) => frame,
+                    CaptureEvent::Video(frame) => {
+                        captured_callback.fetch_add(1, Ordering::Relaxed);
+                        frame
+                    }
                     CaptureEvent::Audio(block) => {
                         let Ok(mut audio) = audio.lock() else {
                             return;
@@ -79,8 +100,14 @@ impl Broadcast {
                     };
 
                     match encoder.encode(surface, frame.timestamp_ns) {
-                        Ok(encoded) => encoded,
-                        Err(_) => return,
+                        Ok(encoded) => {
+                            encoded_callback.fetch_add(1, Ordering::Relaxed);
+                            encoded
+                        }
+                        Err(_) => {
+                            encode_errors_callback.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        }
                     }
                 };
 
@@ -91,7 +118,14 @@ impl Broadcast {
                 if let Ok(mut destino) = destino_da_captura.lock()
                     && let Some(sender) = destino.as_mut()
                 {
-                    let _ = sender.send_frame(&encoded, frame_rate);
+                    match sender.send_frame(&encoded, frame_rate) {
+                        Ok(()) => {
+                            sent_callback.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(_) => {
+                            send_errors_callback.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                 }
             },
         )?;
@@ -100,6 +134,11 @@ impl Broadcast {
             capturer,
             sfu,
             sfu_key: PlainSender::generate_key(),
+            captured,
+            encoded,
+            sent,
+            encode_errors,
+            send_errors,
         })
     }
 
@@ -130,6 +169,16 @@ impl Broadcast {
 
     pub fn frames(&self) -> u64 {
         self.capturer.frames_captured()
+    }
+
+    pub fn stats(&self) -> serde_json::Value {
+        serde_json::json!({
+            "captured": self.captured.load(Ordering::Relaxed),
+            "encoded": self.encoded.load(Ordering::Relaxed),
+            "sent": self.sent.load(Ordering::Relaxed),
+            "encodeErrors": self.encode_errors.load(Ordering::Relaxed),
+            "sendErrors": self.send_errors.load(Ordering::Relaxed),
+        })
     }
 
     pub fn stop(&mut self) -> anyhow::Result<()> {

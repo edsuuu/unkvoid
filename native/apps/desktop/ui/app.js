@@ -64,6 +64,8 @@ class App {
         this.shareSource = null;
         this.shareSources = null;
         this.previewTimers = new Set();
+        this.previewInFlight = new Set();
+        this.broadcastStatsTimer = null;
         this.mediaStatsTimers = new Map();
 
         /** Grade mostra todos do mesmo tamanho; foco dá a tela toda a um só. */
@@ -594,6 +596,12 @@ class App {
             // Uma miniatura por vez, sem travar a abertura do seletor: quem tem dez
             // janelas abertas veria a lista congelar esperando todas.
             const atualizar = async () => {
+                if (this.previewInFlight.has(item.value)) {
+                    return;
+                }
+
+                this.previewInFlight.add(item.value);
+
                 try {
                     const dados = await invoke('source_preview', { source: item.value });
 
@@ -608,13 +616,15 @@ class App {
                     botao.querySelector('span').hidden = true;
                 } catch {
                     // A janela pode desaparecer enquanto o seletor está aberto.
+                } finally {
+                    this.previewInFlight.delete(item.value);
                 }
             };
 
             void atualizar();
-            // O seletor mostra uma prévia viva, não um único snapshot. O intervalo
-            // acompanha 30 FPS; o sistema pode entregar menos quadros se estiver ocupado.
-            this.previewTimers.add(setInterval(() => void atualizar(), 1000 / 30));
+            // Cada preview cria uma captura nativa de um quadro. Não podemos iniciar 30
+            // capturas simultâneas por segundo: no Windows isso trava o app inteiro.
+            this.previewTimers.add(setInterval(() => void atualizar(), 1000));
         }
     }
 
@@ -640,12 +650,18 @@ class App {
             clearInterval(timer);
         }
         this.previewTimers.clear();
+        this.previewInFlight.clear();
     }
 
     async share() {
         this.log('broadcast.start', { quality: el('quality').value, fps: el('fps').value, source: this.shareSource });
         try {
             await this.broadcast.start(el('quality').value, Number(el('fps').value), this.shareSource);
+            this.broadcastStatsTimer = setInterval(() => {
+                void invoke('broadcast_stats')
+                    .then(stats => this.log('broadcast.stats', stats))
+                    .catch(error => this.log('broadcast.stats.error', { message: error.message }));
+            }, 1000);
             this.paintSharing(true);
         } catch (failure) {
             this.log('broadcast.start.error', { message: failure.message ?? String(failure) });
@@ -664,6 +680,8 @@ class App {
 
     async stopSharing() {
         this.log('broadcast.stop');
+        clearInterval(this.broadcastStatsTimer);
+        this.broadcastStatsTimer = null;
         await this.broadcast?.stop().catch(() => 0);
         this.paintSharing(false);
     }
