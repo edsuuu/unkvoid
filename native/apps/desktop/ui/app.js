@@ -232,6 +232,11 @@ class App {
             this.sfu.addEventListener('newProducer', event => this.consume(event.detail));
             this.sfu.addEventListener('peersChanged', () => this.refreshPeople());
             this.sfu.addEventListener('peerLeft', event => this.showScreen(event.detail.peerId, null));
+            this.sfu.addEventListener('producerClosed', event => {
+                if (event.detail.source === 'screen') {
+                    this.showScreen(event.detail.peerId, null);
+                }
+            });
 
             this.broadcast = new Broadcast(this.sfu);
 
@@ -283,7 +288,9 @@ class App {
     }
 
     refreshPeople() {
-        const total = this.sfu?.peers?.size ?? 1;
+        const total = [...(this.sfu?.peers?.values() ?? [])]
+            .filter(peer => ! peer.reconnecting)
+            .length || 1;
 
         el('room-people').textContent = total > 1 ? `${total} pessoas` : 'só você por aqui';
     }

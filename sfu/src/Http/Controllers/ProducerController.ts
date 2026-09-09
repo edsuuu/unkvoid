@@ -32,7 +32,18 @@ export class ProducerController {
     /** Registra o producer e conta para a sala. É isto que acende o "ao vivo" dos outros. */
     private announce(peer: Peer, room: Room, producer: Producer, source: SourceName): void {
         peer.addProducer(producer, source);
-        producer.on('transportclose', () => peer.producers.delete(producer.id));
+        producer.on('transportclose', () => {
+            if (! peer.producers.delete(producer.id)) {
+                return;
+            }
+
+            room.broadcast('producerClosed', {
+                peerId: peer.id,
+                producerId: producer.id,
+                kind: producer.kind,
+                source: String(producer.appData.source),
+            }, peer.id);
+        });
 
         // O producer é declarado antes de um único pacote chegar, então até o score subir
         // quem transmite não tem como distinguir "o servidor está recebendo" de "meus
@@ -64,7 +75,16 @@ export class ProducerController {
         if (producer) {
             producer.close();
             peer.producers.delete(producer.id);
-            request.room().broadcast('producerClosed', { peerId: peer.id, producerId: producer.id }, peer.id);
+            request.room().broadcast('producerClosed', {
+                peerId: peer.id,
+                producerId: producer.id,
+                kind: producer.kind,
+                source: String(producer.appData.source),
+            }, peer.id);
+
+            if (peer.producers.size === 0) {
+                peer.closePlainTransports();
+            }
         }
 
         return new StatusResource('closed');

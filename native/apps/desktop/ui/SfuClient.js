@@ -156,7 +156,7 @@ export class SfuClient extends EventTarget {
             this.markSharing(data.peerId, true);
         }
 
-        if (event === 'producerClosed' || event === 'peerProducersClosed') {
+        if (event === 'producerClosed' && data.source === 'screen') {
             this.markSharing(data.peerId, false);
         }
 
