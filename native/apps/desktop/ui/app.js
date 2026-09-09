@@ -272,6 +272,13 @@ class App {
      * autostart foi removido, e este comentário dizia o contrário.)
      */
     async update() {
+        // No Linux quem atualiza é o APT. Deixar os dois caminhos ligados faria o app
+        // pedir senha de root com `pkexec` no meio da abertura para fazer o que o
+        // `apt upgrade` já faz junto com o resto do sistema.
+        if (App.isLinux()) {
+            return;
+        }
+
         try {
             const version = await invoke('check_update');
 

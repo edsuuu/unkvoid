@@ -91,8 +91,9 @@ por cima. Em paralelo, o segundo apagaria a plataforma do primeiro.
 make build-vps
 ```
 
-Ele compila na VPS e publica na mesma release. O `.dmg` e o `.msi` não saem de
-lá: um exige um Mac por licença da Apple, o outro exige o WiX rodando no Windows.
+Ele compila na VPS, publica na mesma release e refaz o repositório APT. O `.dmg` e
+o `.msi` não saem de lá: um exige um Mac por licença da Apple, o outro exige o WiX
+rodando no Windows.
 
 ### 4. Confira
 
@@ -118,6 +119,48 @@ O sufixo do instalador não é enfeite. O app procura
 `.deb` e AppImage dividiam a chave `linux-x86_64`, quem instalou pelo `.deb`
 baixava o AppImage, a verificação de formato falhava e a atualização morria em
 silêncio.
+
+## Linux: quem atualiza é o APT
+
+No Linux o app **não** se atualiza sozinho. Quem cuida disso é o gerenciador de
+pacotes, que é o que quem usa Linux espera, e manter os dois caminhos ligados
+faria o app pedir senha de root no meio da abertura para fazer o que o
+`apt upgrade` já faz junto com o resto do sistema.
+
+O repositório vive na VPS, em `/var/www/apt`, e é servido em
+<https://discord.unkvoid.com/apt/>. O `build-vps.sh` refaz o índice a cada build.
+
+### Instalar, uma vez por máquina
+
+```bash
+curl -fsSL https://discord.unkvoid.com/apt/unkvoid.gpg \
+  | sudo tee /etc/apt/keyrings/unkvoid.gpg > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/unkvoid.gpg] https://discord.unkvoid.com/apt ./" \
+  | sudo tee /etc/apt/sources.list.d/unkvoid.list
+sudo apt update && sudo apt install unkvoid
+```
+
+Depois disso, versão nova entra com `sudo apt upgrade`.
+
+### A chave do repositório
+
+É **outra** chave, diferente da do auto-update. A do auto-update assina o
+instalador; esta assina a lista de pacotes, e é o que impede alguém no meio do
+caminho oferecer um `.deb` trocado.
+
+| | |
+|---|---|
+| Identidade | `repo@unkvoid.com` |
+| Onde | chaveiro do usuário `ubuntu` na VPS |
+| Pública publicada em | `/var/www/apt/unkvoid.gpg` |
+
+Ela não tem senha, porque o build assina sem ninguém por perto. Guarde uma cópia:
+
+```bash
+ssh vps "gpg --export-secret-keys --armor repo@unkvoid.com" > unkvoid-apt.key
+```
+
+Se ela sumir, gere outra e todo mundo precisa refazer o passo do `curl` acima.
 
 ## Gerar um instalador sem publicar
 
