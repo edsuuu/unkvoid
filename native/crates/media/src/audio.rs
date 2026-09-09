@@ -66,7 +66,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn acumula_ate_fechar_um_bloco_de_20ms() {
+    fn accumulates_until_a_20ms_block_closes() {
         let mut encoder = AudioEncoder::new(64_000).expect("encoder");
 
         // Half a block produces no packet: Opus requires an exact duration.
@@ -83,7 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn um_bloco_grande_vira_varios_pacotes() {
+    fn a_big_block_becomes_several_packets() {
         let mut encoder = AudioEncoder::new(64_000).expect("encoder");
 
         let grande = AudioChunk {

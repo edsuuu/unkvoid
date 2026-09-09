@@ -1,23 +1,21 @@
-//! Broadcasting through the SFU instead of directly to each viewer.
+//! A transmissão pelo SFU, em vez de direto para cada espectador.
 //!
-//! Direct connections are cheaper in latency — the server is in the US, the people are
-//! in Brazil — but the broadcaster's upload multiplies by the number of viewers. Past a
-//! handful of viewers that upload, not the CPU, is what breaks the stream: the frame is
-//! still encoded once, but it is sent N times.
+//! Conexão direta custa menos latência — o servidor está nos EUA e as pessoas no Brasil
+//! — mas o upload de quem transmite multiplica pelo número de espectadores. Passando de
+//! um punhado, é esse upload, e não a CPU, que quebra a transmissão: o quadro continua
+//! sendo codificado uma vez, e passa a ser enviado N vezes.
 //!
-//! Here it is sent **once**, to the server, which fans it out. The path is plain RTP over
-//! UDP (mediasoup's PlainTransport) rather than a full WebRTC connection: there is no ICE
-//! and no DTLS to negotiate, because the server already knows what is coming — this side
-//! picked the SSRC, the payload type and the SRTP key, and announced them when it asked
-//! for the transport. `comedia` on the server means it learns this side's address from
-//! the first packet, so nothing here needs to be reachable from outside.
+//! Aqui ele sobe **uma vez**, para o servidor, que replica. O caminho é RTP puro sobre
+//! UDP (o PlainTransport do mediasoup) em vez de uma conexão WebRTC inteira: não há ICE
+//! nem DTLS a negociar, porque o servidor já sabe o que vem — este lado escolheu o SSRC,
+//! o tipo de payload e a chave SRTP, e anunciou os três ao pedir o transporte. O
+//! `comedia` do lado de lá faz o servidor aprender este endereço no primeiro pacote,
+//! então nada aqui precisa ser alcançável de fora.
 //!
-//! SRTP is not optional: without it a screen share crosses the internet in the clear.
+//! O SRTP não é opcional: sem ele a tela atravessa a internet aberta.
 
 use std::io::ErrorKind;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::thread;
-use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
@@ -32,28 +30,24 @@ use rtc::srtp::protection_profile::ProtectionProfile;
 
 use crate::{audio::CHANNELS, audio::SAMPLE_RATE, EncodedFrame, FRAME_MS};
 
-/// SSRCs the server is told about before a single packet is sent.
+/// Os SSRCs que o servidor conhece antes do primeiro pacote.
 pub const SSRC_VIDEO: u32 = 0x2234_5678;
 pub const SSRC_AUDIO: u32 = 0x2234_5679;
 
-/// Payload types. 96+ is the dynamic range; the server echoes whatever is declared.
+/// Tipos de payload. 96+ é a faixa dinâmica, e o servidor devolve o que for declarado.
 pub const PAYLOAD_VIDEO: u8 = 96;
 pub const PAYLOAD_AUDIO: u8 = 111;
 
-/// 90 kHz is the RTP clock for video, fixed by the H.264 payload format.
+/// 90 kHz é o relógio RTP do vídeo, fixado pelo formato de payload do H.264.
 const VIDEO_CLOCK: u32 = 90_000;
 
-/// Under the 1500-byte Ethernet MTU with room for IP, UDP and the SRTP tag. Going over
-/// it means IP fragmentation, and a single lost fragment costs the whole frame.
+/// Abaixo da MTU de 1500 bytes da Ethernet, com folga para IP, UDP e a etiqueta do
+/// SRTP. Passar disso significa fragmentação de IP, e um só fragmento perdido custa o
+/// quadro inteiro.
 const MTU: usize = 1200;
 
-/// A full local UDP buffer is transient: retrying briefly preserves a complete H.264
-/// frame, while a permanent network error still returns immediately.
-const SEND_RETRIES: usize = 256;
-const SEND_RETRY_DELAY: Duration = Duration::from_millis(2);
-
-/// The one crypto suite negotiated with the server. `AES_CM_128_HMAC_SHA1_80` on the
-/// mediasoup side: a 16-byte key plus a 14-byte salt, exchanged base64 as one blob.
+/// A única suíte criptográfica combinada com o servidor. Do lado do mediasoup ela é
+/// `AES_CM_128_HMAC_SHA1_80`: 16 bytes de chave e 14 de sal, trocados em base64 juntos.
 const KEY_LEN: usize = 16;
 const SALT_LEN: usize = 14;
 
@@ -63,19 +57,27 @@ pub struct PlainSender {
     srtp: SrtpContext,
     video: Box<dyn Packetizer>,
     audio: Box<dyn Packetizer>,
+
+    /// Quando o quadro anterior foi capturado. O relógio RTP anda com o tempo de
+    /// verdade, não com o fps nominal.
+    last_video_ns: Option<u64>,
+
+    /// Pacotes largados por buffer de saída cheio. Uplink saturado é diferente de erro
+    /// de rede, e sem este número os dois viram a mesma linha muda no diagnóstico.
+    dropped: u64,
 }
 
 impl PlainSender {
     pub const CRYPTO_SUITE: &'static str = "AES_CM_128_HMAC_SHA1_80";
 
-    /// A fresh key for this broadcast. It never leaves this process except inside the
-    /// authenticated WebSocket that asks the server for the transport.
+    /// Uma chave nova para esta transmissão. Ela só sai deste processo dentro do
+    /// WebSocket autenticado que pede o transporte ao servidor.
     pub fn generate_key() -> [u8; KEY_LEN + SALT_LEN] {
         std::array::from_fn(|_| rand::random())
     }
 
-    /// `key` is what `generate_key` produced and what the server was told; `server` is
-    /// the address it answered with.
+    /// `key` é o que o `generate_key` produziu e o que o servidor recebeu; `server` é o
+    /// endereço que ele respondeu.
     pub fn connect(server: impl ToSocketAddrs, key: &[u8]) -> Result<Self> {
         if key.len() != KEY_LEN + SALT_LEN {
             return Err(anyhow!(
@@ -91,8 +93,8 @@ impl PlainSender {
             .next()
             .ok_or_else(|| anyhow!("the SFU address resolved to nothing"))?;
 
-        // Binding to port 0 on the unspecified address lets the OS choose. The server
-        // learns where to answer from the first packet it receives.
+        // Ligar na porta 0 do endereço não especificado deixa o sistema escolher. O
+        // servidor aprende para onde responder no primeiro pacote que chega.
         let socket = UdpSocket::bind(if server.is_ipv4() {
             "0.0.0.0:0"
         } else {
@@ -140,6 +142,8 @@ impl PlainSender {
                 Box::new(new_random_sequencer()) as Box<dyn Sequencer>,
                 SAMPLE_RATE,
             )),
+            last_video_ns: None,
+            dropped: 0,
         })
     }
 
@@ -148,9 +152,9 @@ impl PlainSender {
     }
 
     /**
-     * What the server needs to know before the first packet: which codec, which payload
-     * type, which SSRC. It is built here and not in the UI because these are the same
-     * constants the packetizer above uses — describing them in two places is how a
+     * O que o servidor precisa saber antes do primeiro pacote: qual codec, qual tipo de
+     * payload, qual SSRC. É montado aqui e não na interface porque são as mesmas
+     * constantes que o empacotador acima usa — descrever isso em dois lugares é como uma
      * broadcast ends up arriving as noise.
      */
     pub fn rtp_parameters(kind: &str) -> serde_json::Value {
@@ -179,7 +183,7 @@ impl PlainSender {
                     "profile-level-id": "42e01f",
                 },
                 // Without nack and pli a viewer that loses a packet stays with a broken
-                // image until the next keyframe — two seconds of garbage.
+                // imagem até o próximo keyframe — dois segundos de lixo.
                 "rtcpFeedback": [
                     { "type": "nack" },
                     { "type": "nack", "parameter": "pli" },
@@ -191,24 +195,50 @@ impl PlainSender {
         })
     }
 
-    /// One encoded frame becomes several RTP packets — an H.264 keyframe at 1440p is far
-    /// bigger than an MTU. `samples` is how far the RTP clock advances, which is what
-    /// tells the far side when to display the frame.
+    /// Um quadro codificado vira vários pacotes RTP — um keyframe de 1440p é bem maior
+    /// que uma MTU. O avanço do relógio RTP é o que diz ao outro lado quando exibir.
     pub fn send_frame(&mut self, frame: &EncodedFrame, frame_rate: f64) -> Result<()> {
-        let samples = (VIDEO_CLOCK as f64 / frame_rate.max(1.0)).round() as u32;
+        // Todo quadro que a captura ou o encoder não entregam abre um buraco no tempo.
+        // Avançar sempre `90000/fps` roubava esse buraco do vídeo enquanto o áudio
+        // seguia em amostras reais: uma tela parada trinta segundos deixava a
+        // transmissão trinta segundos fora de sincronia, sem volta.
+        //
+        // O avanço vai ANTES de empacotar. O packetizer soma depois de emitir, então
+        // passar o intervalo lá dentro carimbaria o quadro seguinte com o buraco deste.
+        let advance = match self.last_video_ns {
+            Some(previous) if frame.timestamp_ns > previous => {
+                let elapsed = u128::from(frame.timestamp_ns - previous);
 
-        // Fields borrowed separately so the packetizer and the SRTP context can both be
-        // mutable at once — they are different fields of the same struct.
+                (elapsed * u128::from(VIDEO_CLOCK) / 1_000_000_000).min(u128::from(u32::MAX))
+                    as u32
+            }
+            // Sem quadro anterior não há tempo decorrido. Se a captura não carimba a
+            // hora, o fps nominal é o melhor palpite que existe.
+            Some(_) => (VIDEO_CLOCK as f64 / frame_rate.max(1.0)).round() as u32,
+            None => 0,
+        };
+
+        self.last_video_ns = Some(frame.timestamp_ns);
+        self.video.skip_samples(advance);
+
+        // Campos emprestados separadamente para o empacotador e o contexto SRTP poderem
+        // ser mutáveis ao mesmo tempo — são campos distintos da mesma struct.
         Self::send(
             &self.socket,
             &mut self.srtp,
             self.video.as_mut(),
             Bytes::copy_from_slice(&frame.data),
-            samples,
+            0,
+            &mut self.dropped,
         )
     }
 
-    /// Opus arrives in fixed 20 ms blocks, so the clock always advances by the same amount.
+    /// Pacotes largados porque o buffer de saída estava cheio.
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+
+    /// O Opus chega em blocos fixos de 20 ms, então o relógio anda sempre o mesmo tanto.
     pub fn send_audio(&mut self, opus: &[u8]) -> Result<()> {
         let samples = SAMPLE_RATE / 1000 * FRAME_MS;
 
@@ -218,6 +248,7 @@ impl PlainSender {
             self.audio.as_mut(),
             Bytes::copy_from_slice(opus),
             samples,
+            &mut self.dropped,
         )
     }
 
@@ -227,6 +258,7 @@ impl PlainSender {
         packetizer: &mut dyn Packetizer,
         payload: Bytes,
         samples: u32,
+        dropped: &mut u64,
     ) -> Result<()> {
         let packets = packetizer
             .packetize(&payload, samples)
@@ -241,18 +273,14 @@ impl PlainSender {
                 .encrypt_rtp(&plain)
                 .map_err(|error| anyhow!("could not protect RTP: {error}"))?;
 
-            for attempt in 0..=SEND_RETRIES {
-                match socket.send(&protected) {
-                    Ok(_) => break,
-                    Err(error)
-                        if error.kind() == ErrorKind::WouldBlock && attempt < SEND_RETRIES =>
-                    {
-                        thread::sleep(SEND_RETRY_DELAY);
-                    }
-                    Err(error) => {
-                        return Err(error).context("could not send RTP to the SFU");
-                    }
-                }
+            match socket.send(&protected) {
+                Ok(_) => {}
+                // Buffer local cheio é uplink saturado. Largar o pacote é o preço certo
+                // para vídeo ao vivo, e é o que o comentário lá em cima sempre prometeu:
+                // dormir aqui segurava a thread da captura, que é justamente quem produz
+                // o próximo quadro, e ainda segurava o mutex do destino junto.
+                Err(error) if error.kind() == ErrorKind::WouldBlock => *dropped += 1,
+                Err(error) => return Err(error).context("could not send RTP to the SFU"),
             }
         }
 
@@ -264,9 +292,9 @@ impl PlainSender {
 mod tests {
     use super::*;
 
-    /// A local socket standing in for the SFU, so the whole path — packetize, protect,
-    /// send — is exercised for real instead of mocked.
-    fn ouvinte() -> (UdpSocket, SocketAddr) {
+    /// Um socket local no lugar do SFU, para o caminho inteiro — empacotar, proteger,
+    /// enviar — ser exercitado de verdade em vez de simulado.
+    fn listener() -> (UdpSocket, SocketAddr) {
         let socket = UdpSocket::bind("127.0.0.1:0").expect("could not bind the listener");
         let address = socket.local_addr().expect("socket without an address");
 
@@ -278,26 +306,26 @@ mod tests {
     }
 
     #[test]
-    fn chave_precisa_ter_o_tamanho_da_suite() {
-        let (_servidor, address) = ouvinte();
+    fn key_must_match_the_suite_size() {
+        let (_servidor, address) = listener();
 
         assert!(PlainSender::connect(address, &[0; 10]).is_err());
         assert!(PlainSender::connect(address, &PlainSender::generate_key()).is_ok());
     }
 
     #[test]
-    fn chaves_geradas_nao_se_repetem() {
+    fn generated_keys_do_not_repeat() {
         assert_ne!(PlainSender::generate_key(), PlainSender::generate_key());
     }
 
     #[test]
-    fn um_quadro_grande_vira_varios_pacotes_protegidos() {
-        let (servidor, address) = ouvinte();
+    fn a_big_frame_becomes_several_protected_packets() {
+        let (server_socket, address) = listener();
         let key = PlainSender::generate_key();
         let mut sender = PlainSender::connect(address, &key).expect("could not connect");
 
-        // A NAL unit far larger than the MTU: the payloader has to split it, and every
-        // piece has to arrive protected.
+        // Uma unidade NAL bem maior que a MTU: o empacotador precisa quebrá-la, e cada
+        // pedaço tem de chegar protegido.
         let mut data = vec![0u8, 0, 0, 1, 0x65];
         data.extend(std::iter::repeat_n(0xAB, MTU * 3));
 
@@ -315,11 +343,11 @@ mod tests {
         let mut recebidos = 0;
         let mut buffer = [0u8; 2048];
 
-        while let Ok(size) = servidor.recv(&mut buffer) {
+        while let Ok(size) = server_socket.recv(&mut buffer) {
             recebidos += 1;
 
             assert!(size <= MTU + 64, "packet above the MTU: {size}");
-            // Protected payload: the plaintext must not appear on the wire.
+            // Payload protegido: o texto puro não pode aparecer na rede.
             assert!(
                 !buffer[..size]
                     .windows(16)
@@ -335,8 +363,8 @@ mod tests {
     }
 
     #[test]
-    fn audio_cabe_em_um_pacote_e_avanca_o_relogio() {
-        let (servidor, address) = ouvinte();
+    fn audio_fits_one_packet_and_advances_the_clock() {
+        let (server_socket, address) = listener();
         let mut sender =
             PlainSender::connect(address, &PlainSender::generate_key()).expect("could not connect");
 
@@ -348,22 +376,61 @@ mod tests {
             .expect("could not send audio");
 
         let mut buffer = [0u8; 2048];
-        let mut carimbos = Vec::new();
+        let mut timestamps = Vec::new();
 
-        while let Ok(size) = servidor.recv(&mut buffer) {
-            // The RTP timestamp lives in bytes 4..8 and is not encrypted — the header
-            // travels in the clear so the far side can reorder before decrypting.
-            carimbos.push(u32::from_be_bytes([
+        while let Ok(size) = server_socket.recv(&mut buffer) {
+            // O carimbo de tempo do RTP fica nos bytes 4..8 e não é cifrado — o
+            // cabeçalho viaja aberto para o outro lado reordenar antes de decifrar.
+            timestamps.push(u32::from_be_bytes([
                 buffer[4], buffer[5], buffer[6], buffer[7],
             ]));
             assert!(size > 160, "packet without header or auth tag: {size}");
         }
 
-        assert_eq!(carimbos.len(), 2, "each 20 ms block is one packet");
+        assert_eq!(timestamps.len(), 2, "each 20 ms block is one packet");
         assert_eq!(
-            carimbos[1].wrapping_sub(carimbos[0]),
+            timestamps[1].wrapping_sub(timestamps[0]),
             SAMPLE_RATE / 1000 * FRAME_MS,
             "the clock has to advance exactly one 20 ms block"
+        );
+    }
+
+    /// O buraco de um quadro perdido tem de aparecer no relógio.
+    ///
+    /// Enquanto o avanço era fixo em `90000/fps`, todo quadro que não saía roubava
+    /// 16,6 ms do vídeo e o áudio seguia em frente: uma tela parada por trinta segundos
+    /// deixava a transmissão trinta segundos fora de sincronia, para sempre.
+    #[test]
+    fn dropped_frame_opens_a_gap_in_the_video_clock() {
+        let (server_socket, address) = listener();
+        let mut sender =
+            PlainSender::connect(address, &PlainSender::generate_key()).expect("could not connect");
+
+        let make_frame = |timestamp_ns| EncodedFrame {
+            data: vec![0, 0, 0, 1, 0x41, 0xAB],
+            keyframe: false,
+            timestamp_ns,
+        };
+
+        // Três quadros de 60 fps de intervalo entre o primeiro e o segundo: dois deles
+        // não chegaram a ser codificados.
+        sender.send_frame(&make_frame(1_000_000_000), 60.0).expect("1");
+        sender.send_frame(&make_frame(1_050_000_000), 60.0).expect("2");
+
+        let mut buffer = [0u8; 2048];
+        let mut timestamps = Vec::new();
+
+        while server_socket.recv(&mut buffer).is_ok() {
+            timestamps.push(u32::from_be_bytes([
+                buffer[4], buffer[5], buffer[6], buffer[7],
+            ]));
+        }
+
+        assert_eq!(timestamps.len(), 2);
+        assert_eq!(
+            timestamps[1].wrapping_sub(timestamps[0]),
+            50 * VIDEO_CLOCK / 1000,
+            "o relógio precisa andar os 50 ms de verdade, não um quadro nominal",
         );
     }
 }

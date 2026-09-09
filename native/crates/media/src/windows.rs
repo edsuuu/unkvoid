@@ -58,9 +58,19 @@ pub struct MediaFoundationEncoder {
     height: u32,
     frame_rate: f64,
     frames: i64,
-    ponte: Option<Ponte>,
+    bridge: Option<Bridge>,
     /// Um encoder de hardware tem fila: nem todo quadro que entra sai no mesmo instante.
-    prontos: VecDeque<EncodedFrame>,
+    ready: VecDeque<EncodedFrame>,
+
+    /// Pedidos de entrada que o MFT já fez e ainda não foram atendidos.
+    ///
+    /// Um MFT assíncrono **não** repete um `METransformNeedInput` que ninguém atendeu.
+    /// Consumir o evento sem entregar amostra queima o pedido para sempre, e o encoder
+    /// de placa costuma pedir mais de um logo no começo. Depois de alguns quadros ele
+    /// parava de pedir, ninguém tinha mais o que entregar, e o `GetEvent` — que é
+    /// bloqueante e sem prazo — pendurava a thread da captura para sempre, sem erro e
+    /// sem log. Guardar o pedido é o que impede isso.
+    credits: u32,
 }
 
 /// O encoder nasce na thread que liga a transmissão e passa a viver na thread da
@@ -80,14 +90,14 @@ unsafe impl Send for MediaFoundationEncoder {}
 /// implementa não expõe as flags), e sem isso não há VideoProcessor nem gerente de
 /// device para o Media Foundation. A ponte é uma textura compartilhada: a captura copia
 /// nela, este lado lê dela, e o keyed mutex ordena os dois.
-struct Ponte {
-    origem: (u32, u32),
-    compartilhada_na_captura: ID3D11Texture2D,
-    trava_da_captura: IDXGIKeyedMutex,
-    minha_trava: IDXGIKeyedMutex,
-    processador: ID3D11VideoProcessor,
-    entrada: ID3D11VideoProcessorInputView,
-    saida: ID3D11VideoProcessorOutputView,
+struct Bridge {
+    source: (u32, u32),
+    shared_with_capture: ID3D11Texture2D,
+    capture_lock: IDXGIKeyedMutex,
+    my_lock: IDXGIKeyedMutex,
+    processor: ID3D11VideoProcessor,
+    input: ID3D11VideoProcessorInputView,
+    output: ID3D11VideoProcessorOutputView,
     nv12: ID3D11Texture2D,
 }
 
@@ -101,43 +111,43 @@ impl MediaFoundationEncoder {
             let (device, context) = criar_device()?;
 
             // Sem isto, o MFT tocando no device de outra thread corrompe o estado dele.
-            let multithread: ID3D11Multithread = device.cast().map_err(erro_de_inicio)?;
+            let multithread: ID3D11Multithread = device.cast().map_err(start_error)?;
             let _ = multithread.SetMultithreadProtected(true);
 
-            let video_device: ID3D11VideoDevice = device.cast().map_err(erro_de_inicio)?;
-            let video_context: ID3D11VideoContext = context.cast().map_err(erro_de_inicio)?;
+            let video_device: ID3D11VideoDevice = device.cast().map_err(start_error)?;
+            let video_context: ID3D11VideoContext = context.cast().map_err(start_error)?;
 
             let transform = encoder_de_hardware()?;
 
             // O gerente é como o MFT descobre em qual placa a textura vive. Sem ele, o
             // encoder recusa qualquer amostra que não esteja na memória do processador.
             let mut token = 0_u32;
-            let mut gerente: Option<IMFDXGIDeviceManager> = None;
+            let mut manager: Option<IMFDXGIDeviceManager> = None;
 
-            MFCreateDXGIDeviceManager(&mut token, &mut gerente).map_err(erro_de_inicio)?;
+            MFCreateDXGIDeviceManager(&mut token, &mut manager).map_err(start_error)?;
 
-            let gerente = gerente.ok_or_else(|| {
+            let manager = manager.ok_or_else(|| {
                 EncoderError::Start("o Media Foundation não devolveu o gerente de device".into())
             })?;
 
-            gerente
+            manager
                 .ResetDevice(&device, token)
-                .map_err(erro_de_inicio)?;
+                .map_err(start_error)?;
 
             transform
-                .ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, gerente.as_raw() as usize)
-                .map_err(erro_de_inicio)?;
+                .ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)
+                .map_err(start_error)?;
 
             configurar_tipos(&transform, width, height, config)?;
 
-            let events: IMFMediaEventGenerator = transform.cast().map_err(erro_de_inicio)?;
+            let events: IMFMediaEventGenerator = transform.cast().map_err(start_error)?;
 
             transform
                 .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
-                .map_err(erro_de_inicio)?;
+                .map_err(start_error)?;
             transform
                 .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
-                .map_err(erro_de_inicio)?;
+                .map_err(start_error)?;
 
             Ok(Self {
                 device,
@@ -149,8 +159,9 @@ impl MediaFoundationEncoder {
                 height,
                 frame_rate: config.frame_rate,
                 frames: 0,
-                ponte: None,
-                prontos: VecDeque::new(),
+                bridge: None,
+                ready: VecDeque::new(),
+                credits: 0,
             })
         }
     }
@@ -162,16 +173,16 @@ impl MediaFoundationEncoder {
         timestamp_ns: u64,
     ) -> Result<EncodedFrame, EncoderError> {
         unsafe {
-            self.atravessar_a_ponte(surface)?;
+            self.cross_the_bridge(surface)?;
 
-            let amostra = self.montar_amostra()?;
+            let sample = self.build_sample()?;
 
             self.frames += 1;
 
-            self.bombear(Some(amostra))?;
+            self.pump(Some(sample))?;
         }
 
-        self.prontos
+        self.ready
             .pop_front()
             .map(|quadro| EncodedFrame {
                 timestamp_ns,
@@ -185,63 +196,63 @@ impl MediaFoundationEncoder {
     /// A conversão e a escala são um blit do VideoProcessor: a captura entrega BGRA no
     /// tamanho nativo do monitor, o encoder quer NV12 no tamanho escolhido, e fazer essa
     /// conta no processador devolveria o problema de fps que o app existe para resolver.
-    unsafe fn atravessar_a_ponte(&mut self, surface: &GpuSurface) -> Result<(), EncoderError> {
+    unsafe fn cross_the_bridge(&mut self, surface: &GpuSurface) -> Result<(), EncoderError> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
 
         unsafe { surface.texture.GetDesc(&mut desc) };
 
-        let origem = (desc.Width, desc.Height);
+        let source = (desc.Width, desc.Height);
 
         if self
-            .ponte
+            .bridge
             .as_ref()
-            .is_none_or(|ponte| ponte.origem != origem)
+            .is_none_or(|bridge| bridge.source != source)
         {
-            self.ponte = Some(unsafe { self.montar_ponte(surface, origem)? });
+            self.bridge = Some(unsafe { self.montar_ponte(surface, source)? });
         }
 
-        let ponte = self.ponte.as_ref().expect("acabou de ser montada");
+        let bridge = self.bridge.as_ref().expect("acabou de ser montada");
 
         unsafe {
             // Chave 0 é o lado da captura, chave 1 é o meu: a trava alterna entre os dois
             // e é o que garante que a cópia terminou antes do blit começar.
-            ponte
-                .trava_da_captura
+            bridge
+                .capture_lock
                 .AcquireSync(0, u32::MAX)
-                .map_err(erro_de_encode)?;
+                .map_err(encode_error)?;
 
             surface
                 .context
-                .CopyResource(&ponte.compartilhada_na_captura, &surface.texture);
+                .CopyResource(&bridge.shared_with_capture, &surface.texture);
 
             // A cópia é assíncrona na GPU. Liberar a mutex antes do Flush deixava o
             // encoder ler a textura compartilhada antes de a captura terminar de
             // preenchê-la, produzindo vídeo preto apesar de o preview estar correto.
             surface.context.Flush();
 
-            ponte
-                .trava_da_captura
+            bridge
+                .capture_lock
                 .ReleaseSync(1)
-                .map_err(erro_de_encode)?;
+                .map_err(encode_error)?;
 
-            ponte
-                .minha_trava
+            bridge
+                .my_lock
                 .AcquireSync(1, u32::MAX)
-                .map_err(erro_de_encode)?;
+                .map_err(encode_error)?;
 
             // `ManuallyDrop` porque o campo é dono do ponteiro: sem isto a struct
             // liberaria a view ao sair de escopo, e ela pertence à ponte.
             let fluxo = D3D11_VIDEO_PROCESSOR_STREAM {
                 Enable: true.into(),
-                pInputSurface: std::mem::ManuallyDrop::new(Some(ponte.entrada.clone())),
+                pInputSurface: std::mem::ManuallyDrop::new(Some(bridge.input.clone())),
                 ..Default::default()
             };
 
             self.video_context
-                .VideoProcessorBlt(&ponte.processador, &ponte.saida, 0, &[fluxo])
-                .map_err(erro_de_encode)?;
+                .VideoProcessorBlt(&bridge.processor, &bridge.output, 0, &[fluxo])
+                .map_err(encode_error)?;
 
-            ponte.minha_trava.ReleaseSync(0).map_err(erro_de_encode)?;
+            bridge.my_lock.ReleaseSync(0).map_err(encode_error)?;
         }
 
         Ok(())
@@ -250,12 +261,12 @@ impl MediaFoundationEncoder {
     unsafe fn montar_ponte(
         &self,
         surface: &GpuSurface,
-        origem: (u32, u32),
-    ) -> Result<Ponte, EncoderError> {
+        source: (u32, u32),
+    ) -> Result<Bridge, EncoderError> {
         unsafe {
-            let descricao = D3D11_TEXTURE2D_DESC {
-                Width: origem.0,
-                Height: origem.1,
+            let descriptor = D3D11_TEXTURE2D_DESC {
+                Width: source.0,
+                Height: source.1,
                 MipLevels: 1,
                 ArraySize: 1,
                 Format: DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -273,30 +284,30 @@ impl MediaFoundationEncoder {
 
             surface
                 .device
-                .CreateTexture2D(&descricao, None, Some(&mut compartilhada))
-                .map_err(erro_de_encode)?;
+                .CreateTexture2D(&descriptor, None, Some(&mut compartilhada))
+                .map_err(encode_error)?;
 
             let compartilhada = compartilhada.ok_or_else(|| {
                 EncoderError::Encode("a textura compartilhada não foi criada".into())
             })?;
 
-            let recurso: IDXGIResource = compartilhada.cast().map_err(erro_de_encode)?;
-            let identificador: HANDLE = recurso.GetSharedHandle().map_err(erro_de_encode)?;
+            let recurso: IDXGIResource = compartilhada.cast().map_err(encode_error)?;
+            let identificador: HANDLE = recurso.GetSharedHandle().map_err(encode_error)?;
 
             let mut minha: Option<ID3D11Texture2D> = None;
 
             self.device
                 .OpenSharedResource(identificador, &mut minha)
-                .map_err(erro_de_encode)?;
+                .map_err(encode_error)?;
 
             let minha = minha.ok_or_else(|| {
                 EncoderError::Encode("a textura compartilhada não abriu neste device".into())
             })?;
 
-            let trava_da_captura: IDXGIKeyedMutex = compartilhada.cast().map_err(erro_de_encode)?;
-            let minha_trava: IDXGIKeyedMutex = minha.cast().map_err(erro_de_encode)?;
+            let capture_lock: IDXGIKeyedMutex = compartilhada.cast().map_err(encode_error)?;
+            let my_lock: IDXGIKeyedMutex = minha.cast().map_err(encode_error)?;
 
-            let (processador, enumerador) = self.criar_processador(origem)?;
+            let (processor, enumerador) = self.criar_processador(source)?;
             let nv12 = self.criar_nv12()?;
 
             let entrada_desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
@@ -305,38 +316,38 @@ impl MediaFoundationEncoder {
                 ..Default::default()
             };
 
-            let mut entrada: Option<ID3D11VideoProcessorInputView> = None;
+            let mut input: Option<ID3D11VideoProcessorInputView> = None;
 
             self.video_device
                 .CreateVideoProcessorInputView(
                     &minha,
                     &enumerador,
                     &entrada_desc,
-                    Some(&mut entrada),
+                    Some(&mut input),
                 )
-                .map_err(erro_de_encode)?;
+                .map_err(encode_error)?;
 
             let saida_desc = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
                 ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
                 ..Default::default()
             };
 
-            let mut saida: Option<ID3D11VideoProcessorOutputView> = None;
+            let mut output: Option<ID3D11VideoProcessorOutputView> = None;
 
             self.video_device
-                .CreateVideoProcessorOutputView(&nv12, &enumerador, &saida_desc, Some(&mut saida))
-                .map_err(erro_de_encode)?;
+                .CreateVideoProcessorOutputView(&nv12, &enumerador, &saida_desc, Some(&mut output))
+                .map_err(encode_error)?;
 
-            Ok(Ponte {
-                origem,
-                compartilhada_na_captura: compartilhada,
-                trava_da_captura,
-                minha_trava,
-                processador,
-                entrada: entrada.ok_or_else(|| {
+            Ok(Bridge {
+                source,
+                shared_with_capture: compartilhada,
+                capture_lock,
+                my_lock,
+                processor,
+                input: input.ok_or_else(|| {
                     EncoderError::Encode("a view de entrada não foi criada".into())
                 })?,
-                saida: saida
+                output: output
                     .ok_or_else(|| EncoderError::Encode("a view de saída não foi criada".into()))?,
                 nv12,
             })
@@ -345,7 +356,7 @@ impl MediaFoundationEncoder {
 
     unsafe fn criar_processador(
         &self,
-        origem: (u32, u32),
+        source: (u32, u32),
     ) -> Result<(ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator), EncoderError> {
         unsafe {
             let taxa = DXGI_RATIONAL {
@@ -356,8 +367,8 @@ impl MediaFoundationEncoder {
             let conteudo = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
                 InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
                 InputFrameRate: taxa,
-                InputWidth: origem.0,
-                InputHeight: origem.1,
+                InputWidth: source.0,
+                InputHeight: source.1,
                 OutputFrameRate: taxa,
                 OutputWidth: self.width,
                 OutputHeight: self.height,
@@ -367,20 +378,20 @@ impl MediaFoundationEncoder {
             let enumerador = self
                 .video_device
                 .CreateVideoProcessorEnumerator(&conteudo)
-                .map_err(erro_de_encode)?;
+                .map_err(encode_error)?;
 
-            let processador = self
+            let processor = self
                 .video_device
                 .CreateVideoProcessor(&enumerador, 0)
-                .map_err(erro_de_encode)?;
+                .map_err(encode_error)?;
 
-            Ok((processador, enumerador))
+            Ok((processor, enumerador))
         }
     }
 
     unsafe fn criar_nv12(&self) -> Result<ID3D11Texture2D, EncoderError> {
         unsafe {
-            let descricao = D3D11_TEXTURE2D_DESC {
+            let descriptor = D3D11_TEXTURE2D_DESC {
                 Width: self.width,
                 Height: self.height,
                 MipLevels: 1,
@@ -396,40 +407,40 @@ impl MediaFoundationEncoder {
                 MiscFlags: 0,
             };
 
-            let mut textura: Option<ID3D11Texture2D> = None;
+            let mut texture: Option<ID3D11Texture2D> = None;
 
             self.device
-                .CreateTexture2D(&descricao, None, Some(&mut textura))
-                .map_err(erro_de_encode)?;
+                .CreateTexture2D(&descriptor, None, Some(&mut texture))
+                .map_err(encode_error)?;
 
-            textura.ok_or_else(|| EncoderError::Encode("a textura NV12 não foi criada".into()))
+            texture.ok_or_else(|| EncoderError::Encode("a textura NV12 não foi criada".into()))
         }
     }
 
-    unsafe fn montar_amostra(&self) -> Result<IMFSample, EncoderError> {
+    unsafe fn build_sample(&self) -> Result<IMFSample, EncoderError> {
         unsafe {
-            let ponte = self
-                .ponte
+            let bridge = self
+                .bridge
                 .as_ref()
                 .ok_or_else(|| EncoderError::Encode("sem ponte para o encoder".into()))?;
 
-            let buffer = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &ponte.nv12, 0, false)
-                .map_err(erro_de_encode)?;
+            let buffer = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &bridge.nv12, 0, false)
+                .map_err(encode_error)?;
 
-            let amostra = MFCreateSample().map_err(erro_de_encode)?;
+            let sample = MFCreateSample().map_err(encode_error)?;
 
-            amostra.AddBuffer(&buffer).map_err(erro_de_encode)?;
+            sample.AddBuffer(&buffer).map_err(encode_error)?;
 
             // O tempo é contado em quadros, não no relógio: o encoder precisa de um
             // passo constante, e o relógio da captura varia com a carga da máquina.
-            let duracao = (HNS_PER_SECOND as f64 / self.frame_rate).round() as i64;
+            let duration = (HNS_PER_SECOND as f64 / self.frame_rate).round() as i64;
 
-            amostra
-                .SetSampleTime(self.frames * duracao)
-                .map_err(erro_de_encode)?;
-            amostra.SetSampleDuration(duracao).map_err(erro_de_encode)?;
+            sample
+                .SetSampleTime(self.frames * duration)
+                .map_err(encode_error)?;
+            sample.SetSampleDuration(duration).map_err(encode_error)?;
 
-            Ok(amostra)
+            Ok(sample)
         }
     }
 
@@ -438,32 +449,49 @@ impl MediaFoundationEncoder {
     /// Encoder de hardware é assíncrono: não se entrega um quadro e recebe outro na
     /// mesma linha. Ele avisa quando quer entrada e quando tem saída, e é preciso
     /// atender os dois — ignorar um evento trava a fila inteira.
-    unsafe fn bombear(&mut self, mut entrada: Option<IMFSample>) -> Result<(), EncoderError> {
+    unsafe fn pump(&mut self, mut input: Option<IMFSample>) -> Result<(), EncoderError> {
         unsafe {
-            let mut entregue = false;
+            let mut delivered = false;
+
+            // Pedido guardado de uma chamada anterior: o MFT já disse que quer entrada,
+            // então entrega direto em vez de esperar um evento que não virá de novo.
+            if self.credits > 0
+                && let Some(sample) = input.take()
+            {
+                self.transform
+                    .ProcessInput(0, &sample, 0)
+                    .map_err(encode_error)?;
+
+                self.credits -= 1;
+                delivered = true;
+            }
 
             // Sai quando houver saída para devolver, ou quando o encoder pedir entrada e
             // não houver mais nenhuma — o que acontece nos primeiros quadros, enquanto
             // ele enche a própria fila. Sem a segunda saída, isto penduraria a captura.
-            while !entregue || self.prontos.is_empty() {
-                let evento = self
+            while !delivered || self.ready.is_empty() {
+                let event = self
                     .events
                     .GetEvent(Default::default())
-                    .map_err(erro_de_encode)?;
-                let tipo = MF_EVENT_TYPE(evento.GetType().map_err(erro_de_encode)? as i32);
+                    .map_err(encode_error)?;
+                let kind = MF_EVENT_TYPE(event.GetType().map_err(encode_error)? as i32);
 
-                if tipo == METransformNeedInput {
-                    let Some(amostra) = entrada.take() else {
+                if kind == METransformNeedInput {
+                    let Some(sample) = input.take() else {
+                        // Nada mais a entregar nesta chamada. O pedido fica guardado
+                        // para o próximo quadro: descartá-lo era o que travava tudo.
+                        self.credits += 1;
+
                         return Ok(());
                     };
 
                     self.transform
-                        .ProcessInput(0, &amostra, 0)
-                        .map_err(erro_de_encode)?;
+                        .ProcessInput(0, &sample, 0)
+                        .map_err(encode_error)?;
 
-                    entregue = true;
-                } else if tipo == METransformHaveOutput {
-                    self.recolher()?;
+                    delivered = true;
+                } else if kind == METransformHaveOutput {
+                    self.collect_output()?;
                 }
             }
 
@@ -471,40 +499,40 @@ impl MediaFoundationEncoder {
         }
     }
 
-    unsafe fn recolher(&mut self) -> Result<(), EncoderError> {
+    unsafe fn collect_output(&mut self) -> Result<(), EncoderError> {
         unsafe {
-            let mut saida = [MFT_OUTPUT_DATA_BUFFER::default()];
+            let mut output = [MFT_OUTPUT_DATA_BUFFER::default()];
             let mut status = 0_u32;
 
-            match self.transform.ProcessOutput(0, &mut saida, &mut status) {
+            match self.transform.ProcessOutput(0, &mut output, &mut status) {
                 Ok(()) => {}
                 Err(erro) if erro.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(()),
-                Err(erro) => return Err(erro_de_encode(erro)),
+                Err(erro) => return Err(encode_error(erro)),
             }
 
-            let amostra = saida[0]
+            let sample = output[0]
                 .pSample
                 .take()
                 .ok_or_else(|| EncoderError::Encode("o encoder não devolveu amostra".into()))?;
 
-            let buffer = amostra
+            let buffer = sample
                 .ConvertToContiguousBuffer()
-                .map_err(erro_de_encode)?;
+                .map_err(encode_error)?;
 
-            let mut inicio = std::ptr::null_mut();
-            let mut tamanho = 0_u32;
+            let mut start = std::ptr::null_mut();
+            let mut size = 0_u32;
 
             buffer
-                .Lock(&mut inicio, None, Some(&mut tamanho))
-                .map_err(erro_de_encode)?;
+                .Lock(&mut start, None, Some(&mut size))
+                .map_err(encode_error)?;
 
-            let dados = std::slice::from_raw_parts(inicio, tamanho as usize).to_vec();
+            let data = std::slice::from_raw_parts(start, size as usize).to_vec();
 
-            buffer.Unlock().map_err(erro_de_encode)?;
+            buffer.Unlock().map_err(encode_error)?;
 
-            self.prontos.push_back(EncodedFrame {
-                keyframe: e_keyframe(&dados),
-                data: dados,
+            self.ready.push_back(EncodedFrame {
+                keyframe: e_keyframe(&data),
+                data: data,
                 timestamp_ns: 0,
             });
 
@@ -514,16 +542,16 @@ impl MediaFoundationEncoder {
 }
 
 unsafe fn iniciar_media_foundation() -> Result<(), EncoderError> {
-    let mut falha = None;
+    let mut failure = None;
 
     MF_STARTUP.call_once(|| {
         if let Err(erro) = unsafe { MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET) } {
-            falha = Some(erro);
+            failure = Some(erro);
         }
     });
 
-    match falha {
-        Some(erro) => Err(erro_de_inicio(erro)),
+    match failure {
+        Some(erro) => Err(start_error(erro)),
         None => Ok(()),
     }
 }
@@ -549,7 +577,7 @@ unsafe fn criar_device() -> Result<(ID3D11Device, ID3D11DeviceContext), EncoderE
             None,
             Some(&mut context),
         )
-        .map_err(erro_de_inicio)?;
+        .map_err(start_error)?;
 
         match (device, context) {
             (Some(device), Some(context)) => Ok((device, context)),
@@ -566,47 +594,47 @@ unsafe fn criar_device() -> Result<(ID3D11Device, ID3D11DeviceContext), EncoderE
 /// Windows entrega o encoder por CPU, que funciona e é exatamente o que não queremos.
 unsafe fn encoder_de_hardware() -> Result<IMFTransform, EncoderError> {
     unsafe {
-        let entrada = MFT_REGISTER_TYPE_INFO {
+        let input = MFT_REGISTER_TYPE_INFO {
             guidMajorType: MFMediaType_Video,
             guidSubtype: MFVideoFormat_NV12,
         };
-        let saida = MFT_REGISTER_TYPE_INFO {
+        let output = MFT_REGISTER_TYPE_INFO {
             guidMajorType: MFMediaType_Video,
             guidSubtype: MFVideoFormat_H264,
         };
 
-        let mut encontrados: *mut Option<IMFActivate> = std::ptr::null_mut();
-        let mut quantos = 0_u32;
+        let mut found: *mut Option<IMFActivate> = std::ptr::null_mut();
+        let mut how_many = 0_u32;
 
         MFTEnumEx(
             MFT_CATEGORY_VIDEO_ENCODER,
             MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
-            Some(&entrada),
-            Some(&saida),
-            &mut encontrados,
-            &mut quantos,
+            Some(&input),
+            Some(&output),
+            &mut found,
+            &mut how_many,
         )
-        .map_err(erro_de_inicio)?;
+        .map_err(start_error)?;
 
-        if quantos == 0 {
+        if how_many == 0 {
             return Err(EncoderError::Start(
                 "esta máquina não tem encoder de H.264 por hardware".into(),
             ));
         }
 
-        let lista = std::slice::from_raw_parts(encontrados, quantos as usize);
-        let primeiro = lista[0]
+        let list = std::slice::from_raw_parts(found, how_many as usize);
+        let first = list[0]
             .clone()
             .ok_or_else(|| EncoderError::Start("a lista de encoders veio vazia".into()))?;
 
-        let transform: IMFTransform = primeiro.ActivateObject().map_err(erro_de_inicio)?;
+        let transform: IMFTransform = first.ActivateObject().map_err(start_error)?;
 
         // Encoder de hardware nasce trancado: sem destrancar, ele recusa ProcessInput.
-        let atributos = transform.GetAttributes().map_err(erro_de_inicio)?;
+        let attributes = transform.GetAttributes().map_err(start_error)?;
 
-        atributos
+        attributes
             .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
-            .map_err(erro_de_inicio)?;
+            .map_err(start_error)?;
 
         Ok(transform)
     }
@@ -623,47 +651,47 @@ unsafe fn configurar_tipos(
     unsafe {
         let taxa = config.frame_rate.round() as u32;
 
-        let saida: IMFMediaType = MFCreateMediaType().map_err(erro_de_inicio)?;
+        let output: IMFMediaType = MFCreateMediaType().map_err(start_error)?;
 
-        saida
+        output
             .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
-            .map_err(erro_de_inicio)?;
-        saida
+            .map_err(start_error)?;
+        output
             .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)
-            .map_err(erro_de_inicio)?;
-        saida
+            .map_err(start_error)?;
+        output
             .SetUINT32(&MF_MT_AVG_BITRATE, config.bitrate)
-            .map_err(erro_de_inicio)?;
-        saida
+            .map_err(start_error)?;
+        output
             .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
-            .map_err(erro_de_inicio)?;
-        saida
+            .map_err(start_error)?;
+        output
             .SetUINT32(&MF_MT_ALL_SAMPLES_INDEPENDENT, 0)
-            .map_err(erro_de_inicio)?;
-        definir_tamanho(&saida, &MF_MT_FRAME_SIZE, width, height)?;
-        definir_razao(&saida, &MF_MT_FRAME_RATE, taxa, 1)?;
+            .map_err(start_error)?;
+        definir_tamanho(&output, &MF_MT_FRAME_SIZE, width, height)?;
+        definir_razao(&output, &MF_MT_FRAME_RATE, taxa, 1)?;
 
         transform
-            .SetOutputType(0, Some(&saida), 0)
-            .map_err(erro_de_inicio)?;
+            .SetOutputType(0, Some(&output), 0)
+            .map_err(start_error)?;
 
-        let entrada: IMFMediaType = MFCreateMediaType().map_err(erro_de_inicio)?;
+        let input: IMFMediaType = MFCreateMediaType().map_err(start_error)?;
 
-        entrada
+        input
             .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
-            .map_err(erro_de_inicio)?;
-        entrada
+            .map_err(start_error)?;
+        input
             .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)
-            .map_err(erro_de_inicio)?;
-        entrada
+            .map_err(start_error)?;
+        input
             .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
-            .map_err(erro_de_inicio)?;
-        definir_tamanho(&entrada, &MF_MT_FRAME_SIZE, width, height)?;
-        definir_razao(&entrada, &MF_MT_FRAME_RATE, taxa, 1)?;
+            .map_err(start_error)?;
+        definir_tamanho(&input, &MF_MT_FRAME_SIZE, width, height)?;
+        definir_razao(&input, &MF_MT_FRAME_RATE, taxa, 1)?;
 
         transform
-            .SetInputType(0, Some(&entrada), 0)
-            .map_err(erro_de_inicio)?;
+            .SetInputType(0, Some(&input), 0)
+            .map_err(start_error)?;
 
         Ok(())
     }
@@ -671,62 +699,62 @@ unsafe fn configurar_tipos(
 
 /// Largura e altura moram num atributo só, empacotadas em 64 bits.
 unsafe fn definir_tamanho(
-    tipo: &IMFMediaType,
+    kind: &IMFMediaType,
     chave: &::windows::core::GUID,
     largura: u32,
     altura: u32,
 ) -> Result<(), EncoderError> {
     unsafe {
-        tipo.SetUINT64(chave, (u64::from(largura) << 32) | u64::from(altura))
-            .map_err(erro_de_inicio)
+        kind.SetUINT64(chave, (u64::from(largura) << 32) | u64::from(altura))
+            .map_err(start_error)
     }
 }
 
 unsafe fn definir_razao(
-    tipo: &IMFMediaType,
+    kind: &IMFMediaType,
     chave: &::windows::core::GUID,
     numerador: u32,
     denominador: u32,
 ) -> Result<(), EncoderError> {
     unsafe {
-        tipo.SetUINT64(chave, (u64::from(numerador) << 32) | u64::from(denominador))
-            .map_err(erro_de_inicio)
+        kind.SetUINT64(chave, (u64::from(numerador) << 32) | u64::from(denominador))
+            .map_err(start_error)
     }
 }
 
 /// Um keyframe de H.264 carrega SPS (tipo 7), PPS (8) ou IDR (5). O MFT entrega em
 /// Annex-B, com prefixo `00 00 00 01`.
-fn e_keyframe(dados: &[u8]) -> bool {
-    let mut posicao = 0;
+fn e_keyframe(data: &[u8]) -> bool {
+    let mut position = 0;
 
-    while posicao + 4 < dados.len() {
-        if dados[posicao] == 0
-            && dados[posicao + 1] == 0
-            && dados[posicao + 2] == 0
-            && dados[posicao + 3] == 1
+    while position + 4 < data.len() {
+        if data[position] == 0
+            && data[position + 1] == 0
+            && data[position + 2] == 0
+            && data[position + 3] == 1
         {
             if matches!(
-                dados.get(posicao + 4).map(|byte| byte & 0x1F),
+                data.get(position + 4).map(|byte| byte & 0x1F),
                 Some(5 | 7 | 8)
             ) {
                 return true;
             }
 
-            posicao += 4;
+            position += 4;
 
             continue;
         }
 
-        posicao += 1;
+        position += 1;
     }
 
     false
 }
 
-fn erro_de_inicio(erro: ::windows::core::Error) -> EncoderError {
+fn start_error(erro: ::windows::core::Error) -> EncoderError {
     EncoderError::Start(erro.message())
 }
 
-fn erro_de_encode(erro: ::windows::core::Error) -> EncoderError {
+fn encode_error(erro: ::windows::core::Error) -> EncoderError {
     EncoderError::Encode(erro.message())
 }

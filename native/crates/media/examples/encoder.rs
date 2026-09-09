@@ -25,6 +25,17 @@ use capture::Quality;
 #[cfg(target_os = "macos")]
 use media::{EncoderConfig, PlatformEncoder};
 
+/// Os tipos de NAL de um bitstream Annex-B, na ordem em que aparecem.
+#[cfg(target_os = "macos")]
+fn nal_types(data: &[u8]) -> Vec<u8> {
+    data.windows(4)
+        .enumerate()
+        .filter(|(_, janela)| *janela == [0, 0, 0, 1])
+        .filter_map(|(inicio, _)| data.get(inicio + 4))
+        .map(|byte| byte & 0x1F)
+        .collect()
+}
+
 #[cfg(target_os = "macos")]
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
@@ -61,36 +72,52 @@ fn main() -> anyhow::Result<()> {
     let start = Instant::now();
     let mut bytes = 0usize;
     let mut keyframes = 0u64;
-    let mut pior_ms = 0f64;
+    let mut worst_ms = 0f64;
 
     for index in 0..total {
-        let antes = Instant::now();
+        let started = Instant::now();
         let frame = encoder.encode(&surface, index * 16_666_667)?;
-        let levou = antes.elapsed().as_secs_f64() * 1000.0;
+        let took = started.elapsed().as_secs_f64() * 1000.0;
 
         bytes += frame.data.len();
         keyframes += u64::from(frame.keyframe);
-        pior_ms = pior_ms.max(levou);
+        worst_ms = worst_ms.max(took);
+
+        // O empacotador RTP só quebra Annex-B, e só aprende SPS/PPS se eles passarem
+        // por ele. Um keyframe sem os dois vira uma transmissão que nenhuma tela abre,
+        // sem erro em contador nenhum — foi exatamente o que aconteceu por meses.
+        if frame.keyframe {
+            let types = nal_types(&frame.data);
+
+            anyhow::ensure!(
+                frame.data.starts_with(&[0, 0, 0, 1]),
+                "keyframe não começa com start code: o bitstream saiu em AVCC",
+            );
+            anyhow::ensure!(
+                types.contains(&7) && types.contains(&8) && types.contains(&5),
+                "keyframe sem SPS(7), PPS(8) ou IDR(5): veio {types:?}",
+            );
+        }
     }
 
-    let decorrido = start.elapsed().as_secs_f64();
-    let media_ms = decorrido * 1000.0 / total as f64;
-    let orcamento = 1000.0 / config.frame_rate;
+    let elapsed = start.elapsed().as_secs_f64();
+    let average_ms = elapsed * 1000.0 / total as f64;
+    let budget = 1000.0 / config.frame_rate;
 
     println!("encoded frames: {total}");
     println!("keyframes: {keyframes}");
     println!("output: {:.1} KB", bytes as f64 / 1024.0);
-    println!("average: {media_ms:.2} ms/frame · worst case: {pior_ms:.2} ms");
+    println!("average: {average_ms:.2} ms/frame · worst case: {worst_ms:.2} ms");
     println!(
-        "budget at {} fps: {orcamento:.2} ms/frame",
+        "budget at {} fps: {budget:.2} ms/frame",
         config.frame_rate
     );
     println!(
         "\n{}",
-        if media_ms < orcamento {
+        if average_ms < budget {
             format!(
                 "HEADROOM: uses {:.0}% of the per-frame budget",
-                media_ms / orcamento * 100.0
+                average_ms / budget * 100.0
             )
         } else {
             "TIGHT: the encoder cannot keep up with the target FPS".into()
