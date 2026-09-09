@@ -61,6 +61,7 @@ class App {
         this.sharing = false;
         this.shareSource = null;
         this.shareSources = null;
+        this.previewTimers = new Set();
 
         /** Grade mostra todos do mesmo tamanho; foco dá a tela toda a um só. */
         this.focused = null;
@@ -233,9 +234,7 @@ class App {
             this.sfu.addEventListener('peersChanged', () => this.refreshPeople());
             this.sfu.addEventListener('peerLeft', event => this.showScreen(event.detail.peerId, null));
             this.sfu.addEventListener('producerClosed', event => {
-                if (event.detail.source === 'screen') {
-                    this.showScreen(event.detail.peerId, null);
-                }
+                this.showScreen(event.detail.peerId, null);
             });
 
             this.broadcast = new Broadcast(this.sfu);
@@ -527,9 +526,11 @@ class App {
 
             // Uma miniatura por vez, sem travar a abertura do seletor: quem tem dez
             // janelas abertas veria a lista congelar esperando todas.
-            void invoke('source_preview', { source: item.value })
-                .then(dados => {
-                    if (! dados) {
+            const atualizar = async () => {
+                try {
+                    const dados = await invoke('source_preview', { source: item.value });
+
+                    if (! dados || ! botao.isConnected) {
                         return;
                     }
 
@@ -538,8 +539,13 @@ class App {
                     imagem.src = dados;
                     imagem.hidden = false;
                     botao.querySelector('span').hidden = true;
-                })
-                .catch(() => {});
+                } catch {
+                    // A janela pode desaparecer enquanto o seletor está aberto.
+                }
+            };
+
+            void atualizar();
+            this.previewTimers.add(setInterval(() => void atualizar(), 1000));
         }
     }
 
@@ -561,6 +567,10 @@ class App {
 
     closeShareModal() {
         el('share-modal').hidden = true;
+        for (const timer of this.previewTimers) {
+            clearInterval(timer);
+        }
+        this.previewTimers.clear();
     }
 
     async share() {

@@ -214,12 +214,15 @@ impl MediaFoundationEncoder {
                 .context
                 .CopyResource(&ponte.compartilhada_na_captura, &surface.texture);
 
+            // A cópia é assíncrona na GPU. Liberar a mutex antes do Flush deixava o
+            // encoder ler a textura compartilhada antes de a captura terminar de
+            // preenchê-la, produzindo vídeo preto apesar de o preview estar correto.
+            surface.context.Flush();
+
             ponte
                 .trava_da_captura
                 .ReleaseSync(1)
                 .map_err(erro_de_encode)?;
-
-            surface.context.Flush();
 
             ponte
                 .minha_trava
