@@ -18,9 +18,12 @@ for (const codigo of codigos) {
 }
 
 assert.ok(! isRoomCode(''), 'vazio não é código');
-assert.ok(! isRoomCode('a'.repeat(CODE_LENGTH - 1)), 'curto demais não é código');
+assert.ok(isRoomCode('sala-do-time'), 'nome legível precisa ser aceito');
+assert.ok(isRoomCode('abc'), 'código mínimo precisa ser aceito');
+assert.ok(! isRoomCode('ab'), 'curto demais não é código');
+assert.ok(! isRoomCode('a'.repeat(33)), 'longo demais não é código');
 assert.ok(! isRoomCode('A'.repeat(CODE_LENGTH)), 'maiúscula não é código — o servidor recusa');
-assert.ok(! isRoomCode(`${'a'.repeat(CODE_LENGTH - 1)}-`), 'hífen não é código');
+assert.ok(! isRoomCode('sala-'), 'hífen no fim não é código');
 
 // Repetição em vinte mil sorteios seria sorte grande demais para ser sorte.
 assert.equal(new Set(codigos).size, AMOSTRA, 'dois códigos iguais em uma amostra pequena');

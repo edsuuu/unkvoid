@@ -1,15 +1,15 @@
 import { ValidationException } from '../../Exceptions/ApiException.js';
 import { Request } from './Request.js';
 
-/** O que o cliente sorteia. Só este formato entra: nome à mão viraria sala adivinhável. */
-const CODE = /^[a-z0-9]{12}$/;
+/** Códigos podem ser nomes legíveis; o limite evita chaves enormes no mapa e no protocolo. */
+const CODE = /^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/;
 
 const NAME_MAX = 40;
 
 export class JoinRequest extends Request {
     protected override validate(): void {
         if (! CODE.test(this.string('room'))) {
-            throw new ValidationException('room code must be 12 characters of a-z0-9');
+            throw new ValidationException('room code must be 3-32 characters of a-z0-9, with optional hyphens');
         }
 
         if (this.string('name').trim().length > NAME_MAX) {
