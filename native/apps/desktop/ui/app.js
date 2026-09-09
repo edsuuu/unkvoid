@@ -39,6 +39,8 @@ class App {
     /** Mantém o diagnóstico recente pequeno para o modal abrir sem travar o WebView. */
     static MAX_LOG_ENTRIES = 250;
     static MAX_LOG_CHARS = 64 * 1024;
+    static MAX_WINDOW_SOURCES = 12;
+    static MAX_WINDOW_PREVIEWS = 4;
 
     /** Onde o nome fica entre uma abertura e outra. Ninguém quer redigitar todo dia. */
     static NAME_KEY = 'unkvoid:name';
@@ -669,6 +671,7 @@ class App {
             // Janela sem título é painel de sistema: mostrar só polui a escolha.
             window: janelas
                 .filter(janela => janela.title.trim())
+                .slice(0, App.MAX_WINDOW_SOURCES)
                 .map(janela => ({
                     value: `window:${janela.id}`,
                     label: janela.title,
@@ -734,8 +737,12 @@ class App {
             botao.onclick = () => this.pickShareSource(botao);
             lista.appendChild(botao);
 
-            // Uma miniatura por vez, sem travar a abertura do seletor: quem tem dez
-            // janelas abertas veria a lista congelar esperando todas.
+            // Limita previews de aplicativos: cada uma inicia uma captura nativa e
+            // muitas janelas ao mesmo tempo congelam o seletor no Windows.
+            if (tab === 'window' && itens.indexOf(item) >= App.MAX_WINDOW_PREVIEWS) {
+                continue;
+            }
+
             const atualizar = async () => {
                 if (this.previewInFlight.has(item.value)) {
                     return;
@@ -763,9 +770,6 @@ class App {
             };
 
             void atualizar();
-            // Cada preview cria uma captura nativa de um quadro. Não podemos iniciar 30
-            // capturas simultâneas por segundo: no Windows isso trava o app inteiro.
-            this.previewTimers.add(setInterval(() => void atualizar(), 1000));
         }
     }
 
