@@ -23,9 +23,9 @@ impl VideoToolboxEncoder {
             .with_allow_frame_reordering(false)
             .with_average_bit_rate(config.bitrate as i32)
             .with_expected_frame_rate(config.frame_rate)
-            // Keyframe every 2s: someone joining mid-broadcast does not wait long, and
-            // bandwidth is not wasted sending a full frame constantly.
-            .with_max_keyframe_interval((config.frame_rate * 2.0) as i32)
+            // Keyframe every second: a lost RTP fragment recovers quickly instead of
+            // freezing the viewer until a two-second GOP completes.
+            .with_max_keyframe_interval(config.frame_rate as i32)
             .build()
             .map_err(|error| EncoderError::Start(error.to_string()))?;
 
