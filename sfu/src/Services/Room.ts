@@ -152,7 +152,7 @@ export class Room {
 
     describePeers(exceptPeerId?: string): PeerDescription[] {
         return [...this.peers.values()]
-            .filter(peer => peer.id !== exceptPeerId)
+            .filter(peer => peer.id !== exceptPeerId && ! peer.isOrphaned())
             .map(peer => ({
                 peerId: peer.id,
                 name: peer.name,

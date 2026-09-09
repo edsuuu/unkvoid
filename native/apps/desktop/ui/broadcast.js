@@ -15,10 +15,13 @@ export class Broadcast {
     constructor(sfu) {
         this.sfu = sfu;
         this.broadcasting = false;
+        this.nativeActive = false;
+        this.producerIds = [];
     }
 
     async start(quality, fps, source) {
         await invoke('start_broadcast', { quality, fps, source });
+        this.nativeActive = true;
 
         // Vídeo e áudio caem no mesmo transport do servidor, então o endereço é um só —
         // e é por isso que o `use_sfu` vem depois dos dois: mandar RTP antes de declarar
@@ -26,29 +29,47 @@ export class Broadcast {
         // e descartá-los em silêncio.
         let target = null;
 
-        for (const kind of ['video', 'audio']) {
-            const offer = await invoke('sfu_offer', { kind });
+        try {
+            for (const kind of ['video', 'audio']) {
+                const offer = await invoke('sfu_offer', { kind });
 
-            target = await this.sfu.request('producePlain', {
-                kind,
-                source: kind === 'video' ? 'screen' : 'screenAudio',
-                ...offer,
-            });
+                const producer = await this.sfu.request('producePlain', {
+                    kind,
+                    source: kind === 'video' ? 'screen' : 'screenAudio',
+                    ...offer,
+                });
+
+                this.producerIds.push(producer.producerId);
+                target = producer;
+            }
+
+            await invoke('use_sfu', { address: `${target.ip}:${target.port}` });
+            this.broadcasting = true;
+        } catch (error) {
+            await this.stop();
+            throw error;
         }
-
-        await invoke('use_sfu', { address: `${target.ip}:${target.port}` });
-
-        this.broadcasting = true;
     }
 
     /** Devolve quantos quadros foram transmitidos, para a mensagem de encerramento. */
     async stop() {
-        if (! this.broadcasting) {
+        if (! this.nativeActive && ! this.producerIds.length) {
             return 0;
         }
 
         this.broadcasting = false;
 
-        return invoke('stop_broadcast');
+        const producerIds = this.producerIds.splice(0);
+
+        // Parar a captura não fecha os producers já registrados no mediasoup. Fechá-los
+        // primeiro avisa todos os espectadores imediatamente, sem esperar o socket cair.
+        await Promise.all(producerIds.map(producerId =>
+            this.sfu.request('closeProducer', { producerId }).catch(() => null)));
+
+        try {
+            return await invoke('stop_broadcast');
+        } finally {
+            this.nativeActive = false;
+        }
     }
 }

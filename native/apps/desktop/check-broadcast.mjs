@@ -36,9 +36,13 @@ const { Broadcast } = await import('./ui/broadcast.js');
 const pedidos = [];
 const sfu = {
     request: async (acao, dados) => {
-        pedidos.push(`${acao}:${dados.kind}/${dados.source}`);
+    pedidos.push(`${acao}:${dados.kind ?? dados.producerId ?? ''}/${dados.source ?? ''}`);
 
-        return { ip: '10.0.0.1', port: 41000 };
+    return {
+        producerId: dados.kind ? `${dados.kind}-producer` : undefined,
+        ip: '10.0.0.1',
+        port: 41000,
+    };
     },
 };
 
@@ -63,6 +67,12 @@ assert.equal(transmissao.broadcasting, true);
 
 assert.equal(await transmissao.stop(), 4242, 'stop devolve os quadros transmitidos');
 assert.equal(transmissao.broadcasting, false);
+assert.deepEqual(pedidos, [
+    'producePlain:video/screen',
+    'producePlain:audio/screenAudio',
+    'closeProducer:video-producer/',
+    'closeProducer:audio-producer/',
+]);
 
 // Parar duas vezes não pode mandar um segundo `stop_broadcast`: o Rust responde erro e
 // a mensagem de encerramento viraria uma falha na cara de quem só clicou uma vez.
@@ -70,5 +80,21 @@ const antes = chamadas.length;
 
 assert.equal(await transmissao.stop(), 0);
 assert.equal(chamadas.length, antes, 'parar de novo não fala com o Rust');
+
+// Uma falha depois de iniciar a captura também precisa liberar o estado nativo, para
+// que a próxima tentativa não receba "a stream is already in progress".
+const falhaSfu = {
+    request: async (acao, dados) => {
+        if (acao === 'producePlain' && dados.kind === 'audio') {
+            throw new Error('SFU indisponível');
+        }
+
+        return { producerId: 'partial-producer', ip: '10.0.0.1', port: 41000 };
+    },
+};
+const parcial = new Broadcast(falhaSfu);
+await assert.rejects(() => parcial.start('1080', 30, 'display:1'), /SFU indisponível/);
+assert.equal(parcial.nativeActive, false);
+assert.deepEqual(parcial.producerIds, []);
 
 console.log('transmissão: ok — ordem e encerramento');

@@ -88,6 +88,11 @@ export class Peer {
             producer.close();
         }
 
+        this.closePlainTransports();
+        this.producers.clear();
+    }
+
+    closePlainTransports(): void {
         // A plain transport exists only to carry one broadcast: leaving it open would
         // hold a UDP port from a small band for the rest of the process's life.
         for (const transport of this.plainTransports.values()) {
@@ -95,7 +100,6 @@ export class Peer {
         }
 
         this.plainTransports.clear();
-        this.producers.clear();
     }
 
     send(event: string, data: unknown): void {
