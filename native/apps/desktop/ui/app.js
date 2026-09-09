@@ -476,14 +476,16 @@ class App {
             + '<figcaption class="flex items-center gap-2 bg-panel px-3 py-1.5 text-xs text-ink">'
             + '<span class="truncate"></span>'
             + '<span class="text-ink-dim" data-media-stats>buffer -- · fps --</span>'
+            + '<span class="flex-1"></span>'
             + '<span class="flex items-center gap-1.5 text-ink-soft" data-audio-control hidden>'
             + '<span aria-hidden="true">🔊</span>'
             + '<input class="w-20 accent-brand" data-audio-volume type="range" min="0" max="100" value="100" aria-label="Volume desta transmissão">'
             + '<span data-audio-volume-value>100%</span>'
             + '</span>'
-            + '<span class="flex-1"></span>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-focus type="button">Focar</button>'
+            + '<span class="flex items-center gap-1.5">'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-fullscreen type="button">Tela cheia</button>'
+            + '</span>'
             + '</figcaption>';
 
         const video = quadro.querySelector('video');
@@ -505,9 +507,18 @@ class App {
                     return;
                 }
 
-                await quadro.requestFullscreen?.();
+                if (quadro.requestFullscreen) {
+                    await quadro.requestFullscreen();
+                } else if (video.requestFullscreen) {
+                    await video.requestFullscreen();
+                } else if (video.webkitEnterFullscreen) {
+                    video.webkitEnterFullscreen();
+                } else {
+                    this.fail('tela cheia não é suportada neste ambiente');
+                }
             } catch (error) {
                 this.log('media.fullscreen.error', { peerId: from, message: error.message ?? String(error) });
+                this.fail(`não foi possível abrir tela cheia: ${error.message ?? error}`);
             }
         };
 
