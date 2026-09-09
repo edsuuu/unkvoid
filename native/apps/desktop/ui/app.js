@@ -511,7 +511,7 @@ class App {
 
     async share() {
         try {
-            await this.broadcast.start(el('quality').value, this.shareSource);
+            await this.broadcast.start(el('quality').value, Number(el('fps').value), this.shareSource);
             this.paintSharing(true);
         } catch (failure) {
             // Falhar calado deixava a barra sem botão nenhum: quem tentou compartilhar

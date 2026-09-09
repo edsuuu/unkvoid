@@ -103,6 +103,7 @@ fn list_windows() -> Result<Vec<WindowInfo>, String> {
 async fn start_broadcast(
     state: State<'_, ActiveBroadcast>,
     quality: String,
+    fps: u32,
     source: Option<String>,
 ) -> Result<(), String> {
     let mut active = state.0.lock().await;
@@ -112,7 +113,7 @@ async fn start_broadcast(
     }
 
     *active = Some(
-        Broadcast::start(quality_from(&quality), source_from(source.as_deref()))
+        Broadcast::start(quality_from(&quality), fps, source_from(source.as_deref()))
             .map_err(|error| error.to_string())?,
     );
 

@@ -12,7 +12,8 @@ use windows_capture::settings::{
 use windows_capture::window::Window as CaptureWindow;
 
 use crate::{
-    CaptureConfig, CaptureError, CaptureEvent, CaptureSource, Display, VideoFrame, Window,
+    CaptureConfig, CaptureError, CaptureEvent, CaptureSource, Display, GpuSurface, VideoFrame,
+    Window,
 };
 
 type EventSink = Arc<dyn Fn(CaptureEvent) + Send + Sync>;
@@ -49,7 +50,11 @@ where
         },
         DrawBorderSettings::WithoutBorder,
         SecondaryWindowSettings::Default,
-        MinimumUpdateIntervalSettings::Default,
+        // O teto de quadros começa aqui: pedir 30 e deixar a captura entregar 60 faria o
+        // encoder jogar metade fora depois de já ter pago por ela.
+        MinimumUpdateIntervalSettings::Custom(std::time::Duration::from_secs_f64(
+            1.0 / f64::from(config.frame_rate.max(1)),
+        )),
         DirtyRegionSettings::Default,
         ColorFormat::Bgra8,
         (sink, frames),
@@ -105,13 +110,17 @@ impl GraphicsCaptureApiHandler for Sink {
     ) -> Result<(), Self::Error> {
         self.frames.fetch_add(1, Ordering::Relaxed);
 
+        // A textura é da rotação interna da captura: vale enquanto este callback roda,
+        // e o encoder copia dela antes de devolver. Clonar aqui só soma uma referência.
         (self.on_event)(CaptureEvent::Video(VideoFrame {
             width: frame.width(),
             height: frame.height(),
             timestamp_ns: self.started_at.elapsed().as_nanos() as u64,
-            // No hardware encoder on Windows yet: the frame is counted, not
-            // encoded. The Media Foundation path is still missing.
-            surface: None,
+            surface: Some(GpuSurface {
+                texture: frame.as_raw_texture().clone(),
+                device: frame.device().clone(),
+                context: frame.device_context().clone(),
+            }),
         }));
 
         Ok(())

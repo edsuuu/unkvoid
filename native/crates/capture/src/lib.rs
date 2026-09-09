@@ -46,7 +46,22 @@ pub struct Window {
 #[cfg(target_os = "macos")]
 pub type GpuSurface = apple_cf::iosurface::IOSurface;
 
-#[cfg(not(target_os = "macos"))]
+/// No Windows o quadro não é um buffer solto: é uma textura do Direct3D que pertence à
+/// rotação interna da captura, e só o device que a criou sabe lê-la. Por isso os três
+/// andam juntos — o encoder precisa do device e do contexto para copiar a textura antes
+/// que o próximo quadro a reaproveite.
+///
+/// O `::` na frente não é enfeite: este crate tem um módulo chamado `windows`, e sem ele
+/// o caminho acha o módulo local em vez da crate da Microsoft.
+#[cfg(target_os = "windows")]
+#[derive(Clone)]
+pub struct GpuSurface {
+    pub texture: ::windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
+    pub device: ::windows::Win32::Graphics::Direct3D11::ID3D11Device,
+    pub context: ::windows::Win32::Graphics::Direct3D11::ID3D11DeviceContext,
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub type GpuSurface = ();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
