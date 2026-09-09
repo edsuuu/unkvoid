@@ -1,7 +1,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::path::PathBuf;
 
 use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
+use windows_capture::encoder::ImageFormat;
 use windows_capture::frame::Frame;
 use windows_capture::graphics_capture_api::InternalCaptureControl;
 use windows_capture::monitor::Monitor;
@@ -85,6 +88,38 @@ impl std::fmt::Display for CaptureFailure {
 
 impl std::error::Error for CaptureFailure {}
 
+struct PreviewSink {
+    path: PathBuf,
+    result: mpsc::Sender<Result<(), String>>,
+}
+
+impl GraphicsCaptureApiHandler for PreviewSink {
+    type Flags = (PathBuf, mpsc::Sender<Result<(), String>>);
+    type Error = CaptureFailure;
+
+    fn new(context: Context<Self::Flags>) -> Result<Self, Self::Error> {
+        Ok(Self { path: context.flags.0, result: context.flags.1 })
+    }
+
+    fn on_frame_arrived(
+        &mut self,
+        frame: &mut Frame,
+        control: InternalCaptureControl,
+    ) -> Result<(), Self::Error> {
+        let result = frame
+            .save_as_image(&self.path, ImageFormat::Jpeg)
+            .map_err(|error| error.to_string());
+
+        let _ = self.result.send(result);
+        control.stop();
+        Ok(())
+    }
+
+    fn on_closed(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 struct Sink {
     on_event: EventSink,
     frames: Arc<AtomicU64>,
@@ -132,12 +167,60 @@ impl GraphicsCaptureApiHandler for Sink {
 }
 
 impl WindowsCapturer {
-    /// Sem miniatura fora do macOS ainda. Devolver vazio em vez de erro deixa o
-    /// seletor abrir listando os nomes — pior que com preview, melhor que quebrado.
-    pub fn preview(_source: crate::CaptureSource) -> Result<Vec<u8>, CaptureError> {
-        Ok(Vec::new())
+    /// Captura um quadro curto para a pessoa confirmar a tela ou janela escolhida.
+    pub fn preview(source: crate::CaptureSource) -> Result<Vec<u8>, CaptureError> {
+        match source {
+            crate::CaptureSource::Window(id) => capture_preview(
+                CaptureWindow::from_raw_hwnd(id_para_hwnd(id)),
+            ),
+            crate::CaptureSource::Display(id) => capture_preview(
+                Monitor::enumerate()
+                    .map_err(|error| CaptureError::Platform(error.to_string()))?
+                    .into_iter()
+                    .nth(id as usize)
+                    .ok_or(CaptureError::NoDisplay)?,
+            ),
+            crate::CaptureSource::PrimaryDisplay => capture_preview(
+                Monitor::enumerate()
+                    .map_err(|error| CaptureError::Platform(error.to_string()))?
+                    .into_iter()
+                    .next()
+                    .ok_or(CaptureError::NoDisplay)?,
+            ),
+        }
     }
+}
 
+fn capture_preview<T>(alvo: T) -> Result<Vec<u8>, CaptureError>
+where
+    T: TryInto<windows_capture::settings::GraphicsCaptureItemType> + Send + 'static,
+{
+        let caminho = std::env::temp_dir().join(format!("unkvoid-preview-{}.jpg", std::process::id()));
+        let (enviado, recebido) = mpsc::channel();
+        let settings = Settings::new(
+            alvo,
+            CursorCaptureSettings::WithoutCursor,
+            DrawBorderSettings::WithoutBorder,
+            SecondaryWindowSettings::Default,
+            MinimumUpdateIntervalSettings::Custom(std::time::Duration::from_millis(100)),
+            DirtyRegionSettings::Default,
+            ColorFormat::Bgra8,
+            (caminho.clone(), enviado),
+        );
+
+        let _control = PreviewSink::start_free_threaded(settings)
+            .map_err(|error| CaptureError::Platform(error.to_string()))?;
+        recebido
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|error| CaptureError::Platform(error.to_string()))?
+            .map_err(CaptureError::Platform)?;
+
+        let bytes = std::fs::read(&caminho).map_err(|error| CaptureError::Platform(error.to_string()))?;
+        let _ = std::fs::remove_file(caminho);
+        Ok(bytes)
+}
+
+impl WindowsCapturer {
     pub fn displays() -> Result<Vec<Display>, CaptureError> {
         let monitors =
             Monitor::enumerate().map_err(|error| CaptureError::Platform(error.to_string()))?;

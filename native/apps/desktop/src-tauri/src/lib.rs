@@ -208,6 +208,11 @@ fn restart(app: tauri::AppHandle) {
     app.restart();
 }
 
+#[tauri::command]
+fn app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
 /// Ícone na bandeja: fechar a janela esconde o app em vez de matá-lo.
 ///
 /// Sair de verdade é uma escolha explícita no menu do botão direito. Sem isto, fechar a
@@ -275,6 +280,7 @@ pub fn run() {
             list_displays,
             list_windows,
             source_preview,
+            app_version,
             check_update,
             restart,
             start_broadcast,
