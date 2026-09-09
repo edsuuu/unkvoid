@@ -34,10 +34,15 @@ export class ProducerController {
     /** Registra o producer e conta para a sala. É isto que acende o "ao vivo" dos outros. */
     private announce(peer: Peer, room: Room, producer: Producer, source: SourceName): void {
         peer.addProducer(producer, source);
-        let idleTimer = setTimeout(() => this.close(peer, room, producer), MEDIA_IDLE_MS);
+        let idleTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(
+            () => this.close(peer, room, producer),
+            MEDIA_IDLE_MS,
+        );
 
         producer.on('transportclose', () => {
-            clearTimeout(idleTimer);
+            if (idleTimer) {
+                clearTimeout(idleTimer);
+            }
             peer.producers.delete(producer.id);
             room.broadcast('producerClosed', {
                 peerId: peer.id,
@@ -58,16 +63,23 @@ export class ProducerController {
             }
 
             receiving = true;
+            if (idleTimer) {
+                clearTimeout(idleTimer);
+                idleTimer = undefined;
+            }
             peer.send('producerActive', { producerId: producer.id });
         });
 
         producer.on('score', scores => {
-            if (! scores.some(entry => entry.score > 0)) {
+            if (receiving || ! scores.some(entry => entry.score > 0)) {
                 return;
             }
 
-            clearTimeout(idleTimer);
-            idleTimer = setTimeout(() => this.close(peer, room, producer), MEDIA_IDLE_MS);
+            receiving = true;
+            if (idleTimer) {
+                clearTimeout(idleTimer);
+                idleTimer = undefined;
+            }
         });
 
         room.broadcast('newProducer', {
