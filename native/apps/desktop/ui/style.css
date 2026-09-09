@@ -1,3 +1,11 @@
+/*
+ * A ordem das camadas é a ordem em que os nomes aparecem, e para declarações
+ * `!important` quem vence é a camada declarada PRIMEIRO — o contrário do normal. Por
+ * isso `unkvoid` é anunciada antes do Tailwind: é assim que o `display` das transições
+ * ganha do `[hidden] { display: none !important }` que vem no reset dele.
+ */
+@layer unkvoid;
+
 @import "tailwindcss";
 
 /*
@@ -24,6 +32,71 @@
     --color-online: #23a55a;
     --color-danger: #f23f43;
     --color-danger-dark: #a12828;
+}
+
+@layer unkvoid {
+    /*
+     * Modais e painéis aparecem e somem com transição, em vez de piscar.
+     *
+     * O atributo `hidden` do HTML vira `display: none` no reset, e `display` não
+     * interpola. O `allow-discrete` deixa a troca acontecer no fim da transição, então o
+     * elemento continua na tela enquanto o fade roda.
+     */
+    #share-modal,
+    #logs-modal,
+    #people-list,
+    #update-screen,
+    #offline-screen {
+        transition:
+            opacity 160ms ease,
+            display 160ms allow-discrete;
+    }
+
+    #share-modal[hidden],
+    #logs-modal[hidden],
+    #update-screen[hidden],
+    #offline-screen[hidden] {
+        display: flex !important;
+        opacity: 0;
+        pointer-events: none;
+    }
+
+    /* O painel de pessoas é bloco, não flex: manter `flex` aqui o desmontaria. */
+    #people-list[hidden] {
+        display: block !important;
+        opacity: 0;
+        pointer-events: none;
+    }
+
+    /* O cartão cresce um triz junto com o fundo. Sem isto o modal só pisca de opacidade. */
+    #share-modal > div,
+    #logs-modal > div {
+        transition: transform 160ms ease;
+    }
+
+    #share-modal[hidden] > div,
+    #logs-modal[hidden] > div {
+        transform: scale(0.97);
+    }
+
+    /* O painel desce de cima, que é de onde o botão dele está. */
+    #people-list {
+        transition:
+            opacity 160ms ease,
+            transform 160ms ease,
+            display 160ms allow-discrete;
+    }
+
+    #people-list[hidden] {
+        transform: translateY(-6px);
+    }
+
+    /*
+     * Nada de `@starting-style` aqui. O compilador do Tailwind o desmonta e deixa o
+     * `opacity: 0` valendo para sempre — o modal abria invisível. E ele não faz falta:
+     * como o estado escondido continua renderizado, tirar o `hidden` já transiciona de
+     * 0 para 1 sozinho.
+     */
 }
 
 @layer base {

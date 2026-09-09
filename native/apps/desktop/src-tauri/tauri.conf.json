@@ -13,12 +13,11 @@
     "windows": [
       {
         "title": "Unkvoid",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 940,
-        "minHeight": 600,
+        "width": 420,
+        "height": 260,
         "resizable": true,
-        "label": "main"
+        "label": "main",
+        "center": true
       }
     ],
     "withGlobalTauri": true,

@@ -233,6 +233,62 @@ fn app_version(app: tauri::AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
+/// Tamanho da janela depois que o app está pronto para uso.
+const APP_SIZE: (f64, f64) = (1280.0, 800.0);
+
+/// Cresce a janela quando a abertura termina.
+///
+/// Ela nasce pequena de propósito: procurar atualização numa janela de 1280 por 800
+/// vazia parece um app travado, e não um app carregando.
+#[tauri::command]
+fn expand_window(window: tauri::Window) -> Result<(), String> {
+    use tauri::LogicalSize;
+
+    let paint = |erro: tauri::Error| erro.to_string();
+
+    // Sem piso de tamanho aqui. Definir um mínimo enquanto a janela ainda é a pequena
+    // fazia o macOS crescê-la até o próprio mínimo e engolir este `set_size`: ela
+    // parava em 940x600 em vez de 1280x800, nas duas ordens possíveis. O piso é um
+    // luxo; abrir do tamanho certo não é.
+    window
+        .set_size(LogicalSize::new(APP_SIZE.0, APP_SIZE.1))
+        .map_err(paint)?;
+
+    // O `center()` usa o tamanho que a janela tem na hora da chamada, e no macOS o
+    // redimensionamento ainda não terminou aqui — centralizava pelo tamanho antigo e a
+    // janela ficava para o canto. A conta pelo monitor não depende desse tempo.
+    center_on_monitor(&window, APP_SIZE);
+
+    Ok(())
+}
+
+/// Põe a janela no meio do monitor, pelo tamanho que ela **vai** ter.
+///
+/// Ler `outer_size()` aqui não serve: no macOS o redimensionamento ainda não terminou,
+/// então a conta saía com o tamanho da janela pequena e a janela ia parar no canto. O
+/// tamanho alvo é constante e conhecido, então ele não depende desse tempo.
+fn center_on_monitor(window: &tauri::Window, size: (f64, f64)) {
+    use tauri::PhysicalPosition;
+
+    let (Ok(Some(monitor)), Ok(scale)) = (window.primary_monitor(), window.scale_factor()) else {
+        // Sem monitor legível não dá para calcular; o `center` do sistema ainda é
+        // melhor do que deixar onde está.
+        let _ = window.center();
+
+        return;
+    };
+
+    let screen = monitor.size();
+    let origin = monitor.position();
+    let width = size.0 * scale;
+    let height = size.1 * scale;
+
+    let x = origin.x + ((screen.width as f64 - width) / 2.0).max(0.0) as i32;
+    let y = origin.y + ((screen.height as f64 - height) / 2.0).max(0.0) as i32;
+
+    let _ = window.set_position(PhysicalPosition::new(x, y));
+}
+
 /// Se a bandeja existe nesta máquina. É o que decide se fechar a janela esconde ou sai.
 struct HasTray(AtomicBool);
 
@@ -356,7 +412,8 @@ pub fn run() {
             sfu_offer,
             use_sfu,
             stop_broadcast,
-            broadcast_stats
+            broadcast_stats,
+            expand_window
         ])
         .manage(HasTray(AtomicBool::new(false)))
         .setup(|app| {
