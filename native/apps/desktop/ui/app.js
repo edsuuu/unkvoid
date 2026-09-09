@@ -293,6 +293,11 @@ class App {
         el('logs-close').onclick = () => { el('logs-modal').hidden = true; };
         el('logs-clear').onclick = () => { this.logs = []; this.renderLogs(); };
         el('logs-copy').onclick = () => this.copyLogs();
+        el('remote-volume').oninput = event => {
+            const volume = Number(event.target.value);
+            el('remote-volume-value').textContent = `${volume}%`;
+            this.setRemoteVolume(volume / 100);
+        };
         el('share-cancel').onclick = () => this.closeShareModal();
         el('share-confirm').onclick = async () => {
             this.closeShareModal();
@@ -370,8 +375,18 @@ class App {
 
                 audio.srcObject = new MediaStream([consumer.track]);
                 audio.autoplay = true;
+                audio.volume = Number(el('remote-volume').value) / 100;
+                audio.onplay = () => this.log('media.audio.playing', { peerId });
+                audio.onerror = () => this.log('media.audio.error', {
+                    peerId,
+                    message: audio.error?.message ?? `media error ${audio.error?.code ?? 'unknown'}`,
+                });
                 audio.dataset.remote = peerId;
                 document.body.appendChild(audio);
+                void audio.play().catch(error => this.log('media.audio.autoplay.error', {
+                    peerId,
+                    message: error.message ?? String(error),
+                }));
 
                 return;
             }
@@ -428,7 +443,18 @@ class App {
         video.onended = () => this.log('media.video.ended', { peerId: from });
         quadro.querySelector('span').textContent = this.sfu?.peers?.get(from)?.name ?? 'transmitindo';
         quadro.querySelector('[data-focus]').onclick = () => this.focus(from);
-        quadro.querySelector('[data-fullscreen]').onclick = () => quadro.requestFullscreen?.();
+        quadro.querySelector('[data-fullscreen]').onclick = async () => {
+            try {
+                if (document.fullscreenElement) {
+                    await document.exitFullscreen();
+                    return;
+                }
+
+                await quadro.requestFullscreen?.();
+            } catch (error) {
+                this.log('media.fullscreen.error', { peerId: from, message: error.message ?? String(error) });
+            }
+        };
 
         if (! existente) {
             el('stage').appendChild(quadro);
@@ -493,6 +519,13 @@ class App {
         const timer = setInterval(atualizar, 1000);
         this.mediaStatsTimers.set(peerId, timer);
         atualizar();
+    }
+
+    setRemoteVolume(volume) {
+        document.querySelectorAll('audio[data-remote]').forEach(audio => {
+            audio.volume = volume;
+        });
+        this.log('media.audio.volume', { volume });
     }
 
     /** Uma tela ocupando tudo, ou de volta para a grade. */
