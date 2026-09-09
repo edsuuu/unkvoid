@@ -71,6 +71,7 @@
     <button class="cursor-pointer rounded bg-danger px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-danger-dark" id="stop" hidden>Parar</button>
 
     <button class="cursor-pointer rounded px-3 py-1.5 text-sm text-ink-soft transition-colors hover:bg-line hover:text-danger" id="leave">Sair</button>
+    <button class="cursor-pointer rounded px-2 py-1.5 text-xs text-ink-soft transition-colors hover:bg-line hover:text-white" id="logs">Logs</button>
   </header>
 
   <p class="shrink-0 px-3 py-1 text-center text-xs text-danger" id="room-error" hidden></p>
@@ -80,6 +81,22 @@
   <div class="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center" id="stage-empty">
     <p class="text-ink-soft">Ninguém está compartilhando ainda.</p>
     <p class="text-sm text-ink-dim">Mande o código <span class="font-mono text-ink" id="empty-code"></span> para quem você quer aqui.</p>
+  </div>
+</section>
+
+<section class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6" id="logs-modal" hidden>
+  <div class="flex max-h-[80vh] w-full max-w-3xl flex-col rounded-lg bg-content p-6">
+    <div class="flex items-center gap-3">
+      <div>
+        <h2 class="text-xl font-semibold text-white">Diagnóstico</h2>
+        <p class="mt-1 text-sm text-ink-soft">Copie estes eventos após reproduzir o problema.</p>
+      </div>
+      <span class="flex-1"></span>
+      <button class="rounded px-3 py-2 text-sm text-ink-soft hover:bg-line hover:text-white" id="logs-clear" type="button">Limpar</button>
+      <button class="rounded bg-brand px-3 py-2 text-sm font-medium text-white hover:bg-brand-dark" id="logs-copy" type="button">Copiar logs</button>
+      <button class="rounded px-3 py-2 text-sm text-ink-soft hover:bg-line hover:text-white" id="logs-close" type="button">Fechar</button>
+    </div>
+    <textarea class="mt-4 min-h-96 flex-1 resize-none rounded bg-rail p-3 font-mono text-xs text-ink" id="logs-output" readonly></textarea>
   </div>
 </section>
 

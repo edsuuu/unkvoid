@@ -74,6 +74,7 @@ export class SfuClient extends EventTarget {
      * session, no one notices. If not, it republishes everything from scratch.
      */
     handleClose() {
+        this.emit('diagnostic', { event: 'socket.close', data: { attempt: this.reconnectAttempt } });
         for (const waiting of this.pending.values()) {
             waiting.reject(new Error('connection dropped'));
         }
@@ -118,6 +119,9 @@ export class SfuClient extends EventTarget {
     }
 
     handleMessage(message) {
+        if (message.event) {
+            this.emit('diagnostic', { event: `sfu.${message.event}`, data: message.data });
+        }
         if (message.event) {
             this.trackPeers(message.event, message.data);
             this.emit(message.event, message.data);
