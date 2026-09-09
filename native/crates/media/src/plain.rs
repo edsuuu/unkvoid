@@ -49,7 +49,7 @@ const MTU: usize = 1200;
 
 /// A full local UDP buffer is transient: retrying briefly preserves a complete H.264
 /// frame, while a permanent network error still returns immediately.
-const SEND_RETRIES: usize = 8;
+const SEND_RETRIES: usize = 256;
 const SEND_RETRY_DELAY: Duration = Duration::from_millis(2);
 
 /// The one crypto suite negotiated with the server. `AES_CM_128_HMAC_SHA1_80` on the
