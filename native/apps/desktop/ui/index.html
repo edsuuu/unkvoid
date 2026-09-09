@@ -13,6 +13,12 @@
   <h1 class="text-2xl font-semibold text-white">Unkvoid</h1>
   <p class="text-sm text-ink-soft" id="update-status">Procurando atualizações…</p>
 
+  <!-- Só aparece quando há download em curso: uma barra parada em zero durante a
+       consulta faria parecer que algo travou. -->
+  <div class="h-1.5 w-56 overflow-hidden rounded-full bg-rail" id="update-bar" hidden>
+    <div class="h-full w-0 rounded-full bg-brand transition-[width] duration-150" id="update-fill"></div>
+  </div>
+
   <!-- Quando falta algo no sistema, o app precisa dizer O QUE rodar. Mandar a pessoa
        "instalar as dependências" sem o comando é o mesmo que não dizer nada. -->
   <div class="w-full max-w-xl px-6" id="fix-block" hidden>

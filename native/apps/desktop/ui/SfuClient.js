@@ -407,8 +407,14 @@ export class SfuClient extends EventTarget {
 
         this.transportRttMs = rtt != null ? Math.round(rtt * 1000) : null;
 
+        // Sozinho na sala, ou antes do primeiro consumer, o transporte ainda não tem par
+        // de candidatos com estatística — e a lista mostrava `-- ms` para todo mundo,
+        // como se a rede estivesse morta. A ida e volta da sinalização é uma medida
+        // pior, mas é uma medida.
+        const latency = this.transportRttMs ?? this.lastRttMs;
+
         for (const peerId of this.peers.keys()) {
-            this.peerLatency.set(peerId, this.transportRttMs);
+            this.peerLatency.set(peerId, latency);
         }
 
         for (const [consumerId, peerId] of this.consumerPeers) {

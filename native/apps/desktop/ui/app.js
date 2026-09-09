@@ -146,6 +146,7 @@ class App {
         await this.serverAnswered();
 
         el('update-screen').hidden = true;
+        await this.expandWindow();
 
         setInterval(() => void this.update(), App.UPDATE_EVERY_MS);
 
@@ -228,11 +229,38 @@ class App {
      * a leitura correta de uma tela parada é "travou".
      */
     showDownloadProgress() {
-        void listen('update:progress', ({ payload: [baixado, total] }) => {
-            el('update-status').textContent = total
-                ? `Baixando a atualização… ${Math.round((baixado / total) * 100)}%`
-                : `Baixando a atualização… ${(baixado / 1024 / 1024).toFixed(1)} MB`;
+        void listen('update:progress', ({ payload: [downloaded, total] }) => {
+            el('update-bar').hidden = false;
+
+            if (! total) {
+                // Servidor que não manda `content-length`: sem tamanho não há fração, e
+                // uma barra chutando porcentagem mentiria. Fica o quanto já veio.
+                el('update-status').textContent =
+                    `Baixando a atualização… ${(downloaded / 1024 / 1024).toFixed(1)} MB`;
+
+                return;
+            }
+
+            const percent = Math.min(100, Math.round((downloaded / total) * 100));
+
+            el('update-status').textContent = `Baixando a atualização… ${percent}%`;
+            el('update-fill').style.width = `${percent}%`;
         });
+    }
+
+    /**
+     * A janela nasce pequena, do tamanho de um diálogo de carregamento, e só cresce
+     * quando o app está pronto para ser usado.
+     *
+     * Falhar aqui não pode prender ninguém: a janela é redimensionável desde o começo,
+     * então o pior caso é abrir pequena e a pessoa arrastar a borda.
+     */
+    async expandWindow() {
+        try {
+            await invoke('expand_window');
+        } catch (failure) {
+            this.log('window.expand.error', { message: failure.message ?? String(failure) });
+        }
     }
 
     /**
