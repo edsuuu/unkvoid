@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use screencapturekit::prelude::*;
+use screencapturekit::cm::CMTime;
 use screencapturekit::screenshot_manager::{CGImageExt, ImageFormat, SCScreenshotManager};
 
 use crate::{
@@ -249,6 +250,8 @@ impl MacCapturer {
             .with_height(height)
             .with_pixel_format(PixelFormat::BGRA)
             .with_shows_cursor(config.show_cursor)
+            .with_minimum_frame_interval(&CMTime::new(1, config.frame_rate as i32))
+            .with_queue_depth(3)
             .with_captures_audio(config.capture_audio)
             // Our process's audio is excluded: this prevents sending back the voice
             // of someone in the call.

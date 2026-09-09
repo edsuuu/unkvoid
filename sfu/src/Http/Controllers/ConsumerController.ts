@@ -27,14 +27,28 @@ export class ConsumerController {
         consumer.on('transportclose', () => peer.consumers.delete(consumer.id));
         consumer.on('producerclose', () => {
             peer.consumers.delete(consumer.id);
-            peer.send('consumerClosed', { consumerId: consumer.id });
+            peer.send('consumerClosed', {
+                consumerId: consumer.id,
+                producerId: consumer.producerId,
+                kind: consumer.kind,
+                peerId: peer.id,
+                source: String(owner.producer.appData.source),
+            });
         });
 
         return new ConsumerResource(consumer, owner);
     }
 
     async resume(request: ConsumerRequest): Promise<StatusResource> {
-        await request.peer().getConsumer(request.consumerId()).resume();
+        const consumer = request.peer().getConsumer(request.consumerId());
+        await consumer.resume();
+
+        // A new consumer may start on a delta frame. Requesting an IDR immediately
+        // avoids waiting for the encoder's periodic keyframe and removes the common
+        // "connected but black" delay after joining or reconnecting.
+        if (consumer.kind === 'video') {
+            await consumer.requestKeyFrame();
+        }
 
         return new StatusResource('resumed');
     }

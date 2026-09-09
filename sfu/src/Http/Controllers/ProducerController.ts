@@ -39,6 +39,12 @@ export class ProducerController {
         producer.on('transportclose', () => {
             clearTimeout(idleTimer);
             peer.producers.delete(producer.id);
+            room.broadcast('producerClosed', {
+                peerId: peer.id,
+                producerId: producer.id,
+                kind: producer.kind,
+                source,
+            }, peer.id);
         });
 
         // O producer é declarado antes de um único pacote chegar, então até o score subir

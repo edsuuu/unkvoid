@@ -69,6 +69,7 @@ class App {
         this.lastBroadcastStats = null;
         this.broadcastStatsAt = 0;
         this.mediaStatsTimers = new Map();
+        this.consumingProducers = new Set();
 
         /** Grade mostra todos do mesmo tamanho; foco dá a tela toda a um só. */
         this.focused = null;
@@ -245,7 +246,14 @@ class App {
             this.sfu.addEventListener('peersChanged', () => this.refreshPeople());
             this.sfu.addEventListener('peerLeft', event => this.showScreen(event.detail.peerId, null));
             this.sfu.addEventListener('producerClosed', event => {
-                this.showScreen(event.detail.peerId, null);
+                if (event.detail.kind === 'video' && event.detail.source === 'screen') {
+                    this.showScreen(event.detail.peerId, null);
+                }
+            });
+            this.sfu.addEventListener('consumerClosed', event => {
+                if (event.detail.kind === 'video') {
+                    this.showScreen(event.detail.peerId, null);
+                }
             });
 
             this.broadcast = new Broadcast(this.sfu);
@@ -345,7 +353,12 @@ class App {
         }
     }
 
-    async consume({ producerId }) {
+    async consume({ producerId, peerId: ownerPeerId }) {
+        if (this.consumingProducers.has(producerId) || this.sfu?.consumersHasProducer?.(producerId)) {
+            return;
+        }
+
+        this.consumingProducers.add(producerId);
         this.log('media.consume.start', { producerId });
         try {
             const { consumer, peerId } = await this.sfu.consume(producerId);
@@ -366,8 +379,10 @@ class App {
             this.showScreen(peerId, new MediaStream([consumer.track]));
             this.log('media.consume.ready', { producerId, peerId, kind: consumer.kind });
         } catch (failure) {
-            this.log('media.consume.error', { producerId, message: failure.message });
+            this.log('media.consume.error', { producerId, peerId: ownerPeerId, message: failure.message ?? String(failure) });
             console.warn('não deu para receber a mídia:', failure);
+        } finally {
+            this.consumingProducers.delete(producerId);
         }
     }
 
