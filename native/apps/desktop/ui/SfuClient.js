@@ -43,6 +43,7 @@ export class SfuClient extends EventTarget {
         this.closedByUs = false;
         this.reconnectAttempt = 0;
         this.reconnectTimer = null;
+        this.socketGeneration = 0;
         this.lastRttMs = null;
     }
 
@@ -61,11 +62,30 @@ export class SfuClient extends EventTarget {
 
     openSocket() {
         return new Promise((resolve, reject) => {
-            this.socket = new WebSocket(this.url);
-            this.socket.onerror = () => reject(new Error('unable to open the WebSocket'));
-            this.socket.onmessage = message => this.handleMessage(JSON.parse(message.data));
-            this.socket.onclose = () => this.handleClose();
-            this.socket.onopen = () => resolve();
+            const generation = ++this.socketGeneration;
+            const socket = new WebSocket(this.url);
+
+            this.socket = socket;
+            socket.onerror = () => {
+                if (generation === this.socketGeneration) {
+                    reject(new Error('unable to open the WebSocket'));
+                }
+            };
+            socket.onmessage = message => {
+                if (generation === this.socketGeneration) {
+                    this.handleMessage(JSON.parse(message.data));
+                }
+            };
+            socket.onclose = () => {
+                if (generation === this.socketGeneration) {
+                    this.handleClose();
+                }
+            };
+            socket.onopen = () => {
+                if (generation === this.socketGeneration) {
+                    resolve();
+                }
+            };
         });
     }
 
@@ -93,6 +113,10 @@ export class SfuClient extends EventTarget {
     }
 
     scheduleReconnect() {
+        if (this.reconnectTimer) {
+            return;
+        }
+
         if (this.reconnectAttempt >= 8) {
             this.emit('closed');
 
@@ -102,7 +126,10 @@ export class SfuClient extends EventTarget {
         const delay = Math.min(1000 * 2 ** this.reconnectAttempt, 10000);
 
         this.reconnectAttempt += 1;
-        this.reconnectTimer = setTimeout(() => void this.reconnect(), delay);
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            void this.reconnect();
+        }, delay);
     }
 
     async reconnect() {
@@ -296,6 +323,10 @@ export class SfuClient extends EventTarget {
         return { consumer, ...params };
     }
 
+    consumersHasProducer(producerId) {
+        return [...this.consumers.values()].some(consumer => consumer.producerId === producerId);
+    }
+
     /** Explicit departure: without this, the server treats it as a drop and the person becomes a ghost. */
     async leaveRoom() {
         await this.request('leave').catch(() => {});
@@ -304,6 +335,8 @@ export class SfuClient extends EventTarget {
     disconnect() {
         this.closedByUs = true;
         clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+        this.socketGeneration += 1;
         this.socket?.close();
         this.recvTransport?.close();
         this.consumers.clear();
