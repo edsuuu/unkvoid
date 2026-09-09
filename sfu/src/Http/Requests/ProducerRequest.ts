@@ -5,7 +5,7 @@ export class ProducerRequest extends Request {
         this.string('producerId');
     }
 
-    producerId(): string {
+    public producerId(): string {
         return this.string('producerId');
     }
 }

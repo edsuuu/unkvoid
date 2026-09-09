@@ -22,7 +22,7 @@ export class RoomRegistry {
      * Cada worker precisa da própria porta de mídia porque o WebRtcServer não é
      * compartilhado entre processos.
      */
-    async boot(): Promise<void> {
+    public async boot(): Promise<void> {
         for (let index = 0; index < config.workerCount; index += 1) {
             const rtcMinPort = config.plainPortBase + index * config.plainPortsPerWorker;
 
@@ -41,25 +41,40 @@ export class RoomRegistry {
 
             const webRtcServer = await worker.createWebRtcServer({
                 listenInfos: [
-                    { protocol: 'udp', ip: '0.0.0.0', announcedAddress: config.announcedAddress, port },
-                    { protocol: 'tcp', ip: '0.0.0.0', announcedAddress: config.announcedAddress, port },
+                    {
+                        protocol: 'udp',
+                        ip: '0.0.0.0',
+                        announcedAddress: config.announcedAddress,
+                        port,
+                    },
+                    {
+                        protocol: 'tcp',
+                        ip: '0.0.0.0',
+                        announcedAddress: config.announcedAddress,
+                        port,
+                    },
                 ],
             });
 
             this.slots.push({ worker, webRtcServer, rooms: 0 });
         }
 
-        const lastPlain = config.plainPortBase + config.workerCount * config.plainPortsPerWorker - 1;
+        const lastPlain =
+            config.plainPortBase + config.workerCount * config.plainPortsPerWorker - 1;
 
-        console.log(`[INFO] ${this.slots.length} media workers on ports ${config.mediaPort}-${config.mediaPort + this.slots.length - 1} · plain RTP on ${config.plainPortBase}-${lastPlain}`);
+        console.log(
+            `[INFO] ${this.slots.length} media workers on ports ${config.mediaPort}-${config.mediaPort + this.slots.length - 1} · plain RTP on ${config.plainPortBase}-${lastPlain}`,
+        );
     }
 
     /** Sala nova vai para o worker com menos salas. */
     private leastLoadedSlot(): WorkerSlot {
-        return this.slots.reduce((smallest, slot) => (slot.rooms < smallest.rooms ? slot : smallest));
+        return this.slots.reduce((smallest, slot) =>
+            slot.rooms < smallest.rooms ? slot : smallest,
+        );
     }
 
-    async findOrCreate(roomId: string): Promise<Room> {
+    public async findOrCreate(roomId: string): Promise<Room> {
         const existing = this.rooms.get(roomId);
 
         if (existing) {
@@ -73,7 +88,7 @@ export class RoomRegistry {
         const slot = this.leastLoadedSlot();
         const room = await Room.create(slot.worker, slot.webRtcServer, roomId);
 
-        room.onEvicted = empty => this.release(empty);
+        room.onEvicted = (empty) => this.release(empty);
 
         slot.rooms += 1;
         this.rooms.set(roomId, room);
@@ -82,8 +97,8 @@ export class RoomRegistry {
         return room;
     }
 
-    release(room: Room): void {
-        if (room.activeCount() > 0 || ! room.isEmpty()) {
+    public release(room: Room): void {
+        if (room.activeCount() > 0 || !room.isEmpty()) {
             return;
         }
 
@@ -98,11 +113,11 @@ export class RoomRegistry {
         this.rooms.delete(room.id);
     }
 
-    stats(): { rooms: number; peers: number; workers: number[] } {
+    public stats(): { rooms: number; peers: number; workers: number[] } {
         return {
             rooms: this.rooms.size,
             peers: [...this.rooms.values()].reduce((total, room) => total + room.peers.size, 0),
-            workers: this.slots.map(slot => slot.rooms),
+            workers: this.slots.map((slot) => slot.rooms),
         };
     }
 }

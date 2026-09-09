@@ -1,6 +1,13 @@
+import type {
+    PlainTransport,
+    Producer,
+    Router,
+    SrtpParameters,
+    WebRtcServer,
+    WebRtcTransport,
+    Worker,
+} from 'mediasoup/types';
 import { randomUUID, randomBytes } from 'node:crypto';
-
-import type { PlainTransport, Producer, Router, SrtpParameters, WebRtcServer, WebRtcTransport, Worker } from 'mediasoup/types';
 import type { WebSocket } from 'ws';
 
 import { config } from '../config.js';
@@ -27,13 +34,17 @@ export class Room {
 
     private readonly evictions = new Map<string, NodeJS.Timeout>();
 
-    constructor(
+    public constructor(
         public readonly id: string,
         public readonly router: Router,
         private readonly webRtcServer: WebRtcServer,
     ) {}
 
-    static async create(worker: Worker, webRtcServer: WebRtcServer, id: string): Promise<Room> {
+    public static async create(
+        worker: Worker,
+        webRtcServer: WebRtcServer,
+        id: string,
+    ): Promise<Room> {
         const router = await worker.createRouter({ mediaCodecs: config.router.mediaCodecs });
 
         return new Room(id, router, webRtcServer);
@@ -47,7 +58,7 @@ export class Room {
      * inteira recebe no `peerJoined`, então aceitá-lo como identidade deixaria qualquer
      * um derrubar qualquer um só entrando com o id alheio.
      */
-    addPeer(
+    public addPeer(
         name: string,
         socket: WebSocket,
         options: { resumeKey?: string | null; resume?: boolean } = {},
@@ -81,14 +92,14 @@ export class Room {
     private findByResumeKey(resumeKey: string): Peer | null {
         // Varredura porque sala é coisa de dezenas, não de milhares: um índice a mais
         // seria outra estrutura para manter em sincronia com esta.
-        return [...this.peers.values()].find(peer => peer.resumeKey === resumeKey) ?? null;
+        return [...this.peers.values()].find((peer) => peer.resumeKey === resumeKey) ?? null;
     }
 
     /**
      * A sinalização caiu: segura a pessoa por GRACE_MS antes de destruir. A sala só é
      * avisada quando a carência expira de verdade.
      */
-    orphanPeer(peer: Peer): void {
+    public orphanPeer(peer: Peer): void {
         if (this.peers.get(peer.id) !== peer) {
             return;
         }
@@ -99,13 +110,16 @@ export class Room {
         // congelado, sem saber que a conexão de quem transmitia tinha caído.
         this.broadcast('peerConnectionLost', { peerId: peer.id }, peer.id);
 
-        this.evictions.set(peer.id, setTimeout(() => {
-            this.evictions.delete(peer.id);
+        this.evictions.set(
+            peer.id,
+            setTimeout(() => {
+                this.evictions.delete(peer.id);
 
-            if (this.peers.get(peer.id) === peer && peer.isOrphaned()) {
-                this.removePeer(peer);
-            }
-        }, GRACE_MS));
+                if (this.peers.get(peer.id) === peer && peer.isOrphaned()) {
+                    this.removePeer(peer);
+                }
+            }, GRACE_MS),
+        );
     }
 
     private cancelEviction(peerId: string): void {
@@ -118,11 +132,11 @@ export class Room {
     }
 
     /** Quem tem sinalização viva. Órfãos não contam na hora de fechar a sala. */
-    activeCount(): number {
-        return [...this.peers.values()].filter(peer => ! peer.isOrphaned()).length;
+    public activeCount(): number {
+        return [...this.peers.values()].filter((peer) => !peer.isOrphaned()).length;
     }
 
-    findPeer(peerId: string): Peer {
+    public findPeer(peerId: string): Peer {
         const peer = this.peers.get(peerId);
 
         if (!peer) {
@@ -136,7 +150,7 @@ export class Room {
      * Recebe o objeto, não o id: fechar o socket de uma sessão substituída não pode
      * encerrar a sessão nova, que carrega o mesmo id de participante.
      */
-    removePeer(peer: Peer): void {
+    public removePeer(peer: Peer): void {
         if (this.peers.get(peer.id) !== peer) {
             return;
         }
@@ -151,17 +165,17 @@ export class Room {
         this.onEvicted?.(this);
     }
 
-    describePeers(exceptPeerId?: string): PeerDescription[] {
+    public describePeers(exceptPeerId?: string): PeerDescription[] {
         return [...this.peers.values()]
-            .filter(peer => peer.id !== exceptPeerId && ! peer.isOrphaned())
-            .map(peer => ({
+            .filter((peer) => peer.id !== exceptPeerId && !peer.isOrphaned())
+            .map((peer) => ({
                 peerId: peer.id,
                 name: peer.name,
                 producers: peer.describeProducers(),
             }));
     }
 
-    async createTransport(peer: Peer): Promise<WebRtcTransport> {
+    public async createTransport(peer: Peer): Promise<WebRtcTransport> {
         const transport = await this.router.createWebRtcTransport({
             webRtcServer: this.webRtcServer,
             enableUdp: config.transport.enableUdp,
@@ -172,7 +186,7 @@ export class Room {
 
         await transport.setMaxIncomingBitrate(config.transport.maxIncomingBitrate);
 
-        transport.on('dtlsstatechange', state => {
+        transport.on('dtlsstatechange', (state) => {
             if (state === 'closed') {
                 transport.close();
             }
@@ -196,7 +210,10 @@ export class Room {
      * mídia gastaria o dobro de portas UDP, e cada porta a mais é uma linha a mais na
      * regra de firewall que alguém cria à mão.
      */
-    async plainTransportFor(peer: Peer, srtpParameters: SrtpParameters): Promise<PlainTransport> {
+    public async plainTransportFor(
+        peer: Peer,
+        srtpParameters: SrtpParameters,
+    ): Promise<PlainTransport> {
         const existing = [...peer.plainTransports.values()].at(0);
 
         if (existing) {
@@ -205,17 +222,25 @@ export class Room {
 
         // `no more available ports` é o texto do mediasoup, e ele não diz nada a quem
         // só clicou em compartilhar. O limite é real: a faixa de portas do worker.
-        const transport = await this.router.createPlainTransport({
-            listenInfo: { protocol: 'udp', ip: '0.0.0.0', announcedAddress: config.announcedAddress },
-            rtcpMux: true,
-            comedia: true,
-            enableSrtp: true,
-            srtpCryptoSuite: srtpParameters.cryptoSuite,
-        }).catch(failure => {
-            throw /no more available ports/i.test(String(failure))
-                ? new ValidationException(`o servidor já está no limite de ${config.plainPortsPerWorker} transmissões ao mesmo tempo — peça para alguém parar de compartilhar`)
-                : failure;
-        });
+        const transport = await this.router
+            .createPlainTransport({
+                listenInfo: {
+                    protocol: 'udp',
+                    ip: '0.0.0.0',
+                    announcedAddress: config.announcedAddress,
+                },
+                rtcpMux: true,
+                comedia: true,
+                enableSrtp: true,
+                srtpCryptoSuite: srtpParameters.cryptoSuite,
+            })
+            .catch((failure) => {
+                throw /no more available ports/i.test(String(failure))
+                    ? new ValidationException(
+                          `o servidor já está no limite de ${config.plainPortsPerWorker} transmissões ao mesmo tempo — peça para alguém parar de compartilhar`,
+                      )
+                    : failure;
+            });
 
         await transport.connect({ srtpParameters });
 
@@ -224,7 +249,7 @@ export class Room {
         return transport;
     }
 
-    findProducerOwner(producerId: string): ProducerOwner {
+    public findProducerOwner(producerId: string): ProducerOwner {
         for (const peer of this.peers.values()) {
             const producer = peer.producers.get(producerId);
 
@@ -236,7 +261,7 @@ export class Room {
         throw new NotFoundException(`producer ${producerId} does not exist in this room`);
     }
 
-    broadcast(event: string, data: unknown, exceptPeerId?: string): void {
+    public broadcast(event: string, data: unknown, exceptPeerId?: string): void {
         for (const peer of this.peers.values()) {
             if (peer.id !== exceptPeerId) {
                 peer.send(event, data);
@@ -244,11 +269,11 @@ export class Room {
         }
     }
 
-    isEmpty(): boolean {
+    public isEmpty(): boolean {
         return this.peers.size === 0;
     }
 
-    close(): void {
+    public close(): void {
         for (const timer of this.evictions.values()) {
             clearTimeout(timer);
         }

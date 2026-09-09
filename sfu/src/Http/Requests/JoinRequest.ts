@@ -1,5 +1,5 @@
-import { ValidationException } from '../../Exceptions/ApiException.js';
 import { Request } from './Request.js';
+import { ValidationException } from '../../Exceptions/ApiException.js';
 
 /** Códigos podem ser nomes legíveis; o limite evita chaves enormes no mapa e no protocolo. */
 const CODE = /^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/;
@@ -8,8 +8,10 @@ const NAME_MAX = 40;
 
 export class JoinRequest extends Request {
     protected override validate(): void {
-        if (! CODE.test(this.string('room'))) {
-            throw new ValidationException('room code must be 3-32 characters of a-z0-9, with optional hyphens');
+        if (!CODE.test(this.string('room'))) {
+            throw new ValidationException(
+                'room code must be 3-32 characters of a-z0-9, with optional hyphens',
+            );
         }
 
         if (this.string('name').trim().length > NAME_MAX) {
@@ -17,11 +19,11 @@ export class JoinRequest extends Request {
         }
     }
 
-    roomCode(): string {
+    public roomCode(): string {
         return this.string('room');
     }
 
-    name(): string {
+    public name(): string {
         return this.string('name').trim();
     }
 
@@ -30,7 +32,7 @@ export class JoinRequest extends Request {
      * join, nunca no broadcast — o `peerId` a sala inteira conhece, e se ele bastasse
      * qualquer um derrubaria qualquer um entrando com o id alheio.
      */
-    resumeKey(): string | null {
+    public resumeKey(): string | null {
         return typeof this.data.resumeKey === 'string' ? this.data.resumeKey : null;
     }
 
@@ -39,7 +41,7 @@ export class JoinRequest extends Request {
      * novo em folha, então pede sessão limpa mesmo que o servidor ainda guarde a antiga
      * — retomá-la deixaria o cliente sem transporte nenhum.
      */
-    wantsResume(): boolean {
+    public wantsResume(): boolean {
         return this.data.resume === true;
     }
 }

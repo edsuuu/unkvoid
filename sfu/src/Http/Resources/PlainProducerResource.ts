@@ -8,12 +8,12 @@ import type { Resource } from '../../types.js';
  * o SSRC e o tipo de payload.
  */
 export class PlainProducerResource implements Resource {
-    constructor(
+    public constructor(
         private readonly producer: Producer,
         private readonly transport: PlainTransport,
     ) {}
 
-    toArray(): Record<string, unknown> {
+    public toArray(): Record<string, unknown> {
         return {
             producerId: this.producer.id,
             kind: this.producer.kind,

@@ -6,23 +6,26 @@ import type { Session } from '../../types.js';
 export class Request {
     protected readonly data: Record<string, unknown>;
 
-    constructor(data: Record<string, unknown> | undefined, public readonly session: Session) {
+    public constructor(
+        data: Record<string, unknown> | undefined,
+        public readonly session: Session,
+    ) {
         this.data = data ?? {};
         this.validate();
     }
 
     protected validate(): void {}
 
-    peer(): Peer {
-        if (! this.session.peer) {
+    public peer(): Peer {
+        if (!this.session.peer) {
             throw new ValidationException('this action requires a room');
         }
 
         return this.session.peer;
     }
 
-    room(): Room {
-        if (! this.session.room) {
+    public room(): Room {
+        if (!this.session.room) {
             throw new ValidationException('this action requires a room');
         }
 
@@ -52,7 +55,7 @@ export class Request {
     protected oneOf<T extends string>(key: string, allowed: readonly T[]): T {
         const value = this.string(key);
 
-        if (! (allowed as readonly string[]).includes(value)) {
+        if (!(allowed as readonly string[]).includes(value)) {
             throw new ValidationException(`field ${key} must be one of: ${allowed.join(', ')}`);
         }
 

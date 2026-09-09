@@ -16,7 +16,7 @@ export class ProducerController {
      * gente do que conexões diretas aguentam: continua codificando uma vez na GPU, mas
      * sobe uma vez só para o servidor, que replica.
      */
-    async storePlain(request: ProducePlainRequest): Promise<PlainProducerResource> {
+    public async storePlain(request: ProducePlainRequest): Promise<PlainProducerResource> {
         const peer = request.peer();
         const room = request.room();
         const transport = await room.plainTransportFor(peer, request.srtpParameters());
@@ -44,12 +44,16 @@ export class ProducerController {
                 clearTimeout(idleTimer);
             }
             peer.producers.delete(producer.id);
-            room.broadcast('producerClosed', {
-                peerId: peer.id,
-                producerId: producer.id,
-                kind: producer.kind,
-                source,
-            }, peer.id);
+            room.broadcast(
+                'producerClosed',
+                {
+                    peerId: peer.id,
+                    producerId: producer.id,
+                    kind: producer.kind,
+                    source,
+                },
+                peer.id,
+            );
         });
 
         // O producer é declarado antes de um único pacote chegar, então até o score subir
@@ -57,8 +61,8 @@ export class ProducerController {
         // pacotes não vão a lugar nenhum". Avisado uma vez: depois o score só oscila.
         let receiving = false;
 
-        producer.on('score', scores => {
-            if (receiving || ! scores.some(entry => entry.score > 0)) {
+        producer.on('score', (scores) => {
+            if (receiving || !scores.some((entry) => entry.score > 0)) {
                 return;
             }
 
@@ -70,34 +74,46 @@ export class ProducerController {
             peer.send('producerActive', { producerId: producer.id });
         });
 
-        room.broadcast('newProducer', {
-            peerId: peer.id,
-            name: peer.name,
-            producerId: producer.id,
-            kind: producer.kind,
-            source,
-        }, peer.id);
+        room.broadcast(
+            'newProducer',
+            {
+                peerId: peer.id,
+                name: peer.name,
+                producerId: producer.id,
+                kind: producer.kind,
+                source,
+            },
+            peer.id,
+        );
     }
 
-    destroy(request: ProducerRequest): StatusResource {
-        this.close(request.peer(), request.room(), request.peer().producers.get(request.producerId()));
+    public destroy(request: ProducerRequest): StatusResource {
+        this.close(
+            request.peer(),
+            request.room(),
+            request.peer().producers.get(request.producerId()),
+        );
 
         return new StatusResource('closed');
     }
 
     private close(peer: Peer, room: Room, producer: Producer | undefined): void {
-        if (! producer || peer.producers.get(producer.id) !== producer) {
+        if (!producer || peer.producers.get(producer.id) !== producer) {
             return;
         }
 
         producer.close();
         peer.producers.delete(producer.id);
-        room.broadcast('producerClosed', {
-            peerId: peer.id,
-            producerId: producer.id,
-            kind: producer.kind,
-            source: String(producer.appData.source),
-        }, peer.id);
+        room.broadcast(
+            'producerClosed',
+            {
+                peerId: peer.id,
+                producerId: producer.id,
+                kind: producer.kind,
+                source: String(producer.appData.source),
+            },
+            peer.id,
+        );
 
         if (peer.producers.size === 0) {
             peer.closePlainTransports();

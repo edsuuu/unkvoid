@@ -8,11 +8,11 @@ export class TransportRequest extends Request {
         this.object('dtlsParameters');
     }
 
-    transportId(): string {
+    public transportId(): string {
         return this.string('transportId');
     }
 
-    dtlsParameters(): DtlsParameters {
+    public dtlsParameters(): DtlsParameters {
         return this.object<DtlsParameters>('dtlsParameters');
     }
 }

@@ -1,6 +1,5 @@
-import { availableParallelism } from 'node:os';
-
 import type { RouterRtpCodecCapability, WorkerLogTag } from 'mediasoup/types';
+import { availableParallelism } from 'node:os';
 
 export const config = {
     listenHost: process.env.SFU_HOST ?? '127.0.0.1',
@@ -40,7 +39,18 @@ export const config = {
 
     worker: {
         logLevel: 'warn' as const,
-        logTags: ['info', 'ice', 'dtls', 'rtp', 'srtp', 'rtcp', 'bwe', 'score', 'simulcast', 'svc'] as WorkerLogTag[],
+        logTags: [
+            'info',
+            'ice',
+            'dtls',
+            'rtp',
+            'srtp',
+            'rtcp',
+            'bwe',
+            'score',
+            'simulcast',
+            'svc',
+        ] as WorkerLogTag[],
     },
 
     router: {
