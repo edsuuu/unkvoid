@@ -11,10 +11,10 @@ export const CODE_LENGTH = 12;
 export const ROOM_CODE_MIN = 3;
 export const ROOM_CODE_MAX = 32;
 
-const ALFABETO = 'abcdefghijklmnopqrstuvwxyz0123456789';
+const ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 /** O maior múltiplo de 36 que cabe num byte. Acima disto, o byte é descartado. */
-const LIMITE = ALFABETO.length * Math.floor(256 / ALFABETO.length);
+const LIMIT = ALPHABET.length * Math.floor(256 / ALPHABET.length);
 
 export const isRoomCode = valor =>
     typeof valor === 'string'
@@ -23,17 +23,17 @@ export const isRoomCode = valor =>
     && /^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(valor);
 
 export function newRoomCode() {
-    const codigo = [];
+    const code = [];
 
     // Descarta o que sobra do último múltiplo de 36: sem isso as sete primeiras letras
     // sairiam mais vezes que as outras, e entropia é tudo o que protege a sala.
-    while (codigo.length < CODE_LENGTH) {
+    while (code.length < CODE_LENGTH) {
         for (const byte of crypto.getRandomValues(new Uint8Array(CODE_LENGTH))) {
-            if (byte < LIMITE && codigo.length < CODE_LENGTH) {
-                codigo.push(ALFABETO[byte % ALFABETO.length]);
+            if (byte < LIMIT && code.length < CODE_LENGTH) {
+                code.push(ALPHABET[byte % ALPHABET.length]);
             }
         }
     }
 
-    return codigo.join('');
+    return code.join('');
 }
