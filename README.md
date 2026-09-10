@@ -195,4 +195,5 @@ cargo run -p media --example plain -- <ws> <sala>     # o SFU confirmando que re
 | `REDE.md` | o caminho da imagem, os ajustes de rede e o que mora fora do repositório |
 | `SEGURANCA.md` | o que está protegido, o que não está, e o que falta |
 | `AUTO-UPDATE.md` | assinatura, manifesto e os dois canais de atualização |
+| `SERVIDOR.md` | como levantar a VPS do zero: firewall, nginx, SFU e repositório APT |
 | `BUILD-WINDOWS.md`, `BUILD-MACOS.md` | como gerar instalador em cada sistema |
