@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"App permissions: automatic updates and restart after installation.","local":true,"windows":["main"],"permissions":["core:default","updater:default","process:allow-restart"]}}
+{"default":{"identifier":"default","description":"App permissions: automatic updates, restart after installation, and window fullscreen.","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-set-fullscreen","updater:default","process:allow-restart"]}}
