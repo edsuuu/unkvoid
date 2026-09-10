@@ -65,6 +65,10 @@ pub struct PlainSender {
     /// Pacotes largados por buffer de saída cheio. Uplink saturado é diferente de erro
     /// de rede, e sem este número os dois viram a mesma linha muda no diagnóstico.
     dropped: u64,
+
+    /// Bytes que saíram de verdade, já protegidos. É daqui que a barra tira os Mb/s:
+    /// contar pacotes não diz nada quando um quadro parado custa 1 KB e um keyframe 300.
+    sent_bytes: u64,
 }
 
 impl PlainSender {
@@ -144,6 +148,7 @@ impl PlainSender {
             )),
             last_video_ns: None,
             dropped: 0,
+            sent_bytes: 0,
         })
     }
 
@@ -230,12 +235,18 @@ impl PlainSender {
             Bytes::copy_from_slice(&frame.data),
             0,
             &mut self.dropped,
+            &mut self.sent_bytes,
         )
     }
 
     /// Pacotes largados porque o buffer de saída estava cheio.
     pub fn dropped(&self) -> u64 {
         self.dropped
+    }
+
+    /// Bytes protegidos que o socket aceitou, vídeo e áudio somados.
+    pub fn sent_bytes(&self) -> u64 {
+        self.sent_bytes
     }
 
     /// O Opus chega em blocos fixos de 20 ms, então o relógio anda sempre o mesmo tanto.
@@ -249,6 +260,7 @@ impl PlainSender {
             Bytes::copy_from_slice(opus),
             samples,
             &mut self.dropped,
+            &mut self.sent_bytes,
         )
     }
 
@@ -259,6 +271,7 @@ impl PlainSender {
         payload: Bytes,
         samples: u32,
         dropped: &mut u64,
+        sent_bytes: &mut u64,
     ) -> Result<()> {
         let packets = packetizer
             .packetize(&payload, samples)
@@ -274,7 +287,7 @@ impl PlainSender {
                 .map_err(|error| anyhow!("could not protect RTP: {error}"))?;
 
             match socket.send(&protected) {
-                Ok(_) => {}
+                Ok(written) => *sent_bytes += written as u64,
                 // Buffer local cheio é uplink saturado. Largar o pacote é o preço certo
                 // para vídeo ao vivo, e é o que o comentário lá em cima sempre prometeu:
                 // dormir aqui segurava a thread da captura, que é justamente quem produz
@@ -359,6 +372,14 @@ mod tests {
         assert!(
             recebidos > 1,
             "a frame above the MTU produced {recebidos} packet(s)"
+        );
+        // A barra da transmissão lê os Mb/s daqui: um contador parado mostraria 0,0 Mb/s
+        // enquanto a tela sobe inteira.
+        assert!(
+            sender.sent_bytes() >= data.len() as u64,
+            "sent bytes ({}) below the frame itself ({})",
+            sender.sent_bytes(),
+            data.len()
         );
     }
 

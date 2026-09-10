@@ -102,6 +102,7 @@ class App {
         this.broadcastStatsTimer = null;
         this.lastBroadcastStats = null;
         this.broadcastStatsAt = 0;
+        this.broadcastLine = null;
         this.mediaStatsTimers = new Map();
         this.remoteAudios = new Map();
         this.consumingProducers = new Set();
@@ -408,6 +409,7 @@ class App {
             this.sfu.addEventListener('newProducer', event => this.consume(event.detail));
             this.sfu.addEventListener('peersChanged', () => this.refreshPeople());
             this.sfu.addEventListener('peerLeft', event => this.showScreen(event.detail.peerId, null));
+            this.sfu.addEventListener('producerDead', event => void this.broadcastDied(event.detail));
             this.sfu.addEventListener('producerClosed', event => {
                 if (event.detail.kind === 'video' && event.detail.source === 'screen') {
                     this.showScreen(event.detail.peerId, null);
@@ -570,8 +572,13 @@ class App {
     paintPing() {
         const ping = this.sfu?.transportRttMs ?? this.sfu?.lastRttMs;
 
-        document.querySelector('[data-broadcast-stats]').textContent =
-            ping == null ? '--' : `${ping} ms`;
+        const parts = [ping == null ? '--' : `${ping} ms`];
+
+        if (this.broadcastLine) {
+            parts.push(this.broadcastLine);
+        }
+
+        document.querySelector('[data-broadcast-stats]').textContent = parts.join(' · ');
     }
 
     /**
@@ -814,7 +821,7 @@ class App {
             + '<span class="text-ink-dim" data-media-stats>buffer -- · fps --</span>'
             + '<span class="flex-1"></span>'
             + '<span class="flex items-center gap-1.5 text-ink-soft" data-audio-control hidden>'
-            + '<span aria-hidden="true">🔊</span>'
+            + '<button class="cursor-pointer rounded px-1 hover:text-white" data-audio-mute type="button" title="Mutar">🔊</button>'
             + '<input class="w-20 accent-brand" data-audio-volume type="range" min="0" max="100" value="100" aria-label="Volume desta transmissão">'
             + '<span data-audio-volume-value>100%</span>'
             + '</span>'
@@ -914,16 +921,33 @@ class App {
 
         const input = control.querySelector('[data-audio-volume]');
         const value = control.querySelector('[data-audio-volume-value]');
-        const volume = Math.round(audio.volume * 100);
+        const mute = control.querySelector('[data-audio-mute]');
 
-        input.value = String(volume);
-        value.textContent = `${volume}%`;
+        // `muted` do próprio elemento guarda o volume: desmutar devolve a mesma % sem
+        // ninguém aqui precisar lembrar dela.
+        const paint = () => {
+            const volume = Math.round(audio.volume * 100);
+
+            input.value = String(volume);
+            mute.textContent = audio.muted || volume === 0 ? '🔇' : '🔊';
+            mute.title = audio.muted ? 'Ativar o som' : 'Mutar';
+            value.textContent = audio.muted ? 'mudo' : `${volume}%`;
+        };
+
         input.oninput = event => {
             const next = Number(event.target.value);
+
             audio.volume = next / 100;
-            value.textContent = `${next}%`;
-            this.log('media.audio.volume', { peerId, volume: next / 100 });
+            audio.muted = next === 0;
+            paint();
+            this.log('media.audio.volume', { peerId, volume: next / 100, muted: audio.muted });
         };
+        mute.onclick = () => {
+            audio.muted = ! audio.muted;
+            paint();
+            this.log('media.audio.mute', { peerId, muted: audio.muted });
+        };
+        paint();
         control.dataset.ready = 'true';
         control.hidden = false;
     }
@@ -1272,6 +1296,7 @@ class App {
             this.broadcastStatsTimer = null;
             this.lastBroadcastStats = null;
             this.broadcastStatsAt = 0;
+            this.broadcastLine = null;
             this.paintPing();
         }
     }
@@ -1288,6 +1313,18 @@ class App {
             ? Math.round((stats.captured - previous.captured) * 1000 / elapsed)
             : '--';
         const ping = this.sfu?.transportRttMs ?? this.sfu?.lastRttMs ?? '--';
+        const seconds = elapsed / 1000;
+
+        // O que sai da máquina, não o que a captura produz: tela parada entrega quadro
+        // "sem mudança" sem buffer nenhum, e contar capturas mostrava 45 fps enquanto a
+        // sala recebia 2.
+        this.broadcastLine = previous
+            ? [
+                `${Math.round((stats.sent - previous.sent) / seconds)} fps`,
+                `${((stats.sentBytes - previous.sentBytes) * 8 / seconds / 1e6).toFixed(1)} Mb/s`,
+                ...(stats.sendDropped ? [`${stats.sendDropped} perdidos`] : []),
+            ].join(' · ')
+            : 'transmitindo…';
 
         this.paintPing();
         this.log('broadcast.stats', { ...stats, pingMs: ping, fps });
@@ -1309,6 +1346,24 @@ class App {
 
         this.lastBroadcastStats = stats;
         this.broadcastStatsAt = now;
+    }
+
+    /**
+     * Trinta segundos sem um pacote chegar ao servidor, e ele fechou a transmissão.
+     *
+     * Sem isto o app fica com o botão "Parar" na tela e a sala inteira vendo preto, que é
+     * exatamente o modo de falha que ninguém consegue diagnosticar: aqui todo contador
+     * marca saúde porque o socket aceitou os bytes — eles é que não chegam do outro lado.
+     */
+    async broadcastDied(detail) {
+        this.log('broadcast.dead', detail);
+
+        if (! this.sharing) {
+            return;
+        }
+
+        await this.stopSharing();
+        this.fail('a transmissão não chegou ao servidor: nenhum pacote entrou em 30 s. A porta de RTP está bloqueada no caminho.');
     }
 
     async stopSharing() {
