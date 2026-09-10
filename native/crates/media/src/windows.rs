@@ -105,8 +105,16 @@ impl MediaFoundationEncoder {
     pub fn new(config: &EncoderConfig) -> Result<Self, EncoderError> {
         let (width, height) = config.quality.dimensions();
 
+        // Um passo por linha, anunciado antes de acontecer. Daqui para baixo é tudo COM
+        // e Direct3D: driver velho, placa sem encoder de hardware ou sessão sem GPU não
+        // devolvem erro — derrubam o processo. A última linha no arquivo é o passo que
+        // matou.
         unsafe {
+            tracing::info!("encoder: MFStartup");
+
             iniciar_media_foundation()?;
+
+            tracing::info!("encoder: criando o device do Direct3D 11");
 
             let (device, context) = criar_device()?;
 
@@ -117,10 +125,14 @@ impl MediaFoundationEncoder {
             let video_device: ID3D11VideoDevice = device.cast().map_err(start_error)?;
             let video_context: ID3D11VideoContext = context.cast().map_err(start_error)?;
 
+            tracing::info!("encoder: procurando o MFT de H.264 por hardware");
+
             let transform = encoder_de_hardware()?;
 
             // O gerente é como o MFT descobre em qual placa a textura vive. Sem ele, o
             // encoder recusa qualquer amostra que não esteja na memória do processador.
+            tracing::info!("encoder: ligando o gerente de device do DXGI");
+
             let mut token = 0_u32;
             let mut manager: Option<IMFDXGIDeviceManager> = None;
 
@@ -138,9 +150,13 @@ impl MediaFoundationEncoder {
                 .ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)
                 .map_err(start_error)?;
 
+            tracing::info!(width, height, "encoder: configurando os tipos de mídia");
+
             configurar_tipos(&transform, width, height, config)?;
 
             let events: IMFMediaEventGenerator = transform.cast().map_err(start_error)?;
+
+            tracing::info!("encoder: começando o streaming do MFT");
 
             transform
                 .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
@@ -148,6 +164,8 @@ impl MediaFoundationEncoder {
             transform
                 .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
                 .map_err(start_error)?;
+
+            tracing::info!("encoder: pronto");
 
             Ok(Self {
                 device,
@@ -263,6 +281,17 @@ impl MediaFoundationEncoder {
         surface: &GpuSurface,
         source: (u32, u32),
     ) -> Result<Bridge, EncoderError> {
+        // A ponte nasce no PRIMEIRO quadro, já na thread da captura — depois de o app
+        // dizer que está transmitindo. Um crash aqui parece crash "ao transmitir", e sem
+        // esta linha ninguém distingue disso de uma falha na abertura do encoder.
+        tracing::info!(
+            source_width = source.0,
+            source_height = source.1,
+            target_width = self.width,
+            target_height = self.height,
+            "encoder: montando a ponte entre os devices"
+        );
+
         unsafe {
             let descriptor = D3D11_TEXTURE2D_DESC {
                 Width: source.0,

@@ -1403,6 +1403,13 @@ class App {
 
     log(event, data = {}) {
         const line = `${new Date().toISOString()} ${event} ${JSON.stringify(data)}`;
+
+        // Também em disco, pelo Rust. Aqui dentro o diagnóstico vive na memória da
+        // webview e com teto de linhas: se o app cai, ele cai junto — que é justamente
+        // quando alguém precisa dele. O erro é engolido de propósito, porque falhar ao
+        // registrar não pode derrubar o que estava sendo registrado.
+        invoke('log_line', { line }).catch(() => null);
+
         this.logs.push(line);
         this.logChars += line.length + (this.logs.length > 1 ? 1 : 0);
 
@@ -1417,9 +1424,17 @@ class App {
         el('logs-output').scrollTop = el('logs-output').scrollHeight;
     }
 
-    openLogs() {
+    async openLogs() {
         el('logs-modal').hidden = false;
         this.renderLogs();
+
+        // O arquivo tem o que a janela não tem: o que o Rust registrou e o que sobrou de
+        // uma execução que terminou em crash.
+        const path = await invoke('log_path').catch(() => '');
+
+        el('logs-path').textContent = path
+            ? `Arquivo completo, inclusive de execuções que travaram: ${path}`
+            : 'Copie estes eventos após reproduzir o problema.';
     }
 
     async copyLogs() {
