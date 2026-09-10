@@ -67,7 +67,10 @@ where
         (sink, frames),
     );
 
-    Sink::start_free_threaded(settings).map_err(|error| CaptureError::Platform(error.to_string()))
+    Sink::start_free_threaded(settings).map_err(|error| {
+        tracing::error!(error = %error, "Windows Graphics Capture recusou a captura");
+        CaptureError::Platform(error.to_string())
+    })
 }
 
 /// Capture via Windows Graphics Capture. Requires Windows 10 1903 or newer.
@@ -124,6 +127,7 @@ impl GraphicsCaptureApiHandler for PreviewSink {
     }
 
     fn on_closed(&mut self) -> Result<(), Self::Error> {
+        tracing::warn!("prévia de captura encerrada pelo Windows");
         Ok(())
     }
 }
@@ -170,6 +174,7 @@ impl GraphicsCaptureApiHandler for Sink {
     }
 
     fn on_closed(&mut self) -> Result<(), Self::Error> {
+        tracing::warn!("captura de tela encerrada pelo Windows");
         Ok(())
     }
 }
