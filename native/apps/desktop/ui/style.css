@@ -92,6 +92,24 @@
     }
 
     /*
+     * Pausado precisa PARECER pausado.
+     *
+     * Quadro congelado e quadro travado são a mesma imagem na tela: sem o borrão e o
+     * cinza, quem olha não sabe se pausou ou se a rede caiu. É filtro de CSS no
+     * `<video>` — canvas não desenharia nada que isto não desenhe.
+     *
+     * O brilho entra como variável porque mora na MESMA propriedade `filter`: escrevê-lo
+     * direto em `style.filter` fazia a pausa apagar o brilho e o brilho apagar a pausa.
+     */
+    #stage video {
+        filter: brightness(var(--brightness, 1));
+    }
+
+    [data-paused] video {
+        filter: blur(8px) grayscale(1) brightness(calc(var(--brightness, 1) * 0.6));
+    }
+
+    /*
      * Nada de `@starting-style` aqui. O compilador do Tailwind o desmonta e deixa o
      * `opacity: 0` valendo para sempre — o modal abria invisível. E ele não faz falta:
      * como o estado escondido continua renderizado, tirar o `hidden` já transiciona de

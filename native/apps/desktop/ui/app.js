@@ -12,6 +12,16 @@ const FOCUS_ICON = '<path stroke-linecap="round" stroke-linejoin="round" d="M4 5
 const LOOK = {
     tile: 'group relative m-0 flex min-h-0 flex-col overflow-hidden rounded-lg bg-black',
     tileFocused: 'row-span-full col-span-full',
+
+    /* Fora do fluxo e acima de tudo: é assim que o vídeo cobre a janela inteira sem a
+       barra da sala nem o respiro do `body` sobrando na borda. */
+    tileFullscreen: 'fixed inset-0 z-40 rounded-none',
+
+    caption: 'flex items-center gap-2 bg-panel px-3 py-1.5 text-xs text-ink',
+
+    /* Em tela cheia a legenda flutua por cima e some: o `group` do cartão a traz de
+       volta quando o ponteiro procura por ela. */
+    captionFullscreen: 'absolute inset-x-0 bottom-0 bg-panel/85 opacity-0 transition-opacity group-hover:opacity-100',
 };
 
 // Esta interface não tem console: um erro de JavaScript aqui vira tela preta sem pista
@@ -117,6 +127,10 @@ class App {
         /** Grade mostra todos do mesmo tamanho; foco dá a tela toda a um só. */
         this.focused = null;
 
+        /** Quem está ocupando a tela inteira, ou nada. Mora aqui porque o `paintLayout`
+         *  reescreve a classe de todo cartão e apagaria um estado guardado no DOM. */
+        this.fullscreen = null;
+
         this.attempt = 0;
         this.reconnect = null;
     }
@@ -139,6 +153,14 @@ class App {
             if (! list.hidden && target instanceof Node
                 && ! list.contains(target) && target !== el('room-people')) {
                 list.hidden = true;
+            }
+        });
+
+        // A tela cheia é nossa, não do motor: ninguém devolve o Esc de graça, e sem isto
+        // a única saída seria caçar a legenda escondida no rodapé.
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && this.fullscreen) {
+                void this.toggleFullscreen(this.fullscreen);
             }
         });
 
@@ -729,13 +751,31 @@ class App {
             void audio?.play().catch(() => 0);
         }
 
-        const toggle = tile?.querySelector('[data-pause]');
+        this.paintPaused(peerId);
+        this.log('media.paused', { peerId, paused });
+    }
 
-        if (toggle) {
-            toggle.textContent = paused ? 'Retomar' : 'Pausar';
+    /**
+     * Pausado precisa PARECER pausado.
+     *
+     * Quadro congelado e quadro travado são a mesma imagem: sem o borrão e o cinza,
+     * ninguém sabe se pausou ou se a rede caiu. O filtro é do CSS, e o `data-paused` é
+     * o que o liga — desenhar por cima exigiria canvas para nada.
+     *
+     * Também roda depois de redesenhar o cartão: o `innerHTML` nasce sem estado nenhum,
+     * e uma transmissão pausada voltava nítida com o botão dizendo "Retomar".
+     */
+    paintPaused(peerId) {
+        const tile = document.querySelector(`[data-screen="${peerId}"]`);
+        const paused = this.pausedPeers.has(peerId);
+
+        if (! tile) {
+            return;
         }
 
-        this.log('media.paused', { peerId, paused });
+        tile.toggleAttribute('data-paused', paused);
+        tile.querySelector('[data-resume]').hidden = ! paused;
+        tile.querySelector('[data-pause]').textContent = paused ? 'Retomar' : 'Pausar';
     }
 
     async consume({ producerId, peerId: ownerPeerId }) {
@@ -805,6 +845,12 @@ class App {
                 this.focused = null;
             }
 
+            // Quem estava em tela cheia parou de transmitir: sem isto a janela ficava
+            // ocupando o monitor inteiro mostrando o palco vazio.
+            if (this.fullscreen === from) {
+                void this.toggleFullscreen(from);
+            }
+
             clearInterval(this.mediaStatsTimers.get(from));
             this.mediaStatsTimers.delete(from);
             this.paintLayout();
@@ -815,10 +861,17 @@ class App {
         const tile = existing ?? document.createElement('figure');
 
         tile.dataset.screen = from;
-        tile.innerHTML = '<video class="min-h-0 w-full flex-1 bg-black object-contain" autoplay playsinline></video>'
-            + '<figcaption class="flex items-center gap-2 bg-panel px-3 py-1.5 text-xs text-ink">'
+        tile.innerHTML = '<span class="relative flex min-h-0 flex-1">'
+            + '<video class="min-h-0 w-full flex-1 bg-black object-contain" autoplay playsinline></video>'
+            // O play mora por cima do vídeo, não do cartão: sobre a legenda ele cobriria
+            // o botão de retomar da própria legenda.
+            + '<button class="absolute inset-0 flex cursor-pointer items-center justify-center text-white/90 transition-colors hover:text-white" data-resume type="button" aria-label="Retomar esta transmissão" hidden>'
+            + '<svg class="size-20 drop-shadow-lg" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>'
+            + '</button>'
+            + '</span>'
+            + `<figcaption class="${LOOK.caption}">`
             + '<span class="truncate"></span>'
-            + '<span class="text-ink-dim" data-media-stats>buffer -- · fps --</span>'
+            + '<span class="min-w-0 truncate text-ink-dim" data-media-stats>-- ms · -- fps</span>'
             + '<span class="flex-1"></span>'
             + '<span class="flex items-center gap-1.5 text-ink-soft" data-audio-control hidden>'
             + '<button class="cursor-pointer rounded px-1 hover:text-white" data-audio-mute type="button" title="Mutar">🔊</button>'
@@ -849,14 +902,15 @@ class App {
         video.onended = () => this.log('media.video.ended', { peerId: from });
         const owner = this.sfu?.peers?.get(from);
 
-        tile.querySelector('span').textContent = owner?.self ? `${owner.name} (você, sem som)` : owner?.name ?? 'transmitindo';
+        // `figcaption span` e não o primeiro `span` do cartão: o vídeo agora vem dentro
+        // de um, e o nome de quem transmite ia parar em cima da imagem.
+        tile.querySelector('figcaption span').textContent = owner?.self ? `${owner.name} (você, sem som)` : owner?.name ?? 'transmitindo';
 
-        const toggle = tile.querySelector('[data-pause]');
-
-        toggle.textContent = this.pausedPeers.has(from) ? 'Retomar' : 'Pausar';
-        toggle.onclick = () => void this.togglePause(from);
+        tile.querySelector('[data-pause]').onclick = () => void this.togglePause(from);
+        tile.querySelector('[data-resume]').onclick = () => void this.togglePause(from);
         tile.querySelector('[data-focus]').onclick = () => this.focus(from);
-        tile.querySelector('[data-fullscreen]').onclick = () => this.toggleFullscreen(tile, video, from);
+        tile.querySelector('[data-fullscreen]').onclick = () => void this.toggleFullscreen(from);
+        this.paintPaused(from);
 
         if (! existing) {
             el('stage').appendChild(tile);
@@ -876,8 +930,10 @@ class App {
      */
     attachBrightness(tile, video) {
         const control = tile.querySelector('[data-brightness]');
+        // Uma variável, não `style.filter`: o borrão de pausa mora na mesma propriedade,
+        // e escrever direto ali fazia um dos dois apagar o outro.
         const apply = percent => {
-            video.style.filter = percent === 100 ? '' : `brightness(${percent / 100})`;
+            video.style.setProperty('--brightness', String(percent / 100));
         };
 
         const saved = Number(localStorage.getItem('unkvoid.brilho'));
@@ -895,49 +951,37 @@ class App {
     }
 
     /**
-     * Tela cheia, tentando de verdade em vez de perguntar se o método existe.
+     * Tela cheia de app de vídeo, não de página de navegador.
      *
-     * A versão anterior só caía para o próximo candidato quando a função **não existia**.
-     * No WebKitGTK ela existe e a promessa é rejeitada — "The object is in an invalid
-     * state" ao pedir num `<figure>` — então o primeiro erro ia direto para a mensagem
-     * de falha e os outros caminhos nunca eram tentados.
+     * A tela cheia do documento não serve em nenhum dos dois sistemas que reclamaram, e
+     * a versão anterior tentava só ela — daí a lista de candidatos que terminava em erro.
+     *
+     * No Windows o WebView2 estica o vídeo dentro da janela e para por aí: a barra de
+     * título continua na tela, e é exatamente isso que faz "parecer navegador".
+     *
+     * No macOS a API nem existe. O `macos-private-api` do Tauri está desligado no
+     * `Cargo.toml`, e é ela que liga o `wry/fullscreen` — o único lugar que escreve
+     * `fullScreenEnabled` nas preferências do WKWebView. Sem isso o `requestFullscreen`
+     * não é função nenhuma, sobra o `webkitEnterFullscreen`, e ele rejeita com "invalid
+     * state" porque vídeo de MediaStream não tem tela cheia nativa no WebKit.
+     *
+     * O que funciona nos três: o cartão vira `fixed inset-0` por CSS, e a janela do
+     * Tauri vira tela cheia de verdade. Nenhum motor opina.
      */
-    async toggleFullscreen(tile, video, peerId) {
-        if (document.fullscreenElement ?? document.webkitFullscreenElement) {
-            await (document.exitFullscreen?.() ?? document.webkitExitFullscreen?.());
+    async toggleFullscreen(peerId) {
+        this.fullscreen = this.fullscreen === peerId ? null : peerId;
+        this.paintLayout();
+        this.log('media.fullscreen', { peerId, on: Boolean(this.fullscreen) });
 
-            return;
+        try {
+            // Encadeado com `?.` de propósito: o guarda da abertura só confere
+            // `__TAURI__.core`, e desmontar isto no topo do arquivo deixaria a tela preta.
+            await window.__TAURI__.window?.getCurrentWindow?.()?.setFullscreen(Boolean(this.fullscreen));
+        } catch (failure) {
+            // A janela não virou, mas o cartão já ocupa o app inteiro. Falhar na cara de
+            // quem clicou seria pior do que a tela cheia pela metade que ficou.
+            this.log('media.fullscreen.error', { peerId, message: failure.message ?? String(failure) });
         }
-
-        // O elemento de vídeo antes do cartão: é o que todo motor aceita. O último é o
-        // do iOS, que não devolve promessa nenhuma.
-        const candidates = [
-            [video, 'requestFullscreen'],
-            [video, 'webkitRequestFullscreen'],
-            [tile, 'requestFullscreen'],
-            [tile, 'webkitRequestFullscreen'],
-            [video, 'webkitEnterFullscreen'],
-        ];
-
-        const failures = [];
-
-        for (const [target, method] of candidates) {
-            if (typeof target[method] !== 'function') {
-                continue;
-            }
-
-            try {
-                await target[method]();
-                this.log('media.fullscreen.ok', { peerId, method });
-
-                return;
-            } catch (failure) {
-                failures.push(`${method}: ${failure.message ?? failure}`);
-            }
-        }
-
-        this.log('media.fullscreen.error', { peerId, failures });
-        this.fail(`não foi possível abrir tela cheia: ${failures[0] ?? 'nenhum modo suportado'}`);
     }
 
     attachAudioControl(peerId, tile) {
@@ -985,13 +1029,47 @@ class App {
         control.hidden = false;
     }
 
+    /**
+     * O relatório de entrada de uma transmissão.
+     *
+     * Sai do mesmo `getStats` que já alimenta o ping, e casa pelo SSRC igual ao
+     * `updatePeerLatency`: sem esse casamento, duas telas na grade trocariam de números
+     * entre si, que é pior do que não ter número nenhum.
+     */
+    async inboundReport(peerId) {
+        const transport = this.sfu?.recvTransport;
+        const consumer = this.sfu?.consumersOf(peerId)
+            .map(id => this.sfu.consumers.get(id))
+            .find(candidate => candidate?.kind === 'video');
+
+        if (! transport || ! consumer) {
+            return null;
+        }
+
+        const ssrc = consumer.rtpParameters?.encodings?.[0]?.ssrc;
+        const stats = await transport.getStats();
+
+        return [...stats.values()].find(report => report.type === 'inbound-rtp' && report.ssrc === ssrc) ?? null;
+    }
+
+    /**
+     * Os números de quem assiste, na legenda de cada transmissão.
+     *
+     * Taxa e perda vêm de contadores que só sobem, então os dois são derivados do
+     * intervalo: 4 Mb/s agora diz se dá para assistir, e "1.2 GB recebidos" não diz
+     * nada. A perda pelo mesmo motivo é percentual do intervalo — um total que cresceu
+     * num engasgo de dez minutos atrás continuaria vermelho com a rede já boa.
+     *
+     * Mb/s e não MB/s para bater com a linha de quem transmite, que já fala em bits.
+     */
     startMediaStats(peerId, video) {
         clearInterval(this.mediaStatsTimers.get(peerId));
 
         let frames = 0;
         let lastFrames = 0;
+        let lastInbound = null;
         let lastSample = performance.now();
-        const refreshPreview = () => {
+        const refreshPreview = async () => {
             const tile = document.querySelector(`[data-screen="${peerId}"]`);
             const stats = tile?.querySelector('[data-media-stats]');
 
@@ -1008,24 +1086,52 @@ class App {
                 return;
             }
 
+            const inbound = await this.inboundReport(peerId).catch(() => null);
             const now = performance.now();
             const elapsedMs = Math.max(now - lastSample, 1);
+            const seconds = elapsedMs / 1000;
             const buffer = video.buffered.length
                 ? Math.max(0, video.buffered.end(video.buffered.length - 1) - video.currentTime)
                 : 0;
             const fps = Math.round((frames - lastFrames) * 1000 / elapsedMs);
             const quality = video.getVideoPlaybackQuality?.();
+            const ping = this.sfu?.transportRttMs ?? this.sfu?.lastRttMs;
+            const since = inbound && lastInbound ? lastInbound : null;
 
-            stats.textContent = `buffer ${buffer.toFixed(1)} s · fps ${fps}`;
+            // `packetsLost` sabe descer — o RFC deixa o contador ser negativo, e uma
+            // amostra assim viraria "-3% perdidos" na legenda.
+            const lost = since ? Math.max(0, inbound.packetsLost - since.packetsLost) : 0;
+            const received = since ? Math.max(0, inbound.packetsReceived - since.packetsReceived) : 0;
+            const loss = since && lost + received ? lost * 100 / (lost + received) : since ? 0 : null;
+            const rate = since ? (inbound.bytesReceived - since.bytesReceived) * 8 / seconds / 1e6 : null;
+
+            stats.textContent = [
+                ping == null ? '-- ms' : `${ping} ms`,
+                `${fps} fps`,
+                Number.isFinite(rate) ? `${rate.toFixed(1)} Mb/s` : '-- Mb/s',
+                Number.isFinite(loss) ? `${loss.toFixed(1)}% perdidos` : '--% perdidos',
+            ].join(' · ');
+
+            // A legenda já disputa espaço com nome, volume, brilho e quatro botões: em
+            // janela estreita ela corta, e o resto do detalhe fica aqui.
+            stats.title = `buffer ${buffer.toFixed(1)} s`
+                + ` · ${inbound?.packetsLost ?? '--'} pacotes perdidos no total`
+                + ` · jitter ${inbound?.jitter == null ? '--' : Math.round(inbound.jitter * 1000)} ms`;
+
             this.log('media.stats', {
                 peerId,
-                pingMs: this.sfu?.lastRttMs ?? null,
+                pingMs: ping ?? null,
                 bufferSeconds: Number(buffer.toFixed(2)),
                 fps,
+                mbps: Number.isFinite(rate) ? Number(rate.toFixed(2)) : null,
+                lossPercent: Number.isFinite(loss) ? Number(loss.toFixed(2)) : null,
+                packetsLost: inbound?.packetsLost ?? null,
+                jitterMs: inbound?.jitter == null ? null : Math.round(inbound.jitter * 1000),
                 framesDropped: quality?.droppedVideoFrames ?? null,
                 framesDecoded: quality?.totalVideoFrames ?? null,
             });
             lastFrames = frames;
+            lastInbound = inbound;
             lastSample = now;
         };
 
@@ -1043,9 +1149,9 @@ class App {
             video.addEventListener('timeupdate', count);
         }
 
-        const timer = setInterval(refreshPreview, 1000);
+        const timer = setInterval(() => void refreshPreview(), 1000);
         this.mediaStatsTimers.set(peerId, timer);
-        refreshPreview();
+        void refreshPreview();
     }
 
     /** Uma tela ocupando tudo, ou de volta para a grade. */
@@ -1080,10 +1186,19 @@ class App {
         this.paintWatchPrompt();
 
         for (const tile of tiles) {
-            const hidden = Boolean(this.focused) && tile.dataset.screen !== this.focused;
+            // Em tela cheia o resto some de vez: um cartão da grade aparecendo atrás do
+            // vídeo pelas bordas é o que faz a tela cheia parecer uma página esticada.
+            const full = tile.dataset.screen === this.fullscreen;
+            const hidden = this.fullscreen
+                ? ! full
+                : Boolean(this.focused) && tile.dataset.screen !== this.focused;
 
-            tile.className = LOOK.tile;
+            tile.className = full ? `${LOOK.tile} ${LOOK.tileFullscreen}` : LOOK.tile;
             tile.hidden = hidden;
+
+            const caption = tile.querySelector('figcaption');
+
+            caption.className = full ? `${LOOK.caption} ${LOOK.captionFullscreen}` : LOOK.caption;
         }
     }
 
@@ -1425,6 +1540,11 @@ class App {
         this.pausedPeers.clear();
         this.selfStream = null;
         this.focused = null;
+
+        if (this.fullscreen) {
+            await this.toggleFullscreen(this.fullscreen);
+        }
+
         el('people-list').hidden = true;
 
         el('stage').innerHTML = '';

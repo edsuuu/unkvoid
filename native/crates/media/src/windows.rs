@@ -10,7 +10,7 @@
 use std::collections::VecDeque;
 use std::sync::Once;
 
-use ::windows::Win32::Foundation::HANDLE;
+use ::windows::Win32::Foundation::{HANDLE, VARIANT_BOOL};
 use ::windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_1};
 use ::windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
@@ -27,7 +27,9 @@ use ::windows::Win32::Graphics::Dxgi::Common::{
 };
 use ::windows::Win32::Graphics::Dxgi::{IDXGIKeyedMutex, IDXGIResource};
 use ::windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFDXGIDeviceManager, IMFMediaEventGenerator, IMFMediaType, IMFSample,
+    CODECAPI_AVEncCommonLowLatency, CODECAPI_AVEncCommonMeanBitRate,
+    CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncCommonRealTime, CODECAPI_AVEncMPVGOPSize,
+    ICodecAPI, IMFActivate, IMFDXGIDeviceManager, IMFMediaEventGenerator, IMFMediaType, IMFSample,
     IMFTransform, METransformHaveOutput, METransformNeedInput, MF_E_TRANSFORM_NEED_MORE_INPUT,
     MF_EVENT_TYPE, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE,
     MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE,
@@ -37,8 +39,12 @@ use ::windows::Win32::Media::MediaFoundation::{
     MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
     MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_REGISTER_TYPE_INFO, MFTEnumEx,
     MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive,
+    eAVEncCommonRateControlMode_CBR,
 };
 use ::windows::Win32::System::Com::CoTaskMemFree;
+use ::windows::Win32::System::Variant::{
+    VARENUM, VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_UI4,
+};
 use ::windows::core::Interface;
 
 use crate::{EncodedFrame, EncoderConfig, EncoderError, GpuSurface};
@@ -70,7 +76,6 @@ pub struct MediaFoundationEncoder {
     width: u32,
     height: u32,
     frame_rate: f64,
-    frames: i64,
     bridge: Option<Bridge>,
     /// Um encoder de hardware tem fila: nem todo quadro que entra sai no mesmo instante.
     ready: VecDeque<EncodedFrame>,
@@ -166,6 +171,7 @@ impl MediaFoundationEncoder {
             tracing::info!(width, height, "encoder: configurando os tipos de mídia");
 
             configure_types(&transform, width, height, config)?;
+            tune(&transform, config);
 
             let events: IMFMediaEventGenerator = transform.cast().map_err(start_error)?;
 
@@ -190,7 +196,6 @@ impl MediaFoundationEncoder {
                 width,
                 height,
                 frame_rate: config.frame_rate,
-                frames: 0,
                 bridge: None,
                 ready: VecDeque::new(),
                 credits: 0,
@@ -207,9 +212,7 @@ impl MediaFoundationEncoder {
         unsafe {
             self.cross_the_bridge(surface)?;
 
-            let sample = self.build_sample()?;
-
-            self.frames += 1;
+            let sample = self.build_sample(timestamp_ns)?;
 
             self.pump(Some(sample))?;
         }
@@ -465,7 +468,7 @@ impl MediaFoundationEncoder {
         }
     }
 
-    unsafe fn build_sample(&self) -> Result<IMFSample, EncoderError> {
+    unsafe fn build_sample(&self, timestamp_ns: u64) -> Result<IMFSample, EncoderError> {
         unsafe {
             let bridge = self
                 .bridge
@@ -479,12 +482,19 @@ impl MediaFoundationEncoder {
 
             sample.AddBuffer(&buffer).map_err(encode_error)?;
 
-            // O tempo é contado em quadros, não no relógio: o encoder precisa de um
-            // passo constante, e o relógio da captura varia com a carga da máquina.
+            // A hora de verdade da captura, não um contador de quadros. O encoder
+            // distribui a taxa pelo relógio que recebe: com a captura entregando 53
+            // quadros por segundo e o contador andando como se fossem 60, ele espalhava
+            // um segundo de bits por 0,88 segundo de vídeo e a transmissão saía acima da
+            // taxa pedida. O caminho do macOS já tinha apanhado disso — o comentário do
+            // `encode` de lá conta a mesma história, com dois terços em vez de um oitavo.
+            //
+            // A duração continua nominal: é dica de ritmo, e o encoder não a usa para
+            // fechar a conta de bits.
             let duration = (HNS_PER_SECOND as f64 / self.frame_rate).round() as i64;
 
             sample
-                .SetSampleTime(self.frames * duration)
+                .SetSampleTime((timestamp_ns / 100) as i64)
                 .map_err(encode_error)?;
             sample.SetSampleDuration(duration).map_err(encode_error)?;
 
@@ -586,6 +596,91 @@ impl MediaFoundationEncoder {
 
             Ok(())
         }
+    }
+}
+
+
+/// Quantos segundos entre quadros-chave. Quem perde um pacote fica congelado até o
+/// próximo, então isto é o teto da travada de quem assiste. Um segundo é o mesmo que o
+/// caminho do macOS já usa, pelo mesmo motivo escrito lá.
+const GOP_SECONDS: f64 = 1.0;
+
+/// O valor booleano do COM para verdadeiro. Nenhum dos ajustes aqui é desligado.
+const LIGADO: VARIANT_0_0_0 = VARIANT_0_0_0 {
+    boolVal: VARIANT_BOOL(-1),
+};
+
+/// Ajusta o controle de taxa do encoder.
+///
+/// `MF_MT_AVG_BITRATE` no tipo de mídia é só uma dica: sem dizer o **modo**, o MFT de
+/// placa escolhe o dele, e o que se via era 11 Mb/s medidos com 7 Mb/s pedidos. Sobra
+/// que o uplink engole mas a internet no meio do caminho nem sempre — e cada pacote
+/// perdido lá fora congela quem assiste até o quadro-chave seguinte.
+///
+/// Nada aqui é fatal. Encoder de placa recusa a propriedade que não implementa, e
+/// transmitir com o padrão do driver é pior do que com estes valores, mas ainda é
+/// transmitir. O que foi recusado vai para o log, porque é a primeira coisa a olhar
+/// quando a taxa não bate numa máquina específica.
+unsafe fn tune(transform: &IMFTransform, config: &EncoderConfig) {
+    let Ok(codec) = transform.cast::<ICodecAPI>() else {
+        tracing::warn!("encoder: sem ICodecAPI, o controle de taxa fica no padrão do driver");
+
+        return;
+    };
+
+    let gop = (config.frame_rate * GOP_SECONDS).round() as u32;
+
+    // A ordem importa: o modo primeiro, senão a taxa é lida com o significado do modo
+    // antigo. Tudo em VT_UI4 e VT_BOOL porque é o que o ICodecAPI aceita — o `From<u64>`
+    // que a crate oferece monta VT_UI8, que o encoder recusa.
+    let settings: [(&::windows::core::GUID, VARIANT, &str); 5] = [
+        (
+            &CODECAPI_AVEncCommonRateControlMode,
+            variant(VT_UI4, VARIANT_0_0_0 { ulVal: eAVEncCommonRateControlMode_CBR.0 as u32 }),
+            "modo de taxa",
+        ),
+        (
+            &CODECAPI_AVEncCommonMeanBitRate,
+            variant(VT_UI4, VARIANT_0_0_0 { ulVal: config.bitrate }),
+            "taxa média",
+        ),
+        (&CODECAPI_AVEncCommonLowLatency, variant(VT_BOOL, LIGADO), "baixa latência"),
+        (&CODECAPI_AVEncCommonRealTime, variant(VT_BOOL, LIGADO), "tempo real"),
+        (
+            &CODECAPI_AVEncMPVGOPSize,
+            variant(VT_UI4, VARIANT_0_0_0 { ulVal: gop }),
+            "intervalo de quadro-chave",
+        ),
+    ];
+
+    for (key, value, name) in settings {
+        if let Err(error) = unsafe { codec.SetValue(key, &value) } {
+            tracing::warn!(error = %error, ajuste = name, "encoder: ajuste recusado");
+        }
+    }
+
+    tracing::info!(
+        bitrate = config.bitrate,
+        gop,
+        "encoder: taxa constante, baixa latência"
+    );
+}
+
+/// `VARIANT` cru, do jeito que o `ICodecAPI` espera.
+///
+/// A crate oferece `From<u64>`, que monta `VT_UI8` — e o encoder recusa. Montar campo a
+/// campo é o que sobra. Nada aqui aloca, então o `VariantClear` do `Drop` é inócuo.
+fn variant(vt: VARENUM, value: VARIANT_0_0_0) -> VARIANT {
+    VARIANT {
+        Anonymous: VARIANT_0 {
+            Anonymous: std::mem::ManuallyDrop::new(VARIANT_0_0 {
+                vt,
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: value,
+            }),
+        },
     }
 }
 
