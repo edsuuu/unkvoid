@@ -6,11 +6,102 @@
 mod broadcast;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{self, Write},
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use broadcast::Broadcast;
 use capture::{CaptureSource, PlatformCapturer, Quality};
 use serde::Serialize;
 use tauri::{Emitter, State};
+
+#[derive(Clone)]
+struct LogFile(Arc<Mutex<File>>);
+
+impl Write for LogFile {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let mut file = self
+            .0
+            .lock()
+            .map_err(|_| io::Error::other("log file lock poisoned"))?;
+        file.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let mut file = self
+            .0
+            .lock()
+            .map_err(|_| io::Error::other("log file lock poisoned"))?;
+        file.flush()
+    }
+}
+
+fn log_path() -> Option<PathBuf> {
+    let root = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
+        .or_else(|| std::env::current_exe().ok()?.parent().map(PathBuf::from))?;
+
+    Some(root.join("Unkvoid").join("logs").join("unkvoid.log"))
+}
+
+fn configure_logging() {
+    let Some(path) = log_path() else {
+        tracing_subscriber::fmt().with_env_filter("info").init();
+        return;
+    };
+
+    let Some(parent) = path.parent() else {
+        tracing_subscriber::fmt().with_env_filter("info").init();
+        return;
+    };
+    let writer = fs::create_dir_all(parent)
+        .and_then(|()| OpenOptions::new().create(true).append(true).open(&path));
+
+    let Ok(file) = writer else {
+        tracing_subscriber::fmt().with_env_filter("info").init();
+        return;
+    };
+
+    let shared = Arc::new(Mutex::new(file));
+    let panic_path = path.clone();
+    std::panic::set_hook(Box::new(move |panic| {
+        let message = panic
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.payload().downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("panic sem mensagem");
+        let location = panic
+            .location()
+            .map(|value| format!("{}:{}", value.file(), value.line()))
+            .unwrap_or_else(|| "localização desconhecida".to_string());
+
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&panic_path)
+        {
+            let _ = writeln!(file, "PANIC: {message} ({location})");
+            let _ = writeln!(
+                file,
+                "backtrace:\n{}",
+                std::backtrace::Backtrace::force_capture()
+            );
+            let _ = file.flush();
+        }
+    }));
+
+    tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .with_ansi(false)
+        .with_writer(move || LogFile(Arc::clone(&shared)))
+        .init();
+    tracing::info!(path = %path.display(), "logging iniciado");
+}
 
 #[derive(Default)]
 struct ActiveBroadcast(tokio::sync::Mutex<Option<Broadcast>>);
@@ -110,6 +201,7 @@ async fn start_broadcast(
     audio: bool,
     mute_calls: bool,
 ) -> Result<(), String> {
+    tracing::info!(?source, quality = %quality, fps, audio, mute_calls, "iniciando transmissão");
     let mut active = state.0.lock().await;
 
     if active.is_some() {
@@ -124,7 +216,10 @@ async fn start_broadcast(
             audio,
             mute_calls,
         )
-        .map_err(|error| error.to_string())?,
+        .map_err(|error| {
+            tracing::error!(error = %error, "falha ao iniciar captura");
+            error.to_string()
+        })?,
     );
 
     Ok(())
@@ -390,7 +485,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt().with_env_filter("info").init();
+    configure_logging();
 
     tauri::Builder::default()
         // Uma cópia só. Abrir o app de novo traz a janela que já existe para a frente,
@@ -438,7 +533,7 @@ pub fn run() {
             // mas só quando existe bandeja para trazer a janela de volta. Sem ela,
             // esconder deixava um processo invisível que só morria no `kill`.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if ! window.state::<HasTray>().0.load(Ordering::Relaxed) {
+                if !window.state::<HasTray>().0.load(Ordering::Relaxed) {
                     return;
                 }
 

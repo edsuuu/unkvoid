@@ -97,6 +97,15 @@ pub struct SystemAudio {
     chunks: Arc<AtomicU64>,
 }
 
+/// # Segurança
+///
+/// O único campo que o Rust recusa é o `HANDLE` do evento de parada, porque `HANDLE` é
+/// ponteiro. Handle de evento não é objeto COM nem está preso a apartamento nenhum:
+/// pertence ao processo inteiro, e `SetEvent` é chamado de outra thread por desenho. A
+/// captura já atravessa threads assim lá dentro; aqui é a mesma travessia, com o dono
+/// do handle junto.
+unsafe impl Send for SystemAudio {}
+
 impl SystemAudio {
     pub fn start(
         sink: EventSink,
