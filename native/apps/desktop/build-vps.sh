@@ -70,7 +70,12 @@ npm run check
 # própria, leva alguns minutos a mais e ninguém o atualiza sozinho.
 BUNDLES="${UNKVOID_BUNDLES:-deb}"
 
-nice -n 19 npx tauri build --bundles "$BUNDLES"
+# `createUpdaterArtifacts: false` só para este build. Com a chave pública no
+# `tauri.conf.json`, o Tauri tenta assinar o artefato de updater de TODO bundle e para o
+# build inteiro quando não acha a privada — mesmo gerando um `.deb`, que não tem
+# updater. Sem este override, tirar a chave da VPS quebrava o build do Linux.
+nice -n 19 npx tauri build --bundles "$BUNDLES" \
+    --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
 # Os instaladores ficam servidos pelo nginx em /downloads/, para quem for testar não
 # precisar de ssh nem de esperar a release sair.
