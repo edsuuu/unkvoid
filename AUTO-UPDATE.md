@@ -1,217 +1,173 @@
-# Atualização automática e releases
+# Atualização automática e publicação
 
-Como ligar o auto-update e como sair uma versão para os três sistemas.
+Como sair uma versão para os três sistemas, e o que faz o app se atualizar sozinho.
 
 O app procura versão nova ao abrir e de seis em seis horas. Se achar, baixa,
 instala e reinicia sozinho — a menos que você esteja numa sala, porque reiniciar
 no meio de uma transmissão derrubaria quem está assistindo. Nesse caso a versão
 fica no disco e passa a valer no próximo reinício.
 
-## O que faz a atualização funcionar
+**No Linux isso não acontece, de propósito.** Lá quem atualiza é o APT, junto com
+o resto da máquina. Ver a seção do Linux.
 
-Três coisas, e as três precisam existir ao mesmo tempo:
+## As duas chaves, que são diferentes
 
-| Peça | Onde vive |
-|---|---|
-| Chave pública | `native/apps/desktop/src-tauri/tauri.conf.json`, em `plugins.updater.pubkey` |
-| Chave privada | `~/.tauri/unkvoid.key` na máquina que gera o build |
-| Manifesto | `latest.json`, publicado junto dos instaladores na release do GitHub |
+Confundir uma com a outra é o erro mais caro deste arquivo.
 
-A pública vai dentro do app. A privada assina cada instalador e produz o arquivo
-`.sig` ao lado dele. O manifesto diz, para cada sistema, qual arquivo baixar e
-qual é a assinatura dele. **Sem assinatura o instalador sobe igual e ninguém se
-atualiza** — a release parece certa e não atualiza ninguém.
+| Chave | O que assina | Onde mora |
+|---|---|---|
+| Auto-update (minisign) | O instalador do macOS e do Windows | `~/.tauri/unkvoid.key`, só nas máquinas que buildam |
+| Repositório APT (GPG) | O índice de pacotes do Linux | `repo@unkvoid.com`, no chaveiro da VPS |
 
-A chave privada não tem senha e **não** está no repositório. Ela é o que prova
-que a atualização veio de você: quem a tiver publica atualização para todo mundo
-que instalou o app. Faça uma cópia em lugar seguro; se ela sumir, a única saída
-é gerar outro par e trocar a pública no app, e aí quem já instalou precisa
-reinstalar uma vez à mão.
+A pública do auto-update vai **dentro do app**, em
+`native/apps/desktop/src-tauri/tauri.conf.json`, em `plugins.updater.pubkey`. A
+privada assina cada instalador e produz o `.sig` ao lado dele.
 
-## Preparar, uma vez só
+**A privada do auto-update não fica na VPS.** Quem a tiver publica atualização
+para todo mundo que instalou o app, e a VPS é uma máquina exposta à internet. O
+Linux não precisa dela: quem autentica o pacote lá é a GPG do repositório.
 
-### 1. GitHub
+Trocar a pública quebra todo mundo que já instalou: o app compara a assinatura
+com a chave que ele carrega por dentro, então quem tem a versão antiga precisa de
+uma instalação manual, uma última vez. A anterior está guardada em
+`~/.tauri/unkvoid-B1BAB-antiga.key.bak`.
 
-Em **Settings → Secrets and variables → Actions → New repository secret**:
+Se a privada sumir, a única saída é gerar outro par e trocar a pública — com o
+mesmo custo. Faça uma cópia em lugar seguro.
 
-| Nome | Valor |
-|---|---|
-| `TAURI_SIGNING_PRIVATE_KEY` | o conteúdo inteiro de `~/.tauri/unkvoid.key` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | vazio |
+## Onde o app procura
 
-Para copiar a chave:
+`https://discord.unkvoid.com/downloads/latest.json`, servido pelo nginx a partir
+de `/var/www/downloads/unkvoid/` com `Cache-Control: no-store`.
 
-```bash
-cat ~/.tauri/unkvoid.key | pbcopy
-```
+O manifesto é **costurado**, não sobrescrito. Cada sistema é compilado numa
+máquina diferente, e as três chamam o mesmo `publish-downloads.sh`: publicar o
+Windows não pode apagar o macOS que subiu ontem.
 
-### 2. VPS
+## macOS
 
-O Linux é compilado lá, e quem publica a release é o `gh`. Ele precisa estar
-autenticado uma vez:
+Na máquina com Xcode e a chave privada:
 
 ```bash
-ssh vps
-gh auth login
+cd native/apps/desktop
+TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/unkvoid.key)" \
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" \
+npm run tauri build
+
+./publish-downloads.sh 0.0.7 darwin-aarch64 \
+  ../../target/release/bundle/macos/Unkvoid.app.tar.gz
 ```
 
-O resto — Rust, cmake, dependências do Tauri — o `build-vps.sh` instala sozinho
-na primeira execução.
+O artefato do atualizador é o `.app.tar.gz`, **não** o `.dmg`. O `.dmg` é para
+quem instala pela primeira vez.
 
-## Soltar uma versão
-
-### 1. Suba o número
-
-Em `native/apps/desktop/src-tauri/tauri.conf.json`, campo `version`.
-
-Suba junto o `SFU_APP_VERSION` em `sfu/ecosystem.config.cjs` e o padrão em
-`sfu/src/config.ts`, senão o app vê a versão do servidor diferente da sua e
-procura atualização a cada abertura, para sempre.
+Se o empacotamento falhar com `bundle_dmg.sh`, sobrou um volume montado de um
+build interrompido:
 
 ```bash
-cd sfu && ./deploy.sh
+hdiutil detach /Volumes/dmg.* -force
+rm -f native/target/release/bundle/macos/rw.*.dmg
 ```
 
-### 2. Publique a tag
+## Windows
+
+O `.msi` exige o WiX, que só roda no Windows. O código é editado no WSL e
+sincronizado para `C:\Users\edsu\unkvoid-build` pelo script de build.
+
+### Uma vez só
+
+Copie a chave privada do Mac para a máquina Windows, em
+`%USERPROFILE%\.tauri\unkvoid.key`. Sem ela o build sai sem `.sig`, o instalador
+sobe igual e ninguém se atualiza — a publicação parece certa e não atualiza
+ninguém.
+
+### A cada versão
+
+No WSL, para o código chegar:
 
 ```bash
-git commit -am "Sobe para 0.0.4"
-git tag v0.0.4
-git push origin main --tags
+cd ~/projects/unkvoid && git pull
 ```
 
-A tag dispara o `.github/workflows/release.yml`, que compila o macOS e depois o
-Windows em runners de verdade. Os dois trabalhos são **encadeados de propósito**:
-cada um publica lendo o `latest.json` que já está lá e mesclando o próprio alvo
-por cima. Em paralelo, o segundo apagaria a plataforma do primeiro.
+No PowerShell, para compilar e assinar:
 
-### 3. Gere o Linux
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Users\edsu\build-unkvoid.ps1
+```
+
+Ele põe o CMake no PATH, sincroniza o código do WSL, roda `npm ci` se faltar,
+assina com a chave se ela existir, empacota o `.msi` e copia o resultado para
+`C:\Users\edsu\Desktop\apps`.
+
+De volta no WSL, para publicar. O script é bash, então não roda no PowerShell:
+
+```bash
+cd ~/projects/unkvoid/native/apps/desktop
+./publish-downloads.sh 0.0.7 windows-x86_64 \
+  /mnt/c/Users/edsu/Desktop/apps/Unkvoid_0.0.7_x64_pt-BR.msi
+```
+
+O `.msi.sig` precisa estar na mesma pasta que o `.msi`. O script recusa sem ele,
+de propósito.
+
+Troque `0.0.7` pela versão do `tauri.conf.json` e o nome do arquivo pelo que o
+build gerou — o sufixo muda com o idioma do instalador.
+
+## Linux
+
+**Instala e atualiza pelo APT**, e nada mais. O atualizador embutido está
+desligado neste sistema: pedir senha de root com `pkexec` no meio da abertura
+faria o que o `apt upgrade` já faz junto com o resto da máquina.
+
+Para quem usa, uma vez só:
+
+```bash
+curl -fsSL https://discord.unkvoid.com/apt/unkvoid.gpg \
+  | sudo tee /usr/share/keyrings/unkvoid.gpg > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/unkvoid.gpg] https://discord.unkvoid.com/apt ./" \
+  | sudo tee /etc/apt/sources.list.d/unkvoid.list
+sudo apt update && sudo apt install unkvoid
+```
+
+Depois disso, versão nova chega com `sudo apt upgrade`, como qualquer outro
+pacote.
+
+Para publicar uma versão, do Mac:
 
 ```bash
 make build-vps
 ```
 
-Ele compila na VPS, publica na mesma release e refaz o repositório APT. O `.dmg` e
-o `.msi` não saem de lá: um exige um Mac por licença da Apple, o outro exige o WiX
-rodando no Windows.
+Ele atualiza o clone na VPS, compila lá, gera o `.deb` e chama o
+`apt-publish.sh`, que refaz o índice e o assina com a GPG do repositório. A
+chave do auto-update não viaja: o Linux não a usa.
 
-### 4. Confira
+O build compartilha a máquina com o SFU, então roda com um núcleo de folga e em
+prioridade baixa — alguns minutos a mais, e nenhuma transmissão engasgando no
+meio.
 
-```bash
-gh release view v0.0.4 --repo edsuuu/unkvoid
-curl -sL https://github.com/edsuuu/unkvoid/releases/latest/download/latest.json | jq '.platforms | keys'
-```
+### O AppImage
 
-Devem aparecer estas chaves:
+Sai só com `UNKVOID_BUNDLES=deb,appimage`, e **ninguém o atualiza sozinho**: ele
+não tem gerenciador de pacotes e o app não consulta o manifesto no Linux. Serve
+para distro sem APT, e quem o usa troca o arquivo à mão.
 
-```
-darwin-aarch64
-linux-x86_64
-linux-x86_64-appimage
-linux-x86_64-deb
-windows-x86_64
-windows-x86_64-msi
-windows-x86_64-nsis
-```
+## GitHub
 
-O sufixo do instalador não é enfeite. O app procura
-`{sistema}-{arquitetura}-{instalador}` e só depois a chave genérica. Enquanto
-`.deb` e AppImage dividiam a chave `linux-x86_64`, quem instalou pelo `.deb`
-baixava o AppImage, a verificação de formato falhava e a atualização morria em
-silêncio.
+Fora do caminho de atualização. O `build-vps.sh` só publica release lá com
+`--github`, e é arquivo para quem quiser baixar à mão. Sem a flag ele termina
+depois do APT, que é o que importa.
 
-## Linux: quem atualiza é o APT
+## Quando alguma coisa não atualiza
 
-No Linux o app **não** se atualiza sozinho. Quem cuida disso é o gerenciador de
-pacotes, que é o que quem usa Linux espera, e manter os dois caminhos ligados
-faria o app pedir senha de root no meio da abertura para fazer o que o
-`apt upgrade` já faz junto com o resto do sistema.
+Na ordem, porque cada uma explica a seguinte:
 
-O repositório vive na VPS, em `/var/www/apt`, e é servido em
-<https://discord.unkvoid.com/apt/>. O `build-vps.sh` refaz o índice a cada build.
-
-### Instalar, uma vez por máquina
-
-```bash
-curl -fsSL https://discord.unkvoid.com/apt/unkvoid.gpg \
-  | sudo tee /etc/apt/keyrings/unkvoid.gpg > /dev/null
-echo "deb [signed-by=/etc/apt/keyrings/unkvoid.gpg] https://discord.unkvoid.com/apt ./" \
-  | sudo tee /etc/apt/sources.list.d/unkvoid.list
-sudo apt update && sudo apt install unkvoid
-```
-
-Depois disso, versão nova entra com `sudo apt upgrade`.
-
-### A chave do repositório
-
-É **outra** chave, diferente da do auto-update. A do auto-update assina o
-instalador; esta assina a lista de pacotes, e é o que impede alguém no meio do
-caminho oferecer um `.deb` trocado.
-
-| | |
-|---|---|
-| Identidade | `repo@unkvoid.com` |
-| Onde | chaveiro do usuário `ubuntu` na VPS |
-| Pública publicada em | `/var/www/apt/unkvoid.gpg` |
-
-Ela não tem senha, porque o build assina sem ninguém por perto. Guarde uma cópia:
-
-```bash
-ssh vps "gpg --export-secret-keys --armor repo@unkvoid.com" > unkvoid-apt.key
-```
-
-Se ela sumir, gere outra e todo mundo precisa refazer o passo do `curl` acima.
-
-## Gerar um instalador sem publicar
-
-Para testar sem mexer na release:
-
-```bash
-ssh vps "UNKVOID_BUNDLES=deb TAURI_SIGNING_PRIVATE_KEY=\$(cat) \
-  /var/www/projects/unkvoid/native/apps/desktop/build-vps.sh --dry-run" < ~/.tauri/unkvoid.key
-```
-
-O resultado fica em <https://discord.unkvoid.com/downloads/>.
-
-A chave viaja pela entrada padrão de propósito: assim ela não aparece na linha de
-comando, que qualquer um enxerga com `ps`, e não fica gravada em disco na VPS.
-
-## Quando não atualiza
-
-| Sintoma | Causa provável |
-|---|---|
-| A release existe e ninguém atualiza | Build sem `TAURI_SIGNING_PRIVATE_KEY`: não há `.sig`, e o `latest.json` sai sem a plataforma |
-| Só uma plataforma atualiza | Os dois trabalhos rodaram em paralelo e um sobrescreveu o manifesto do outro |
-| Nada acontece, sem erro | A release foi marcada como pré-lançamento. O app procura em `/releases/latest/`, e o "latest" do GitHub ignora pré-lançamento |
-| Erro de formato no Linux | O `.deb` recebeu a URL do AppImage: confira os sufixos no `latest.json` |
-
-Para ver o que o app achou, botão **Logs** dentro do app, depois **Copiar logs**.
-
-
-## O manifesto no nosso próprio servidor
-
-O atualizador embutido consulta dois endereços, em ordem:
-
-1. `https://discord.unkvoid.com/downloads/latest.json`
-2. a release do GitHub, como reserva
-
-O primeiro existe para o auto-update não depender do GitHub Actions. Cada
-sistema é compilado numa máquina diferente — Windows no Windows, macOS num Mac,
-Linux na VPS — e as três chamam o mesmo script:
-
-```
-native/apps/desktop/publish-downloads.sh 0.0.7 windows-x86_64 caminho/do/Unkvoid.msi
-```
-
-Ele copia o instalador e a assinatura para a pasta que o nginx serve, e
-**costura** a entrada da plataforma no `latest.json` em vez de reescrevê-lo:
-publicar o Windows não pode apagar o macOS que subiu ontem. A versão do
-manifesto é sempre a mais nova que já passou por ali, então uma correção só para
-um sistema não rebaixa o que os outros anunciam.
-
-O build da VPS chama o script sozinho, para o AppImage. O `.deb` fica de fora de
-propósito: quem instala por pacote atualiza pelo repositório APT, com
-`apt upgrade`, e não pelo atualizador embutido.
-
-Sem o arquivo `.sig` ao lado, o script recusa. Um manifesto apontando para um
-instalador não assinado é uma atualização que ninguém consegue instalar.
+1. `curl -s https://discord.unkvoid.com/downloads/latest.json` — se der 404,
+   nada mais importa: o app pergunta e não recebe resposta.
+2. A `version` do manifesto é maior que a instalada? Igual não atualiza.
+3. A plataforma está lá? `darwin-aarch64`, `windows-x86_64`.
+4. A `pubkey` do `tauri.conf.json` bate com a privada que assinou? Se o build
+   avisou `does not match the public key`, a assinatura vai ser recusada em
+   execução e o build passa mesmo assim.
+5. O arquivo da `url` responde 200?
+6. No Linux, nenhuma das cinco: lá é `apt update && apt upgrade`.

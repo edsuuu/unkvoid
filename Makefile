@@ -64,11 +64,10 @@ build-linux:
 # gravada em disco na VPS.
 build-vps:
 	@set -e; \
-	test -f "$(CHAVE)" || { printf 'falta %s — sem ela o build sai sem assinatura e ninguém se atualiza\n' "$(CHAVE)" >&2; exit 1; }; \
 	ssh $(VPS_REMOTE) "set -e; \
 		if [ -d $(VPS_APP)/.git ]; then cd $(VPS_APP) && git fetch --tags && git pull --ff-only; \
 		else git clone $(REPO_URL) $(VPS_APP); fi"; \
-	ssh $(VPS_REMOTE) "TAURI_SIGNING_PRIVATE_KEY=\$$(cat) $(VPS_APP)/native/apps/desktop/build-vps.sh" < "$(CHAVE)"
+	ssh $(VPS_REMOTE) "$(VPS_APP)/native/apps/desktop/build-vps.sh"
 
 release:
 	cd $(DESKTOP_DIR) && node release.mjs
