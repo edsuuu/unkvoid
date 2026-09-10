@@ -88,7 +88,10 @@ fi
 
 # O repositório APT: é por ele que o Linux instala e atualiza, com `apt install unkvoid`.
 # O download solto continua existindo para quem só quer o arquivo.
-DEB=$(find ../../target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit 2>/dev/null || true)
+# O mais recente, não o primeiro que a busca achar: a pasta guarda os `.deb` de todas
+# as versões já geradas nesta máquina, e `-print -quit` publicava um antigo no APT.
+DEB=$(find ../../target/release/bundle/deb -maxdepth 1 -name '*.deb' -printf '%T@ %p\n' 2>/dev/null \
+    | sort -rn | head -1 | cut -d' ' -f2- || true)
 
 if [ -n "$DEB" ] && [ -d "${UNKVOID_APT:-/var/www/apt}" ]; then
     ./apt-publish.sh "$DEB"
@@ -97,7 +100,7 @@ fi
 # Com --dry-run o build para aqui: serve para gerar um instalador de teste sem mexer na
 # release, e sem exigir um gh autenticado nesta máquina.
 for arg in "$@"; do
-    if [ "$argumento" = "--dry-run" ]; then
+    if [ "$arg" = "--dry-run" ]; then
         echo "[INFO] --dry-run: instaladores gerados, nada publicado"
         find ../../target/release/bundle -maxdepth 2 -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.sig' \) -print
         exit 0
@@ -119,8 +122,8 @@ if ! command -v gh > /dev/null 2>&1; then
 fi
 
 for tool in node npm gh; do
-    if ! command -v "$ferramenta" > /dev/null 2>&1; then
-        echo "[ERRO] falta o $ferramenta na VPS." >&2
+    if ! command -v "$tool" > /dev/null 2>&1; then
+        echo "[ERRO] falta o $tool na VPS." >&2
         exit 1
     fi
 done
