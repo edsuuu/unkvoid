@@ -42,7 +42,10 @@ echo "[INFO] $NAME publicado em $BASE/"
 
 # O merge em Node porque a VPS já tem Node — é o mesmo runtime do SFU, e `jq` seria um
 # pacote a mais para instalar em toda máquina que publica.
-run "cd '$DIR' && node -e '
+# A assinatura vai pelo ambiente, não interpolada no código: `${SIGNATURE@Q}` só existe
+# do bash 4.4 em diante, e o macOS ainda vem com o 3.2 — justamente a máquina que gera o
+# artefato do macOS. O script morria com "bad substitution" só ali.
+run "cd '$DIR' && UNKVOID_SIGNATURE='$SIGNATURE' node -e '
 const fs = require(\"fs\");
 const path = \"latest.json\";
 const manifest = fs.existsSync(path)
@@ -57,7 +60,7 @@ if (manifest.version.localeCompare(\"$VERSION\", undefined, { numeric: true }) <
 
 manifest.pub_date = new Date().toISOString();
 manifest.platforms[\"$PLATFORM\"] = {
-    signature: ${SIGNATURE@Q},
+    signature: process.env.UNKVOID_SIGNATURE,
     url: \"$BASE/$NAME\",
 };
 
