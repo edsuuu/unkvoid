@@ -22,9 +22,14 @@ const LOOK = {
 
     caption: 'flex items-center gap-2 bg-panel px-3 py-1.5 text-xs text-ink',
 
-    /* Em tela cheia a legenda flutua por cima e some: o `group` do cartão a traz de
-       volta quando o ponteiro procura por ela. */
-    captionFullscreen: 'absolute inset-x-0 bottom-0 bg-panel/85 opacity-0 transition-opacity group-hover:opacity-100',
+    /* Em tela cheia a legenda flutua por cima do vídeo. Quem a mostra e a esconde é o
+       relógio de ociosidade, não o `group-hover`: com o cartão ocupando a janela inteira
+       o ponteiro está sempre em cima dele, então o hover ficaria ligado para sempre. */
+    captionFullscreen: 'absolute inset-x-0 bottom-0 z-50 bg-panel/85 transition-opacity duration-200',
+
+    /* A barra da sala precisa de `fixed` e de z acima do cartão para continuar
+       alcançável: o vídeo é `fixed inset-0 z-40` e cobriria qualquer coisa no fluxo. */
+    headerFullscreen: 'fixed inset-x-0 top-0 z-50 flex h-12 items-center gap-3 bg-panel/85 px-3 transition-opacity duration-200',
 };
 
 // Esta interface não tem console: um erro de JavaScript aqui vira tela preta sem pista
@@ -49,9 +54,17 @@ class App {
     /** De quanto em quanto tempo procurar versão nova com o app já aberto. */
     static UPDATE_EVERY_MS = 6 * 60 * 60 * 1000;
 
-    /** Mantém o diagnóstico recente pequeno para o modal abrir sem travar o WebView. */
+    /**
+     * Ponteiro parado por este tanto em tela cheia e some tudo: barra, legenda e o
+     * próprio cursor. Três segundos é o que separa "parou de mexer" de "está a caminho
+     * do botão".
+     */
+    static IDLE_MS = 3000;
+
     static INSTALL_KEY = 'unkvoid.instalacao';
     static TOAST_MS = 6000;
+
+    /** Mantém o diagnóstico recente pequeno para o modal abrir sem travar o WebView. */
     static MAX_LOG_ENTRIES = 250;
     static MAX_LOG_CHARS = 64 * 1024;
     static MAX_WINDOW_SOURCES = 12;
@@ -158,6 +171,9 @@ class App {
         /** Quem está ocupando a tela inteira, ou nada. Mora aqui porque o `paintLayout`
          *  reescreve a classe de todo cartão e apagaria um estado guardado no DOM. */
         this.fullscreen = null;
+        this.idleTimer = null;
+        this.idle = false;
+        this.headerLook = null;
 
         this.attempt = 0;
         this.reconnect = null;
@@ -199,6 +215,11 @@ class App {
                 void this.toggleFullscreen(this.fullscreen);
             }
         });
+
+        // Mexeu, tudo volta. `mousemove` chega dezenas de vezes por segundo, então o
+        // trabalho por evento é reiniciar um temporizador — pintar a cada um deles
+        // custaria um recálculo de estilo a cada pixel de movimento.
+        document.addEventListener('mousemove', () => this.wakeUp());
 
         this.showDownloadProgress();
 
@@ -1336,6 +1357,13 @@ class App {
         el('stage').style.gridTemplateColumns = `repeat(${this.focused ? 1 : columns}, minmax(0, 1fr))`;
         this.paintWatchPrompt();
 
+        const header = document.querySelector('#room > header');
+
+        // A aparência original é lida uma vez e guardada: reconstruí-la à mão aqui seria
+        // manter a mesma lista de classes em dois lugares, e o HTML é quem manda.
+        this.headerLook ??= header.className;
+        header.className = this.fullscreen ? LOOK.headerFullscreen : this.headerLook;
+
         for (const tile of tiles) {
             // Em tela cheia o resto some de vez: um cartão da grade aparecendo atrás do
             // vídeo pelas bordas é o que faz a tela cheia parecer uma página esticada.
@@ -1351,6 +1379,57 @@ class App {
 
             caption.className = full ? `${LOOK.caption} ${LOOK.captionFullscreen}` : LOOK.caption;
         }
+
+        this.wakeUp();
+    }
+
+    /**
+     * O ponteiro mexeu: mostra tudo e recomeça a contagem.
+     *
+     * Fora da tela cheia isto só limpa o relógio. Deixar a contagem correndo esconderia
+     * o cursor de quem saiu da tela cheia e ficou parado lendo a lista de salas.
+     */
+    wakeUp() {
+        clearTimeout(this.idleTimer);
+        this.idleTimer = null;
+
+        // Só pinta na virada. `mousemove` chega a cada pixel, e mexer em `classList`
+        // sessenta vezes por segundo para deixar tudo como já estava é trabalho jogado
+        // fora bem no momento em que a máquina está codificando vídeo.
+        if (this.idle) {
+            this.paintIdle(false);
+        }
+
+        if (! this.fullscreen) {
+            return;
+        }
+
+        this.idleTimer = setTimeout(() => this.paintIdle(true), App.IDLE_MS);
+    }
+
+    /**
+     * Some com a barra, a legenda e o cursor, ou traz os três de volta.
+     *
+     * Um estado só para os três porque a pergunta é uma só — a pessoa parou de mexer? —
+     * e três relógios para a mesma pergunta saem de sincronia no primeiro que reiniciar.
+     *
+     * `opacity` e não `hidden`: a transição precisa de algo para animar, e um elemento
+     * que sai do fluxo faria o vídeo pular meio segundo antes de o ponteiro parar.
+     */
+    paintIdle(idle) {
+        this.idle = idle;
+
+        const header = document.querySelector('#room > header');
+        const caption = this.fullscreen
+            && el('stage').querySelector(`[data-screen="${CSS.escape(this.fullscreen)}"] figcaption`);
+
+        for (const element of [header, caption]) {
+            element?.classList.toggle('opacity-0', idle);
+            // Sem isto a barra invisível continua roubando o clique de quem quer o vídeo.
+            element?.classList.toggle('pointer-events-none', idle);
+        }
+
+        document.body.classList.toggle('cursor-none', idle);
     }
 
     /**
