@@ -117,6 +117,8 @@ impl PlainSender {
             .set_nonblocking(true)
             .context("could not put the SFU socket in non-blocking mode")?;
 
+        grow_send_buffer(&socket);
+
         let srtp = SrtpContext::new(
             &key[..KEY_LEN],
             &key[KEY_LEN..],
@@ -288,16 +290,44 @@ impl PlainSender {
 
             match socket.send(&protected) {
                 Ok(written) => *sent_bytes += written as u64,
-                // Buffer local cheio é uplink saturado. Largar o pacote é o preço certo
-                // para vídeo ao vivo, e é o que o comentário lá em cima sempre prometeu:
-                // dormir aqui segurava a thread da captura, que é justamente quem produz
-                // o próximo quadro, e ainda segurava o mutex do destino junto.
+                // Só chega aqui com o buffer do socket cheio, e depois do `SO_SNDBUF`
+                // ampliado isso é uplink saturado de verdade. Largar o pacote é o preço
+                // certo para vídeo ao vivo: dormir aqui segurava a thread da captura,
+                // que é justamente quem produz o próximo quadro, e segurava junto o
+                // mutex do destino.
                 Err(error) if error.kind() == ErrorKind::WouldBlock => *dropped += 1,
                 Err(error) => return Err(error).context("could not send RTP to the SFU"),
             }
         }
 
         Ok(())
+    }
+}
+
+/// Quanto o socket pode ter em voo antes de recusar. Um quadro a 1080p60 sai em umas dez
+/// mensagens, e um quadro-chave em algumas centenas; o padrão do Windows para datagrama
+/// é 8 KB, ou seja, menos de um quadro. Era isso que largava 14% dos pacotes com o
+/// uplink praticamente vazio, e o que travava a imagem de quem assistia a cada movimento
+/// na tela. 4 MB é limite, não reserva: o sistema só usa o que precisa.
+const SEND_BUFFER: usize = 4 * 1024 * 1024;
+
+/// Amplia o buffer de saída do socket, se o sistema deixar.
+///
+/// Não é fatal: o sistema pode aparar o pedido, e transmitir com o buffer padrão é pior
+/// do que com ele grande, mas ainda é melhor do que não transmitir. O tamanho que ficou
+/// vai para o log porque é ele, e não o pedido, que explica perda de pacote depois.
+fn grow_send_buffer(socket: &UdpSocket) {
+    let socket = socket2::SockRef::from(socket);
+
+    if let Err(error) = socket.set_send_buffer_size(SEND_BUFFER) {
+        tracing::warn!(error = %error, "transporte: o buffer de saída ficou no padrão");
+
+        return;
+    }
+
+    match socket.send_buffer_size() {
+        Ok(size) => tracing::info!(bytes = size, "transporte: buffer de saída"),
+        Err(error) => tracing::warn!(error = %error, "transporte: buffer de saída desconhecido"),
     }
 }
 

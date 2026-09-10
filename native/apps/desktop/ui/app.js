@@ -825,6 +825,10 @@ class App {
             + '<input class="w-20 accent-brand" data-audio-volume type="range" min="0" max="100" value="100" aria-label="Volume desta transmissão">'
             + '<span data-audio-volume-value>100%</span>'
             + '</span>'
+            + '<span class="flex items-center gap-1.5 text-ink-soft" title="Brilho — só do seu lado, não muda o que os outros veem">'
+            + '<span aria-hidden="true">☀</span>'
+            + '<input class="w-20 accent-brand" data-brightness type="range" min="100" max="250" value="100" aria-label="Brilho desta transmissão">'
+            + '</span>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-pause type="button">Pausar</button>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-focus type="button">Focar</button>'
             + '<span class="flex items-center gap-1.5">'
@@ -835,6 +839,7 @@ class App {
         const video = tile.querySelector('video');
         video.srcObject = stream;
         this.attachAudioControl(from, tile);
+        this.attachBrightness(tile, video);
         video.onerror = () => this.log('media.video.error', {
             peerId: from,
             message: video.error?.message ?? `media error ${video.error?.code ?? 'unknown'}`,
@@ -859,6 +864,34 @@ class App {
 
         this.startMediaStats(from, video);
         this.paintLayout();
+    }
+
+    /**
+     * Brilho da transmissão, só para quem assiste.
+     *
+     * É um filtro de CSS no `<video>`: nada volta para quem transmite, nada passa pelo
+     * encoder, e jogo escuro deixa de virar quadrado preto sem custar um bit a mais. O
+     * valor fica no navegador de quem assiste e vale para as transmissões seguintes,
+     * porque quem precisa clarear uma precisa clarear todas.
+     */
+    attachBrightness(tile, video) {
+        const control = tile.querySelector('[data-brightness]');
+        const apply = percent => {
+            video.style.filter = percent === 100 ? '' : `brightness(${percent / 100})`;
+        };
+
+        const saved = Number(localStorage.getItem('unkvoid.brilho'));
+        const start = Number.isFinite(saved) && saved >= 100 && saved <= 250 ? saved : 100;
+
+        control.value = String(start);
+        apply(start);
+
+        control.oninput = () => {
+            const percent = Number(control.value);
+
+            apply(percent);
+            localStorage.setItem('unkvoid.brilho', String(percent));
+        };
     }
 
     /**
