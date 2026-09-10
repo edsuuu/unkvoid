@@ -276,6 +276,8 @@ impl WindowsCapturer {
         let frames = Arc::new(AtomicU64::new(0));
         let sink: EventSink = Arc::new(on_event);
 
+        tracing::info!(source = ?config.source, "captura: abrindo o Graphics Capture");
+
         // Monitor e janela são tipos diferentes, mas `iniciar` é genérico e devolve o
         // mesmo controle para os dois.
         let control = match config.source {
@@ -327,6 +329,8 @@ impl WindowsCapturer {
 
         // O áudio não derruba a transmissão: sem permissão ou em Windows antigo, o vídeo
         // continua e a falha fica no log. Ficar mudo é ruim; não transmitir é pior.
+        tracing::info!(scope = ?scope, "captura: imagem no ar, abrindo o áudio do sistema");
+
         let audio = if config.capture_audio {
             match SystemAudio::start(sink, audio_chunks, scope) {
                 Ok(audio) => Some(audio),
