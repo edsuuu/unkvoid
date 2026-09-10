@@ -51,7 +51,13 @@ export class Broadcast {
                 target = producer;
             }
 
-            await invoke('use_sfu', { address: `${target.ip}:${target.port}` });
+            // A chave de SAÍDA do servidor vem na mesma resposta e sempre veio — o app
+            // é que a jogava fora. É com ela que o Rust abre o caminho de volta e vê o
+            // pedido de quadro-chave, que é o que encurta a travada de quem assiste.
+            await invoke('use_sfu', {
+                address: `${target.ip}:${target.port}`,
+                serverKey: target.srtpParameters?.keyBase64 ?? null,
+            });
             this.broadcasting = true;
         } catch (error) {
             await this.stop();

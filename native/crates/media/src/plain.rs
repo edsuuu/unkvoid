@@ -55,6 +55,11 @@ pub struct PlainSender {
     socket: UdpSocket,
     server: SocketAddr,
     srtp: SrtpContext,
+
+    /// Para ABRIR o que o servidor manda de volta, que vem com a chave dele e não com a
+    /// nossa. Sem isto o caminho de retorno era ruído: o pedido de quadro-chave chegava
+    /// em todo buraco de pacote e ninguém conseguia sequer saber que ele existia.
+    incoming: Option<SrtpContext>,
     video: Box<dyn Packetizer>,
     audio: Box<dyn Packetizer>,
 
@@ -82,7 +87,7 @@ impl PlainSender {
 
     /// `key` é o que o `generate_key` produziu e o que o servidor recebeu; `server` é o
     /// endereço que ele respondeu.
-    pub fn connect(server: impl ToSocketAddrs, key: &[u8]) -> Result<Self> {
+    pub fn connect(server: impl ToSocketAddrs, key: &[u8], server_key: Option<&[u8]>) -> Result<Self> {
         if key.len() != KEY_LEN + SALT_LEN {
             return Err(anyhow!(
                 "SRTP key must be {} bytes, got {}",
@@ -128,10 +133,24 @@ impl PlainSender {
         )
         .map_err(|error| anyhow!("could not start SRTP: {error}"))?;
 
+        // Chave do servidor ausente é cliente falando com servidor antigo: a transmissão
+        // sobe igual, só não há recuperação rápida de perda.
+        let incoming = server_key.and_then(|key| {
+            SrtpContext::new(
+                &key[..KEY_LEN],
+                &key[KEY_LEN..],
+                ProtectionProfile::Aes128CmHmacSha1_80,
+                None,
+                None,
+            )
+            .ok()
+        });
+
         Ok(Self {
             socket,
             server,
             srtp,
+            incoming,
             video: Box::new(new_packetizer(
                 MTU,
                 PAYLOAD_VIDEO,
@@ -241,6 +260,36 @@ impl PlainSender {
         )
     }
 
+
+    /// Lê o que o servidor devolveu e diz se ele pediu um quadro-chave.
+    ///
+    /// O servidor manda esse pedido assim que percebe um buraco na sequência. Sem
+    /// atender, a imagem de quem assiste só se recompõe no quadro-chave periódico — até
+    /// um segundo depois, e é isso que se sente como travada. Atendendo, o congelamento
+    /// dura uma ida e volta.
+    ///
+    /// Não bloqueia: o socket é não-bloqueante e quem chama é a thread da captura, que
+    /// não pode esperar por nada. Lê o que já chegou e volta.
+    pub fn keyframe_requested(&mut self) -> bool {
+        let Some(incoming) = self.incoming.as_mut() else {
+            return false;
+        };
+
+        let mut buffer = [0_u8; 1500];
+        let mut asked = false;
+
+        while let Ok(size) = self.socket.recv(&mut buffer) {
+            // Falha ao abrir é pacote de outra pessoa ou lixo da rede. Ignorar é o certo:
+            // é justamente a autenticação do SRTCP que impede um estranho de nos fazer
+            // gastar quadro-chave a cada pacote forjado.
+            if let Ok(plain) = incoming.decrypt_rtcp(&buffer[..size]) {
+                asked |= wants_keyframe(&plain);
+            }
+        }
+
+        asked
+    }
+
     /// Pacotes largados porque o buffer de saída estava cheio.
     pub fn dropped(&self) -> u64 {
         self.dropped
@@ -331,8 +380,59 @@ fn grow_send_buffer(socket: &UdpSocket) {
     }
 }
 
+/// Procura um pedido de quadro-chave num RTCP composto.
+///
+/// PLI e FIR são as duas formas de dizer a mesma coisa, e navegadores diferentes mandam
+/// uma ou outra — atender só uma deixaria metade das pessoas congelada. O laço anda pelo
+/// campo de comprimento de cada sub-pacote porque o pedido quase nunca vem sozinho: ele
+/// costuma vir atrás de um relatório de recepção, no mesmo datagrama.
+fn wants_keyframe(rtcp: &[u8]) -> bool {
+    /// Payload-specific feedback, onde mora o PLI.
+    const PSFB: u8 = 206;
+    /// Full Intra Request no formato antigo, sozinho num pacote só dele.
+    const LEGACY_FIR: u8 = 192;
+    const PLI: u8 = 1;
+    const FIR: u8 = 4;
+
+    let mut rest = rtcp;
+
+    while rest.len() >= 4 {
+        let format = rest[0] & 0x1F;
+        let kind = rest[1];
+        // O campo conta palavras de 32 bits sem contar a primeira, então o pacote inteiro
+        // tem (length + 1) * 4 bytes.
+        let size = (usize::from(u16::from_be_bytes([rest[2], rest[3]])) + 1) * 4;
+
+        if kind == LEGACY_FIR || (kind == PSFB && (format == PLI || format == FIR)) {
+            return true;
+        }
+
+        if size == 0 || size > rest.len() {
+            return false;
+        }
+
+        rest = &rest[size..];
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// Um PLI atrás de um relatório de recepção, que é como ele chega de verdade. Se o
+    /// laço não andar pelo comprimento, este caso passa batido e a travada continua.
+    #[test]
+    fn a_pli_behind_a_receiver_report_is_found() {
+        // RR vazio: versão 2, sem blocos, PT 201, comprimento 1 (8 bytes no total).
+        let mut packet = vec![0x80, 201, 0x00, 0x01, 0, 0, 0, 1];
+        // PLI: versão 2, FMT 1, PT 206, comprimento 2 (12 bytes no total).
+        packet.extend_from_slice(&[0x81, 206, 0x00, 0x02, 0, 0, 0, 1, 0, 0, 0, 2]);
+
+        assert!(wants_keyframe(&packet), "PLI depois de um RR não foi encontrado");
+        assert!(!wants_keyframe(&packet[..8]), "um RR sozinho não pede quadro-chave");
+    }
+
     use super::*;
 
     /// Um socket local no lugar do SFU, para o caminho inteiro — empacotar, proteger,
@@ -352,8 +452,8 @@ mod tests {
     fn key_must_match_the_suite_size() {
         let (_servidor, address) = listener();
 
-        assert!(PlainSender::connect(address, &[0; 10]).is_err());
-        assert!(PlainSender::connect(address, &PlainSender::generate_key()).is_ok());
+        assert!(PlainSender::connect(address, &[0; 10], None).is_err());
+        assert!(PlainSender::connect(address, &PlainSender::generate_key(), None).is_ok());
     }
 
     #[test]
@@ -365,7 +465,7 @@ mod tests {
     fn a_big_frame_becomes_several_protected_packets() {
         let (server_socket, address) = listener();
         let key = PlainSender::generate_key();
-        let mut sender = PlainSender::connect(address, &key).expect("could not connect");
+        let mut sender = PlainSender::connect(address, &key, None).expect("could not connect");
 
         // Uma unidade NAL bem maior que a MTU: o empacotador precisa quebrá-la, e cada
         // pedaço tem de chegar protegido.
@@ -417,7 +517,7 @@ mod tests {
     fn audio_fits_one_packet_and_advances_the_clock() {
         let (server_socket, address) = listener();
         let mut sender =
-            PlainSender::connect(address, &PlainSender::generate_key()).expect("could not connect");
+            PlainSender::connect(address, &PlainSender::generate_key(), None).expect("could not connect");
 
         sender
             .send_audio(&[0x7F; 160])
@@ -455,7 +555,7 @@ mod tests {
     fn dropped_frame_opens_a_gap_in_the_video_clock() {
         let (server_socket, address) = listener();
         let mut sender =
-            PlainSender::connect(address, &PlainSender::generate_key()).expect("could not connect");
+            PlainSender::connect(address, &PlainSender::generate_key(), None).expect("could not connect");
 
         let make_frame = |timestamp_ns| EncodedFrame {
             data: vec![0, 0, 0, 1, 0x41, 0xAB],

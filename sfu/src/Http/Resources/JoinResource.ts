@@ -18,6 +18,10 @@ export class JoinResource implements Resource {
             resumeKey: this.peer.resumeKey,
             routerRtpCapabilities: this.room.router.rtpCapabilities,
             peers: this.room.describePeers(this.peer.id),
+            locked: this.room.locked,
+            // Só para desenhar a interface. Quem mandar `removePeer` sem ser dono é
+            // recusado no servidor de qualquer jeito — esconder botão não é autorização.
+            owner: this.room.isOwner(this.peer),
         };
     }
 }

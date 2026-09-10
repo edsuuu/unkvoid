@@ -18,6 +18,7 @@ export class JoinController {
         const { peer, resumed } = room.addPeer(request.name(), request.session.socket, {
             resumeKey: request.resumeKey(),
             resume: request.wantsResume(),
+            installId: request.installId(),
         });
 
         request.session.room = room;

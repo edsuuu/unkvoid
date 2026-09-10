@@ -6,6 +6,9 @@ const CODE = /^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/;
 
 const NAME_MAX = 40;
 
+/** Formato do identificador de instalação: o `randomUUID` do navegador. */
+const INSTALL = /^[0-9a-f-]{8,64}$/;
+
 export class JoinRequest extends Request {
     protected override validate(): void {
         if (!CODE.test(this.string('room'))) {
@@ -17,6 +20,16 @@ export class JoinRequest extends Request {
         if (this.string('name').trim().length > NAME_MAX) {
             throw new ValidationException(`name must be at most ${NAME_MAX} characters`);
         }
+    }
+
+    /**
+     * Quem é a instalação que está entrando. Ausente em cliente antigo, e aí a pessoa
+     * entra sem poder ser dona nem banida — degradar é melhor do que recusar.
+     */
+    public installId(): string | null {
+        const value = this.data.installId;
+
+        return typeof value === 'string' && INSTALL.test(value) ? value : null;
     }
 
     public roomCode(): string {

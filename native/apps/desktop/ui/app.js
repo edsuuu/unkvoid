@@ -9,6 +9,9 @@ const GRID_ICON = '<path stroke-linecap="round" stroke-linejoin="round" d="M4 5h
 const FOCUS_ICON = '<path stroke-linecap="round" stroke-linejoin="round" d="M4 5h16v10H4zM4 17h4v2H4zM10 17h4v2h-4zM16 17h4v2h-4z"/>';
 
 /** Aparência dos elementos que o JavaScript cria. */
+/** Saturação inicial, em porcentagem. Ver o comentário de `attachVideoConfig`. */
+const SATURATION_DEFAULT = 115;
+
 const LOOK = {
     tile: 'group relative m-0 flex min-h-0 flex-col overflow-hidden rounded-lg bg-black',
     tileFocused: 'row-span-full col-span-full',
@@ -47,6 +50,8 @@ class App {
     static UPDATE_EVERY_MS = 6 * 60 * 60 * 1000;
 
     /** Mantém o diagnóstico recente pequeno para o modal abrir sem travar o WebView. */
+    static INSTALL_KEY = 'unkvoid.instalacao';
+    static TOAST_MS = 6000;
     static MAX_LOG_ENTRIES = 250;
     static MAX_LOG_CHARS = 64 * 1024;
     static MAX_WINDOW_SOURCES = 12;
@@ -85,6 +90,28 @@ class App {
     static SERVER = import.meta.env.VITE_SERVER ?? localStorage.getItem('server') ?? 'https://discord.unkvoid.com';
 
     /** A sinalização mora no mesmo host, atrás do mesmo TLS. */
+    /**
+     * O identificador desta instalação do app.
+     *
+     * Sobrevive a reconectar e a fechar o app, que é o que o `peerId` não faz — ele é
+     * sorteado a cada conexão. É nele que a posse da sala se apoia: dono que perde a sala
+     * quando a internet oscila não é dono de nada.
+     *
+     * Não é prova de identidade. Quem editar o próprio app manda o que quiser, e vale
+     * exatamente o que o código da sala vale: quem tem a string, entra. É o modelo do
+     * produto, e está registrado aqui para ser escolha e não acidente.
+     */
+    static installId() {
+        let id = localStorage.getItem(App.INSTALL_KEY);
+
+        if (! id) {
+            id = crypto.randomUUID();
+            localStorage.setItem(App.INSTALL_KEY, id);
+        }
+
+        return id;
+    }
+
     static socketUrl() {
         return `${App.SERVER.replace(/^http/, 'ws')}/sfu`;
     }
@@ -114,6 +141,7 @@ class App {
         this.broadcastStatsAt = 0;
         this.broadcastLine = null;
         this.mediaStatsTimers = new Map();
+        this.mediaStatsRuns = new Map();
         this.remoteAudios = new Map();
         this.consumingProducers = new Set();
         this.peopleStatsTimer = null;
@@ -153,6 +181,14 @@ class App {
             if (! list.hidden && target instanceof Node
                 && ! list.contains(target) && target !== el('room-people')) {
                 list.hidden = true;
+            }
+
+            // O fundo escuro É o `<section>` do modal: clicar nele e não num filho quer
+            // dizer que o clique caiu fora da caixa. Sem isto a única saída era o botão.
+            for (const id of ['share-modal', 'logs-modal']) {
+                if (target === el(id)) {
+                    el(id).hidden = true;
+                }
             }
         });
 
@@ -428,9 +464,28 @@ class App {
             this.sfu.addEventListener('reconnected', event => void this.afterReconnect(event.detail));
             // Sem isto, desistir de reconectar era uma tela parada e nenhuma palavra.
             this.sfu.addEventListener('closed', () => this.fail('a conexão caiu e não voltou. Saia e entre na sala de novo.'));
-            this.sfu.addEventListener('newProducer', event => this.consume(event.detail));
+            this.sfu.addEventListener('newProducer', event => {
+                if (event.detail.kind === 'video') {
+                    this.toast(`${this.sfu?.peers?.get(event.detail.peerId)?.name ?? 'alguém'} começou a transmitir`);
+                }
+
+                void this.consume(event.detail);
+            });
             this.sfu.addEventListener('peersChanged', () => this.refreshPeople());
-            this.sfu.addEventListener('peerLeft', event => this.showScreen(event.detail.peerId, null));
+            this.sfu.addEventListener('peerKicked', event => this.toast(`${event.detail.name} foi removido da sala`));
+            this.sfu.addEventListener('kicked', event => this.fail(event.detail?.reason ?? 'você foi removido desta sala'));
+            this.sfu.addEventListener('roomLockChanged', event => {
+                this.paintRoomLock(event.detail.locked);
+                this.toast(event.detail.locked
+                    ? `${event.detail.byName} trancou a sala`
+                    : `${event.detail.byName} destrancou a sala`);
+            });
+            this.sfu.addEventListener('peerJoined', event => this.toast(`${event.detail.name} entrou na sala`));
+            this.sfu.addEventListener('peerLeft', event => {
+                // O nome antes de remover: depois disto o `SfuClient` já esqueceu quem era.
+                this.toast(`${this.sfu?.peers?.get(event.detail.peerId)?.name ?? 'alguém'} saiu da sala`);
+                this.showScreen(event.detail.peerId, null);
+            });
             this.sfu.addEventListener('producerDead', event => void this.broadcastDied(event.detail));
             this.sfu.addEventListener('producerClosed', event => {
                 if (event.detail.kind === 'video' && event.detail.source === 'screen') {
@@ -445,7 +500,14 @@ class App {
 
             this.broadcast = new Broadcast(this.sfu);
 
-            const joined = await this.sfu.connect(App.socketUrl(), { room: this.room, name: this.name });
+            const joined = await this.sfu.connect(App.socketUrl(), {
+                room: this.room,
+                name: this.name,
+                installId: App.installId(),
+            });
+
+            this.owner = joined?.owner === true;
+            this.paintRoomLock(joined?.locked === true);
 
             // Quem já estava transmitindo antes de você chegar não emite `newProducer`:
             // sem varrer a lista inicial, você entra numa sala com telas ao vivo e não vê
@@ -491,6 +553,7 @@ class App {
         el('self-view').onclick = () => this.toggleSelfView();
         el('watch-pending').onclick = () => this.refreshWatch();
         el('people-refresh').onclick = () => this.refreshWatch();
+        el('room-lock').onclick = () => void this.toggleRoomLock();
         el('leave').onclick = () => this.leave();
         el('logs').onclick = () => this.openLogs();
         el('logs-close').onclick = () => { el('logs-modal').hidden = true; };
@@ -516,6 +579,55 @@ class App {
         } catch {
             this.fail('não deu para copiar — selecione o código à mão.');
         }
+    }
+
+    /**
+     * Um aviso passageiro no canto.
+     *
+     * Existe por segurança, não por enfeite: hoje o código da sala é a única credencial,
+     * e ele é digitado à mão, então nomes fáceis são adivinháveis. Alguém entrar era
+     * silencioso. Um aviso não impede a entrada, mas transforma o problema invisível em
+     * visível — que é o primeiro passo para alguém reagir.
+     *
+     * Também vai para o log, porque quem chegou depois precisa saber quem esteve na sala.
+     */
+    toast(message) {
+        this.log('room.toast', { message });
+
+        const card = document.createElement('p');
+
+        card.className = 'max-w-xs rounded-lg border border-line bg-panel px-3 py-2 text-xs text-ink shadow-lg';
+        card.textContent = message;
+        el('toasts').appendChild(card);
+
+        setTimeout(() => card.remove(), App.TOAST_MS);
+    }
+
+    /**
+     * Tranca a sala, que é o que existe hoje contra entrada indesejada.
+     *
+     * O código da sala é digitado à mão e é a única credencial: nomes fáceis são
+     * adivinháveis. Trancar não protege quem já está dentro de quem já está dentro — para
+     * isso vem o dono e a expulsão — mas fecha a porta para o resto do mundo.
+     *
+     * O estado mora no servidor, não aqui: quem chega depois precisa encontrar a sala
+     * trancada, e um botão que só soubesse de si mesmo não trancaria nada.
+     */
+    async toggleRoomLock() {
+        const locked = el('room-lock').dataset.locked !== 'true';
+
+        try {
+            await this.sfu.request('setRoomLock', { locked });
+        } catch (failure) {
+            this.fail(`não deu para ${locked ? 'trancar' : 'destrancar'}: ${failure.message ?? failure}`);
+        }
+    }
+
+    paintRoomLock(locked) {
+        const button = el('room-lock');
+
+        button.dataset.locked = String(locked);
+        button.textContent = locked ? '🔒 Trancada' : '🔓 Destrancada';
     }
 
     fail(mensagem) {
@@ -638,7 +750,7 @@ class App {
         try {
             el('people-list').hidden = true;
             await this.sfu.request('removePeer', { peerId });
-            this.log('peer.removed', { peerId });
+            this.log('peer.removed', { peerId, owner: this.owner });
         } catch (error) {
             this.fail(`não foi possível remover: ${error.message ?? error}`);
         }
@@ -853,6 +965,7 @@ class App {
 
             clearInterval(this.mediaStatsTimers.get(from));
             this.mediaStatsTimers.delete(from);
+        this.mediaStatsRuns.delete(from);
             this.paintLayout();
 
             return;
@@ -878,9 +991,19 @@ class App {
             + '<input class="w-20 accent-brand" data-audio-volume type="range" min="0" max="100" value="100" aria-label="Volume desta transmissão">'
             + '<span data-audio-volume-value>100%</span>'
             + '</span>'
-            + '<span class="flex items-center gap-1.5 text-ink-soft" title="Brilho — só do seu lado, não muda o que os outros veem">'
-            + '<span aria-hidden="true">☀</span>'
-            + '<input class="w-20 accent-brand" data-brightness type="range" min="100" max="250" value="100" aria-label="Brilho desta transmissão">'
+            + '<span class="relative flex items-center">'
+            + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-video-config type="button" title="Ajustes de imagem — só do seu lado, não mudam o que os outros veem">Imagem</button>'
+            // Ancorado no cartão e não no corpo da página: cada transmissão tem os seus,
+            // e um painel só teria de descobrir a qual delas pertence.
+            + '<span class="absolute bottom-full right-0 z-30 mb-1 hidden w-56 rounded-lg border border-line bg-panel p-3 shadow-lg" data-video-panel>'
+            + '<label class="flex flex-col gap-1 text-xs text-ink-soft">Brilho'
+            + '<input class="accent-brand" data-brightness type="range" min="50" max="250" value="100" aria-label="Brilho desta transmissão">'
+            + '</label>'
+            + '<label class="mt-3 flex flex-col gap-1 text-xs text-ink-soft">Saturação'
+            + '<input class="accent-brand" data-saturation type="range" min="50" max="250" value="115" aria-label="Saturação desta transmissão">'
+            + '</label>'
+            + '<button class="mt-3 cursor-pointer text-xs text-ink-dim hover:text-white" data-video-reset type="button">Voltar ao padrão</button>'
+            + '</span>'
             + '</span>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-pause type="button">Pausar</button>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-focus type="button">Focar</button>'
@@ -892,7 +1015,7 @@ class App {
         const video = tile.querySelector('video');
         video.srcObject = stream;
         this.attachAudioControl(from, tile);
-        this.attachBrightness(tile, video);
+        this.attachVideoConfig(tile, video);
         video.onerror = () => this.log('media.video.error', {
             peerId: from,
             message: video.error?.message ?? `media error ${video.error?.code ?? 'unknown'}`,
@@ -921,32 +1044,51 @@ class App {
     }
 
     /**
-     * Brilho da transmissão, só para quem assiste.
+     * Ajustes de imagem, só para quem assiste.
      *
-     * É um filtro de CSS no `<video>`: nada volta para quem transmite, nada passa pelo
-     * encoder, e jogo escuro deixa de virar quadrado preto sem custar um bit a mais. O
-     * valor fica no navegador de quem assiste e vale para as transmissões seguintes,
-     * porque quem precisa clarear uma precisa clarear todas.
+     * São filtros de CSS no `<video>`: nada volta para quem transmite, nada passa pelo
+     * encoder, e jogo escuro ou lavado deixa de ser problema sem custar um bit a mais.
+     *
+     * Cada transmissão tem o seu painel, mas o valor é guardado uma vez só: quem precisa
+     * clarear uma tela precisa clarear a próxima também, e ajustar tudo de novo a cada
+     * pessoa que entra na sala seria pior do que não ter ajuste.
+     *
+     * Saturação começa acima de 100 de propósito. O H.264 em 4:2:0 joga fora três quartos
+     * da informação de cor, e a imagem chega lavada em relação ao que quem transmite vê.
      */
-    attachBrightness(tile, video) {
-        const control = tile.querySelector('[data-brightness]');
-        // Uma variável, não `style.filter`: o borrão de pausa mora na mesma propriedade,
-        // e escrever direto ali fazia um dos dois apagar o outro.
-        const apply = percent => {
-            video.style.setProperty('--brightness', String(percent / 100));
+    attachVideoConfig(tile, video) {
+        // Variáveis, não `style.filter`: o borrão de pausa mora na mesma propriedade, e
+        // escrever direto ali fazia um dos dois apagar o outro.
+        const controls = [
+            ['--brightness', tile.querySelector('[data-brightness]'), 'unkvoid.brilho', 100],
+            ['--saturation', tile.querySelector('[data-saturation]'), 'unkvoid.saturacao', SATURATION_DEFAULT],
+        ];
+
+        const apply = (property, control) => {
+            video.style.setProperty(property, String(Number(control.value) / 100));
         };
 
-        const saved = Number(localStorage.getItem('unkvoid.brilho'));
-        const start = Number.isFinite(saved) && saved >= 100 && saved <= 250 ? saved : 100;
+        for (const [property, control, key, fallback] of controls) {
+            const saved = Number(localStorage.getItem(key));
 
-        control.value = String(start);
-        apply(start);
+            control.value = String(saved >= 50 && saved <= 250 ? saved : fallback);
+            apply(property, control);
 
-        control.oninput = () => {
-            const percent = Number(control.value);
+            control.oninput = () => {
+                apply(property, control);
+                localStorage.setItem(key, control.value);
+            };
+        }
 
-            apply(percent);
-            localStorage.setItem('unkvoid.brilho', String(percent));
+        const panel = tile.querySelector('[data-video-panel]');
+
+        tile.querySelector('[data-video-config]').onclick = () => panel.classList.toggle('hidden');
+        tile.querySelector('[data-video-reset]').onclick = () => {
+            for (const [property, control, key, fallback] of controls) {
+                control.value = String(fallback);
+                apply(property, control);
+                localStorage.removeItem(key);
+            }
         };
     }
 
@@ -1135,11 +1277,20 @@ class App {
             lastSample = now;
         };
 
+        // Cada `showScreen` redesenha o cartão e chamava isto de novo, e a corrente
+        // anterior seguia se reagendando para sempre — segurando o vídeo, a closure e um
+        // callback por quadro, para nada. O número da rodada é o que mata a antiga.
+        const run = (this.mediaStatsRuns.get(peerId) ?? 0) + 1;
+
+        this.mediaStatsRuns.set(peerId, run);
+
         const countFrame = () => {
-            frames += 1;
-            if ('requestVideoFrameCallback' in video) {
-                video.requestVideoFrameCallback(countFrame);
+            if (this.mediaStatsRuns.get(peerId) !== run) {
+                return;
             }
+
+            frames += 1;
+            video.requestVideoFrameCallback(countFrame);
         };
 
         if ('requestVideoFrameCallback' in video) {
@@ -1470,7 +1621,9 @@ class App {
             ? [
                 `${Math.round((stats.sent - previous.sent) / seconds)} fps`,
                 `${((stats.sentBytes - previous.sentBytes) * 8 / seconds / 1e6).toFixed(1)} Mb/s`,
-                ...(stats.sendDropped ? [`${stats.sendDropped} perdidos`] : []),
+                // Sempre, mesmo em zero. Um campo que só aparece quando está ruim faz
+                // duvidar se ainda funciona — e zero aqui é a informação boa.
+                `${stats.sendDropped} perdidos`,
             ].join(' · ')
             : 'transmitindo…';
 

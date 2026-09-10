@@ -25,6 +25,18 @@ export class Peer {
         socket: WebSocket,
         /** Segredo desta sessão: quem o apresenta de volta é a mesma pessoa, e mais ninguém. */
         public readonly resumeKey: string,
+        /**
+         * A instalação do app, não a pessoa e não a sessão.
+         *
+         * É o único identificador que sobrevive a reconectar e a fechar o app, e por isso
+         * é nele que a posse da sala e o banimento se apoiam: o `id` é sorteado a cada
+         * conexão, e um dono que perde a posse ao oscilar a rede não é dono de nada.
+         *
+         * Não é prova de identidade — quem editar o próprio app manda o que quiser. Vale
+         * exatamente o que o código da sala vale, e o modelo aqui é o mesmo: quem tem a
+         * string, entra.
+         */
+        public readonly installId: string,
     ) {
         this.socket = socket;
     }
