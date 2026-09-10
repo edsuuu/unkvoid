@@ -56,17 +56,23 @@ build-mac: mac-build
 build-linux:
 	cd $(DESKTOP_DIR) && npx tauri build --bundles deb,appimage
 
-# O Linux sai da VPS. O .dmg e o .msi saem do GitHub Actions, porque nenhum dos dois
-# pode ser gerado em Linux: um exige um Mac por licença, o outro exige o WiX no Windows.
+# O Linux sai da VPS: gera o .deb e publica no APT, que é como o Linux instala e
+# atualiza. O .dmg e o .msi saem das máquinas de cada sistema, porque nenhum dos dois
+# pode ser gerado em Linux — um exige um Mac por licença, o outro exige o WiX no Windows.
 #
-# A chave privada vai pela entrada padrão e vira variável de ambiente do lado de lá.
-# Assim ela não aparece na linha de comando (que qualquer um vê no `ps`) e não fica
-# gravada em disco na VPS.
+# A chave que assina atualizações NÃO vem para cá. O Linux não a usa, e a VPS é uma
+# máquina exposta: quem a tiver publica atualização para todo mundo que instalou o app.
+#
+# Por rsync e não por git: o repositório é privado, e clonar de lá exigiria uma
+# credencial do GitHub guardada numa máquina exposta à internet. O `--delete` mantém a
+# cópia igual à daqui, e os `--exclude` preservam o cache do cargo, que são 2 GB e
+# quarenta minutos de compilação.
 build-vps:
 	@set -e; \
-	ssh $(VPS_REMOTE) "set -e; \
-		if [ -d $(VPS_APP)/.git ]; then cd $(VPS_APP) && git fetch --tags && git pull --ff-only; \
-		else git clone $(REPO_URL) $(VPS_APP); fi"; \
+	ssh $(VPS_REMOTE) "mkdir -p $(VPS_APP)"; \
+	rsync -az --delete \
+		--exclude .git --exclude node_modules --exclude target --exclude dist \
+		./native ./Makefile "$(VPS_REMOTE):$(VPS_APP)/"; \
 	ssh $(VPS_REMOTE) "$(VPS_APP)/native/apps/desktop/build-vps.sh"
 
 release:
