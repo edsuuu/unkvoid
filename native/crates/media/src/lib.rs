@@ -59,9 +59,14 @@ impl EncoderConfig {
     pub fn new(quality: Quality, frame_rate: u32) -> Self {
         // Os mesmos valores do app web, onde já foram calibrados.
         let bitrate = match quality {
-            Quality::Hd720 => 4_000_000,
-            Quality::Hd1080 => 7_000_000,
-            Quality::Qhd1440 => 12_000_000,
+            // Medidos depois que o controle de taxa passou a ser respeitado de verdade.
+            // Antes o MFT do Windows ignorava o alvo e entregava 11 Mb/s com 7 pedidos;
+            // quando a taxa passou a valer, 1080p60 caiu para 6,5 Mb/s reais e a imagem
+            // ficou visivelmente pior — o excesso estava tapando um teto baixo demais.
+            // Jogo a 60 quadros é o pior caso do H.264: cena inteira mudando toda vez.
+            Quality::Hd720 => 5_000_000,
+            Quality::Hd1080 => 10_000_000,
+            Quality::Qhd1440 => 16_000_000,
         };
 
         let frame_rate = frame_rate.clamp(Self::FPS_MIN, Self::FPS_MAX);
@@ -106,6 +111,8 @@ impl PlatformEncoder {
     pub fn new(_config: &EncoderConfig) -> Result<Self, EncoderError> {
         Err(EncoderError::Unsupported)
     }
+
+    pub fn request_keyframe(&mut self) {}
 
     pub fn encode(
         &mut self,

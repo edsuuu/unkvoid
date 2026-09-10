@@ -186,3 +186,32 @@ comando, que qualquer um enxerga com `ps`, e não fica gravada em disco na VPS.
 | Erro de formato no Linux | O `.deb` recebeu a URL do AppImage: confira os sufixos no `latest.json` |
 
 Para ver o que o app achou, botão **Logs** dentro do app, depois **Copiar logs**.
+
+
+## O manifesto no nosso próprio servidor
+
+O atualizador embutido consulta dois endereços, em ordem:
+
+1. `https://discord.unkvoid.com/downloads/latest.json`
+2. a release do GitHub, como reserva
+
+O primeiro existe para o auto-update não depender do GitHub Actions. Cada
+sistema é compilado numa máquina diferente — Windows no Windows, macOS num Mac,
+Linux na VPS — e as três chamam o mesmo script:
+
+```
+native/apps/desktop/publish-downloads.sh 0.0.7 windows-x86_64 caminho/do/Unkvoid.msi
+```
+
+Ele copia o instalador e a assinatura para a pasta que o nginx serve, e
+**costura** a entrada da plataforma no `latest.json` em vez de reescrevê-lo:
+publicar o Windows não pode apagar o macOS que subiu ontem. A versão do
+manifesto é sempre a mais nova que já passou por ali, então uma correção só para
+um sistema não rebaixa o que os outros anunciam.
+
+O build da VPS chama o script sozinho, para o AppImage. O `.deb` fica de fora de
+propósito: quem instala por pacote atualiza pelo repositório APT, com
+`apt upgrade`, e não pelo atualizador embutido.
+
+Sem o arquivo `.sig` ao lado, o script recusa. Um manifesto apontando para um
+instalador não assinado é uma atualização que ninguém consegue instalar.

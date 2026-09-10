@@ -39,6 +39,10 @@ pub struct Broadcast {
     /// os 60 fps que não aparecem são culpa nossa ou do jogo: a 60 Hz há 16 666 µs por
     /// quadro, e o que passar disso derruba fps sozinho.
     busy_us: Arc<AtomicU64>,
+
+    /// Quantas vezes o servidor pediu um quadro-chave, ou seja, quantas vezes ele viu um
+    /// buraco na sequência. É a medida de perda que existe entre nós e ele.
+    keyframes: Arc<AtomicU64>,
 }
 
 impl Broadcast {
@@ -87,6 +91,7 @@ impl Broadcast {
         let audio_packets = Arc::new(AtomicU64::new(0));
         let audio_errors = Arc::new(AtomicU64::new(0));
         let busy_us = Arc::new(AtomicU64::new(0));
+        let keyframes = Arc::new(AtomicU64::new(0));
         let captured_callback = Arc::clone(&captured);
         let encoded_callback = Arc::clone(&encoded);
         let sent_callback = Arc::clone(&sent);
@@ -97,6 +102,7 @@ impl Broadcast {
         let audio_packets_callback = Arc::clone(&audio_packets);
         let audio_errors_callback = Arc::clone(&audio_errors);
         let busy_us_callback = Arc::clone(&busy_us);
+        let keyframes_callback = Arc::clone(&keyframes);
 
         tracing::info!(
             source = ?source,
@@ -165,10 +171,24 @@ impl Broadcast {
 
                 let started = std::time::Instant::now();
 
+                // Antes de codificar, e uma vez por quadro: é o único momento em que
+                // dá para atender o pedido, e ler o socket aqui custa uma syscall que
+                // volta vazia na esmagadora maioria dos quadros.
+                let asked = capture_target
+                    .lock()
+                    .ok()
+                    .and_then(|mut target| target.as_mut().map(|sender| sender.keyframe_requested()))
+                    .unwrap_or(false);
+
                 let encoded = {
                     let Ok(mut encoder) = encoder.lock() else {
                         return;
                     };
+
+                    if asked {
+                        encoder.request_keyframe();
+                        keyframes_callback.fetch_add(1, Ordering::Relaxed);
+                    }
 
                     match encoder.encode(surface, frame.timestamp_ns) {
                         Ok(encoded) => {
@@ -226,6 +246,7 @@ impl Broadcast {
             send_errors,
             send_dropped,
             busy_us,
+            keyframes,
             sent_bytes,
             audio_packets,
             audio_errors,
@@ -246,8 +267,8 @@ impl Broadcast {
     }
 
     /// Aponta a transmissão para a porta que o servidor devolveu.
-    pub fn use_sfu(&self, address: String) -> anyhow::Result<()> {
-        let sender = PlainSender::connect(address.as_str(), &self.sfu_key)?;
+    pub fn use_sfu(&self, address: String, server_key: Option<Vec<u8>>) -> anyhow::Result<()> {
+        let sender = PlainSender::connect(address.as_str(), &self.sfu_key, server_key.as_deref())?;
 
         *self
             .sfu
@@ -271,6 +292,7 @@ impl Broadcast {
             "sendErrors": self.send_errors.load(Ordering::Relaxed),
             "sendDropped": self.send_dropped.load(Ordering::Relaxed),
             "busyUs": self.busy_us.load(Ordering::Relaxed),
+            "keyframesAsked": self.keyframes.load(Ordering::Relaxed),
             "sentBytes": self.sent_bytes.load(Ordering::Relaxed),
             "audioPackets": self.audio_packets.load(Ordering::Relaxed),
             "audioErrors": self.audio_errors.load(Ordering::Relaxed),

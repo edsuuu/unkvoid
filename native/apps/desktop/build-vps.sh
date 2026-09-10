@@ -86,6 +86,16 @@ if [ -d "$DOWNLOADS" ]; then
     echo "[INFO] instaladores em $DOWNLOADS"
 fi
 
+# O manifesto no nosso próprio servidor, para o atualizador embutido não depender do
+# GitHub. O `.deb` fica de fora porque quem instala por pacote atualiza pelo APT logo
+# abaixo; quem precisa do manifesto é o AppImage, que não tem gerenciador nenhum.
+APPIMAGE=$(find ../../target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' -printf '%T@ %p\n' 2>/dev/null \
+    | sort -rn | head -1 | cut -d' ' -f2- || true)
+
+if [ -n "$APPIMAGE" ] && [ -f "$APPIMAGE.sig" ]; then
+    ./publish-downloads.sh "$(node -p "require('./src-tauri/tauri.conf.json').version")" linux-x86_64 "$APPIMAGE"
+fi
+
 # O repositório APT: é por ele que o Linux instala e atualiza, com `apt install unkvoid`.
 # O download solto continua existindo para quem só quer o arquivo.
 # O mais recente, não o primeiro que a busca achar: a pasta guarda os `.deb` de todas

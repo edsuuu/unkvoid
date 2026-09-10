@@ -1,5 +1,47 @@
 import { Device } from 'mediasoup-client';
 
+
+/** Folga de reprodução, em milissegundos. Ver `givePlayoutRoom`. */
+const PLAYOUT_TARGET_MS = 400;
+
+/**
+ * Folga de reprodução, para a retransmissão ter tempo de chegar.
+ *
+ * O servidor reenvia pacote perdido quando o player pede, mas o pedido leva uma ida e
+ * volta — daqui até os EUA são uns 150 ms. Com a folga padrão, o pacote reenviado chega
+ * depois da hora de exibir e é jogado fora: o player pediu, o servidor mandou, e a
+ * imagem congelou do mesmo jeito.
+ *
+ * 400 ms cobrem essa ida e volta com margem. É atraso que se paga uma vez, no começo, e
+ * ninguém percebe assistindo — ao contrário de congelar a cada perda.
+ *
+ * Só vídeo: áudio já se protege com o FEC embutido do Opus, e atrasar o som é o que se
+ * nota primeiro. Nada aqui é obrigatório — o nome da propriedade mudou entre versões do
+ * motor, então os dois são tentados e a falta de ambos só custa a folga.
+ */
+function givePlayoutRoom(consumer) {
+    if (consumer.kind !== 'video') {
+        return;
+    }
+
+    const receiver = consumer.rtpReceiver;
+
+    if (! receiver) {
+        return;
+    }
+
+    try {
+        receiver.jitterBufferTarget = PLAYOUT_TARGET_MS;
+    } catch {
+        // Motor antigo: o nome anterior, em segundos.
+        try {
+            receiver.playoutDelayHint = PLAYOUT_TARGET_MS / 1000;
+        } catch {
+            // Sem folga. A transmissão funciona, só recupera pior de uma perda.
+        }
+    }
+}
+
 export class SfuClient extends EventTarget {
     /**
      * Quanto esperar por uma resposta do servidor de mídia.
@@ -59,7 +101,11 @@ export class SfuClient extends EventTarget {
         this.dispatchEvent(new CustomEvent(name, { detail }));
     }
 
-    /** `identity` e `{ room, name }`: o codigo da sala e como voce aparece para os outros. */
+    /**
+     * `identity` e `{ room, name, installId }`: o codigo da sala, como voce aparece para
+     * os outros, e qual instalacao do app e esta. O ultimo e o que sustenta a posse da
+     * sala do outro lado — ele sobrevive a reconectar, e o `peerId` nao.
+     */
     connect(url, identity) {
         this.url = url;
         this.identity = identity;
@@ -386,6 +432,7 @@ export class SfuClient extends EventTarget {
 
         this.consumers.set(consumer.id, consumer);
         this.consumerPeers.set(consumer.id, params.peerId);
+        givePlayoutRoom(consumer);
         await this.request('resumeConsumer', { consumerId: consumer.id });
 
         return { consumer, ...params };

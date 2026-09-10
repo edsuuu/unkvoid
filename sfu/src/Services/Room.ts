@@ -32,6 +32,39 @@ export class Room {
     /** Devolve a sala ao registro quando ela esvazia. O registro é quem ignora se não esvaziou. */
     public onEvicted: ((room: Room) => void) | null = null;
 
+    /**
+     * Sala trancada recusa quem ainda não está dentro.
+     *
+     * O código da sala é digitado à mão e por isso é adivinhável — "sala1", "teste". Ele
+     * é a única credencial que existe, então trancar é o que transforma "quem souber o
+     * nome entra" em "quem já está dentro fica, e mais ninguém entra".
+     *
+     * Não é privilégio de ninguém: quem já está na sala é confiado por definição, e
+     * trancar não age sobre quem está dentro. Expulsar, esse sim, vai ser do dono.
+     *
+     * Reconexão passa: quem cai e volta em GRACE_MS não é gente nova, e uma tranca que
+     * expulsa por oscilação de rede seria pior do que tranca nenhuma.
+     */
+    public locked = false;
+
+    /**
+     * A instalação que criou a sala. Quem chega primeiro fica com a chave.
+     *
+     * Guardado por instalação e não por `peerId` porque o `peerId` é sorteado a cada
+     * conexão: dono amarrado a ele perderia a sala numa oscilação de rede. Sobrevive
+     * também a fechar e reabrir o app, então quem criou a sala continua dono ao voltar.
+     */
+    public ownerInstallId: string | null = null;
+
+    /**
+     * Quem foi expulso, enquanto a sala existir.
+     *
+     * Expulsar sem isto não expulsa nada: a pessoa continua sabendo o código e entra de
+     * novo no segundo seguinte. Some junto com a sala, que é o tempo de vida certo — uma
+     * lista que durasse além dela seria um cadastro de pessoas, e isso é outra coisa.
+     */
+    private readonly banned = new Set<string>();
+
     private readonly evictions = new Map<string, NodeJS.Timeout>();
 
     public constructor(
@@ -61,7 +94,7 @@ export class Room {
     public addPeer(
         name: string,
         socket: WebSocket,
-        options: { resumeKey?: string | null; resume?: boolean } = {},
+        options: { resumeKey?: string | null; resume?: boolean; installId?: string | null } = {},
     ): JoinOutcome {
         const previous = options.resumeKey ? this.findByResumeKey(options.resumeKey) : null;
 
@@ -82,11 +115,48 @@ export class Room {
             this.broadcast('peerLeft', { peerId: previous.id }, previous.id);
         }
 
-        const peer = new Peer(randomUUID(), name, socket, randomBytes(16).toString('hex'));
+        const installId = options.installId ?? null;
+
+        if (installId && this.banned.has(installId)) {
+            throw new ValidationException('você foi removido desta sala');
+        }
+
+        if (this.locked) {
+            throw new ValidationException('esta sala está trancada — peça para alguém lá dentro destrancar');
+        }
+
+        const peer = new Peer(
+            randomUUID(),
+            name,
+            socket,
+            randomBytes(16).toString('hex'),
+            installId ?? '',
+        );
+
+        // Sala vazia: quem acende a luz fica com a chave. `??=` e não `=` porque o dono
+        // que sai e volta reencontra a sala dele, em vez de perdê-la para quem ficou.
+        if (installId && this.peers.size === 0) {
+            this.ownerInstallId ??= installId;
+        }
 
         this.peers.set(peer.id, peer);
 
         return { peer, resumed: false };
+    }
+
+    /** Expulsa e impede a volta. Sem a segunda metade, a primeira não serve para nada. */
+    public banPeer(target: Peer): void {
+        if (target.installId) {
+            this.banned.add(target.installId);
+        }
+
+        this.broadcast('peerKicked', { peerId: target.id, name: target.name });
+        target.send('kicked', { reason: 'você foi removido desta sala' });
+        this.removePeer(target);
+    }
+
+    public isOwner(peer: Peer): boolean {
+        return Boolean(peer.installId) && peer.installId === this.ownerInstallId;
     }
 
     private findByResumeKey(resumeKey: string): Peer | null {

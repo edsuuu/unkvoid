@@ -183,14 +183,32 @@ async fn sfu_offer(
 }
 
 /// Aponta a transmissão para a porta que o servidor devolveu no `producePlain`.
+///
+/// `server_key` é a chave SRTP de SAÍDA do servidor, que vem na mesma resposta. É com ela
+/// que este lado abre o caminho de volta e enxerga o pedido de quadro-chave — sem ela a
+/// transmissão sobe igual, só demora mais a se recompor de uma perda.
 #[tauri::command]
-async fn use_sfu(state: State<'_, ActiveBroadcast>, address: String) -> Result<(), String> {
+async fn use_sfu(
+    state: State<'_, ActiveBroadcast>,
+    address: String,
+    server_key: Option<String>,
+) -> Result<(), String> {
     let active = state.0.lock().await;
+
+    let key = server_key
+        .map(|value| {
+            use base64::Engine;
+
+            base64::engine::general_purpose::STANDARD
+                .decode(value)
+                .map_err(|error| format!("chave do servidor ilegível: {error}"))
+        })
+        .transpose()?;
 
     active
         .as_ref()
         .ok_or_else(|| "no active stream".to_string())?
-        .use_sfu(address)
+        .use_sfu(address, key)
         .map_err(|error| error.to_string())
 }
 

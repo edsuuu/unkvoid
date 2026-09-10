@@ -140,7 +140,7 @@ async fn main() -> Result<()> {
                         .ok_or_else(|| anyhow!("key lost between the request and the answer"))?;
 
                     println!("sending RTP to {address}");
-                    sender = Some(PlainSender::connect(address.as_str(), &key)?);
+                    sender = Some(PlainSender::connect(address.as_str(), &key, None)?);
                 }
             }
         }

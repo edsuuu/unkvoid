@@ -92,11 +92,17 @@
     <button class="cursor-pointer rounded px-3 py-1.5 text-sm text-ink-soft ring-1 ring-inset ring-line transition-colors hover:bg-line hover:text-white" id="self-view" type="button" hidden>Ver o que a sala vê</button>
     <span class="min-w-0 truncate text-[11px] text-ink-dim" data-broadcast-stats>--</span>
 
+    <button class="cursor-pointer rounded px-3 py-1.5 text-sm text-ink-soft ring-1 ring-inset ring-line transition-colors hover:bg-line hover:text-white" id="room-lock" type="button" title="Trancada, a sala recusa quem ainda não entrou">🔓 Destrancada</button>
     <button class="cursor-pointer rounded px-3 py-1.5 text-sm text-ink-soft transition-colors hover:bg-line hover:text-danger" id="leave">Sair</button>
     <button class="cursor-pointer rounded px-2 py-1.5 text-xs text-ink-soft transition-colors hover:bg-line hover:text-white" id="logs">Logs</button>
   </header>
 
   <p class="shrink-0 px-3 py-1 text-center text-xs text-danger" id="room-error" hidden></p>
+
+<!-- Empilha de baixo para cima e nunca cobre a legenda das transmissões, que fica no
+     rodapé de cada cartão. `pointer-events-none` porque aviso não se clica: ele some
+     sozinho, e um retângulo invisível engolindo cliques é pior que aviso nenhum. -->
+<div class="pointer-events-none fixed bottom-4 right-4 z-40 flex flex-col items-end gap-2" id="toasts"></div>
 
   <div class="grid min-h-0 flex-1 gap-2 overflow-auto p-2" id="stage"></div>
 

@@ -49,6 +49,13 @@ impl VideoToolboxEncoder {
         Ok(Self { session })
     }
 
+    /// O servidor pediu um quadro-chave.
+    ///
+    /// Sem efeito aqui por enquanto: o intervalo já é de um segundo, que é o teto da
+    /// travada, e o `videotoolbox` desta versão não expõe a opção por quadro. Existe para
+    /// o caminho de cima não precisar saber em que sistema está.
+    pub fn request_keyframe(&mut self) {}
+
     /// Codifica um quadro. A `surface` vem da captura sem passar pelo processador.
     ///
     /// O VideoToolbox devolve AVCC: cada NAL vem com um prefixo de tamanho, e SPS/PPS

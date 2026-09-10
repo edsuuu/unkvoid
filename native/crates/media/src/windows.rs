@@ -29,6 +29,7 @@ use ::windows::Win32::Graphics::Dxgi::{IDXGIKeyedMutex, IDXGIResource};
 use ::windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVEncCommonLowLatency, CODECAPI_AVEncCommonMeanBitRate,
     CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncCommonRealTime, CODECAPI_AVEncMPVGOPSize,
+    CODECAPI_AVEncVideoForceKeyFrame,
     ICodecAPI, IMFActivate, IMFDXGIDeviceManager, IMFMediaEventGenerator, IMFMediaType, IMFSample,
     IMFTransform, METransformHaveOutput, METransformNeedInput, MF_E_TRANSFORM_NEED_MORE_INPUT,
     MF_EVENT_TYPE, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE,
@@ -77,6 +78,13 @@ pub struct MediaFoundationEncoder {
     height: u32,
     frame_rate: f64,
     bridge: Option<Bridge>,
+
+    /// Pedido de quadro-chave esperando a próxima amostra.
+    ///
+    /// Guardado em vez de aplicado na hora porque a propriedade vale para o quadro
+    /// seguinte: ligá-la fora do caminho de codificação a gastaria num momento em que
+    /// não há quadro nenhum para marcar.
+    force_keyframe: bool,
     /// Um encoder de hardware tem fila: nem todo quadro que entra sai no mesmo instante.
     ready: VecDeque<EncodedFrame>,
 
@@ -197,10 +205,16 @@ impl MediaFoundationEncoder {
                 height,
                 frame_rate: config.frame_rate,
                 bridge: None,
+                force_keyframe: false,
                 ready: VecDeque::new(),
                 credits: 0,
             })
         }
+    }
+
+    /// O servidor pediu um quadro-chave: o próximo sai como tal.
+    pub fn request_keyframe(&mut self) {
+        self.force_keyframe = true;
     }
 
     /// Codifica um quadro. `surface` vem da captura sem passar pela CPU.
@@ -211,6 +225,10 @@ impl MediaFoundationEncoder {
     ) -> Result<EncodedFrame, EncoderError> {
         unsafe {
             self.cross_the_bridge(surface)?;
+
+            if std::mem::take(&mut self.force_keyframe) {
+                self.mark_keyframe();
+            }
 
             let sample = self.build_sample(timestamp_ns)?;
 
@@ -466,6 +484,24 @@ impl MediaFoundationEncoder {
 
             texture.ok_or_else(|| EncoderError::Encode("a textura NV12 não foi criada".into()))
         }
+    }
+
+    /// Marca o próximo quadro como chave.
+    ///
+    /// Silenciosa quando o encoder não implementa: a transmissão continua, só recupera de
+    /// uma perda no quadro-chave periódico em vez de na hora. Falhar aqui derrubaria a
+    /// transmissão inteira por causa de uma otimização.
+    fn mark_keyframe(&self) {
+        let Ok(codec) = self.transform.cast::<ICodecAPI>() else {
+            return;
+        };
+
+        let _ = unsafe {
+            codec.SetValue(
+                &CODECAPI_AVEncVideoForceKeyFrame,
+                &variant(VT_UI4, VARIANT_0_0_0 { ulVal: 1 }),
+            )
+        };
     }
 
     unsafe fn build_sample(&self, timestamp_ns: u64) -> Result<IMFSample, EncoderError> {

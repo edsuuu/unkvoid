@@ -186,3 +186,13 @@ cargo run -p media --example plain -- <ws> <sala>     # o SFU confirmando que re
   tem a classe não faz nada.
 - **`build.rs` tem `cargo:rerun-if-changed=../dist`.** Sem isso o cargo não recompila
   quando só o frontend muda, e o app sai com a interface antiga. Não remova.
+
+## Documentos
+
+| Arquivo | O que tem |
+|---|---|
+| `DECISOES.md` | decisões de arquitetura e o porquê de cada uma |
+| `REDE.md` | o caminho da imagem, os ajustes de rede e o que mora fora do repositório |
+| `SEGURANCA.md` | o que está protegido, o que não está, e o que falta |
+| `AUTO-UPDATE.md` | assinatura, manifesto e os dois canais de atualização |
+| `BUILD-WINDOWS.md`, `BUILD-MACOS.md` | como gerar instalador em cada sistema |
