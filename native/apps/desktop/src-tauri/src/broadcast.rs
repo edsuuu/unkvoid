@@ -30,6 +30,15 @@ pub struct Broadcast {
     sent_bytes: Arc<AtomicU64>,
     audio_packets: Arc<AtomicU64>,
     audio_errors: Arc<AtomicU64>,
+
+    /// Microssegundos gastos dentro do callback da captura, somados.
+    ///
+    /// Codificar e mandar acontecem na thread que a captura chama, então cada
+    /// microssegundo aqui é um microssegundo em que o Windows não entrega o quadro
+    /// seguinte. Dividido por `captured` dá o custo por quadro, e é o número que diz se
+    /// os 60 fps que não aparecem são culpa nossa ou do jogo: a 60 Hz há 16 666 µs por
+    /// quadro, e o que passar disso derruba fps sozinho.
+    busy_us: Arc<AtomicU64>,
 }
 
 impl Broadcast {
@@ -77,6 +86,7 @@ impl Broadcast {
         let sent_bytes = Arc::new(AtomicU64::new(0));
         let audio_packets = Arc::new(AtomicU64::new(0));
         let audio_errors = Arc::new(AtomicU64::new(0));
+        let busy_us = Arc::new(AtomicU64::new(0));
         let captured_callback = Arc::clone(&captured);
         let encoded_callback = Arc::clone(&encoded);
         let sent_callback = Arc::clone(&sent);
@@ -86,6 +96,7 @@ impl Broadcast {
         let sent_bytes_callback = Arc::clone(&sent_bytes);
         let audio_packets_callback = Arc::clone(&audio_packets);
         let audio_errors_callback = Arc::clone(&audio_errors);
+        let busy_us_callback = Arc::clone(&busy_us);
 
         tracing::info!(
             source = ?source,
@@ -152,6 +163,8 @@ impl Broadcast {
                     return;
                 };
 
+                let started = std::time::Instant::now();
+
                 let encoded = {
                     let Ok(mut encoder) = encoder.lock() else {
                         return;
@@ -162,10 +175,13 @@ impl Broadcast {
                             encoded_callback.fetch_add(1, Ordering::Relaxed);
                             encoded
                         }
+                        // `NeedsMoreInput` é a fila do encoder de hardware enchendo, não
+                        // defeito. Contar como erro fazia o diagnóstico acusar falha no
+                        // começo de toda transmissão, que é justamente quando o encoder
+                        // de placa está enchendo a fila dele.
+                        Err(media::EncoderError::NeedsMoreInput) => return,
                         Err(error) => {
                             encode_errors_callback.fetch_add(1, Ordering::Relaxed);
-                            // `NeedsMoreInput` é a fila do encoder de hardware enchendo,
-                            // não defeito: no `debug` para não afogar o arquivo.
                             tracing::debug!(error = %error, "encoder: quadro sem saída");
 
                             return;
@@ -194,6 +210,8 @@ impl Broadcast {
                         }
                     }
                 }
+
+                busy_us_callback.fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
             },
         )?;
 
@@ -207,6 +225,7 @@ impl Broadcast {
             encode_errors,
             send_errors,
             send_dropped,
+            busy_us,
             sent_bytes,
             audio_packets,
             audio_errors,
@@ -251,6 +270,7 @@ impl Broadcast {
             "encodeErrors": self.encode_errors.load(Ordering::Relaxed),
             "sendErrors": self.send_errors.load(Ordering::Relaxed),
             "sendDropped": self.send_dropped.load(Ordering::Relaxed),
+            "busyUs": self.busy_us.load(Ordering::Relaxed),
             "sentBytes": self.sent_bytes.load(Ordering::Relaxed),
             "audioPackets": self.audio_packets.load(Ordering::Relaxed),
             "audioErrors": self.audio_errors.load(Ordering::Relaxed),
