@@ -4,6 +4,7 @@
 //! crate `capture` cuida do que muda de plataforma para plataforma.
 
 mod broadcast;
+mod logbook;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -98,6 +99,22 @@ fn list_windows() -> Result<Vec<WindowInfo>, String> {
         .map_err(|error| error.to_string())
 }
 
+/// A interface manda para cá o mesmo diagnóstico que mostra na janela de logs.
+///
+/// Sem isto ele vivia só na memória da webview, com teto de linhas: o app caía e o
+/// diagnóstico do que aconteceu caía junto, que é exatamente o momento em que ele
+/// importa.
+#[tauri::command]
+fn log_line(line: String) {
+    logbook::write(&line);
+}
+
+/// Onde o arquivo mora, para a janela de diagnóstico dizer à pessoa o que anexar.
+#[tauri::command]
+fn log_path() -> String {
+    logbook::path().to_string_lossy().into_owned()
+}
+
 /// Liga a captura e o encoder. A tela sobe uma vez só, para o servidor.
 ///
 /// `source` vem como `display:<id>` ou `window:<id>`; ausente é o monitor principal.
@@ -116,18 +133,39 @@ async fn start_broadcast(
         return Err("a stream is already in progress".into());
     }
 
-    *active = Some(
-        Broadcast::start(
-            quality_from(&quality),
-            fps,
-            source_from(source.as_deref()),
-            audio,
-            mute_calls,
-        )
-        .map_err(|error| error.to_string())?,
+    // Registrado ANTES de chamar. No Windows a captura e o encoder são COM e Direct3D:
+    // quando um deles derruba o processo não há erro para devolver nem pânico para o
+    // hook pegar, e a única prova do que estava acontecendo é a linha já em disco.
+    tracing::info!(
+        %quality,
+        fps,
+        source = source.as_deref().unwrap_or("primary"),
+        audio,
+        mute_calls,
+        "broadcast: ligando captura e encoder"
     );
 
-    Ok(())
+    let started = Broadcast::start(
+        quality_from(&quality),
+        fps,
+        source_from(source.as_deref()),
+        audio,
+        mute_calls,
+    );
+
+    match started {
+        Ok(broadcast) => {
+            *active = Some(broadcast);
+            tracing::info!("broadcast: no ar");
+
+            Ok(())
+        }
+        Err(error) => {
+            tracing::error!(error = %error, "broadcast: não subiu");
+
+            Err(error.to_string())
+        }
+    }
 }
 
 /// O que mandar ao servidor para abrir o ingest puro: codec, SSRC e a chave SRTP.
@@ -390,7 +428,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt().with_env_filter("info").init();
+    logbook::init();
 
     tauri::Builder::default()
         // Uma cópia só. Abrir o app de novo traz a janela que já existe para a frente,
@@ -413,7 +451,9 @@ pub fn run() {
             use_sfu,
             stop_broadcast,
             broadcast_stats,
-            expand_window
+            expand_window,
+            log_line,
+            log_path
         ])
         .manage(HasTray(AtomicBool::new(false)))
         .setup(|app| {
