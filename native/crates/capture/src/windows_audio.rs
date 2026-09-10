@@ -22,6 +22,7 @@
 //! Ao compartilhar a tela inteira não há um processo só, e aí volta a exclusão da nossa
 //! árvore. Nesse caso o Discord entra no áudio, e a interface avisa antes.
 
+use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::JoinHandle;
@@ -313,14 +314,7 @@ unsafe fn activate(scope: AudioScope) -> Result<IAudioClient, CaptureError> {
             },
         };
 
-        // A API recebe a configuração como um PROPVARIANT de blob. Não há construtor
-        // para isso na crate, então o registro é montado campo a campo.
-        let mut variant = PROPVARIANT::default();
-        let fields = &mut variant.Anonymous.Anonymous;
-
-        fields.vt = VT_BLOB;
-        fields.Anonymous.blob.cbSize = size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32;
-        fields.Anonymous.blob.pBlobData = (&raw mut params).cast::<u8>();
+        let variant = blob_of(&mut params);
 
         let done_event = CreateEventW(None, false, false, None).map_err(platform_error)?;
         let handler: IActivateAudioInterfaceCompletionHandler = Done(done_event).into();
@@ -328,7 +322,7 @@ unsafe fn activate(scope: AudioScope) -> Result<IAudioClient, CaptureError> {
         let operation = ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
             &IAudioClient::IID,
-            Some(&variant),
+            Some(&*variant),
             &handler,
         )
         .map_err(platform_error)?;
@@ -352,5 +346,63 @@ unsafe fn activate(scope: AudioScope) -> Result<IAudioClient, CaptureError> {
             })?
             .cast::<IAudioClient>()
             .map_err(platform_error)
+    }
+}
+
+/// Empacota a configuração no `PROPVARIANT` de blob que a API recebe. Não há construtor
+/// para isso na crate, então o registro é montado campo a campo.
+///
+/// Sai como `ManuallyDrop` porque o `PROPVARIANT` se julga dono do que carrega: ao sair
+/// de escopo ele chama `PropVariantClear`, e para `VT_BLOB` isso devolve `pBlobData` ao
+/// alocador do COM. O blob aqui é a pilha de quem chamou, que nunca veio desse alocador
+/// — liberá-la corrompia o heap e matava o processo (0xC0000374) milissegundos depois de
+/// a transmissão dizer que estava no ar, sem HRESULT e sem pânico. Dono destes bytes é
+/// `params`, e ele vive na pilha de quem chamou até depois da ativação.
+///
+/// # Segurança
+///
+/// O `PROPVARIANT` devolvido guarda um ponteiro cru para `params`: ele só vale enquanto
+/// `params` não sair de escopo.
+unsafe fn blob_of(params: &mut AUDIOCLIENT_ACTIVATION_PARAMS) -> ManuallyDrop<PROPVARIANT> {
+    let mut variant = ManuallyDrop::new(PROPVARIANT::default());
+
+    unsafe {
+        let fields = &mut variant.Anonymous.Anonymous;
+
+        fields.vt = VT_BLOB;
+        fields.Anonymous.blob.cbSize = size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32;
+        fields.Anonymous.blob.pBlobData = std::ptr::from_mut(params).cast::<u8>();
+    }
+
+    variant
+}
+
+#[cfg(test)]
+mod testes {
+    use super::*;
+
+    /// Deixa o `PROPVARIANT` do blob sair de escopo de propósito. Enquanto ele for
+    /// `ManuallyDrop` isso não faz nada; no dia em que voltar a ser solto normalmente, o
+    /// `PropVariantClear` devolve pilha ao alocador do COM e este teste morre com o
+    /// processo — que é a falha que se quer impedir de voltar.
+    #[test]
+    fn o_blob_nao_libera_a_pilha() {
+        let mut params = AUDIOCLIENT_ACTIVATION_PARAMS {
+            ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+            Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+                ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+                    TargetProcessId: 1,
+                    ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+                },
+            },
+        };
+
+        let esperado = std::ptr::from_mut(&mut params).cast::<u8>();
+        let variant = unsafe { blob_of(&mut params) };
+
+        unsafe {
+            assert_eq!(variant.Anonymous.Anonymous.vt, VT_BLOB);
+            assert_eq!(variant.Anonymous.Anonymous.Anonymous.blob.pBlobData, esperado);
+        }
     }
 }

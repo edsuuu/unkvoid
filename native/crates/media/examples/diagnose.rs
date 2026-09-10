@@ -139,6 +139,7 @@ fn verdict(code: Option<i32>) -> String {
         0xC000_001D => " — instrução ilegal",
         0xC000_0094 => " — divisão por zero",
         0xC000_00FD => " — estouro de pilha",
+        0xC000_0374 => " — heap corrompido",
         0xC000_0409 => " — pilha corrompida",
         _ => "",
     };
@@ -288,7 +289,11 @@ fn pipeline(quality: Quality, source: CaptureSource) -> Result<String, String> {
             quality,
             source,
             frame_rate: 60,
-            capture_audio: false,
+            // Iguais aos de `Broadcast::start`: o áudio do sistema sobe numa thread à
+            // parte e já derrubou o processo por conta própria. Deixá-lo de fora aqui
+            // fazia o passo passar com o app morrendo.
+            capture_audio: true,
+            mute_listed_apps: true,
             ..CaptureConfig::default()
         },
         move |event| {
