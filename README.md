@@ -196,4 +196,5 @@ cargo run -p media --example plain -- <ws> <sala>     # o SFU confirmando que re
 | `SEGURANCA.md` | o que está protegido, o que não está, e o que falta |
 | `AUTO-UPDATE.md` | assinatura, manifesto e os dois canais de atualização |
 | `SERVIDOR.md` | como levantar a VPS do zero: firewall, nginx, SFU e repositório APT |
+| `UDP.md` | quantas portas UDP a rede precisa abrir, e o que quebra calado quando aperta |
 | `BUILD-WINDOWS.md`, `BUILD-MACOS.md` | como gerar instalador em cada sistema |
