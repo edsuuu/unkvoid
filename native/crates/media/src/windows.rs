@@ -38,6 +38,7 @@ use ::windows::Win32::Media::MediaFoundation::{
     MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_REGISTER_TYPE_INFO, MFTEnumEx,
     MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive,
 };
+use ::windows::Win32::System::Com::CoTaskMemFree;
 use ::windows::core::Interface;
 
 use crate::{EncodedFrame, EncoderConfig, EncoderError, GpuSurface};
@@ -645,16 +646,31 @@ unsafe fn encoder_de_hardware() -> Result<IMFTransform, EncoderError> {
         )
         .map_err(start_error)?;
 
-        if how_many == 0 {
+        if found.is_null() {
             return Err(EncoderError::Start(
                 "esta máquina não tem encoder de H.264 por hardware".into(),
             ));
         }
 
-        let list = std::slice::from_raw_parts(found, how_many as usize);
-        let first = list[0]
-            .clone()
-            .ok_or_else(|| EncoderError::Start("a lista de encoders veio vazia".into()))?;
+        // O `MFTEnumEx` devolve um vetor do alocador COM com uma referência para cada
+        // encoder. Quem chamou é dono das duas coisas: das referências e do vetor. Antes
+        // daqui saía um `clone` — que soma mais uma referência — e nada era liberado,
+        // então cada abertura de transmissão deixava para trás o vetor inteiro e um
+        // objeto COM por encoder instalado na máquina.
+        let list = std::slice::from_raw_parts_mut(found, how_many as usize);
+        let first = list.first_mut().and_then(Option::take);
+
+        // Os outros são liberados aqui; o vetor, logo depois. Vale inclusive quando não
+        // veio nenhum: o alocador entrega o vetor do mesmo jeito.
+        for slot in list.iter_mut().skip(1) {
+            drop(slot.take());
+        }
+
+        CoTaskMemFree(Some(found.cast::<core::ffi::c_void>().cast_const()));
+
+        let first = first.ok_or_else(|| {
+            EncoderError::Start("esta máquina não tem encoder de H.264 por hardware".into())
+        })?;
 
         let transform: IMFTransform = first.ActivateObject().map_err(start_error)?;
 
