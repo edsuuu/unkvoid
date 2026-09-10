@@ -49,10 +49,22 @@ const HNS_PER_SECOND: i64 = 10_000_000;
 /// `MFStartup` é por processo, e chamar duas vezes devolve erro.
 static MF_STARTUP: Once = Once::new();
 
+/// Prazo para tomar cada lado do keyed mutex, em milissegundos. Um quadro a 60 Hz dura
+/// 16 ms; um segundo é folga de sobra. Esperar `INFINITE` por uma chave que o outro lado
+/// não vai devolver — driver que reiniciou, ponte remontada no meio — penduraria a thread
+/// da captura para sempre, sem erro e sem log.
+const LOCK_TIMEOUT_MS: u32 = 1_000;
+
 pub struct MediaFoundationEncoder {
     device: ID3D11Device,
     video_device: ID3D11VideoDevice,
     video_context: ID3D11VideoContext,
+
+    /// Guardado só para continuar existindo: o MFT recebe o gerente como número cru no
+    /// `MFT_MESSAGE_SET_D3D_MANAGER` e não é dono dele. Sendo local de `new`, ele morria
+    /// ao fim da abertura e o encoder ficava com um ponteiro para nada — que só cobra no
+    /// primeiro quadro, dentro do driver.
+    _manager: IMFDXGIDeviceManager,
     transform: IMFTransform,
     events: IMFMediaEventGenerator,
     width: u32,
@@ -172,6 +184,7 @@ impl MediaFoundationEncoder {
                 device,
                 video_device,
                 video_context,
+                _manager: manager,
                 transform,
                 events,
                 width,
@@ -237,7 +250,7 @@ impl MediaFoundationEncoder {
             // e é o que garante que a cópia terminou antes do blit começar.
             bridge
                 .capture_lock
-                .AcquireSync(0, u32::MAX)
+                .AcquireSync(0, LOCK_TIMEOUT_MS)
                 .map_err(encode_error)?;
 
             surface
@@ -256,7 +269,7 @@ impl MediaFoundationEncoder {
 
             bridge
                 .my_lock
-                .AcquireSync(1, u32::MAX)
+                .AcquireSync(1, LOCK_TIMEOUT_MS)
                 .map_err(encode_error)?;
 
             // `ManuallyDrop` porque o campo é dono do ponteiro: sem isto a struct
@@ -267,11 +280,16 @@ impl MediaFoundationEncoder {
                 ..Default::default()
             };
 
-            self.video_context
-                .VideoProcessorBlt(&bridge.processor, &bridge.output, 0, &[stream])
-                .map_err(encode_error)?;
+            let blit =
+                self.video_context
+                    .VideoProcessorBlt(&bridge.processor, &bridge.output, 0, &[stream]);
 
+            // A trava volta antes do erro subir. Com o `?` no blit, um quadro recusado
+            // saía daqui com a chave na mão e o quadro seguinte esperava por ela para
+            // sempre — a transmissão congelava sem ninguém errar de novo.
             bridge.my_lock.ReleaseSync(0).map_err(encode_error)?;
+
+            blit.map_err(encode_error)?;
         }
 
         Ok(())
