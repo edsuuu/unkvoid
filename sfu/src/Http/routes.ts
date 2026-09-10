@@ -5,7 +5,6 @@ import type { JoinController } from './Controllers/JoinController.js';
 import type { LeaveController } from './Controllers/LeaveController.js';
 import type { PeerController } from './Controllers/PeerController.js';
 import type { ProducerController } from './Controllers/ProducerController.js';
-import type { RoomController } from './Controllers/RoomController.js';
 import type { TransportController } from './Controllers/TransportController.js';
 import { ConsumeRequest } from './Requests/ConsumeRequest.js';
 import { ConsumerRequest } from './Requests/ConsumerRequest.js';
@@ -13,7 +12,6 @@ import { JoinRequest } from './Requests/JoinRequest.js';
 import { ProducePlainRequest } from './Requests/ProducePlainRequest.js';
 import { ProducerRequest } from './Requests/ProducerRequest.js';
 import { RemovePeerRequest } from './Requests/RemovePeerRequest.js';
-import { SetRoomLockRequest } from './Requests/SetRoomLockRequest.js';
 import { Request } from './Requests/Request.js';
 import { TransportRequest } from './Requests/TransportRequest.js';
 
@@ -23,7 +21,6 @@ export type Controllers = {
     transport: TransportController;
     producer: ProducerController;
     peer: PeerController;
-    room: RoomController;
     consumer: ConsumerController;
 };
 
@@ -50,10 +47,6 @@ export const routes = (controllers: Controllers): Record<ActionName, Route> => (
     [Action.RemovePeer]: {
         build: (data, session) => new RemovePeerRequest(data, session),
         handle: (request) => controllers.peer.remove(request),
-    },
-    [Action.SetRoomLock]: {
-        build: (data, session) => new SetRoomLockRequest(data, session),
-        handle: (request) => controllers.room.setLock(request),
     },
     [Action.CreateTransport]: {
         build: (data, session) => new Request(data, session),

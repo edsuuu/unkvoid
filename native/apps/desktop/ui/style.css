@@ -98,11 +98,16 @@
      * cinza, quem olha não sabe se pausou ou se a rede caiu. É filtro de CSS no
      * `<video>` — canvas não desenharia nada que isto não desenhe.
      *
-     * O brilho entra como variável porque mora na MESMA propriedade `filter`: escrevê-lo
-     * direto em `style.filter` fazia a pausa apagar o brilho e o brilho apagar a pausa.
+     * Brilho e saturação entram como variáveis porque moram na MESMA propriedade
+     * `filter`: escrevê-los direto em `style.filter` fazia a pausa apagar os dois e os
+     * dois apagarem a pausa.
+     *
+     * A saturação precisa estar aqui, e não só na variável: o controle gravava
+     * `--saturation` e este filtro nunca a lia, então arrastar a barra não mudava um
+     * pixel. Na pausa ela não aparece porque o `grayscale` já zera a cor.
      */
     #stage video {
-        filter: brightness(var(--brightness, 1));
+        filter: brightness(var(--brightness, 1)) saturate(var(--saturation, 1));
     }
 
     [data-paused] video {

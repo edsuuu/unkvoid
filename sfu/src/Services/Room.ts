@@ -33,21 +33,6 @@ export class Room {
     public onEvicted: ((room: Room) => void) | null = null;
 
     /**
-     * Sala trancada recusa quem ainda não está dentro.
-     *
-     * O código da sala é digitado à mão e por isso é adivinhável — "sala1", "teste". Ele
-     * é a única credencial que existe, então trancar é o que transforma "quem souber o
-     * nome entra" em "quem já está dentro fica, e mais ninguém entra".
-     *
-     * Não é privilégio de ninguém: quem já está na sala é confiado por definição, e
-     * trancar não age sobre quem está dentro. Expulsar, esse sim, vai ser do dono.
-     *
-     * Reconexão passa: quem cai e volta em GRACE_MS não é gente nova, e uma tranca que
-     * expulsa por oscilação de rede seria pior do que tranca nenhuma.
-     */
-    public locked = false;
-
-    /**
      * A instalação que criou a sala. Quem chega primeiro fica com a chave.
      *
      * Guardado por instalação e não por `peerId` porque o `peerId` é sorteado a cada
@@ -119,10 +104,6 @@ export class Room {
 
         if (installId && this.banned.has(installId)) {
             throw new ValidationException('você foi removido desta sala');
-        }
-
-        if (this.locked) {
-            throw new ValidationException('esta sala está trancada — peça para alguém lá dentro destrancar');
         }
 
         const peer = new Peer(

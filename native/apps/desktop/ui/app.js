@@ -17,8 +17,10 @@ const LOOK = {
     tileFocused: 'row-span-full col-span-full',
 
     /* Fora do fluxo e acima de tudo: é assim que o vídeo cobre a janela inteira sem a
-       barra da sala nem o respiro do `body` sobrando na borda. */
-    tileFullscreen: 'fixed inset-0 z-40 rounded-none',
+       barra da sala nem o respiro do `body` sobrando na borda. O arredondamento do
+       cartão fica: com a legenda em `absolute`, o vídeo é o único filho no fluxo e
+       ocupa a altura toda, então a única borda que sobra é a das proporções. */
+    tileFullscreen: 'fixed inset-0 z-40',
 
     caption: 'flex items-center gap-2 bg-panel px-3 py-1.5 text-xs text-ink',
 
@@ -495,12 +497,6 @@ class App {
             this.sfu.addEventListener('peersChanged', () => this.refreshPeople());
             this.sfu.addEventListener('peerKicked', event => this.toast(`${event.detail.name} foi removido da sala`));
             this.sfu.addEventListener('kicked', event => this.fail(event.detail?.reason ?? 'você foi removido desta sala'));
-            this.sfu.addEventListener('roomLockChanged', event => {
-                this.paintRoomLock(event.detail.locked);
-                this.toast(event.detail.locked
-                    ? `${event.detail.byName} trancou a sala`
-                    : `${event.detail.byName} destrancou a sala`);
-            });
             this.sfu.addEventListener('peerJoined', event => this.toast(`${event.detail.name} entrou na sala`));
             this.sfu.addEventListener('peerLeft', event => {
                 // O nome antes de remover: depois disto o `SfuClient` já esqueceu quem era.
@@ -528,7 +524,6 @@ class App {
             });
 
             this.owner = joined?.owner === true;
-            this.paintRoomLock(joined?.locked === true);
 
             // Quem já estava transmitindo antes de você chegar não emite `newProducer`:
             // sem varrer a lista inicial, você entra numa sala com telas ao vivo e não vê
@@ -574,7 +569,6 @@ class App {
         el('self-view').onclick = () => this.toggleSelfView();
         el('watch-pending').onclick = () => this.refreshWatch();
         el('people-refresh').onclick = () => this.refreshWatch();
-        el('room-lock').onclick = () => void this.toggleRoomLock();
         el('leave').onclick = () => this.leave();
         el('logs').onclick = () => this.openLogs();
         el('logs-close').onclick = () => { el('logs-modal').hidden = true; };
@@ -624,32 +618,6 @@ class App {
         setTimeout(() => card.remove(), App.TOAST_MS);
     }
 
-    /**
-     * Tranca a sala, que é o que existe hoje contra entrada indesejada.
-     *
-     * O código da sala é digitado à mão e é a única credencial: nomes fáceis são
-     * adivinháveis. Trancar não protege quem já está dentro de quem já está dentro — para
-     * isso vem o dono e a expulsão — mas fecha a porta para o resto do mundo.
-     *
-     * O estado mora no servidor, não aqui: quem chega depois precisa encontrar a sala
-     * trancada, e um botão que só soubesse de si mesmo não trancaria nada.
-     */
-    async toggleRoomLock() {
-        const locked = el('room-lock').dataset.locked !== 'true';
-
-        try {
-            await this.sfu.request('setRoomLock', { locked });
-        } catch (failure) {
-            this.fail(`não deu para ${locked ? 'trancar' : 'destrancar'}: ${failure.message ?? failure}`);
-        }
-    }
-
-    paintRoomLock(locked) {
-        const button = el('room-lock');
-
-        button.dataset.locked = String(locked);
-        button.textContent = locked ? '🔒 Trancada' : '🔓 Destrancada';
-    }
 
     fail(mensagem) {
         this.log('ui.error', { message: mensagem });
@@ -1378,6 +1346,11 @@ class App {
             const caption = tile.querySelector('figcaption');
 
             caption.className = full ? `${LOOK.caption} ${LOOK.captionFullscreen}` : LOOK.caption;
+
+            // O rótulo diz a ação, não o estado: um botão escrito "Tela cheia" enquanto
+            // já se está em tela cheia é a mesma armadilha do cadeado que dizia
+            // "Destrancada" e trancava ao clicar.
+            tile.querySelector('[data-fullscreen]').textContent = full ? 'Sair da tela cheia' : 'Tela cheia';
         }
 
         this.wakeUp();
