@@ -26,8 +26,6 @@ unsafe extern "C" {
 /// processador só entrega o buffer e recebe os bytes de volta.
 pub struct VideoToolboxEncoder {
     session: CompressionSession,
-    frame_rate: f64,
-    frames: u64,
 }
 
 impl VideoToolboxEncoder {
@@ -48,11 +46,7 @@ impl VideoToolboxEncoder {
             .build()
             .map_err(|error| EncoderError::Start(error.to_string()))?;
 
-        Ok(Self {
-            session,
-            frame_rate: config.frame_rate,
-            frames: 0,
-        })
+        Ok(Self { session })
     }
 
     /// Codifica um quadro. A `surface` vem da captura sem passar pelo processador.
@@ -67,10 +61,12 @@ impl VideoToolboxEncoder {
         surface: &IOSurface,
         timestamp_ns: u64,
     ) -> Result<EncodedFrame, EncoderError> {
-        let scale = self.frame_rate as i64;
-        let presentation = (self.frames as i64, scale as i32);
-
-        self.frames += 1;
+        // A hora de verdade da captura, em nanossegundos. Antes era um contador de
+        // quadros sobre o fps nominal, e o VideoToolbox distribui o bitrate pelo relógio
+        // que recebe: com a captura entregando 40 quadros por segundo e o contador
+        // andando como se fossem 60, ele espalhava um segundo de bits por um segundo e
+        // meio de vídeo real — a transmissão saía com dois terços do bitrate pedido.
+        let presentation = (timestamp_ns as i64, 1_000_000_000);
 
         let encoded = self
             .session

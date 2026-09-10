@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use screencapturekit::prelude::*;
 use screencapturekit::cm::CMTime;
@@ -22,6 +22,18 @@ struct Sink<F: Fn(CaptureEvent) + Send + Sync + 'static> {
     frames: Arc<AtomicU64>,
     audio_chunks: Arc<AtomicU64>,
     started_at: std::time::Instant,
+
+    /// O último quadro que veio com imagem de verdade.
+    ///
+    /// O ScreenCaptureKit não redesenha o que não mudou: ele entrega o quadro na cadência
+    /// pedida, mas **sem buffer nenhum** quando a tela está parada. Deixar esses quadros
+    /// passarem em branco fazia o encoder rodar a 2 fps numa tela parada — e como o
+    /// keyframe é contado em quadros CODIFICADOS, o próximo IDR podia levar meio minuto:
+    /// quem chegava depois ficava no preto até lá, e quem perdia um pacote congelava.
+    ///
+    /// Repetir o último quadro custa quase nada — um P-frame de tela parada é minúsculo —
+    /// e mantém o relógio do encoder andando junto com o do mundo.
+    last_surface: Mutex<Option<crate::GpuSurface>>,
 }
 
 impl<F: Fn(CaptureEvent) + Send + Sync + 'static> SCStreamOutputTrait for Sink<F> {
@@ -33,12 +45,23 @@ impl<F: Fn(CaptureEvent) + Send + Sync + 'static> SCStreamOutputTrait for Sink<F
                 self.frames.fetch_add(1, Ordering::Relaxed);
 
                 let (width, height) = frame_size(&sample);
+                let fresh = sample.image_buffer().and_then(|buffer| buffer.io_surface());
+                let surface = match self.last_surface.lock() {
+                    Ok(mut last) => {
+                        if fresh.is_some() {
+                            *last = fresh;
+                        }
+
+                        last.clone()
+                    }
+                    Err(_) => fresh,
+                };
 
                 (self.on_event)(CaptureEvent::Video(VideoFrame {
                     width,
                     height,
                     timestamp_ns,
-                    surface: sample.image_buffer().and_then(|buffer| buffer.io_surface()),
+                    surface,
                 }));
             }
             SCStreamOutputType::Audio => {
@@ -305,6 +328,7 @@ impl MacCapturer {
                     frames: frames.clone(),
                     audio_chunks: audio_chunks.clone(),
                     started_at,
+                    last_surface: Mutex::new(None),
                 },
                 kind,
             );

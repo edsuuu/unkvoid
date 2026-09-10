@@ -27,6 +27,7 @@ pub struct Broadcast {
     encode_errors: Arc<AtomicU64>,
     send_errors: Arc<AtomicU64>,
     send_dropped: Arc<AtomicU64>,
+    sent_bytes: Arc<AtomicU64>,
     audio_packets: Arc<AtomicU64>,
     audio_errors: Arc<AtomicU64>,
 }
@@ -58,6 +59,7 @@ impl Broadcast {
         let encode_errors = Arc::new(AtomicU64::new(0));
         let send_errors = Arc::new(AtomicU64::new(0));
         let send_dropped = Arc::new(AtomicU64::new(0));
+        let sent_bytes = Arc::new(AtomicU64::new(0));
         let audio_packets = Arc::new(AtomicU64::new(0));
         let audio_errors = Arc::new(AtomicU64::new(0));
         let captured_callback = Arc::clone(&captured);
@@ -66,6 +68,7 @@ impl Broadcast {
         let encode_errors_callback = Arc::clone(&encode_errors);
         let send_errors_callback = Arc::clone(&send_errors);
         let send_dropped_callback = Arc::clone(&send_dropped);
+        let sent_bytes_callback = Arc::clone(&sent_bytes);
         let audio_packets_callback = Arc::clone(&audio_packets);
         let audio_errors_callback = Arc::clone(&audio_errors);
 
@@ -107,6 +110,8 @@ impl Broadcast {
                                 match sender.send_audio(packet) {
                                     Ok(()) => {
                                         audio_packets_callback.fetch_add(1, Ordering::Relaxed);
+                                        sent_bytes_callback
+                                            .store(sender.sent_bytes(), Ordering::Relaxed);
                                     }
                                     Err(_) => {
                                         audio_errors_callback.fetch_add(1, Ordering::Relaxed);
@@ -153,6 +158,7 @@ impl Broadcast {
                             // Lido com o cadeado já na mão: uplink saturado larga pacote
                             // sem devolver erro, e sem este número some do diagnóstico.
                             send_dropped_callback.store(sender.dropped(), Ordering::Relaxed);
+                            sent_bytes_callback.store(sender.sent_bytes(), Ordering::Relaxed);
                         }
                         Err(_) => {
                             send_errors_callback.fetch_add(1, Ordering::Relaxed);
@@ -172,6 +178,7 @@ impl Broadcast {
             encode_errors,
             send_errors,
             send_dropped,
+            sent_bytes,
             audio_packets,
             audio_errors,
         })
@@ -215,6 +222,7 @@ impl Broadcast {
             "encodeErrors": self.encode_errors.load(Ordering::Relaxed),
             "sendErrors": self.send_errors.load(Ordering::Relaxed),
             "sendDropped": self.send_dropped.load(Ordering::Relaxed),
+            "sentBytes": self.sent_bytes.load(Ordering::Relaxed),
             "audioPackets": self.audio_packets.load(Ordering::Relaxed),
             "audioErrors": self.audio_errors.load(Ordering::Relaxed),
         })

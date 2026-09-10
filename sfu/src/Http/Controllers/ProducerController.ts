@@ -34,10 +34,15 @@ export class ProducerController {
     /** Registra o producer e conta para a sala. É isto que acende o "ao vivo" dos outros. */
     private announce(peer: Peer, room: Room, producer: Producer, source: SourceName): void {
         peer.addProducer(producer, source);
-        let idleTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(
-            () => this.close(peer, room, producer),
-            MEDIA_IDLE_MS,
-        );
+        // Trinta segundos sem um pacote e o producer morre. Avisar quem transmite é o
+        // ponto: `close` fala com a sala inteira MENOS o dono, então sem esta linha o app
+        // segue mostrando "ao vivo" para sempre enquanto todo mundo vê tela preta. A
+        // causa quase sempre é a porta de RTP deste worker fechada no firewall — a faixa
+        // inteira precisa estar aberta, não só o começo dela.
+        let idleTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+            peer.send('producerDead', { producerId: producer.id, kind: producer.kind, source });
+            this.close(peer, room, producer);
+        }, MEDIA_IDLE_MS);
 
         producer.on('transportclose', () => {
             if (idleTimer) {
