@@ -47,9 +47,24 @@ impl Broadcast {
         // captura e encoder discordarem faria o vídeo chegar acelerado ou aos trancos.
         let frame_rate = encoder_config.frame_rate;
 
+        // Cada etapa anuncia que vai começar, não que terminou. As três abaixo mexem com
+        // hardware por dentro — no Windows são Media Foundation, Opus e Graphics Capture
+        // — e uma delas morrendo leva o processo junto, sem erro e sem pânico. Quem diz
+        // onde foi é a última destas linhas que aparecer no arquivo.
+        tracing::info!(
+            width = encoder_config.quality.dimensions().0,
+            height = encoder_config.quality.dimensions().1,
+            frame_rate,
+            bitrate = encoder_config.bitrate,
+            "broadcast: abrindo o encoder de vídeo"
+        );
+
         // O callback da captura é `Fn`: o encoder guarda estado entre quadros e precisa
         // de mutabilidade interior.
         let encoder = Mutex::new(PlatformEncoder::new(&encoder_config)?);
+
+        tracing::info!("broadcast: abrindo o encoder de áudio");
+
         let audio = Mutex::new(AudioEncoder::new(96_000)?);
         let sfu: Target = Arc::new(Mutex::new(None));
         let capture_target = Arc::clone(&sfu);
@@ -71,6 +86,13 @@ impl Broadcast {
         let sent_bytes_callback = Arc::clone(&sent_bytes);
         let audio_packets_callback = Arc::clone(&audio_packets);
         let audio_errors_callback = Arc::clone(&audio_errors);
+
+        tracing::info!(
+            source = ?source,
+            capture_audio = with_audio,
+            mute_listed_apps = mute_calls,
+            "broadcast: abrindo a captura"
+        );
 
         let capturer = PlatformCapturer::start(
             &CaptureConfig {
@@ -95,8 +117,10 @@ impl Broadcast {
 
                         let packets = match audio.push(&block) {
                             Ok(packets) => packets,
-                            Err(_) => {
+                            Err(error) => {
                                 audio_errors_callback.fetch_add(1, Ordering::Relaxed);
+                                tracing::warn!(error = %error, "áudio: bloco recusado");
+
                                 return;
                             }
                         };
@@ -138,8 +162,12 @@ impl Broadcast {
                             encoded_callback.fetch_add(1, Ordering::Relaxed);
                             encoded
                         }
-                        Err(_) => {
+                        Err(error) => {
                             encode_errors_callback.fetch_add(1, Ordering::Relaxed);
+                            // `NeedsMoreInput` é a fila do encoder de hardware enchendo,
+                            // não defeito: no `debug` para não afogar o arquivo.
+                            tracing::debug!(error = %error, "encoder: quadro sem saída");
+
                             return;
                         }
                     }
@@ -160,8 +188,9 @@ impl Broadcast {
                             send_dropped_callback.store(sender.dropped(), Ordering::Relaxed);
                             sent_bytes_callback.store(sender.sent_bytes(), Ordering::Relaxed);
                         }
-                        Err(_) => {
+                        Err(error) => {
                             send_errors_callback.fetch_add(1, Ordering::Relaxed);
+                            tracing::warn!(error = %error, "transporte: quadro não saiu");
                         }
                     }
                 }
