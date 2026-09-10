@@ -1,31 +1,28 @@
 #!/usr/bin/env bash
 #
-# Build do Linux na VPS, assinado, e publicado na release.
+# Build do Linux na VPS e publicação no repositório APT.
 #
-# A VPS é Linux, então ela gera .deb e .AppImage e mais nada: o .dmg exige um Mac por
-# licença da Apple, e o .msi exige o WiX rodando no Windows. Essas duas plataformas vêm
-# do GitHub Actions (.github/workflows/release.yml), e o `release.mjs` mescla o
-# manifesto publicado em vez de sobrescrevê-lo — é isso que deixa as três conviverem na
-# mesma release sem uma apagar a outra.
+# A VPS é Linux, então ela gera o .deb e mais nada: o .dmg exige um Mac por licença da
+# Apple, e o .msi exige o WiX rodando no Windows.
+#
+# **No Linux quem atualiza é o APT**, e é por isso que a chave do auto-update não
+# aparece aqui. O atualizador embutido do Tauri está desligado neste sistema — pedir
+# senha de root com `pkexec` no meio da abertura faria o que o `apt upgrade` já faz
+# junto com o resto da máquina. Quem autentica o pacote é a assinatura GPG do próprio
+# repositório, que é outra chave e mora só nesta VPS.
+#
+# Isso também é o que mantém a chave que assina atualizações FORA de uma máquina
+# exposta à internet: quem a tiver publica atualização para todo mundo que instalou o
+# app, e aqui ela não serviria para nada.
 #
 # Roda NA VPS:
-#   TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/unkvoid.key)" ./build-vps.sh
+#   ./build-vps.sh
 #
 # Ou daqui, pelo alias `vps` do ssh:
 #   make build-vps
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
-
-# Sem a chave o build sai sem `.sig`, a release sobe igual e ninguém se atualiza
-# sozinho para ela. Falhar agora é melhor do que descobrir isso na máquina de alguém.
-if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
-    echo "[ERRO] TAURI_SIGNING_PRIVATE_KEY não está definida — o build sairia sem assinatura." >&2
-    echo "       TAURI_SIGNING_PRIVATE_KEY=\"\$(cat ~/.tauri/unkvoid.key)\" $0" >&2
-    exit 1
-fi
-
-export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 
 # O que o Tauri precisa para empacotar no Ubuntu, mais o cmake, que o `opusic-sys` usa
 # para compilar o libopus do zero.
@@ -68,9 +65,10 @@ echo "[INFO] compilando com $CARGO_BUILD_JOBS de $CORES núcleos, em prioridade 
 
 npm ci
 npm run check
-# `UNKVOID_BUNDLES=deb` pula o AppImage, que baixa tool própria e leva alguns
-# minutos a mais — útil quando se quer só um instalador para testar.
-BUNDLES="${UNKVOID_BUNDLES:-deb,appimage}"
+# Só o .deb: é o que o APT distribui e o que o app espera no Linux. `UNKVOID_BUNDLES`
+# ainda aceita `deb,appimage` para quem precisar do AppImage solto, mas ele baixa tool
+# própria, leva alguns minutos a mais e ninguém o atualiza sozinho.
+BUNDLES="${UNKVOID_BUNDLES:-deb}"
 
 nice -n 19 npx tauri build --bundles "$BUNDLES"
 
@@ -86,16 +84,6 @@ if [ -d "$DOWNLOADS" ]; then
     echo "[INFO] instaladores em $DOWNLOADS"
 fi
 
-# O manifesto no nosso próprio servidor, para o atualizador embutido não depender do
-# GitHub. O `.deb` fica de fora porque quem instala por pacote atualiza pelo APT logo
-# abaixo; quem precisa do manifesto é o AppImage, que não tem gerenciador nenhum.
-APPIMAGE=$(find ../../target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' -printf '%T@ %p\n' 2>/dev/null \
-    | sort -rn | head -1 | cut -d' ' -f2- || true)
-
-if [ -n "$APPIMAGE" ] && [ -f "$APPIMAGE.sig" ]; then
-    ./publish-downloads.sh "$(node -p "require('./src-tauri/tauri.conf.json').version")" linux-x86_64 "$APPIMAGE"
-fi
-
 # O repositório APT: é por ele que o Linux instala e atualiza, com `apt install unkvoid`.
 # O download solto continua existindo para quem só quer o arquivo.
 # O mais recente, não o primeiro que a busca achar: a pasta guarda os `.deb` de todas
@@ -106,6 +94,18 @@ DEB=$(find ../../target/release/bundle/deb -maxdepth 1 -name '*.deb' -printf '%T
 if [ -n "$DEB" ] && [ -d "${UNKVOID_APT:-/var/www/apt}" ]; then
     ./apt-publish.sh "$DEB"
 fi
+
+# Daqui para baixo é só o GitHub, e ninguém se atualiza por ele: o macOS e o Windows
+# leem o manifesto do nosso próprio servidor, e o Linux lê o APT logo acima. A release
+# lá é arquivo para quem quiser baixar à mão, então só acontece se for pedida — sem
+# isto, um `gh` não autenticado transformava um build já publicado no APT em erro.
+case " $* " in
+    *" --github "*) ;;
+    *)
+        echo "[INFO] pronto: .deb no APT. Para publicar também no GitHub: $0 --github"
+        exit 0
+        ;;
+esac
 
 # Com --dry-run o build para aqui: serve para gerar um instalador de teste sem mexer na
 # release, e sem exigir um gh autenticado nesta máquina.
