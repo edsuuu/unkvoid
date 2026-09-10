@@ -10,7 +10,6 @@ import { ConsumerController } from './Controllers/ConsumerController.js';
 import { JoinController } from './Controllers/JoinController.js';
 import { LeaveController } from './Controllers/LeaveController.js';
 import { PeerController } from './Controllers/PeerController.js';
-import { RoomController } from './Controllers/RoomController.js';
 import { ProducerController } from './Controllers/ProducerController.js';
 import { TransportController } from './Controllers/TransportController.js';
 import { routes } from './routes.js';
@@ -25,7 +24,6 @@ export class Kernel {
             transport: new TransportController(),
             producer: new ProducerController(),
             peer: new PeerController(),
-            room: new RoomController(),
             consumer: new ConsumerController(),
         });
     }
