@@ -229,7 +229,14 @@ class App {
 
         this.showDownloadProgress();
 
-        await this.serverAnswered();
+        // Procurar versão nova é a primeira coisa que o app faz ao abrir, sem depender
+        // de nada além do manifesto. Antes disso, quem decidia era o `appVersion` do
+        // `/health`: uma variável de ambiente na VPS que alguém tinha que lembrar de
+        // subir junto com a versão. Esquecer dela deixava o app publicado hoje esperando
+        // até seis horas — o tempo do temporizador — para se atualizar na abertura.
+        if (await this.serverAnswered()) {
+            await this.update();
+        }
 
         el('update-screen').hidden = true;
         await this.expandWindow();
@@ -346,7 +353,9 @@ class App {
     }
 
     /**
-     * Procura, baixa e instala a versão nova — sem perguntar nada.
+     * Procura, baixa e instala a versão nova. A única pergunta é a do sistema: no
+     * Windows o instalador precisa de administrador, e o aviso do UAC é o que a pessoa
+     * confirma para a instalação seguir.
      *
      * Roda na abertura e de tempos em tempos: o app fica dias aberto na bandeja, então
      * só olhar na abertura significaria esperar o próximo reinício da máquina para ver
@@ -361,6 +370,14 @@ class App {
             return;
         }
 
+        // Antes do download, e não depois. No Windows o `check_update` não volta: o
+        // plugin dispara o instalador e encerra o processo lá dentro, então a conferência
+        // que ficava depois dele nunca rodava e a transmissão caía junto com o app. A
+        // versão nova espera a próxima abertura, que é quando ninguém está assistindo.
+        if (this.room) {
+            return;
+        }
+
         try {
             const version = await invoke('check_update');
 
@@ -369,12 +386,6 @@ class App {
             }
 
             el('update-status').textContent = `Instalando a versão ${version}…`;
-
-            // Reiniciar no meio de uma transmissão derruba quem está assistindo. A
-            // versão já está no disco; passa a valer no próximo reinício.
-            if (this.room) {
-                return;
-            }
 
             await invoke('restart');
         } catch (failure) {
@@ -390,13 +401,6 @@ class App {
 
             if (! response.ok) {
                 throw new Error(`o servidor respondeu ${response.status}`);
-            }
-
-            const health = await response.json();
-            const localVersion = await invoke('app_version');
-
-            if (health.appVersion && health.appVersion !== localVersion) {
-                await this.update();
             }
 
             return true;

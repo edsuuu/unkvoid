@@ -37,12 +37,24 @@ mesmo custo. Faça uma cópia em lugar seguro.
 
 ## Onde o app procura
 
-`https://discord.unkvoid.com/downloads/latest.json`, servido pelo nginx a partir
-de `/var/www/downloads/unkvoid/` com `Cache-Control: no-store`.
+`https://unkvoid.com/downloads/latest.json`, montado pelo Laravel a cada pedido a
+partir da tabela `releases`, com `Cache-Control: no-store`. O instalador em si
+mora no MinIO, e a URL do manifesto é assinada na hora e vence em uma hora — por
+isso o manifesto não pode ser guardado em cache.
 
-O manifesto é **costurado**, não sobrescrito. Cada sistema é compilado numa
-máquina diferente, e as três chamam o mesmo `publish-downloads.sh`: publicar o
-Windows não pode apagar o macOS que subiu ontem.
+O manifesto nasce do banco, então nenhuma publicação apaga a outra: cada sistema
+é compilado numa máquina diferente e registra só a sua linha, pela API assinada
+de `publish-release.sh`. Publicar o Windows não tira o macOS que subiu ontem.
+
+A chave de cada plataforma é a que o atualizador do Tauri procura, e o instalador
+faz parte dela: `windows-x86_64-msi`, `windows-x86_64-nsis`, `darwin-aarch64`,
+`linux-x86_64-deb`. Não é enfeite — o app confere os bytes do que baixou, e um
+`.exe` entregue a quem instalou pelo `.msi` morre em `InvalidUpdaterFormat`.
+
+**A versão do manifesto é uma só, a mais nova entre todas as plataformas.** Subir
+o Windows para uma versão que o macOS ainda não tem faz todo Mac instalado baixar
+o `.app.tar.gz` velho, se atualizar para a versão que já tinha, e repetir. Os três
+sistemas saem na mesma versão, ou o que sair sozinho espera.
 
 ## macOS
 
@@ -54,8 +66,10 @@ TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/unkvoid.key)" \
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" \
 npm run tauri build
 
-./publish-downloads.sh 0.0.7 darwin-aarch64 \
-  ../../target/release/bundle/macos/Unkvoid.app.tar.gz
+RELEASE_SECRET="$(grep -h . ~/auxilos/release-secret.env | cut -d= -f2)" \
+./publish-release.sh darwin-aarch64 \
+  ../../target/release/bundle/macos/Unkvoid.app.tar.gz \
+  ../../target/release/bundle/macos/Unkvoid.app.tar.gz.sig
 ```
 
 O artefato do atualizador é o `.app.tar.gz`, **não** o `.dmg`. O `.dmg` é para
@@ -71,47 +85,57 @@ rm -f native/target/release/bundle/macos/rw.*.dmg
 
 ## Windows
 
-O `.msi` exige o WiX, que só roda no Windows. O código é editado no WSL e
-sincronizado para `C:\Users\edsu\unkvoid-build` pelo script de build.
+Saem dois instaladores, e os dois são publicados: o `.exe` do NSIS, que é o que a
+pessoa baixa do site, e o `.msi`, que é o que a empresa instala por política. Cada
+um vira uma chave própria no manifesto, porque o app se atualiza pelo mesmo
+formato por onde foi instalado.
+
+O `.msi` exige o WiX e o `.exe` exige o NSIS; os dois só rodam no Windows. O
+código é editado no WSL e sincronizado para `C:\Users\edsu\unkvoid-build` pelo
+script de build.
+
+### O que a pessoa vê
+
+Os dois instalam para a máquina toda, em `Arquivos de Programas`. É de propósito:
+trocar arquivo lá exige administrador, então o Windows abre o aviso do UAC e a
+atualização só segue quando a pessoa confirma. Instalar por usuário tiraria o
+aviso e trocaria o app sem perguntar.
+
+O app procura versão nova assim que abre e depois de seis em seis horas. Achando,
+baixa com a barra de progresso na tela, dispara o instalador e sai — o instalador
+põe a versão nova no lugar e reabre o app. Dentro de uma sala nada disso acontece:
+a atualização espera a próxima abertura, porque no Windows o processo morre junto
+com a chamada e a transmissão cairia com ele.
 
 ### Uma vez só
 
 Copie a chave privada do Mac para a máquina Windows, em
-`%USERPROFILE%\.tauri\unkvoid.key`. Sem ela o build sai sem `.sig`, o instalador
-sobe igual e ninguém se atualiza — a publicação parece certa e não atualiza
-ninguém.
+`%USERPROFILE%\.tauri\unkvoid.key`. Sem ela o build para com erro, de propósito:
+um build sem `.sig` sobe igual e não atualiza ninguém, e a publicação parece
+certa.
 
 ### A cada versão
 
-No WSL, para o código chegar:
-
-```bash
-cd ~/projects/unkvoid && git pull
-```
-
-No PowerShell, para compilar e assinar:
+No PowerShell, para compilar e assinar — o script lê o código direto do WSL, então
+não há nada a copiar antes:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\Users\edsu\build-unkvoid.ps1
+powershell -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-26.04\var\www\projects\unkvoid\native\apps\desktop\build-windows.ps1
 ```
 
-Ele põe o CMake no PATH, sincroniza o código do WSL, roda `npm ci` se faltar,
-assina com a chave se ela existir, empacota o `.msi` e copia o resultado para
-`C:\Users\edsu\Desktop\apps`.
+Ele põe o CMake no PATH, sincroniza o código, roda `npm ci` se faltar, assina com
+a chave, empacota o `.msi` e o `.exe`, confere que cada um saiu com o `.sig` ao
+lado e copia tudo para `C:\Users\edsu\Desktop\apps`.
 
 De volta no WSL, para publicar. O script é bash, então não roda no PowerShell:
 
 ```bash
-cd ~/projects/unkvoid/native/apps/desktop
-./publish-downloads.sh 0.0.7 windows-x86_64 \
-  /mnt/c/Users/edsu/Desktop/apps/Unkvoid_0.0.7_x64_pt-BR.msi
+make publish-windows
 ```
 
-O `.msi.sig` precisa estar na mesma pasta que o `.msi`. O script recusa sem ele,
-de propósito.
-
-Troque `0.0.7` pela versão do `tauri.conf.json` e o nome do arquivo pelo que o
-build gerou — o sufixo muda com o idioma do instalador.
+Ele lê a versão do `tauri.conf.json`, pega os dois instaladores dessa versão e
+registra cada um com a sua chave. A pasta de saída guarda build de todas as
+versões, e o filtro existe para não subir o `.msi` de ontem com o número de hoje.
 
 ## Linux
 
@@ -162,12 +186,17 @@ depois do APT, que é o que importa.
 
 Na ordem, porque cada uma explica a seguinte:
 
-1. `curl -s https://discord.unkvoid.com/downloads/latest.json` — se der 404,
-   nada mais importa: o app pergunta e não recebe resposta.
+1. `curl -s https://unkvoid.com/downloads/latest.json` — se der 404, nada mais
+   importa: o app pergunta e não recebe resposta. Dá 404 quando nenhuma versão
+   registrada tem assinatura, porque uma sem `.sig` fica de fora do manifesto.
 2. A `version` do manifesto é maior que a instalada? Igual não atualiza.
-3. A plataforma está lá? `darwin-aarch64`, `windows-x86_64`.
+3. A plataforma está lá? `windows-x86_64-nsis` para quem instalou pelo `.exe`,
+   `windows-x86_64-msi` para quem instalou pelo `.msi`, `darwin-aarch64` no Mac.
+   O app procura primeiro a chave com o instalador e só depois `windows-x86_64`.
 4. A `pubkey` do `tauri.conf.json` bate com a privada que assinou? Se o build
    avisou `does not match the public key`, a assinatura vai ser recusada em
    execução e o build passa mesmo assim.
-5. O arquivo da `url` responde 200?
+5. O arquivo da `url` responde 200? A URL é assinada e vence em uma hora — se a
+   que você tem na mão é de ontem, peça o manifesto de novo antes de concluir
+   qualquer coisa.
 6. No Linux, nenhuma das cinco: lá é `apt update && apt upgrade`.
