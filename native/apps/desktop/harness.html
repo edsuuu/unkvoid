@@ -64,7 +64,56 @@ folha.rel = 'stylesheet';
 folha.href = './dist/' + html.match(/href="\/?(assets\/[^"]*\.css)"/)[1];
 document.head.appendChild(folha);
 
+// Um nome guardado é o estado normal de quem já usou o app uma vez: a tela de entrada
+// aparece preenchida, e é assim que ela precisa sair no print.
+localStorage.setItem('unkvoid:name', 'Edsu');
+
 await import('./dist/' + html.match(/src="\/?(assets\/[^"]*\.js)"/)[1]);
+
+// `?tela=entrada` e `?tela=sala` existem para tirar print numa máquina que não compila
+// o app. Quem pinta a sala é DOM puro; o WebSocket traz gente e vídeo, que numa sala
+// recém-criada ainda não existem.
+const tela = new URLSearchParams(location.search).get('tela');
+
+if (tela) {
+    const limite = Date.now() + 5000;
+
+    while (document.getElementById('entry-screen')?.hidden !== false && Date.now() < limite) {
+        await new Promise(volta => setTimeout(volta, 50));
+    }
+
+    // Aqui `hidden` não é `display: none`, é opacidade zero com 160 ms de fade, e a
+    // captura pegava o meio do caminho: a tela de atualização aparecia por cima da de
+    // entrada, meio transparente.
+    const semFade = document.createElement('style');
+
+    semFade.textContent = '*, *::before, *::after { transition: none !important; animation: none !important }';
+    document.head.appendChild(semFade);
+}
+
+if (tela === 'sala' || tela === 'compartilhar') {
+    const app = window.unkvoid;
+
+    app.name = 'Edsu';
+    app.room = 'k3m9xq2vt7bd';
+
+    // A mesma sequência do `connect()`, menos o SfuClient.
+    document.getElementById('entry-screen').hidden = true;
+    document.getElementById('room').hidden = false;
+    document.getElementById('copy-code').textContent = app.room;
+    document.getElementById('empty-code').textContent = app.room;
+    app.paintLayout();
+    app.wireRoom();
+    app.refreshPeople();
+}
+
+// A tela mais cheia do app, e a que o harness já sabia montar sozinho: as telas e as
+// janelas são de mentira, o resto é o modal de verdade.
+if (tela === 'compartilhar') {
+    document.getElementById('share').click();
+
+    await new Promise(volta => setTimeout(volta, 400));
+}
 </script>
 </body>
 </html>

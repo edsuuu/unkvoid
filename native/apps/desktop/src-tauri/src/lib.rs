@@ -182,6 +182,22 @@ async fn sfu_offer(
         .sfu_offer(&kind))
 }
 
+/// Chave SRTP nova antes de republicar num servidor que reiniciou.
+///
+/// Ver `Broadcast::renew_sfu_key`: reapontar o destino recomeça a numeração dos pacotes,
+/// e repetir a chave com o contador zerado repetiria o keystream.
+#[tauri::command]
+async fn renew_sfu_key(state: State<'_, ActiveBroadcast>) -> Result<(), String> {
+    let mut active = state.0.lock().await;
+
+    active
+        .as_mut()
+        .ok_or_else(|| "no active stream".to_string())?
+        .renew_sfu_key();
+
+    Ok(())
+}
+
 /// Aponta a transmissão para a porta que o servidor devolveu no `producePlain`.
 ///
 /// `server_key` é a chave SRTP de SAÍDA do servidor, que vem na mesma resposta. É com ela
@@ -466,6 +482,7 @@ pub fn run() {
             restart,
             start_broadcast,
             sfu_offer,
+            renew_sfu_key,
             use_sfu,
             stop_broadcast,
             broadcast_stats,
