@@ -60,7 +60,7 @@ Parrot compilam o WebKitGTK **sem WebRTC**, e nenhum pacote do GStreamer muda is
 ligado antes da página nascer: `typeof RTCPeerConnection` continua `undefined`). No
 Linux o app cria sala e transmite (desde a 0.0.15) e assiste (desde a 0.0.16) por um
 receptor nativo: o servidor manda a mídia por RTP puro (`consumePlain`), o Rust abre o
-SRTP e o GStreamer decodifica numa janela própria ao lado do app. `unkvoid-desktop --check` diz o que o
+SRTP e o GStreamer decodifica e o quadro entra no cartão do app como MJPEG. `unkvoid-desktop --check` diz o que o
 motor da janela desta máquina sabe fazer, e `unkvoid-desktop --check-capture` prova a
 captura e o encoder em três segundos, sem abrir janela.
 
