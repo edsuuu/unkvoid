@@ -1502,7 +1502,16 @@ class App {
 
         const columns = Math.ceil(Math.sqrt(tiles.length || 1));
 
-        el('stage').style.gridTemplateColumns = `repeat(${this.focused ? 1 : columns}, minmax(0, 1fr))`;
+        // Focar não esconde as outras telas: elas viram miniaturas numa faixa embaixo,
+        // e clicar numa delas traz para o foco. Sem isto quem focava perdia de vista
+        // quem mais estava transmitindo.
+        const others = tiles.filter(tile => tile.dataset.screen !== this.focused);
+        const focusing = Boolean(this.focused) && ! this.fullscreen && others.length > 0;
+
+        el('stage').style.gridTemplateColumns = focusing
+            ? `repeat(${others.length}, minmax(0, 1fr))`
+            : `repeat(${this.focused ? 1 : columns}, minmax(0, 1fr))`;
+        el('stage').style.gridTemplateRows = focusing ? 'minmax(0, 1fr) 7rem' : '';
         this.paintWatchPrompt();
 
         const header = document.querySelector('#room > header');
@@ -1516,16 +1525,22 @@ class App {
             // Em tela cheia o resto some de vez: um cartão da grade aparecendo atrás do
             // vídeo pelas bordas é o que faz a tela cheia parecer uma página esticada.
             const full = tile.dataset.screen === this.fullscreen;
-            const hidden = this.fullscreen
-                ? ! full
-                : Boolean(this.focused) && tile.dataset.screen !== this.focused;
+            const thumb = focusing && tile.dataset.screen !== this.focused;
 
             tile.className = full ? `${LOOK.tile} ${LOOK.tileFullscreen}` : LOOK.tile;
-            tile.hidden = hidden;
+            tile.hidden = this.fullscreen ? ! full : false;
+            tile.style.gridColumn = focusing && ! thumb ? '1 / -1' : '';
+            tile.style.gridRow = focusing ? (thumb ? '2' : '1') : '';
+            tile.classList.toggle('cursor-pointer', thumb);
+            tile.classList.toggle('ring-1', thumb);
+            tile.classList.toggle('ring-line', thumb);
+            tile.title = thumb ? 'Focar esta tela' : '';
+            tile.onclick = thumb ? () => this.focus(tile.dataset.screen) : null;
 
             const caption = tile.querySelector('figcaption');
 
             caption.className = full ? `${LOOK.caption} ${LOOK.captionFullscreen}` : LOOK.caption;
+            caption.hidden = thumb;
 
             // O rótulo diz a ação, não o estado: um botão escrito "Tela cheia" enquanto
             // já se está em tela cheia é a mesma armadilha do cadeado que dizia
