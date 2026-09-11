@@ -41,9 +41,11 @@ encoder` afirma que o keyframe sai com start code, SPS, PPS e IDR.
 - **Windows** — compila para o alvo, mas **nada foi executado lá**. As correções
   do encoder e o áudio WASAPI foram escritos e type-checados, não testados. É o
   primeiro trabalho de quem pegar a máquina Windows.
-- **Linux** — não transmite nem assiste dentro do app: a captura é um esqueleto de 48
-  linhas, e o WebKitGTK das distros vem sem WebRTC (ver README). Assistir é pelo
-  navegador, em `unkvoid.com/assistir/<código>`. Instala por `apt install unkvoid`.
+- **Linux** — transmite (X11, via `gst-launch-1.0` + x264 na CPU, desde a 0.0.15) e
+  assiste (0.0.16) pelo receptor nativo: RTP puro do servidor, SRTP aberto no Rust
+  (`crates/media/src/receiver.rs`), GStreamer decodifica numa janela separada
+  (`src-tauri/src/watch.rs`). O WebKitGTK das distros segue sem WebRTC (ver README).
+  Instala por `apt install unkvoid`.
 
 ### O que NÃO existe: servidores com salas
 
@@ -346,8 +348,9 @@ Cosmético.
 
 ### 6. Linux
 
-`LinuxCapturer::start` recusa com erro claro. Falta consumir o nó do PipeWire que o portal
-XDG devolve. Só se alguém quiser.
+`LinuxCapturer` roda o `gst-launch-1.0` como processo filho e lê H.264 Annex-B pelo pipe
+(`crates/capture/src/linux.rs`); o `PlatformEncoder` do Linux só repassa. Falta Wayland
+(`pipewiresrc` via portal), lista de janelas e keyframe sob demanda (hoje é um por segundo).
 
 ### 7. Pendências fora do código
 

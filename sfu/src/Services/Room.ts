@@ -244,7 +244,29 @@ export class Room {
         peer: Peer,
         srtpParameters: SrtpParameters,
     ): Promise<PlainTransport> {
-        const existing = [...peer.plainTransports.values()].at(0);
+        return this.plainTransport(peer, srtpParameters, false);
+    }
+
+    /**
+     * O transport por onde o app sem WebRTC RECEBE. É outro, e não o de transmitir, de
+     * propósito: `comedia` aprende um endereço só por transport, e o de transmitir já
+     * aponta para o socket que manda — o que chega teria de vir por ele.
+     */
+    public async plainReceiveTransportFor(
+        peer: Peer,
+        srtpParameters: SrtpParameters,
+    ): Promise<PlainTransport> {
+        return this.plainTransport(peer, srtpParameters, true);
+    }
+
+    private async plainTransport(
+        peer: Peer,
+        srtpParameters: SrtpParameters,
+        receive: boolean,
+    ): Promise<PlainTransport> {
+        const existing = [...peer.plainTransports.values()].find(
+            (transport) => Boolean(transport.appData.receive) === receive,
+        );
 
         if (existing) {
             return existing;
@@ -263,6 +285,7 @@ export class Room {
                 comedia: true,
                 enableSrtp: true,
                 srtpCryptoSuite: srtpParameters.cryptoSuite,
+                appData: { receive },
             })
             .catch((failure) => {
                 throw /no more available ports/i.test(String(failure))

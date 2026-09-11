@@ -64,7 +64,12 @@ pub struct GpuSurface {
     pub context: ::windows::Win32::Graphics::Direct3D11::ID3D11DeviceContext,
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// No Linux o quadro já chega comprimido: o x264 roda dentro do GStreamer, do lado da
+/// captura. O "buffer" que vai para o encoder é o H.264 pronto.
+#[cfg(target_os = "linux")]
+pub type GpuSurface = linux::EncodedVideo;
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub type GpuSurface = ();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

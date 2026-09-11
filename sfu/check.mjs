@@ -302,6 +302,23 @@ const run = async () => {
     assert.equal(plainAudio.data.port, plain.data.port, 'áudio e vídeo da mesma transmissão dividem a porta');
     assert.notEqual(plainAudio.data.producerId, plain.data.producerId, 'mas são produtores diferentes');
 
+    // Assistir por RTP puro: o Linux, sem WebRTC na janela, recebe numa porta UDP.
+    const semChaveVer = await assistindo.call('consumePlain', { producerId: plain.data.producerId, srtpParameters: {} });
+    assert.equal(semChaveVer.status, 422, 'assistir puro sem chave SRTP tem de ser recusado');
+
+    const chaveVer = { cryptoSuite: 'AES_CM_128_HMAC_SHA1_80', keyBase64: Buffer.alloc(30, 9).toString('base64') };
+    const verVideo = await assistindo.call('consumePlain', { producerId: plain.data.producerId, srtpParameters: chaveVer });
+    assert.equal(verVideo.ok, true, `assistir puro tem de ser aceito: ${JSON.stringify(verVideo)}`);
+    assert.ok(verVideo.data.port > 0 && verVideo.data.port !== plain.data.port, 'recebe numa porta própria, não na do ingest');
+    assert.ok(verVideo.data.payloadType > 0 && verVideo.data.srtpParameters?.keyBase64, 'diz o payload e a chave para abrir');
+    assert.equal(verVideo.data.name, 'Nativo', 'diz de quem é a tela');
+
+    const verAudio = await assistindo.call('consumePlain', { producerId: plainAudio.data.producerId, srtpParameters: chaveVer });
+    assert.equal(verAudio.data.port, verVideo.data.port, 'áudio e vídeo chegam pela mesma porta');
+
+    const retomado = await assistindo.call('resumeConsumer', { consumerId: verVideo.data.consumerId });
+    assert.equal(retomado.ok, true, 'o consumer puro retoma como qualquer outro');
+
     // Sair de propósito não deixa fantasma: a sala avisa na hora.
     assistindo.events.length = 0;
     await nativo.call('leave');

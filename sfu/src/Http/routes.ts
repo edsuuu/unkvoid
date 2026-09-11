@@ -6,6 +6,7 @@ import type { LeaveController } from './Controllers/LeaveController.js';
 import type { PeerController } from './Controllers/PeerController.js';
 import type { ProducerController } from './Controllers/ProducerController.js';
 import type { TransportController } from './Controllers/TransportController.js';
+import { ConsumePlainRequest } from './Requests/ConsumePlainRequest.js';
 import { ConsumeRequest } from './Requests/ConsumeRequest.js';
 import { ConsumerRequest } from './Requests/ConsumerRequest.js';
 import { JoinRequest } from './Requests/JoinRequest.js';
@@ -67,6 +68,10 @@ export const routes = (controllers: Controllers): Record<ActionName, Route> => (
     [Action.Consume]: {
         build: (data, session) => new ConsumeRequest(data, session),
         handle: (request) => controllers.consumer.store(request),
+    },
+    [Action.ConsumePlain]: {
+        build: (data, session) => new ConsumePlainRequest(data, session),
+        handle: (request) => controllers.consumer.storePlain(request),
     },
     [Action.ResumeConsumer]: {
         build: (data, session) => new ConsumerRequest(data, session),
