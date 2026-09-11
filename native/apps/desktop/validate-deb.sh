@@ -15,7 +15,7 @@ docker build -q -t unkvoid-linux-test -f Dockerfile.test . > /dev/null
 
 docker run --rm -v "$DEB:/tmp/unkvoid.deb:ro" unkvoid-linux-test bash -c '
 set -e
-apt-get install -y -qq /tmp/unkvoid.deb > /dev/null 2>&1
+apt-get install -y -qq /tmp/unkvoid.deb 2>&1 | tail -3
 unkvoid-desktop --version
 # Xvfb na mão: o xvfb-run da Debian 12 fica esperando para sempre quando o comando
 # termina antes de ele achar que o servidor subiu.
