@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use broadcast::Broadcast;
 use capture::{CaptureSource, PlatformCapturer, Quality};
 use serde::Serialize;
+use tauri::webview::PageLoadEvent;
 use tauri::{Emitter, State};
 
 #[derive(Default)]
@@ -460,8 +461,72 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// O app está rodando só para responder ao `--check`: sem interface, sem bandeja.
+struct SelfCheck(bool);
+
+/// O que `--check` pergunta ao motor da janela. Sem `RTCPeerConnection` na primeira
+/// carga ele recarrega uma vez, porque a configuração que liga o WebRTC no Linux entra
+/// depois de a primeira página nascer. Na segunda, responde o que houver.
+const CHECK_SCRIPT: &str = r#"
+(async () => {
+    const webrtc = typeof RTCPeerConnection !== 'undefined';
+
+    if (!webrtc && !sessionStorage.getItem('unkvoid:check-reload')) {
+        sessionStorage.setItem('unkvoid:check-reload', '1');
+        location.reload();
+        return;
+    }
+
+    const codecs = (kind) => {
+        try {
+            const api = kind === 'receiver' ? RTCRtpReceiver : RTCRtpSender;
+            return api.getCapabilities('video').codecs.map((codec) => codec.mimeType);
+        } catch {
+            return [];
+        }
+    };
+
+    await window.__TAURI__.core.invoke('report_check', {
+        webrtc,
+        receiver: webrtc ? codecs('receiver') : [],
+        sender: webrtc ? codecs('sender') : [],
+        userAgent: navigator.userAgent,
+    });
+})();
+"#;
+
+/// A resposta do `--check`, impressa e transformada em código de saída: 0 quando esta
+/// máquina consegue assistir (WebRTC com H.264 na recepção), 1 quando não.
+#[tauri::command]
+fn report_check(app: tauri::AppHandle, webrtc: bool, receiver: Vec<String>, sender: Vec<String>, user_agent: String) {
+    let h264 = receiver.iter().any(|codec| codec.to_ascii_lowercase().contains("h264"));
+    let yes_no = |value: bool| if value { "sim" } else { "não" };
+
+    println!("unkvoid check");
+    println!("  webrtc no motor da janela: {}", yes_no(webrtc));
+    println!("  assistir (H.264 na recepção): {}", yes_no(h264));
+    println!("  recebe: {}", if receiver.is_empty() { "-".to_string() } else { receiver.join(", ") });
+    println!("  envia:  {}", if sender.is_empty() { "-".to_string() } else { sender.join(", ") });
+    println!("  motor:  {user_agent}");
+
+    app.exit(if webrtc && h264 { 0 } else { 1 });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let arguments: Vec<String> = std::env::args().collect();
+    let context = tauri::generate_context!();
+
+    // `--version` e `--check` existem para testar o pacote sem clicar em nada: numa
+    // distro limpa, num contêiner, num script. O primeiro nem abre janela.
+    if arguments.iter().any(|argument| argument == "--version") {
+        println!("unkvoid {}", context.package_info().version);
+
+        return;
+    }
+
+    let checking = arguments.iter().any(|argument| argument == "--check");
+
     logbook::init();
 
     tauri::Builder::default()
@@ -473,7 +538,9 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(ActiveBroadcast::default())
+        .manage(SelfCheck(checking))
         .invoke_handler(tauri::generate_handler![
+            report_check,
             list_displays,
             list_windows,
             source_preview,
@@ -491,8 +558,14 @@ pub fn run() {
             log_path
         ])
         .manage(HasTray(AtomicBool::new(false)))
-        .setup(|app| {
+        .setup(move |app| {
             use tauri::Manager;
+
+            if checking {
+                enable_webrtc(app.handle());
+
+                return Ok(());
+            }
 
             // A bandeja não pode derrubar o app. No GNOME sem a extensão de
             // AppIndicator ela simplesmente não existe, e propagar o erro daqui fazia o
@@ -521,6 +594,16 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .run(tauri::generate_context!())
+        .on_page_load(|webview, payload| {
+            use tauri::Manager;
+
+            if payload.event() == PageLoadEvent::Finished && webview.state::<SelfCheck>().0 {
+                if let Err(failure) = webview.eval(CHECK_SCRIPT) {
+                    eprintln!("unkvoid check: não deu para rodar o teste na página: {failure}");
+                    webview.app_handle().exit(2);
+                }
+            }
+        })
+        .run(context)
         .expect("error starting the app");
 }
