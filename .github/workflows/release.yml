@@ -31,6 +31,10 @@ jobs:
           # automática não. É o erro que passou meses sem ninguém notar.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # Antes de publicar, e não depois: o Tauri só avisa quando a chave não bate com a
+      # `pubkey` do app, e quem descobre é quem instalou, na hora de atualizar.
+      - run: node check-signature.mjs ../../target/release/bundle/msi/*.msi.sig ../../target/release/bundle/nsis/*-setup.exe.sig
+
       - run: |
           for file in ../../target/release/bundle/msi/*.msi; do ./publish-release.sh windows-x86_64-msi "$file" "$file.sig"; done
           for file in ../../target/release/bundle/nsis/*-setup.exe; do ./publish-release.sh windows-x86_64-nsis "$file" "$file.sig"; done
@@ -54,6 +58,8 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - run: node check-signature.mjs ../../target/release/bundle/macos/Unkvoid.app.tar.gz.sig
+
       - run: |
           ./publish-release.sh darwin-aarch64 ../../target/release/bundle/macos/Unkvoid.app.tar.gz ../../target/release/bundle/macos/Unkvoid.app.tar.gz.sig
           for file in ../../target/release/bundle/dmg/*.dmg; do ./publish-release.sh darwin-aarch64-dmg "$file"; done
