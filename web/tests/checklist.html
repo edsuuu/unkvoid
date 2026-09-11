@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checklist de testes · Unkvoid</title>
+<style>
+  body { margin: 0; padding: 32px 16px; background: #06050a; color: #ece9f3; font-family: Archivo, Helvetica, Arial, sans-serif; }
+  main { max-width: 820px; margin: 0 auto; }
+  h1 { font-size: 26px; letter-spacing: -0.02em; margin: 0 0 4px; }
+  .sub { color: #8a80a6; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; margin: 0 0 28px; }
+  h2 { font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: #9a9cff; margin: 28px 0 10px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  label { display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px; border: 1px solid #241f34; border-radius: 12px; margin: 6px 0; background: rgba(18,15,28,0.6); cursor: pointer; }
+  label:has(input:checked) { border-color: rgba(138,124,245,0.5); }
+  label:has(input:checked) span { color: #8a80a6; text-decoration: line-through; }
+  input { margin-top: 3px; accent-color: #8a7cf5; }
+  .tag { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10.5px; color: #9a9cff; background: rgba(86,63,214,0.14); border: 1px solid rgba(138,124,245,0.24); border-radius: 6px; padding: 2px 7px; margin-left: auto; white-space: nowrap; }
+  .auto { color: #34d399; border-color: rgba(52,211,153,0.3); background: rgba(52,211,153,0.08); }
+  .bar { position: sticky; top: 0; background: #06050a; padding: 8px 0 12px; font-size: 13px; color: #a89fc0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Checklist de testes</h1>
+  <p class="sub">site, login, e-mail e SFU · marque o que você validou · o estado fica neste navegador</p>
+  <div class="bar"><span id="done">0</span> de <span id="total">0</span> marcados</div>
+
+  <h2>Site</h2>
+  <label><input type="checkbox"><span>Landing abre em https://unkvoid.com com fundo de estrelas, header em pílula e as três telas do app trocando nas abas</span><i class="tag auto">auto: páginas 200</i></label>
+  <label><input type="checkbox"><span>"Baixar para &lt;sistema&gt;" mostra o sistema da sua máquina e o card certo ganha o selo "Seu sistema"</span></label>
+  <label><input type="checkbox"><span>Botão "Copiar" do apt copia <code>sudo apt install unkvoid</code> e vira "Copiado"</span></label>
+  <label><input type="checkbox"><span>www.unkvoid.com redireciona para unkvoid.com</span><i class="tag auto">auto</i></label>
+  <label><input type="checkbox"><span>/privacidade e /termos no mesmo visual escuro, com contato@unkvoid.com</span><i class="tag auto">auto</i></label>
+  <label><input type="checkbox"><span>Logo real aparece no header, no rodapé e no favicon</span><i class="tag auto">auto: 200 na imagem</i></label>
+  <label><input type="checkbox"><span>Página funciona a 400px de largura sem rolagem horizontal</span></label>
+
+  <h2>Login pelo site</h2>
+  <label><input type="checkbox"><span>/cadastro cria a conta e já entra; chega o e-mail de boas-vindas</span><i class="tag auto">Pest</i></label>
+  <label><input type="checkbox"><span>/login com e-mail e senha entra e chega o e-mail "Novo acesso"</span><i class="tag auto">Pest</i></label>
+  <label><input type="checkbox"><span>Senha errada mostra "E-mail ou senha não conferem" sem dizer qual campo</span><i class="tag auto">Pest</i></label>
+  <label><input type="checkbox"><span>Seis tentativas erradas em um minuto travam com "Muitas tentativas"</span></label>
+  <label><input type="checkbox"><span>"Entrar com Google" abre a tela do Google e volta logado; conta nova recebe boas-vindas, conta existente recebe "Novo acesso"</span><i class="tag auto">Pest com Socialite dublado</i></label>
+  <label><input type="checkbox"><span>Conta criada por senha e depois Google com o mesmo e-mail vira uma conta só</span><i class="tag auto">Pest</i></label>
+  <label><input type="checkbox"><span>"Sair" no header encerra a sessão</span><i class="tag auto">Pest</i></label>
+  <label><input type="checkbox"><span>Quem entra com o e-mail do dono vê "Painel" e abre /admin; outra conta recebe 403</span><i class="tag auto">Pest</i></label>
+
+  <h2>Senha</h2>
+  <label><input type="checkbox"><span>/esqueci-a-senha responde igual para e-mail existente e inexistente</span><i class="tag auto">Pest</i></label>
+  <label><input type="checkbox"><span>O e-mail de redefinição chega e o link abre /redefinir-senha/{token} com o e-mail preenchido</span></label>
+  <label><input type="checkbox"><span>Senha nova salva, entra na hora, e a antiga não funciona mais</span><i class="tag auto">Pest</i></label>
+  <label><input type="checkbox"><span>Link usado ou vencido (60 min) é recusado com mensagem clara</span><i class="tag auto">Pest</i></label>
+  <label><input type="checkbox"><span>Conta só do Google não entra por senha (401 na API, erro no site)</span><i class="tag auto">Pest</i></label>
+
+  <h2>API do app</h2>
+  <label><input type="checkbox"><span>POST /api/auth/register devolve token e usuário (201)</span><i class="tag auto">e2e</i></label>
+  <label><input type="checkbox"><span>POST /api/auth/login devolve token; senha errada dá 401</span><i class="tag auto">e2e</i></label>
+  <label><input type="checkbox"><span>GET /api/me com token devolve a conta; sem token dá 401</span><i class="tag auto">e2e</i></label>
+  <label><input type="checkbox"><span>POST /api/auth/logout revoga o token (204) e ele não entra mais</span><i class="tag auto">e2e</i></label>
+  <label><input type="checkbox"><span>GET /oauth2/app?port=N abre o Google e devolve o token em http://127.0.0.1:N/?token=…</span><i class="tag auto">Pest</i></label>
+  <label><input type="checkbox"><span>Login por API acima de 5 por minuto no mesmo e-mail+IP recebe 429</span></label>
+
+  <h2>E-mail</h2>
+  <label><input type="checkbox"><span>Entrar na caixa contato@unkvoid.com por IMAP (mail.unkvoid.com:993) com a senha de ~/auxilos/email-unkvoid.txt</span><i class="tag auto">e2e</i></label>
+  <label><input type="checkbox"><span>E-mail de boas-vindas chega em HTML de tabela, fundo escuro, logo e botão roxo</span><i class="tag auto">e2e + Pest</i></label>
+  <label><input type="checkbox"><span>Enviar para um Gmail e cair na caixa de entrada (precisa do TXT mail._domainkey no DNS)</span></label>
+  <label><input type="checkbox"><span>Responder de um Gmail para contato@unkvoid.com e receber na caixa</span></label>
+  <label><input type="checkbox"><span>Servidor de e-mail fora do ar: login continua funcionando e o aviso vai para o log</span><i class="tag auto">notifyQuietly</i></label>
+
+  <h2>SFU</h2>
+  <label><input type="checkbox"><span>/health responde ok em https://unkvoid.com/health</span><i class="tag auto">e2e</i></label>
+  <label><input type="checkbox"><span>join sem token dá 422; token com outro segredo ou vencido dá 401</span><i class="tag auto">check.mjs</i></label>
+  <label><input type="checkbox"><span>POST /rooms/:code/kick sem assinatura dá 401; com assinatura da produção passa; não é alcançável pelo nginx</span><i class="tag auto">e2e</i></label>
+  <label><input type="checkbox"><span>Deploy do SFU espera a sala esvaziar antes de reiniciar (install.sh)</span></label>
+</main>
+<script>
+  const boxes = [...document.querySelectorAll('input[type=checkbox]')];
+  const key = 'unkvoid:checklist';
+  let saved = [];
+  try { saved = JSON.parse(localStorage.getItem(key) || '[]'); } catch (e) { saved = []; }
+  boxes.forEach((box, index) => { box.checked = Boolean(saved[index]); box.addEventListener('change', paint); });
+  function paint() {
+    try { localStorage.setItem(key, JSON.stringify(boxes.map(b => b.checked))); } catch (e) {}
+    document.getElementById('done').textContent = boxes.filter(b => b.checked).length;
+    document.getElementById('total').textContent = boxes.length;
+  }
+  paint();
+</script>
+</body>
+</html>
