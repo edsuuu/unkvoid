@@ -15,6 +15,7 @@ export type Resource = {
 
 export type PeerDescription = {
     peerId: string;
+    userId: string;
     name: string;
     producers: ProducerDescription[];
 };

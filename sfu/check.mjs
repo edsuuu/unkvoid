@@ -6,8 +6,27 @@
  * abre uma dúzia de clientes de uma vez, que é exatamente o que ele existe para barrar.
  */
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 
 const URL_WS = process.env.SFU_CHECK_URL ?? 'ws://127.0.0.1:3000/sfu';
+const URL_HTTP = URL_WS.replace(/^ws/, 'http').replace(/\/sfu$/, '');
+const SECRET = process.env.SFU_SECRET ?? 'segredo-de-teste-com-mais-de-32-caracteres';
+
+const hmac = input => createHmac('sha256', SECRET).update(input).digest('hex');
+
+/** O que o Laravel faz: assina quem entra, com que nome, e se é dono. */
+const token = (claims, secret = SECRET) => {
+    const body = Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 60, ...claims })).toString('base64url');
+
+    return `${body}.${createHmac('sha256', secret).update(body).digest('hex')}`;
+};
+
+/** E o cabeçalho com que ele chama o SFU direto. */
+const signed = (method, path, body, timestamp = String(Math.floor(Date.now() / 1000))) => ({
+    'content-type': 'application/json',
+    'x-unkvoid-timestamp': timestamp,
+    'x-unkvoid-signature': hmac(`${timestamp}\n${method}\n${path}\n${body}`),
+});
 
 /** O mínimo que um espectador precisa declarar para receber H.264 do app nativo. */
 const CAPACIDADES = {
@@ -101,23 +120,26 @@ const run = async () => {
     const visitante = await abrir();
 
     let reply = await visitante.call('join', {});
-    assert.equal(reply.status, 422, 'entrar sem sala nem nome é erro de validação');
+    assert.equal(reply.status, 422, 'entrar sem token é erro de validação');
 
-    reply = await visitante.call('join', { room: 'MAIÚSCULA123', name: 'X' });
-    assert.equal(reply.status, 422, 'código fora do formato deve ser recusado');
+    reply = await visitante.call('join', { token: 'lixo' });
+    assert.equal(reply.status, 422, 'token sem o formato corpo.assinatura é erro de validação');
 
-    reply = await visitante.call('join', { room, name: '' });
-    assert.equal(reply.status, 422, 'nome vazio deve ser recusado');
+    reply = await visitante.call('join', { token: token({ room, sub: '1', name: 'X', owner: false }, 'outro-segredo') });
+    assert.equal(reply.status, 401, 'token assinado com outro segredo tem de ser recusado');
 
-    reply = await visitante.call('join', { room, name: 'x'.repeat(41) });
-    assert.equal(reply.status, 422, 'nome longo demais deve ser recusado');
+    reply = await visitante.call('join', { token: token({ room, sub: '1', name: 'X', owner: false, exp: 1 }) });
+    assert.equal(reply.status, 401, 'token vencido tem de ser recusado');
 
     reply = await visitante.call('createTransport', {});
     assert.equal(reply.status, 401, 'ação sem sessão deve dar 401');
 
     // A identidade nasce no servidor: ninguém escolhe o próprio id.
     const dono = await abrir();
-    const entrada = await entrar(dono, { room, name: 'Dono' });
+    const entrada = await entrar(dono, { token: token({ room, sub: '10', name: 'Dono', owner: true }) });
+
+    assert.equal(entrada.owner, true, 'quem o Laravel disse que é dono chega como dono');
+    assert.equal(entrada.userId, '10', 'e sabe qual conta é');
 
     assert.ok(entrada.peerId, 'o servidor devolve o id do participante');
     assert.ok(entrada.resumeKey, 'e a chave para voltar depois de uma queda');
@@ -125,7 +147,7 @@ const run = async () => {
     assert.ok(entrada.routerRtpCapabilities.codecs.length > 0, 'e as capacidades do router');
     assert.equal(entrada.resumed, false, 'a primeira entrada não é retomada');
 
-    reply = await dono.call('join', { room, name: 'Dono' });
+    reply = await dono.call('join', { token: token({ room, sub: '10', name: 'Dono', owner: true }) });
     assert.equal(reply.ok, false, 'não dá para entrar duas vezes no mesmo socket');
 
     reply = await dono.call('pauseConsumer', { consumerId: 'nao-existe' });
@@ -140,7 +162,11 @@ const run = async () => {
 
     // Ninguém derruba ninguém sabendo o id alheio: sem a chave, é entrada nova.
     const impostor = await abrir();
-    const outraSessao = await entrar(impostor, { room, name: 'Impostor', resumeKey: entrada.peerId, resume: true });
+    const outraSessao = await entrar(impostor, {
+        token: token({ room, sub: '11', name: 'Impostor', owner: false }),
+        resumeKey: entrada.peerId,
+        resume: true,
+    });
 
     assert.equal(outraSessao.resumed, false, 'o peerId de outro não retoma sessão nenhuma');
     assert.notEqual(outraSessao.peerId, entrada.peerId, 'e nem rouba o id');
@@ -149,7 +175,7 @@ const run = async () => {
     // Queda de sinalização não tira ninguém da sala: voltar dentro da carência retoma
     // a sessão com a mídia intacta.
     const solucador = await abrir();
-    const soluco = await entrar(solucador, { room, name: 'Soluço' });
+    const soluco = await entrar(solucador, { token: token({ room, sub: '12', name: 'Soluço', owner: false }) });
 
     reply = await solucador.call('createTransport', {});
     const transporteAntes = reply.data.transportId;
@@ -166,7 +192,11 @@ const run = async () => {
 
     const voltou = await abrir();
     dono.events.length = 0;
-    const retomada = await entrar(voltou, { room, name: 'Soluço', resumeKey: soluco.resumeKey, resume: true });
+    const retomada = await entrar(voltou, {
+        token: token({ room, sub: '12', name: 'Soluço', owner: false }),
+        resumeKey: soluco.resumeKey,
+        resume: true,
+    });
 
     assert.equal(retomada.resumed, true, 'com a chave e resume:true a sessão é retomada');
     assert.equal(retomada.peerId, soluco.peerId, 'e é a mesma pessoa, com o mesmo id');
@@ -185,14 +215,17 @@ const run = async () => {
     await espera(600);
 
     const reaberto = await abrir();
-    const limpa = await entrar(reaberto, { room, name: 'Soluço', resumeKey: soluco.resumeKey });
+    const limpa = await entrar(reaberto, {
+        token: token({ room, sub: '12', name: 'Soluço', owner: false }),
+        resumeKey: soluco.resumeKey,
+    });
 
     assert.equal(limpa.resumed, false, 'sem resume:true NÃO pode retomar — o cliente não tem transporte');
     reaberto.close();
 
     // Ingest de RTP puro: o app declara o que vai mandar antes de mandar.
     const nativo = await abrir();
-    await entrar(nativo, { room, name: 'Nativo' });
+    await entrar(nativo, { token: token({ room, sub: '13', name: 'Nativo', owner: false }) });
 
     const semChave = await nativo.call('producePlain', {
         kind: 'video',
@@ -235,7 +268,7 @@ const run = async () => {
 
     // O ponto inteiro: outra pessoa na sala consome como qualquer transmissão.
     const assistindo = await abrir();
-    await entrar(assistindo, { room, name: 'Assiste' });
+    await entrar(assistindo, { token: token({ room, sub: '14', name: 'Assiste', owner: false }) });
 
     const transporte = await assistindo.call('createTransport');
     const consumo = await assistindo.call('consume', {
@@ -271,6 +304,36 @@ const run = async () => {
         assistindo.events.some(evento => evento.event === 'peerLeft'),
         'sair no botão avisa a sala na hora, sem esperar a carência',
     );
+
+    // Expulsar vem do Laravel, por HTTP assinado. Sem assinatura, ou com a hora fora da
+    // janela, a porta 3000 não expulsa ninguém.
+    const kickPath = `/rooms/${room}/kick`;
+    const kickBody = JSON.stringify({ userId: '14' });
+
+    let http = await fetch(`${URL_HTTP}${kickPath}`, { method: 'POST', body: kickBody, headers: { 'content-type': 'application/json' } });
+    assert.equal(http.status, 401, 'expulsar sem assinatura tem de ser recusado');
+
+    http = await fetch(`${URL_HTTP}${kickPath}`, { method: 'POST', body: kickBody, headers: signed('POST', kickPath, kickBody, '1000') });
+    assert.equal(http.status, 401, 'assinatura com hora velha tem de ser recusada');
+
+    http = await fetch(`${URL_HTTP}${kickPath}`, { method: 'POST', body: kickBody, headers: signed('POST', kickPath, '{"userId":"10"}') });
+    assert.equal(http.status, 401, 'assinatura de outro corpo tem de ser recusada');
+
+    dono.events.length = 0;
+    http = await fetch(`${URL_HTTP}${kickPath}`, { method: 'POST', body: kickBody, headers: signed('POST', kickPath, kickBody) });
+    assert.equal(http.status, 200, 'expulsar assinado passa');
+    assert.deepEqual(await http.json(), { kicked: 1 }, 'e derruba a sessão daquela conta');
+
+    await espera(300);
+    assert.ok(assistindo.events.some(evento => evento.event === 'kicked'), 'quem foi expulso fica sabendo');
+    assert.ok(dono.events.some(evento => evento.event === 'peerKicked'), 'e a sala também');
+
+    http = await fetch(`${URL_HTTP}/rooms/sala-que-nao-existe/kick`, { method: 'POST', body: kickBody, headers: signed('POST', '/rooms/sala-que-nao-existe/kick', kickBody) });
+    assert.deepEqual(await http.json(), { kicked: 0 }, 'sala fora do ar não tem quem expulsar, e não é erro');
+
+    // Quem já caiu pode ser tirado da lista por qualquer um; quem está ao vivo, não.
+    reply = await dono.call('removePeer', { peerId: entrada.peerId });
+    assert.equal(reply.status, 422, 'remover alguém ao vivo pelo socket é recusado — isso é do Laravel');
 
     assistindo.close();
     nativo.close();

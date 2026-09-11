@@ -32,24 +32,6 @@ export class Room {
     /** Devolve a sala ao registro quando ela esvazia. O registro é quem ignora se não esvaziou. */
     public onEvicted: ((room: Room) => void) | null = null;
 
-    /**
-     * A instalação que criou a sala. Quem chega primeiro fica com a chave.
-     *
-     * Guardado por instalação e não por `peerId` porque o `peerId` é sorteado a cada
-     * conexão: dono amarrado a ele perderia a sala numa oscilação de rede. Sobrevive
-     * também a fechar e reabrir o app, então quem criou a sala continua dono ao voltar.
-     */
-    public ownerInstallId: string | null = null;
-
-    /**
-     * Quem foi expulso, enquanto a sala existir.
-     *
-     * Expulsar sem isto não expulsa nada: a pessoa continua sabendo o código e entra de
-     * novo no segundo seguinte. Some junto com a sala, que é o tempo de vida certo — uma
-     * lista que durasse além dela seria um cadastro de pessoas, e isso é outra coisa.
-     */
-    private readonly banned = new Set<string>();
-
     private readonly evictions = new Map<string, NodeJS.Timeout>();
 
     public constructor(
@@ -79,7 +61,8 @@ export class Room {
     public addPeer(
         name: string,
         socket: WebSocket,
-        options: { resumeKey?: string | null; resume?: boolean; installId?: string | null } = {},
+        identity: { userId: string; owner: boolean },
+        options: { resumeKey?: string | null; resume?: boolean } = {},
     ): JoinOutcome {
         const previous = options.resumeKey ? this.findByResumeKey(options.resumeKey) : null;
 
@@ -100,44 +83,39 @@ export class Room {
             this.broadcast('peerLeft', { peerId: previous.id }, previous.id);
         }
 
-        const installId = options.installId ?? null;
-
-        if (installId && this.banned.has(installId)) {
-            throw new ValidationException('você foi removido desta sala');
-        }
-
         const peer = new Peer(
             randomUUID(),
             name,
             socket,
             randomBytes(16).toString('hex'),
-            installId ?? '',
+            identity.userId,
+            identity.owner,
         );
-
-        // Sala vazia: quem acende a luz fica com a chave. `??=` e não `=` porque o dono
-        // que sai e volta reencontra a sala dele, em vez de perdê-la para quem ficou.
-        if (installId && this.peers.size === 0) {
-            this.ownerInstallId ??= installId;
-        }
 
         this.peers.set(peer.id, peer);
 
         return { peer, resumed: false };
     }
 
-    /** Expulsa e impede a volta. Sem a segunda metade, a primeira não serve para nada. */
-    public banPeer(target: Peer): void {
-        if (target.installId) {
-            this.banned.add(target.installId);
+    /**
+     * Expulsa todas as sessões de uma conta. Quem chama é o Laravel, depois de gravar o
+     * banimento: a metade que impede a volta mora lá, porque é lá que o token nasce.
+     */
+    public kickUser(userId: string): number {
+        let kicked = 0;
+
+        for (const peer of [...this.peers.values()]) {
+            if (peer.userId !== userId) {
+                continue;
+            }
+
+            this.broadcast('peerKicked', { peerId: peer.id, name: peer.name }, peer.id);
+            peer.send('kicked', { reason: 'você foi removido desta sala' });
+            this.removePeer(peer);
+            kicked += 1;
         }
 
-        this.broadcast('peerKicked', { peerId: target.id, name: target.name });
-        target.send('kicked', { reason: 'você foi removido desta sala' });
-        this.removePeer(target);
-    }
-
-    public isOwner(peer: Peer): boolean {
-        return Boolean(peer.installId) && peer.installId === this.ownerInstallId;
+        return kicked;
     }
 
     private findByResumeKey(resumeKey: string): Peer | null {
@@ -221,6 +199,7 @@ export class Room {
             .filter((peer) => peer.id !== exceptPeerId && !peer.isOrphaned())
             .map((peer) => ({
                 peerId: peer.id,
+                userId: peer.userId,
                 name: peer.name,
                 producers: peer.describeProducers(),
             }));

@@ -1,14 +1,25 @@
-import { createServer, type IncomingMessage } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 
 import { config } from '../config.js';
+import {
+    ApiException,
+    NotFoundException,
+    ValidationException,
+} from '../Exceptions/ApiException.js';
 import { RoomRegistry } from '../Services/RoomRegistry.js';
+import { Signature } from '../Services/Signature.js';
 import type { Session } from '../types.js';
 import { Kernel } from './Kernel.js';
 
 type Payload = { id?: number; action?: string; data?: Record<string, unknown> };
 
 const WINDOW_MS = 60_000;
+
+/** Um corpo maior que isto não é uma chamada do Laravel. */
+const MAX_BODY_BYTES = 16 * 1024;
+
+const KICK_PATH = /^\/rooms\/([a-z0-9-]+)\/kick$/;
 
 /**
  * Um socket meio aberto — tampa do notebook fechada, Wi-Fi trocado por 4G — nunca manda
@@ -34,22 +45,7 @@ export class Server {
     public async start(): Promise<void> {
         await this.registry.boot();
 
-        const http = createServer((request, response) => {
-            if (request.url !== '/health') {
-                response.writeHead(404).end();
-
-                return;
-            }
-
-            response.writeHead(200, { 'content-type': 'application/json' });
-            response.end(
-                JSON.stringify({
-                    ok: true,
-                    appVersion: config.appVersion,
-                    ...this.registry.stats(),
-                }),
-            );
-        });
+        const http = createServer((request, response) => void this.serve(request, response));
 
         const websockets = new WebSocketServer({ server: http, path: config.path });
 
@@ -75,6 +71,94 @@ export class Server {
                 `[INFO] SFU em ${config.listenHost}:${config.listenPort}${config.path} · media on port ${config.mediaPort}`,
             ),
         );
+    }
+
+    /**
+     * O pouco de HTTP que existe: o `/health` que o app consulta antes de entrar, e a
+     * porta pela qual o Laravel manda expulsar alguém. Tudo o mais é WebSocket.
+     */
+    private async serve(request: IncomingMessage, response: ServerResponse): Promise<void> {
+        const path = (request.url ?? '').split('?')[0] ?? '';
+
+        try {
+            if (request.method === 'GET' && path === '/health') {
+                this.reply(response, 200, {
+                    ok: true,
+                    appVersion: config.appVersion,
+                    ...this.registry.stats(),
+                });
+
+                return;
+            }
+
+            const kick = KICK_PATH.exec(path);
+
+            if (request.method === 'POST' && kick?.[1]) {
+                const body = await this.body(request);
+
+                // Assinado pelo Laravel com o mesmo segredo do token. Sem isto qualquer um
+                // que alcançasse a porta 3000 expulsaria quem quisesse.
+                Signature.verifyHeader(
+                    request.headers['x-unkvoid-timestamp']?.toString(),
+                    request.headers['x-unkvoid-signature']?.toString(),
+                    'POST',
+                    path,
+                    body,
+                );
+
+                const { userId } = JSON.parse(body) as { userId?: unknown };
+
+                if (typeof userId !== 'string' || userId === '') {
+                    throw new ValidationException('field userId is required');
+                }
+
+                // Sala que não está no ar não tem quem expulsar: o banimento já foi gravado
+                // do outro lado, e é ele que impede a volta.
+                this.reply(response, 200, {
+                    kicked: this.registry.find(kick[1])?.kickUser(userId) ?? 0,
+                });
+
+                return;
+            }
+
+            throw new NotFoundException();
+        } catch (exception) {
+            const status = exception instanceof ApiException ? exception.status : 500;
+            const message = exception instanceof Error ? exception.message : 'unexpected error';
+
+            if (status === 500) {
+                console.error(`[ERROR] http ${request.method} ${path}: ${message}`);
+            }
+
+            this.reply(response, status, { ok: false, error: message });
+        }
+    }
+
+    private body(request: IncomingMessage): Promise<string> {
+        return new Promise((resolve, reject) => {
+            const chunks: Buffer[] = [];
+            let size = 0;
+
+            request.on('data', (chunk: Buffer) => {
+                size += chunk.length;
+
+                if (size > MAX_BODY_BYTES) {
+                    request.destroy();
+                    reject(new ValidationException('body too large'));
+
+                    return;
+                }
+
+                chunks.push(chunk);
+            });
+            request.on('end', () => resolve(Buffer.concat(chunks).toString()));
+            request.on('error', reject);
+        });
+    }
+
+    private reply(response: ServerResponse, status: number, data: Record<string, unknown>): void {
+        response.writeHead(status, { 'content-type': 'application/json' });
+        response.end(JSON.stringify(data));
     }
 
     private accept(socket: WebSocket, request: IncomingMessage): void {

@@ -1,43 +1,32 @@
 import { Request } from './Request.js';
-import { ValidationException } from '../../Exceptions/ApiException.js';
+import { Signature, type JoinClaims } from '../../Services/Signature.js';
 
-/** Códigos podem ser nomes legíveis; o limite evita chaves enormes no mapa e no protocolo. */
-const CODE = /^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/;
-
-const NAME_MAX = 40;
-
-/** Formato do identificador de instalação: o `randomUUID` do navegador. */
-const INSTALL = /^[0-9a-f-]{8,64}$/;
-
+/**
+ * Entrar na sala é apresentar o token que o Laravel assinou. Quem pode entrar, com que
+ * nome e se é dono foi decidido lá, contra o banco; aqui só se confere a assinatura e a
+ * validade. Nenhuma chamada de rede no caminho do join.
+ */
 export class JoinRequest extends Request {
+    declare private claims: JoinClaims;
+
     protected override validate(): void {
-        if (!CODE.test(this.string('room'))) {
-            throw new ValidationException(
-                'room code must be 3-32 characters of a-z0-9, with optional hyphens',
-            );
-        }
-
-        if (this.string('name').trim().length > NAME_MAX) {
-            throw new ValidationException(`name must be at most ${NAME_MAX} characters`);
-        }
-    }
-
-    /**
-     * Quem é a instalação que está entrando. Ausente em cliente antigo, e aí a pessoa
-     * entra sem poder ser dona nem banida — degradar é melhor do que recusar.
-     */
-    public installId(): string | null {
-        const value = this.data.installId;
-
-        return typeof value === 'string' && INSTALL.test(value) ? value : null;
+        this.claims = Signature.claims(this.string('token'));
     }
 
     public roomCode(): string {
-        return this.string('room');
+        return this.claims.room;
     }
 
     public name(): string {
-        return this.string('name').trim();
+        return this.claims.name.trim();
+    }
+
+    public userId(): string {
+        return this.claims.sub;
+    }
+
+    public isOwner(): boolean {
+        return this.claims.owner;
     }
 
     /**

@@ -21,6 +21,7 @@ const server = spawn('node', ['dist/server.js'], {
     env: {
         ...process.env,
         SFU_PORT: String(PORT),
+        SFU_SECRET: process.env.SFU_SECRET ?? 'segredo-de-teste-com-mais-de-32-caracteres',
         SFU_WORKERS: '1',
         SFU_HEARTBEAT_MS: String(HEARTBEAT_MS),
     },
