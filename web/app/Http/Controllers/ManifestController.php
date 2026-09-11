@@ -11,6 +11,11 @@ use Illuminate\Http\JsonResponse;
 /**
  * O que o atualizador do Tauri lê. O formato é o dele: uma versão, e uma URL assinada
  * por plataforma. Sem cache de propósito: as URLs vencem, e o app baixa logo em seguida.
+ *
+ * A versão é uma só para todas as plataformas, e por isso só entram aqui as que têm
+ * build nessa versão. Anunciar 0.0.14 e servir o instalador 0.0.7 de uma plataforma que
+ * ficou para trás faz o app dela baixar o antigo achando que é o novo: instala, volta a
+ * ser velho, vê o anúncio de novo e repete para sempre.
  */
 final class ManifestController
 {
@@ -22,15 +27,10 @@ final class ManifestController
 
         $newest = null;
 
-        /** @var array<string, array{url: string, signature: string}> $platforms */
-        $platforms = [];
-
         foreach ($latest as $release) {
             if (! $release->platform->updates() || is_null($release->signature)) {
                 continue;
             }
-
-            $platforms[$release->platform->value] = ['url' => $release->downloadUrl(), 'signature' => $release->signature];
 
             if (is_null($newest) || version_compare($release->version, $newest->version, '>')) {
                 $newest = $release;
@@ -38,6 +38,17 @@ final class ManifestController
         }
 
         abort_if(is_null($newest), 404);
+
+        /** @var array<string, array{url: string, signature: string}> $platforms */
+        $platforms = [];
+
+        foreach ($latest as $release) {
+            if (! $release->platform->updates() || is_null($release->signature) || $release->version !== $newest->version) {
+                continue;
+            }
+
+            $platforms[$release->platform->value] = ['url' => $release->downloadUrl(), 'signature' => $release->signature];
+        }
 
         // O app que não sabe por qual instalador foi instalado procura só `windows-x86_64`.
         foreach ([ReleasePlatformEnum::WindowsNsis, ReleasePlatformEnum::WindowsMsi] as $fallback) {

@@ -71,6 +71,18 @@ it('o latest.json ignora o .dmg e o que não tem assinatura', function (): void 
     $this->getJson('/downloads/latest.json')->assertNotFound();
 });
 
+it('o latest.json deixa de fora a plataforma que ficou numa versão antiga', function (): void {
+    Release::query()->create(['version' => '0.0.7', 'platform' => ReleasePlatformEnum::WindowsMsi, 'file_name' => 'a.msi', 'path' => 'releases/0.0.7/a.msi', 'size' => 1, 'signature' => 'assinatura-windows', 'published_at' => now()->subDay()]);
+    Release::query()->create(['version' => '0.0.14', 'platform' => ReleasePlatformEnum::MacosApp, 'file_name' => 'a.tar.gz', 'path' => 'releases/0.0.14/a.tar.gz', 'size' => 1, 'signature' => 'assinatura-macos', 'published_at' => now()]);
+
+    $this->getJson('/downloads/latest.json')
+        ->assertOk()
+        ->assertJsonPath('version', '0.0.14')
+        ->assertJsonPath('platforms.darwin-aarch64.signature', 'assinatura-macos')
+        ->assertJsonMissingPath('platforms.windows-x86_64-msi')
+        ->assertJsonMissingPath('platforms.windows-x86_64');
+});
+
 it('a landing mostra a versão e os links das plataformas publicadas', function (): void {
     Release::query()->create(['version' => '0.0.8', 'platform' => ReleasePlatformEnum::LinuxDeb, 'file_name' => 'a.deb', 'path' => 'releases/0.0.8/a.deb', 'size' => 1, 'signature' => null, 'published_at' => now()]);
 
