@@ -3,12 +3,16 @@ SHELL := /bin/bash
 DESKTOP_DIR := native/apps/desktop
 RUST_DIR := native
 
-.PHONY: help dev run frontend rust-check check build build-windows build-mac build-linux mac-build install build-vps release
+.PHONY: help dev run frontend rust-check check build build-windows build-mac build-linux mac-build install build-vps release publish-windows
 
 VPS_REMOTE ?= vps
 VPS_APP := /var/www/projects/unkvoid
 REPO_URL := https://github.com/edsuuu/unkvoid.git
 CHAVE := $(HOME)/.tauri/unkvoid.key
+
+# Onde o build-windows.ps1 larga os instaladores, visto de dentro do WSL.
+WINDOWS_APPS ?= /mnt/c/Users/edsu/Desktop/apps
+VERSAO = $(shell node -pe 'JSON.parse(require("fs").readFileSync("$(DESKTOP_DIR)/src-tauri/tauri.conf.json","utf8")).version')
 
 help:
 	@printf "Comandos disponíveis:\n"
@@ -24,6 +28,7 @@ help:
 	@printf "  make install     Instala e abre o .app no macOS\n"
 	@printf "  make build-vps   Gera DEB e AppImage na VPS e publica assinado\n"
 	@printf "  make release     Publica os instaladores desta máquina na release\n"
+	@printf "  make publish-windows Publica o .msi e o .exe que o Windows acabou de gerar\n"
 
 dev:
 	cd $(DESKTOP_DIR) && npm run tauri dev
@@ -79,6 +84,24 @@ build-vps:
 
 release:
 	cd $(DESKTOP_DIR) && node release.mjs
+
+# O Windows compila no Windows e publica daqui: o publish-release.sh é bash e o segredo
+# da API mora no WSL. Os dois instaladores vão com chave própria no manifesto — quem
+# instalou pelo .msi receberia `InvalidUpdaterFormat` se baixasse o .exe de volta.
+#
+# O filtro pela versão não é enfeite: a pasta de saída junta build de todas as versões,
+# e publicar o .msi de ontem com o número de hoje deixa todo mundo baixando o errado.
+publish-windows:
+	@set -e; \
+	source $(HOME)/auxilos/release-secret.env; \
+	export RELEASE_SECRET; \
+	cd $(DESKTOP_DIR); \
+	for file in $(WINDOWS_APPS)/Unkvoid_$(VERSAO)_*.msi; do \
+		./publish-release.sh windows-x86_64-msi "$$file" "$$file.sig"; \
+	done; \
+	for file in $(WINDOWS_APPS)/Unkvoid_$(VERSAO)_*-setup.exe; do \
+		./publish-release.sh windows-x86_64-nsis "$$file" "$$file.sig"; \
+	done
 
 install: mac-build
 	@set -e; \
