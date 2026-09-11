@@ -93,9 +93,14 @@ Depende de aprovar o esquema: `rooms`, `room_bans`, `releases`.
 ### 4. Linux de verdade
 
 - O WebKitGTK de Debian, Ubuntu, Mint e Parrot vem sem WebRTC, provado em Docker.
-  Assistir no Linux é pelo navegador (`/assistir/{código}`) até existir um receptor
-  nativo: as crates `rtc-*` já estão no repositório, falta decodificar e desenhar.
-- Transmitir no Linux: captura pelo PipeWire e encoder por VA-API. É outro bloco.
+  Assistir no Linux: **feito em 11/09/2026 (0.0.16)** por receptor nativo — o SFU
+  ganhou `consumePlain` (RTP puro numa porta do transport plain), o Rust abre o
+  SRTP e repassa para um `gst-launch-1.0` que decodifica numa janela própria. Falta
+  desenhar dentro da janela do app, e RTCP de volta (NACK/PLI). Assistir pelo
+  navegador foi descartado de propósito.
+- Transmitir no Linux: **feito em 11/09/2026** para X11, com o GStreamer como
+  processo (`ximagesrc` → `x264enc` na CPU) e som pelo monitor do PulseAudio. Falta
+  Wayland (`pipewiresrc` via portal), lista de janelas e VA-API para aliviar a CPU.
 
 ### 5. Revisão
 

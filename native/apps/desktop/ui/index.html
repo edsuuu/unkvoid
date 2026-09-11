@@ -87,7 +87,6 @@
     </button>
 
     <button class="cursor-pointer rounded bg-online px-3 py-1.5 text-sm font-medium text-white transition-colors hover:brightness-110" id="watch-pending" type="button" hidden>Assistir</button>
-    <button class="cursor-pointer rounded px-3 py-1.5 text-sm text-ink-soft ring-1 ring-inset ring-line transition-colors hover:bg-line hover:text-white" id="watch-browser" type="button" hidden title="Este sistema não tem WebRTC no motor da janela: assistir é pelo navegador">Assistir no navegador</button>
     <button class="cursor-pointer rounded bg-brand px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-brand-dark" id="share">Compartilhar tela</button>
     <button class="cursor-pointer rounded bg-danger px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-danger-dark" id="stop" hidden>Parar</button>
     <button class="cursor-pointer rounded px-3 py-1.5 text-sm text-ink-soft ring-1 ring-inset ring-line transition-colors hover:bg-line hover:text-white" id="self-view" type="button" hidden>Ver o que a sala vê</button>
@@ -182,8 +181,10 @@
 
       <span class="flex-1"></span>
 
-      <button class="cursor-pointer rounded-md px-4 py-2.5 text-sm font-medium text-ink-soft ring-1 ring-inset ring-line transition-colors hover:bg-line hover:text-white" id="share-cancel" type="button">Cancelar</button>
-      <button class="cursor-pointer rounded-md bg-brand px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand/20 transition-colors hover:bg-brand-dark disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none" id="share-confirm" type="button" disabled>Transmitir</button>
+      <span class="flex shrink-0 gap-3">
+        <button class="cursor-pointer rounded-md px-4 py-2.5 text-sm font-medium text-ink-soft ring-1 ring-inset ring-line transition-colors hover:bg-line hover:text-white" id="share-cancel" type="button">Cancelar</button>
+        <button class="cursor-pointer rounded-md bg-brand px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand/20 transition-colors hover:bg-brand-dark disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none" id="share-confirm" type="button" disabled>Transmitir</button>
+      </span>
     </div>
   </div>
 </section>

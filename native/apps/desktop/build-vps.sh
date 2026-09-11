@@ -70,15 +70,28 @@ docker run --rm --user "$(id -u):$(id -g)" \
 DEB=$(find ../../target-deb12/release/bundle/deb -maxdepth 1 -name '*.deb' -printf '%T@ %p\n' 2>/dev/null \
     | sort -rn | head -1 | cut -d' ' -f2- || true)
 
-if [ -n "$DEB" ]; then
-    ./apt-publish.sh "$DEB"
+if [ -z "$DEB" ]; then
+    echo "[ERRO] nenhum .deb saiu do build" >&2
+    exit 1
 fi
+
+# Com --dry-run o build para aqui: serve para gerar um instalador de teste sem publicar.
+# `./validate-deb.sh "$DEB"` prova o pacote numa Debian limpa, fora do caminho da
+# publicação — quem valida de verdade é quem instala.
+for arg in "$@"; do
+    if [ "$arg" = "--dry-run" ]; then
+        echo "[INFO] --dry-run: nada publicado: $DEB"
+        exit 0
+    fi
+done
+
+./apt-publish.sh "$DEB"
 
 # O card do Linux no site aponta para o .deb mais novo. O segredo mora no .env do site,
 # que está nesta mesma máquina, então nada viaja.
 WEB_ENV="${UNKVOID_WEB_ENV:-/var/www/projects/unkvoid-web/shared/.env}"
 
-if [ -n "$DEB" ] && [ -f "$WEB_ENV" ]; then
+if [ -f "$WEB_ENV" ]; then
     RELEASE_SECRET="$(grep '^RELEASE_SECRET=' "$WEB_ENV" | cut -d= -f2-)" ./publish-release.sh linux-x86_64-deb "$DEB"
 fi
 
@@ -93,16 +106,6 @@ case " $* " in
         exit 0
         ;;
 esac
-
-# Com --dry-run o build para aqui: serve para gerar um instalador de teste sem mexer na
-# release, e sem exigir um gh autenticado nesta máquina.
-for arg in "$@"; do
-    if [ "$arg" = "--dry-run" ]; then
-        echo "[INFO] --dry-run: instaladores gerados, nada publicado"
-        find ../../target-deb12/release/bundle -maxdepth 2 -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.sig' \) -print
-        exit 0
-    fi
-done
 
 # O `gh` é quem publica a release. Não vem no Ubuntu, então instala do repositório da
 # própria GitHub — a versão do apt padrão é velha demais para `release upload --clobber`.
