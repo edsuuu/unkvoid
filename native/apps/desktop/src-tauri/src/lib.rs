@@ -5,8 +5,10 @@
 
 mod broadcast;
 mod logbook;
+mod watch;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use broadcast::Broadcast;
 use capture::{CaptureSource, PlatformCapturer, Quality};
@@ -227,6 +229,59 @@ async fn use_sfu(
         .ok_or_else(|| "no active stream".to_string())?
         .use_sfu(address, key)
         .map_err(|error| error.to_string())
+}
+
+struct NativeWatches(Mutex<watch::Watches>);
+
+/// A chave SRTP deste lado, para o `consumePlain` levar ao servidor.
+#[tauri::command]
+fn watch_key(state: State<'_, NativeWatches>) -> Result<String, String> {
+    use base64::Engine;
+
+    let mut watches = state.0.lock().map_err(|_| "watch state is poisoned".to_string())?;
+
+    Ok(base64::engine::general_purpose::STANDARD.encode(watches.key()))
+}
+
+/// Recebe a transmissão de alguém por RTP puro e abre numa janela do GStreamer. É o
+/// jeito de assistir onde o webview não tem WebRTC.
+#[tauri::command]
+fn watch_native(
+    state: State<'_, NativeWatches>,
+    peer_id: String,
+    address: String,
+    server_key: String,
+    video_payload_type: Option<u8>,
+    audio_payload_type: Option<u8>,
+) -> Result<(), String> {
+    use base64::Engine;
+
+    let server_key = base64::engine::general_purpose::STANDARD
+        .decode(server_key)
+        .map_err(|error| format!("chave do servidor ilegível: {error}"))?;
+
+    let mut watches = state.0.lock().map_err(|_| "watch state is poisoned".to_string())?;
+
+    watches
+        .start(peer_id, &address, &server_key, video_payload_type, audio_payload_type)
+        .map_err(|error| error.to_string())
+}
+
+/// Fecha a janela de uma transmissão, ou de todas quando `peer_id` vem vazio.
+#[tauri::command]
+fn stop_watch(state: State<'_, NativeWatches>, peer_id: Option<String>) -> Result<(), String> {
+    let mut watches = state.0.lock().map_err(|_| "watch state is poisoned".to_string())?;
+
+    watches.stop(peer_id.as_deref());
+
+    Ok(())
+}
+
+#[tauri::command]
+fn watch_stats(state: State<'_, NativeWatches>, peer_id: String) -> Result<u64, String> {
+    let watches = state.0.lock().map_err(|_| "watch state is poisoned".to_string())?;
+
+    Ok(watches.packets(&peer_id))
 }
 
 #[tauri::command]
@@ -461,24 +516,6 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-/// Abre uma URL no navegador do sistema. Existe porque no Linux o motor da janela vem
-/// sem WebRTC nas distros, e assistir passa a ser no navegador.
-#[tauri::command]
-fn open_url(url: String) -> Result<(), String> {
-    if !url.starts_with("https://") {
-        return Err("só abre https".to_string());
-    }
-
-    #[cfg(target_os = "linux")]
-    let command = std::process::Command::new("xdg-open").arg(&url).spawn();
-    #[cfg(target_os = "macos")]
-    let command = std::process::Command::new("open").arg(&url).spawn();
-    #[cfg(target_os = "windows")]
-    let command = std::process::Command::new("cmd").args(["/C", "start", "", &url]).spawn();
-
-    command.map(|_| ()).map_err(|failure| failure.to_string())
-}
-
 /// O app está rodando só para responder ao `--check`: sem interface, sem bandeja.
 struct SelfCheck(bool);
 
@@ -536,6 +573,73 @@ fn report_check(app: tauri::AppHandle, webrtc: bool, receiver: Vec<String>, send
     std::process::exit(if webrtc && h264 { 0 } else { 1 });
 }
 
+/// Três segundos de captura da tela principal passando pelo encoder. Sai 0 com pelo
+/// menos um keyframe codificado; 1 quando nada saiu, e diz o que faltou.
+fn check_capture() -> i32 {
+    use std::sync::atomic::AtomicU64;
+
+    let frames = Arc::new(AtomicU64::new(0));
+    let keyframes = Arc::new(AtomicU64::new(0));
+    let audio = Arc::new(AtomicU64::new(0));
+    let config = media::EncoderConfig::new(Quality::Hd720, 30);
+
+    let encoder = match media::PlatformEncoder::new(&config) {
+        Ok(encoder) => Mutex::new(encoder),
+        Err(error) => {
+            println!("unkvoid check-capture: encoder: {error}");
+            return 1;
+        }
+    };
+
+    let (frames_cb, keyframes_cb, audio_cb) =
+        (Arc::clone(&frames), Arc::clone(&keyframes), Arc::clone(&audio));
+
+    let capturer = PlatformCapturer::start(
+        &capture::CaptureConfig {
+            quality: Quality::Hd720,
+            frame_rate: 30,
+            ..capture::CaptureConfig::default()
+        },
+        move |event| match event {
+            capture::CaptureEvent::Video(frame) => {
+                if let Some(surface) = frame.surface.as_ref()
+                    && let Ok(mut encoder) = encoder.lock()
+                    && let Ok(encoded) = encoder.encode(surface, frame.timestamp_ns)
+                {
+                    frames_cb.fetch_add(1, Ordering::Relaxed);
+                    keyframes_cb.fetch_add(u64::from(encoded.keyframe), Ordering::Relaxed);
+                }
+            }
+            capture::CaptureEvent::Audio(_) => {
+                audio_cb.fetch_add(1, Ordering::Relaxed);
+            }
+        },
+    );
+
+    let mut capturer = match capturer {
+        Ok(capturer) => capturer,
+        Err(error) => {
+            println!("unkvoid check-capture: captura: {error}");
+            return 1;
+        }
+    };
+
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let _ = capturer.stop();
+
+    let (frames, keyframes, audio) = (
+        frames.load(Ordering::Relaxed),
+        keyframes.load(Ordering::Relaxed),
+        audio.load(Ordering::Relaxed),
+    );
+
+    println!(
+        "unkvoid check-capture: {frames} quadros codificados ({keyframes} keyframes), {audio} blocos de áudio em 3 s"
+    );
+
+    i32::from(keyframes == 0)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let arguments: Vec<String> = std::env::args().collect();
@@ -547,6 +651,12 @@ pub fn run() {
         println!("unkvoid {}", context.package_info().version);
 
         return;
+    }
+
+    // Captura e codificação de vídeo, sem sala nem janela: é o que prova, numa distro
+    // limpa, que compartilhar a tela funciona antes de alguém apresentar com ela.
+    if arguments.iter().any(|argument| argument == "--check-capture") {
+        std::process::exit(check_capture());
     }
 
     let checking = arguments.iter().any(|argument| argument == "--check");
@@ -565,7 +675,6 @@ pub fn run() {
         .manage(SelfCheck(checking))
         .invoke_handler(tauri::generate_handler![
             report_check,
-            open_url,
             list_displays,
             list_windows,
             source_preview,
@@ -578,11 +687,16 @@ pub fn run() {
             use_sfu,
             stop_broadcast,
             broadcast_stats,
+            watch_key,
+            watch_native,
+            stop_watch,
+            watch_stats,
             expand_window,
             log_line,
             log_path
         ])
         .manage(HasTray(AtomicBool::new(false)))
+        .manage(NativeWatches(Mutex::new(watch::Watches::default())))
         .setup(move |app| {
             use tauri::Manager;
 

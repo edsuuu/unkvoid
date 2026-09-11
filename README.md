@@ -52,15 +52,17 @@ infra/nginx.conf    só termina TLS para o WebSocket
 |---|---|---|---|---|
 | macOS | ScreenCaptureKit | sim | VideoToolbox | sim |
 | Windows | Graphics Capture (pega os quadros) | falta (WASAPI loopback) | **falta** (Media Foundation) | **não** |
-| Linux | falta (nó do PipeWire) | falta | falta | não; assiste pelo navegador |
+| Linux | GStreamer `ximagesrc` (X11) | monitor do PulseAudio/PipeWire | x264 (CPU, no GStreamer) | sim |
 
 **Assistir** usa o WebRTC do webview. No Linux isso não existe: Debian, Ubuntu, Mint e
 Parrot compilam o WebKitGTK **sem WebRTC**, e nenhum pacote do GStreamer muda isso
 (provado em 11/09/2026 numa Debian 12 e numa Ubuntu 24.04 limpas, com `enable-webrtc`
 ligado antes da página nascer: `typeof RTCPeerConnection` continua `undefined`). No
-Linux o app cria sala e vai transmitir; assistir é pelo navegador, em
-`https://unkvoid.com/assistir/<código>`, e o app tem um botão que abre isso.
-`unkvoid-desktop --check` diz o que o motor da janela desta máquina sabe fazer.
+Linux o app cria sala e transmite (desde a 0.0.15) e assiste (desde a 0.0.16) por um
+receptor nativo: o servidor manda a mídia por RTP puro (`consumePlain`), o Rust abre o
+SRTP e o GStreamer decodifica numa janela própria ao lado do app. `unkvoid-desktop --check` diz o que o
+motor da janela desta máquina sabe fazer, e `unkvoid-desktop --check-capture` prova a
+captura e o encoder em três segundos, sem abrir janela.
 
 ## Como buildar
 
@@ -119,8 +121,10 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev build-essential
 cd native/apps/desktop && npm ci && npx tauri build
 ```
 
-Compila e abre, mas a captura ainda recusa com erro claro: falta consumir o nó do
-PipeWire que o portal XDG devolve.
+A captura é o `gst-launch-1.0` como processo (`ximagesrc` → `x264enc`, som pelo
+`pulsesrc` no monitor da saída): precisa de `gstreamer1.0-tools` e dos plugins
+good/ugly, que o `.deb` já exige. Só X11: em sessão Wayland pura a lista de telas sai
+vazia (o caminho é `pipewiresrc` via portal). Sem lista de janelas ainda.
 
 ### Publicar uma release
 

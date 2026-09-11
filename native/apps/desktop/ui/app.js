@@ -152,6 +152,8 @@ class App {
         this.mediaStatsTimers = new Map();
         this.mediaStatsRuns = new Map();
         this.remoteAudios = new Map();
+        // Quem está sendo assistido pelo caminho nativo (Linux): uma janela por pessoa.
+        this.nativeWatching = new Set();
         this.consumingProducers = new Set();
         this.peopleStatsTimer = null;
 
@@ -575,14 +577,6 @@ class App {
                 this.fail('o motor da janela desta máquina não recebe H.264 pelo WebRTC. Dá para transmitir, mas não para assistir. Abra Logs e mande a linha device.h264.missing.');
             }
 
-            // Sem WebRTC (Debian, Ubuntu, Mint e Parrot compilam o WebKitGTK sem ele) o
-            // caminho para assistir é o navegador, que tem. O botão só aparece aqui.
-            el('watch-browser').hidden = this.sfu.canWatch();
-            el('watch-browser').onclick = () => {
-                void invoke('open_url', { url: `${App.SERVER}/assistir/${this.room}` })
-                    .catch(error => this.fail(`não deu para abrir o navegador: ${error.message ?? error}`));
-            };
-
             this.refreshPeople();
             this.peopleStatsTimer = setInterval(() => {
                 void this.refreshPeopleStats();
@@ -936,6 +930,12 @@ class App {
     }
 
     async consume({ producerId, peerId: ownerPeerId }) {
+        // Sem WebRTC na janela (o Linux), quem recebe e desenha é o Rust com o
+        // GStreamer, numa janela ao lado. Uma chamada por pessoa, não por producer.
+        if (this.sfu?.canWatch?.() === false && App.isLinux()) {
+            return this.consumeNative(ownerPeerId);
+        }
+
         if (this.consumingProducers.has(producerId) || this.sfu?.consumersHasProducer?.(producerId)) {
             return;
         }
@@ -980,11 +980,98 @@ class App {
 
             if (this.sfu?.canWatch?.() === false && ! this.warnedNoWebRTC) {
                 this.warnedNoWebRTC = true;
-                this.fail('este sistema não tem WebRTC no motor da janela. Dá para transmitir aqui; para assistir, use o botão "Assistir no navegador".');
+                this.fail('este sistema não tem WebRTC no motor da janela: dá para transmitir, mas ainda não dá para assistir.');
             }
         } finally {
             this.consumingProducers.delete(producerId);
         }
+    }
+
+    /**
+     * Assistir por RTP puro: o servidor manda a mídia numa porta UDP e o GStreamer
+     * abre numa janela própria. O cartão no palco só diz que está acontecendo.
+     */
+    async consumeNative(peerId) {
+        if (this.nativeWatching.has(peerId)) {
+            return;
+        }
+
+        const producers = this.sfu?.peers?.get(peerId)?.producers ?? [];
+
+        if (! producers.some(producer => producer.kind === 'video')) {
+            return;
+        }
+
+        this.nativeWatching.add(peerId);
+        this.log('media.native.start', { peerId });
+
+        try {
+            const keyBase64 = await invoke('watch_key');
+            const srtpParameters = { cryptoSuite: 'AES_CM_128_HMAC_SHA1_80', keyBase64 };
+            const consumers = [];
+
+            for (const producer of producers) {
+                consumers.push(await this.sfu.request('consumePlain', { producerId: producer.producerId, srtpParameters }));
+            }
+
+            const video = consumers.find(consumer => consumer.kind === 'video');
+            const audio = consumers.find(consumer => consumer.kind === 'audio');
+
+            await invoke('watch_native', {
+                peerId,
+                address: `${video.ip}:${video.port}`,
+                serverKey: video.srtpParameters.keyBase64,
+                videoPayloadType: video.payloadType,
+                audioPayloadType: audio?.payloadType ?? null,
+            });
+
+            // Só depois de o Rust ter aberto o caminho: retomar antes mandaria o
+            // keyframe para um endereço que o servidor ainda não conhece.
+            for (const consumer of consumers) {
+                await this.sfu.request('resumeConsumer', { consumerId: consumer.consumerId });
+            }
+
+            this.showNativeTile(peerId, video.name);
+            this.log('media.native.ready', { peerId });
+        } catch (failure) {
+            this.nativeWatching.delete(peerId);
+            this.log('media.native.error', { peerId, message: failure.message ?? String(failure) });
+            this.fail(`não deu para assistir: ${failure.message ?? failure}`);
+        }
+    }
+
+    async stopNative(peerId) {
+        if (! this.nativeWatching.has(peerId)) {
+            return;
+        }
+
+        this.nativeWatching.delete(peerId);
+        await invoke('stop_watch', { peerId }).catch(() => null);
+    }
+
+    showNativeTile(peerId, name) {
+        const tile = document.querySelector(`[data-screen="${peerId}"]`) ?? document.createElement('figure');
+
+        tile.dataset.screen = peerId;
+        tile.innerHTML = '<span class="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-black text-center text-sm text-ink-soft">'
+            + '<span>A tela está aberta numa janela separada do GStreamer.</span>'
+            + '<button class="cursor-pointer rounded-md px-4 py-2 text-sm font-medium text-white ring-1 ring-inset ring-line hover:bg-line" data-native-stop type="button">Parar de assistir</button>'
+            + '</span>'
+            + `<figcaption class="${LOOK.caption}"><span class="truncate"></span></figcaption>`;
+        tile.querySelector('figcaption span').textContent = name ?? 'alguém';
+        tile.querySelector('[data-native-stop]').onclick = () => {
+            void this.stopNative(peerId);
+            tile.remove();
+            this.paintLayout();
+            this.paintWatchPrompt();
+        };
+
+        if (! tile.isConnected) {
+            el('stage').appendChild(tile);
+        }
+
+        this.paintLayout();
+        this.paintWatchPrompt();
     }
 
     /** Desenha (ou remove) a tela de quem está transmitindo. */
@@ -992,6 +1079,7 @@ class App {
         const existing = document.querySelector(`[data-screen="${from}"]`);
 
         if (! stream) {
+            void this.stopNative(from);
             // Tirar o elemento não para o decoder: a faixa segue viva no transporte, e
             // o app fica dias aberto. Cada transmissão encerrada deixava mais uma.
             for (const media of [existing?.querySelector('video'), this.remoteAudios.get(from)]) {
@@ -1493,7 +1581,8 @@ class App {
             display: displays.map(display => ({
                 value: `display:${display.id}`,
                 label: `Tela ${display.id}`,
-                detail: `${display.width}×${display.height}`,
+                // Sem tamanho conhecido (Linux sem xdpyinfo) é melhor nada que "0×0".
+                detail: display.width ? `${display.width}×${display.height}` : '',
             })),
             // Janela sem título é painel de sistema: mostrar só polui a escolha.
             window: appWindows
@@ -1523,8 +1612,12 @@ class App {
 
         el('mute-calls').disabled = ! audio;
 
+        // No Linux o que vai é o monitor da saída de som: o sistema inteiro, sem filtro
+        // por aplicativo.
         const note = App.isLinux()
-            ? 'O Linux ainda não captura áudio do sistema: a transmissão vai sem som.'
+            ? audio && el('mute-calls').checked
+                ? 'No Linux vai o som do sistema inteiro: não dá para deixar o Discord de fora.'
+                : ''
             : audio && el('mute-calls').checked && isWindows && isDisplay
                 ? 'Na tela inteira o Windows não separa o áudio por aplicativo. Escolha a janela do jogo em Aplicativos para deixar o Discord de fora.'
                 : '';
@@ -1557,8 +1650,8 @@ class App {
         list.innerHTML = '';
 
         if (! items.length) {
-            const reason = navigator.platform.startsWith('Linux')
-                ? 'Compartilhar a tela ainda não funciona no Linux. Dá para assistir quem transmite.'
+            const reason = App.isLinux()
+                ? 'Nenhuma tela X11 encontrada. Em sessão Wayland a captura ainda não funciona.'
                 : 'Nenhuma tela encontrada. No macOS, autorize a gravação de tela nas Configurações do Sistema.';
 
             list.innerHTML = tab === 'display'
@@ -1801,6 +1894,8 @@ class App {
         this.sfu = null;
         this.broadcast = null;
         this.room = null;
+        this.nativeWatching.clear();
+        await invoke('stop_watch', { peerId: null }).catch(() => null);
         this.remoteAudios.clear();
         this.pausedPeers.clear();
         this.selfStream = null;

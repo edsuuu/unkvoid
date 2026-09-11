@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 anyhow.workspace = true
 base64 = "0.22"
+rand = "0.8"
 capture = { path = "../../../crates/capture" }
 media = { path = "../../../crates/media" }
 serde.workspace = true

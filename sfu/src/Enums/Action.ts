@@ -7,6 +7,7 @@ export const Action = {
     ProducePlain: 'producePlain',
     CloseProducer: 'closeProducer',
     Consume: 'consume',
+    ConsumePlain: 'consumePlain',
     ResumeConsumer: 'resumeConsumer',
     PauseConsumer: 'pauseConsumer',
 } as const;
