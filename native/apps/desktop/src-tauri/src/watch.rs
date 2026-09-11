@@ -144,6 +144,12 @@ impl Watches {
         }
     }
 
+    pub fn set_muted(&self, peer_id: &str, muted: bool) {
+        if let Some(watch) = self.active.get(peer_id) {
+            watch.receiver.set_muted(muted);
+        }
+    }
+
     pub fn packets(&self, peer_id: &str) -> u64 {
         self.active.get(peer_id).map(|watch| watch.receiver.packets()).unwrap_or(0)
     }

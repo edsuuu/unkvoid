@@ -26,6 +26,8 @@ const KEEPALIVE: Duration = Duration::from_secs(5);
 
 pub struct PlainReceiver {
     stop: Arc<AtomicBool>,
+    /// Mudo é não repassar o áudio: o decodificador só vê silêncio e retoma quando volta.
+    muted: Arc<AtomicBool>,
     packets: Arc<AtomicU64>,
     local: SocketAddr,
 }
@@ -57,10 +59,12 @@ impl PlainReceiver {
         let mut incoming = context(server_key)?;
         let relay = UdpSocket::bind("127.0.0.1:0").context("could not open the local relay socket")?;
         let stop = Arc::new(AtomicBool::new(false));
+        let muted = Arc::new(AtomicBool::new(false));
         let packets = Arc::new(AtomicU64::new(0));
         let local = socket.local_addr()?;
 
         let stop_thread = Arc::clone(&stop);
+        let muted_thread = Arc::clone(&muted);
         let packets_thread = Arc::clone(&packets);
 
         std::thread::spawn(move || {
@@ -96,7 +100,13 @@ impl PlainReceiver {
 
                 let target = match (video, audio) {
                     (Some((wanted, to)), _) if wanted == payload_type => to,
-                    (_, Some((wanted, to))) if wanted == payload_type => to,
+                    (_, Some((wanted, to))) if wanted == payload_type => {
+                        if muted_thread.load(Ordering::Relaxed) {
+                            continue;
+                        }
+
+                        to
+                    }
                     _ => continue,
                 };
 
@@ -106,7 +116,11 @@ impl PlainReceiver {
             }
         });
 
-        Ok(Self { stop, packets, local })
+        Ok(Self { stop, muted, packets, local })
+    }
+
+    pub fn set_muted(&self, muted: bool) {
+        self.muted.store(muted, Ordering::Relaxed);
     }
 
     pub fn packets(&self) -> u64 {

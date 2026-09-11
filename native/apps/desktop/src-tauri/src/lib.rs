@@ -277,6 +277,16 @@ fn stop_watch(state: State<'_, NativeWatches>, peer_id: Option<String>) -> Resul
     Ok(())
 }
 
+/// Mudo de uma transmissão assistida pelo caminho nativo.
+#[tauri::command]
+fn watch_mute(state: State<'_, NativeWatches>, peer_id: String, muted: bool) -> Result<(), String> {
+    let watches = state.0.lock().map_err(|_| "watch state is poisoned".to_string())?;
+
+    watches.set_muted(&peer_id, muted);
+
+    Ok(())
+}
+
 #[tauri::command]
 fn watch_stats(state: State<'_, NativeWatches>, peer_id: String) -> Result<u64, String> {
     let watches = state.0.lock().map_err(|_| "watch state is poisoned".to_string())?;
@@ -695,6 +705,7 @@ pub fn run() {
             watch_key,
             watch_native,
             stop_watch,
+            watch_mute,
             watch_stats,
             expand_window,
             log_line,
