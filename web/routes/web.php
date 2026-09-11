@@ -31,4 +31,5 @@ Route::post('/logout', LogoutController::class)->middleware('auth')->name('logou
 
 Route::middleware(['auth', 'role:Administrador'])->group(function (): void {
     Route::view('/admin', 'admin.releases.index')->name('admin');
+    Route::view('/admin/erros', 'admin.errors.index')->name('admin.errors');
 });

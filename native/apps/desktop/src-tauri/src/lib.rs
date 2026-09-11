@@ -675,8 +675,9 @@ pub fn run() {
     }
 
     let checking = arguments.iter().any(|argument| argument == "--check");
+    let version = context.package_info().version.to_string();
 
-    logbook::init();
+    logbook::init(&version);
 
     tauri::Builder::default()
         // Uma cópia só. Abrir o app de novo traz a janela que já existe para a frente,
@@ -731,6 +732,11 @@ pub fn run() {
             }
 
             enable_webrtc(app.handle());
+
+            // O que sobrou do erro da vez passada sobe agora. Um pânico ou uma morte suja
+            // dentro de uma chamada do sistema leva o processo junto, e não sobra ninguém
+            // para avisar na hora — o log no disco é a única testemunha.
+            logbook::report(&version);
 
             Ok(())
         })
