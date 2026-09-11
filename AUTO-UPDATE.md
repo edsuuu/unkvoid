@@ -16,12 +16,20 @@ Confundir uma com a outra é o erro mais caro deste arquivo.
 
 | Chave | O que assina | Onde mora |
 |---|---|---|
-| Auto-update (minisign) | O instalador do macOS e do Windows | `~/.tauri/unkvoid.key`, só nas máquinas que buildam |
+| Auto-update (minisign) | O instalador do macOS e do Windows | `~/auxilos/unkvoid.key`, só nas máquinas que buildam |
 | Repositório APT (GPG) | O índice de pacotes do Linux | `repo@unkvoid.com`, no chaveiro da VPS |
 
 A pública do auto-update vai **dentro do app**, em
 `native/apps/desktop/src-tauri/tauri.conf.json`, em `plugins.updater.pubkey`. A
 privada assina cada instalador e produz o `.sig` ao lado dele.
+
+O par em uso tem o identificador `9a18c9243ef59b08`. Confira antes de assinar, e
+não pelo caminho do arquivo: no WSL e na máquina do Windows, `~/.tauri/unkvoid.key`
+é um par **antigo**, de identificador `3bc5c39b972ff1c3`. Ele assina sem reclamar,
+o build sai com um aviso no meio de mil linhas, a publicação parece certa, e a
+recusa só acontece na máquina de quem instalou. Foi assim que a 0.0.7 do Windows
+foi publicada: assinada com uma chave que o app não reconhece. O
+`build-windows.ps1` compara os identificadores e falha quando não batem.
 
 **A privada do auto-update não fica na VPS.** Quem a tiver publica atualização
 para todo mundo que instalou o app, e a VPS é uma máquina exposta à internet. O
