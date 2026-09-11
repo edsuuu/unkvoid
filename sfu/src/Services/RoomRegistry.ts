@@ -74,6 +74,10 @@ export class RoomRegistry {
         );
     }
 
+    public find(roomId: string): Room | undefined {
+        return this.rooms.get(roomId);
+    }
+
     public async findOrCreate(roomId: string): Promise<Room> {
         const existing = this.rooms.get(roomId);
 

@@ -89,8 +89,6 @@ class App {
      * o que resta ali é reinstalar o app, e é isso que a mensagem diz.
      */
     static REMEDIO = {
-        webrtc: 'sudo apt install -y gstreamer1.0-plugins-good gstreamer1.0-plugins-bad'
-            + ' gstreamer1.0-libav gstreamer1.0-nice',
         h264: 'sudo apt install -y gstreamer1.0-libav gstreamer1.0-plugins-ugly',
     };
 
@@ -102,7 +100,7 @@ class App {
      * O único servidor. VITE_SERVER aponta um build local para uma pilha local, e o
      * override no localStorage serve para cutucar um build já pronto sem recompilar.
      */
-    static SERVER = import.meta.env.VITE_SERVER ?? localStorage.getItem('server') ?? 'https://discord.unkvoid.com';
+    static SERVER = import.meta.env.VITE_SERVER ?? localStorage.getItem('server') ?? 'https://unkvoid.com';
 
     /** A sinalização mora no mesmo host, atrás do mesmo TLS. */
     /**
@@ -179,6 +177,7 @@ class App {
 
         this.attempt = 0;
         this.reconnect = null;
+        this.warnedNoWebRTC = false;
     }
 
     /**
@@ -186,9 +185,7 @@ class App {
      * num app desatualizado ou sem servidor só produziria erro mais adiante.
      */
     async start() {
-        if (! this.hasWebRTC()) {
-            return;
-        }
+        this.checkWebRTC();
 
         // Fora do `wireRoom`: aquele roda a cada entrada em sala, e `addEventListener`
         // soma em vez de substituir, ao contrário dos `onclick` do resto do arquivo.
@@ -207,6 +204,17 @@ class App {
                 if (target === el(id)) {
                     el(id).hidden = true;
                 }
+            }
+        });
+
+        // A rede caiu ou voltou enquanto a tela de reconexão estava aberta. Sem escutar,
+        // o texto continuaria culpando o servidor depois de a pessoa arrancar o cabo, e
+        // quem reconectou o Wi-Fi esperaria até dez segundos de espera que já não vale.
+        window.addEventListener('offline', () => this.paintOffline());
+        window.addEventListener('online', () => {
+            if (! el('offline-screen').hidden) {
+                this.attempt = 0;
+                this.showOffline();
             }
         });
 
@@ -251,9 +259,18 @@ class App {
      * lá na frente, e a pessoa voltaria para a tela de nome sem entender nada — que foi
      * exatamente o que aconteceu.
      */
-    hasWebRTC() {
+    /**
+     * WebRTC só é preciso para ASSISTIR: criar sala, entrar e transmitir seguem sem ele.
+     * Por isso a falta não trava o app na abertura — ela vira um aviso na hora em que
+     * alguém compartilha. Antes, a tela de abertura mandava instalar pacotes do
+     * GStreamer que não resolviam nada num WebKitGTK compilado sem WebRTC.
+     *
+     * O reload único existe porque a configuração que liga o WebRTC no Linux entra
+     * depois de a primeira página nascer.
+     */
+    checkWebRTC() {
         if (typeof RTCPeerConnection !== 'undefined') {
-            return true;
+            return;
         }
 
         if (! sessionStorage.getItem(App.WEBRTC_RELOAD_KEY)) {
@@ -261,25 +278,12 @@ class App {
             this.log('webrtc.reload');
             location.reload();
 
-            return false;
+            return;
         }
 
         this.log('webrtc.missing', { userAgent: navigator.userAgent });
-        this.showFix(
-            'Falta o WebRTC nesta máquina.',
-            App.isLinux() ? App.REMEDIO.webrtc : null,
-        );
-
-        return false;
     }
 
-    /**
-     * Uma peça do sistema está faltando, e aqui está o que fazer.
-     *
-     * Sem o comando na tela a pessoa fica com "instale as dependências", que não é
-     * informação — foi assim que uma instalação que já tinha tudo passou por falta de
-     * biblioteca.
-     */
     showFix(problem, command) {
         el('update-screen').hidden = false;
         el('update-status').textContent = command
@@ -407,11 +411,15 @@ class App {
         }
     }
 
+    /**
+     * Duas falhas muito diferentes mostravam a mesma tela. "Sem conexão" com a internet
+     * funcionando manda a pessoa reiniciar o roteador enquanto o servidor é que está fora,
+     * e ela nunca descobre que não havia nada para consertar do lado dela.
+     */
     showOffline() {
-        el('offline-screen').hidden = false;
-
         this.attempt += 1;
-        el('offline-status').textContent = `Reconectando… (tentativa ${this.attempt})`;
+        this.paintOffline();
+        el('offline-screen').hidden = false;
 
         clearTimeout(this.reconnect);
         this.reconnect = setTimeout(async () => {
@@ -421,6 +429,21 @@ class App {
                 this.showEntry();
             }
         }, Math.min(2000 * this.attempt, 10000));
+    }
+
+    /**
+     * `navigator.onLine` só é confiável quando diz que não: sem interface de rede não há
+     * o que tentar. Dizendo que sim, ainda pode ser um roteador conectado sem internet,
+     * então o texto afirma só o que dá para afirmar — daqui a rede parece viva e o
+     * servidor não respondeu — em vez de apontar culpado.
+     */
+    paintOffline() {
+        const semRede = ! navigator.onLine;
+
+        el('offline-title').textContent = semRede ? 'Sem internet' : 'Servidor sem resposta';
+        el('offline-status').textContent = semRede
+            ? `Este computador está sem rede. Tentando de novo… (tentativa ${this.attempt})`
+            : `A sua internet está funcionando. Tentando de novo… (tentativa ${this.attempt})`;
     }
 
     showEntry() {
@@ -720,11 +743,28 @@ class App {
             return;
         }
 
+        // A sessão é outra, então os producers da transmissão morreram com a antiga. A
+        // captura aqui continua rodando, e sem republicar o RTP segue subindo para uma
+        // porta que não existe mais, com o "ao vivo" aceso e a sala vendo preto.
+        if (this.sharing) {
+            try {
+                await this.broadcast.republish();
+                this.log('broadcast.republished', { producerId: this.broadcast.videoProducerId });
+            } catch (failure) {
+                this.log('broadcast.republish.error', { message: failure.message ?? String(failure) });
+                await this.stopSharing();
+                this.fail(`a transmissão caiu com o servidor e não voltou: ${failure.message ?? failure}`);
+            }
+        }
+
         for (const tile of [...el('stage').children]) {
             this.showScreen(tile.dataset.screen, null);
         }
 
+        // O tile próprio foi junto com os outros e o producer é outro, então o botão não
+        // pode continuar oferecendo ocultar uma tela que não está mais desenhada.
         this.selfStream = null;
+        el('self-view').textContent = 'Ver o que a sala vê';
 
         for (const peer of peers ?? []) {
             for (const producer of peer.producers ?? []) {
@@ -921,7 +961,11 @@ class App {
             this.log('media.consume.ready', { producerId, peerId, kind: consumer.kind });
         } catch (failure) {
             this.log('media.consume.error', { producerId, peerId: ownerPeerId, message: failure.message ?? String(failure) });
-            console.warn('não deu para receber a mídia:', failure);
+
+            if (this.sfu?.canWatch?.() === false && ! this.warnedNoWebRTC) {
+                this.warnedNoWebRTC = true;
+                this.fail('esta máquina não tem WebRTC no motor da janela: dá para transmitir, mas não para assistir.');
+            }
         } finally {
             this.consumingProducers.delete(producerId);
         }

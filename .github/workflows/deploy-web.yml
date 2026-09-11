@@ -1,0 +1,27 @@
+# O site (web/) vai para o ar a cada push na main que toque nele. Roda no runner que
+# mora na própria VPS, então não há ssh nem segredo viajando: o script já está lá.
+name: deploy-web
+
+on:
+  push:
+    branches: [main]
+    paths: ['web/**', 'infra/deploy-web.sh', '.github/workflows/deploy-web.yml']
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'edsuuu/unkvoid' && github.actor == 'edsuuu'
+    runs-on: [self-hosted, Linux, X64, unkvoid]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - run: infra/deploy-web.sh

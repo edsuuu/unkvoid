@@ -18,9 +18,10 @@ export class JoinResource implements Resource {
             resumeKey: this.peer.resumeKey,
             routerRtpCapabilities: this.room.router.rtpCapabilities,
             peers: this.room.describePeers(this.peer.id),
-            // Só para desenhar a interface. Quem mandar `removePeer` sem ser dono é
-            // recusado no servidor de qualquer jeito — esconder botão não é autorização.
-            owner: this.room.isOwner(this.peer),
+            userId: this.peer.userId,
+            // Só para desenhar a interface: expulsar passa pelo Laravel, que confere de
+            // novo contra o banco — esconder botão não é autorização.
+            owner: this.peer.owner,
         };
     }
 }

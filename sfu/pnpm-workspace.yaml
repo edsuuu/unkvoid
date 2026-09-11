@@ -2,3 +2,4 @@
 # passo em silêncio e o worker não existe — o SFU sobe e morre no primeiro `boot()`.
 allowBuilds:
   mediasoup: true
+  unrs-resolver: false

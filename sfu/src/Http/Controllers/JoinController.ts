@@ -15,18 +15,23 @@ export class JoinController {
 
         const room = await this.registry.findOrCreate(request.roomCode());
 
-        const { peer, resumed } = room.addPeer(request.name(), request.session.socket, {
-            resumeKey: request.resumeKey(),
-            resume: request.wantsResume(),
-            installId: request.installId(),
-        });
+        const { peer, resumed } = room.addPeer(
+            request.name(),
+            request.session.socket,
+            { userId: request.userId(), owner: request.isOwner() },
+            { resumeKey: request.resumeKey(), resume: request.wantsResume() },
+        );
 
         request.session.room = room;
         request.session.peer = peer;
 
         // Retomada não é novidade para a sala: ninguém saiu, a sinalização é que voltou.
         if (!resumed) {
-            room.broadcast('peerJoined', { peerId: peer.id, name: peer.name }, peer.id);
+            room.broadcast(
+                'peerJoined',
+                { peerId: peer.id, userId: peer.userId, name: peer.name },
+                peer.id,
+            );
         }
 
         return new JoinResource(peer, room, resumed);

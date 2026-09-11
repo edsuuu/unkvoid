@@ -1,0 +1,1 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true" {{ $attributes }}><path d="M3 5.6 10.9 4.5v7.1H3zm0 12.8 7.9 1.1v-7H3zM11.8 4.4 22 3v8.6H11.8zm0 15.2L22 21v-8.6H11.8z"/></svg>
