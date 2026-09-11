@@ -45,7 +45,7 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
 #    Windows ele nao leva a lugar nenhum.
 if (-not (Test-Path $Src)) { throw "Codigo nao encontrado em $Src - o WSL esta ligado?" }
 Write-Host "==> Sincronizando codigo de $Src" -ForegroundColor Cyan
-robocopy $Src $Work /MIR /XD node_modules target .git dist .idea .vscode /XF .git /NFL /NDL /NJH /NJS /NP | Out-Null
+robocopy $Src $Work /MIR /XD node_modules vendor target .git .claude dist .idea .vscode /XF .git /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy falhou (codigo $LASTEXITCODE)" }
 
 Set-Location (Join-Path $Work "native\apps\desktop")
