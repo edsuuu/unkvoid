@@ -1,5 +1,10 @@
+import { randomUUID } from 'node:crypto';
+
 import { Request } from './Request.js';
+import { ValidationException } from '../../Exceptions/ApiException.js';
 import { Signature, type JoinClaims } from '../../Services/Signature.js';
+
+const LEGACY_CODE = /^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/;
 
 /**
  * Entrar na sala é apresentar o token que o Laravel assinou. Quem pode entrar, com que
@@ -10,7 +15,26 @@ export class JoinRequest extends Request {
     declare private claims: JoinClaims;
 
     protected override validate(): void {
-        this.claims = Signature.claims(this.string('token'));
+        if (typeof this.data.token === 'string') {
+            this.claims = Signature.claims(this.data.token);
+
+            return;
+        }
+
+        // ponytail: o join antigo, sem token, continua aceito enquanto houver app
+        // instalado que não sabe pedir um. Entra como visitante, nunca como dono.
+        // Apagar quando o app com login estiver publicado nos três sistemas.
+        const room = this.string('room');
+        const name = this.string('name').trim();
+
+        if (!LEGACY_CODE.test(room) || name === '' || name.length > 40) {
+            throw new ValidationException('field token is required');
+        }
+
+        const installId =
+            typeof this.data.installId === 'string' ? this.data.installId : randomUUID();
+
+        this.claims = { room, sub: `guest:${installId}`, name, owner: false, exp: 0 };
     }
 
     public roomCode(): string {
