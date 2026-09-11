@@ -52,12 +52,15 @@ infra/nginx.conf    só termina TLS para o WebSocket
 |---|---|---|---|---|
 | macOS | ScreenCaptureKit | sim | VideoToolbox | sim |
 | Windows | Graphics Capture (pega os quadros) | falta (WASAPI loopback) | **falta** (Media Foundation) | **não** |
-| Linux | falta (nó do PipeWire) | falta | falta | não |
+| Linux | falta (nó do PipeWire) | falta | falta | não; assiste pelo navegador |
 
-No Windows a captura já entrega os quadros certos e respeita a tela escolhida, mas
-`on_frame_arrived` descarta os pixels (`surface: None`) porque não há encoder para
-recebê-los — então `start_broadcast` falha com erro na tela. **Assistir** funciona em
-qualquer sistema: quem recebe usa o WebRTC do próprio webview.
+**Assistir** usa o WebRTC do webview. No Linux isso não existe: Debian, Ubuntu, Mint e
+Parrot compilam o WebKitGTK **sem WebRTC**, e nenhum pacote do GStreamer muda isso
+(provado em 11/09/2026 numa Debian 12 e numa Ubuntu 24.04 limpas, com `enable-webrtc`
+ligado antes da página nascer: `typeof RTCPeerConnection` continua `undefined`). No
+Linux o app cria sala e vai transmitir; assistir é pelo navegador, em
+`https://unkvoid.com/assistir/<código>`, e o app tem um botão que abre isso.
+`unkvoid-desktop --check` diz o que o motor da janela desta máquina sabe fazer.
 
 ## Como buildar
 

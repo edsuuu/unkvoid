@@ -41,8 +41,9 @@ encoder` afirma que o keyframe sai com start code, SPS, PPS e IDR.
 - **Windows** — compila para o alvo, mas **nada foi executado lá**. As correções
   do encoder e o áudio WASAPI foram escritos e type-checados, não testados. É o
   primeiro trabalho de quem pegar a máquina Windows.
-- **Linux** — só assiste. A captura é um esqueleto de 48 linhas e o encoder
-  também. Instala por `apt install unkvoid`.
+- **Linux** — não transmite nem assiste dentro do app: a captura é um esqueleto de 48
+  linhas, e o WebKitGTK das distros vem sem WebRTC (ver README). Assistir é pelo
+  navegador, em `unkvoid.com/assistir/<código>`. Instala por `apt install unkvoid`.
 
 ### O que NÃO existe: servidores com salas
 
