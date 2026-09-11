@@ -556,17 +556,20 @@ class App {
             // O app transmite H.264. Se o WebKit desta máquina não anuncia o codec, o
             // servidor recusa cada `consume` e a pessoa fica olhando para uma sala vazia
             // sem um único erro na tela. É o modo de falha mais caro do Linux.
-            // Sem WebRTC nenhum o aviso vem na hora de assistir, em `consume`. Aqui é só o
-            // caso em que o WebRTC existe mas o H.264 não entrou na lista.
+            // Sem WebRTC nenhum o `videoCodecs` nasce vazio e cairia aqui, culpando o
+            // H.264 por uma falta que é do motor inteiro. Quem não tem WebRTC já é
+            // avisado na hora de assistir, em `consume`.
             if (this.sfu.canWatch() && ! this.sfu.videoCodecs.some(codec => /h264/i.test(codec))) {
-                const capabilities = api => typeof api !== 'undefined' && api.getCapabilities
-                    ? api.getCapabilities('video')?.codecs?.map(codec => codec.mimeType) ?? null
-                    : null;
-
+                // O que o motor da janela diz que sabe receber e mandar, cru: é a única
+                // pista para descobrir por que o H.264 não entrou nesta distro.
+                //
+                // Os globais são lidos de `globalThis`: no WebKitGTK sem WebRTC eles não
+                // existem, e citá-los direto derruba o `join` inteiro com "can't find
+                // variable" — engolindo o aviso que esta linha existe para dar.
                 this.log('device.h264.missing', {
                     codecs: this.sfu.videoCodecs,
-                    receiver: capabilities(window.RTCRtpReceiver),
-                    sender: capabilities(window.RTCRtpSender),
+                    receiver: globalThis.RTCRtpReceiver?.getCapabilities?.('video')?.codecs?.map(codec => codec.mimeType) ?? null,
+                    sender: globalThis.RTCRtpSender?.getCapabilities?.('video')?.codecs?.map(codec => codec.mimeType) ?? null,
                     userAgent: navigator.userAgent,
                 });
                 this.fail('o motor da janela desta máquina não recebe H.264 pelo WebRTC. Dá para transmitir, mas não para assistir. Abra Logs e mande a linha device.h264.missing.');
