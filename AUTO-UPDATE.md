@@ -115,12 +115,16 @@ põe a versão nova no lugar e reabre o app. Dentro de uma sala nada disso acont
 a atualização espera a próxima abertura, porque no Windows o processo morre junto
 com a chamada e a transmissão cairia com ele.
 
-### Uma vez só
+### A chave não se copia para cá
 
-Copie a chave privada do Mac para a máquina Windows, em
-`%USERPROFILE%\.tauri\unkvoid.key`. Sem ela o build para com erro, de propósito:
-um build sem `.sig` sobe igual e não atualiza ninguém, e a publicação parece
-certa.
+Nada a preparar: o script lê `~/auxilos/unkvoid.key` do WSL, pelo mesmo caminho de
+rede por onde lê o código. **Não copie a chave para `%USERPROFILE%\.tauri`** — foi
+de lá que saiu a 0.0.7 assinada com o par errado, e o arquivo que ainda está lá é
+o par antigo.
+
+Sem a chave, ou com a chave errada, o build para com erro. É de propósito: um
+build sem `.sig`, ou com `.sig` de outro par, sobe igual e não atualiza ninguém,
+enquanto a publicação parece certa.
 
 ### A cada versão
 
