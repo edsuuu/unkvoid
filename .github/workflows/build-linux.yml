@@ -1,7 +1,6 @@
-# O .deb do Linux, gerado na VPS e publicado no repositório APT. A VPS é a única máquina
-# Linux com o toolchain, e o cache do cargo (2 GB, quarenta minutos) mora lá em
-# /var/www/projects/unkvoid/native/target — por isso o build roda naquela pasta e não no
-# checkout do runner.
+# O .deb do Linux, gerado na VPS dentro de um Debian 12 (Dockerfile.linux) e publicado
+# no repositório APT. O cache do cargo mora em /var/www/projects/unkvoid/native — por
+# isso o build roda naquela pasta e não no checkout do runner.
 name: build-linux
 
 on:
@@ -28,6 +27,7 @@ jobs:
           persist-credentials: false
 
       - run: |
-          rsync -a --delete --exclude target --exclude node_modules --exclude dist \
+          rsync -a --delete --exclude target --exclude target-deb12 --exclude .cargo-home --exclude .home \
+            --exclude node_modules --exclude dist \
             ./native/ /var/www/projects/unkvoid/native/
       - run: /var/www/projects/unkvoid/native/apps/desktop/build-vps.sh
