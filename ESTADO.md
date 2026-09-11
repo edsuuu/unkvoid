@@ -43,7 +43,7 @@ encoder` afirma que o keyframe sai com start code, SPS, PPS e IDR.
   primeiro trabalho de quem pegar a máquina Windows.
 - **Linux** — transmite (X11, via `gst-launch-1.0` + x264 na CPU, desde a 0.0.15) e
   assiste (0.0.16) pelo receptor nativo: RTP puro do servidor, SRTP aberto no Rust
-  (`crates/media/src/receiver.rs`), GStreamer decodifica numa janela separada
+  (`crates/media/src/receiver.rs`), GStreamer decodifica e entrega ao cartão do app como MJPEG
   (`src-tauri/src/watch.rs`). O WebKitGTK das distros segue sem WebRTC (ver README).
   Instala por `apt install unkvoid`.
 

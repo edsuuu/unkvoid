@@ -243,8 +243,8 @@ fn watch_key(state: State<'_, NativeWatches>) -> Result<String, String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(watches.key()))
 }
 
-/// Recebe a transmissão de alguém por RTP puro e abre numa janela do GStreamer. É o
-/// jeito de assistir onde o webview não tem WebRTC.
+/// Recebe a transmissão de alguém por RTP puro e devolve a porta do MJPEG em
+/// 127.0.0.1 para o cartão desenhar. É o jeito de assistir onde o webview não tem WebRTC.
 #[tauri::command]
 fn watch_native(
     state: State<'_, NativeWatches>,
@@ -253,7 +253,7 @@ fn watch_native(
     server_key: String,
     video_payload_type: Option<u8>,
     audio_payload_type: Option<u8>,
-) -> Result<(), String> {
+) -> Result<u16, String> {
     use base64::Engine;
 
     let server_key = base64::engine::general_purpose::STANDARD

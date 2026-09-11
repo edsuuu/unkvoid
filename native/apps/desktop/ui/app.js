@@ -1021,7 +1021,7 @@ class App {
             const video = consumers.find(consumer => consumer.kind === 'video');
             const audio = consumers.find(consumer => consumer.kind === 'audio');
 
-            await invoke('watch_native', {
+            const port = await invoke('watch_native', {
                 peerId,
                 address: `${video.ip}:${video.port}`,
                 serverKey: video.srtpParameters.keyBase64,
@@ -1035,7 +1035,7 @@ class App {
                 await this.sfu.request('resumeConsumer', { consumerId: consumer.consumerId });
             }
 
-            this.showNativeTile(peerId, video.name);
+            this.showNativeTile(peerId, video.name, port);
             this.log('media.native.ready', { peerId });
         } catch (failure) {
             this.nativeWatching.delete(peerId);
@@ -1053,17 +1053,31 @@ class App {
         await invoke('stop_watch', { peerId }).catch(() => null);
     }
 
-    showNativeTile(peerId, name) {
+    /** O cartão do assistir nativo: a `<img>` lê o MJPEG que o Rust serve em 127.0.0.1. */
+    showNativeTile(peerId, name, port) {
         const tile = document.querySelector(`[data-screen="${peerId}"]`) ?? document.createElement('figure');
 
         tile.dataset.screen = peerId;
-        tile.innerHTML = '<span class="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-black text-center text-sm text-ink-soft">'
-            + '<span>A tela está aberta numa janela separada do GStreamer.</span>'
-            + '<button class="cursor-pointer rounded-md px-4 py-2 text-sm font-medium text-white ring-1 ring-inset ring-line hover:bg-line" data-native-stop type="button">Parar de assistir</button>'
+        tile.innerHTML = '<span class="relative flex min-h-0 flex-1">'
+            + '<img class="min-h-0 w-full flex-1 bg-black object-contain" alt="">'
             + '</span>'
-            + `<figcaption class="${LOOK.caption}"><span class="truncate"></span></figcaption>`;
+            + `<figcaption class="${LOOK.caption}">`
+            + '<span class="truncate"></span>'
+            + '<span class="flex-1"></span>'
+            + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-native-stop type="button">Parar</button>'
+            + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-focus type="button">Focar</button>'
+            + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-fullscreen type="button">Tela cheia</button>'
+            + '</figcaption>';
+
+        const image = tile.querySelector('img');
+
+        image.src = `http://127.0.0.1:${port}/`;
+        image.onerror = () => this.log('media.native.image.error', { peerId, port });
         tile.querySelector('figcaption span').textContent = name ?? 'alguém';
+        tile.querySelector('[data-focus]').onclick = () => this.focus(peerId);
+        tile.querySelector('[data-fullscreen]').onclick = () => void this.toggleFullscreen(peerId);
         tile.querySelector('[data-native-stop]').onclick = () => {
+            image.src = '';
             void this.stopNative(peerId);
             tile.remove();
             this.paintLayout();
