@@ -261,10 +261,12 @@ gpg --verify <(curl -s https://discord.unkvoid.com/apt/InRelease)
 
 ## 6. Downloads e manifesto de atualização
 
-`/var/www/downloads/unkvoid/` guarda os instaladores do macOS e do Windows e o
-`latest.json`, que é onde o app procura versão nova. O manifesto é **costurado**
-por `publish-downloads.sh`: cada sistema compila numa máquina diferente, e
-publicar o Windows não pode apagar o macOS que subiu ontem.
+Nada disso mora no disco do servidor. Os instaladores do macOS e do Windows vão
+para o MinIO pela API assinada de `publish-release.sh`, e o `latest.json` que o
+app lê é montado pelo Laravel a cada pedido, em `/downloads/latest.json`, a
+partir da tabela `releases`. Cada sistema compila numa máquina diferente e
+registra só a sua linha, então publicar o Windows não apaga o macOS que subiu
+ontem.
 
 **A chave que assina atualizações nunca vem para cá.** O Linux não a usa, e esta
 máquina é exposta à internet: quem a tiver publica atualização para todo mundo
