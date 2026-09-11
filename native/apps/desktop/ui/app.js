@@ -1502,7 +1502,13 @@ class App {
             // O rótulo diz a ação, não o estado: um botão escrito "Tela cheia" enquanto
             // já se está em tela cheia é a mesma armadilha do cadeado que dizia
             // "Destrancada" e trancava ao clicar.
-            tile.querySelector('[data-fullscreen]').textContent = full ? 'Sair da tela cheia' : 'Tela cheia';
+            // O cartão do assistir nativo (Linux) não tem esse botão: a janela é do
+            // GStreamer, fora do app.
+            const fullscreenButton = tile.querySelector('[data-fullscreen]');
+
+            if (fullscreenButton) {
+                fullscreenButton.textContent = full ? 'Sair da tela cheia' : 'Tela cheia';
+            }
         }
 
         this.wakeUp();
