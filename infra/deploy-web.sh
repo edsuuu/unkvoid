@@ -54,8 +54,24 @@ echo "[INFO] release $RELEASE ativa em $PROJECT_DIR/current"
 
 sudo systemctl reload php8.4-fpm
 
+# Pela data de modificação, e não pelo nome.
+#
+# O nome é um carimbo da hora local. No dia em que o fuso da máquina saiu de CEST para o
+# de São Paulo, o relógio andou cinco horas para trás e a release recém-criada virou a
+# "mais antiga" da lista ordenada por nome. A limpeza apagou justamente aquela para onde
+# o `current` tinha acabado de apontar, e o site foi para 404 com o deploy marcado como
+# sucesso. A data de modificação não depende de como a máquina resolveu chamar a hora.
+#
+# A conferência do `current` fica como segunda trava: seja qual for a ordem, a release
+# que está no ar não sai do disco.
 cd "$PROJECT_DIR/releases"
-ls -1 | sort -r | tail -n +$((KEEP_RELEASES + 1)) | while read -r OLD_RELEASE; do
+CURRENT=$(basename "$(readlink -f "$PROJECT_DIR/current")")
+
+ls -1t | tail -n +$((KEEP_RELEASES + 1)) | while read -r OLD_RELEASE; do
+    if [ "$OLD_RELEASE" = "$CURRENT" ]; then
+        continue
+    fi
+
     echo "[INFO] removendo release antiga $OLD_RELEASE"
     rm -rf "$OLD_RELEASE"
 done
