@@ -88,10 +88,6 @@ class App {
      * janela vem com o sistema ou com o instalador, então não há pacote a instalar —
      * o que resta ali é reinstalar o app, e é isso que a mensagem diz.
      */
-    static REMEDIO = {
-        h264: 'sudo apt install -y gstreamer1.0-libav gstreamer1.0-plugins-ugly',
-    };
-
     static isLinux() {
         return /Linux/i.test(navigator.platform) || /Linux/i.test(navigator.userAgent);
     }
@@ -561,10 +557,15 @@ class App {
             // servidor recusa cada `consume` e a pessoa fica olhando para uma sala vazia
             // sem um único erro na tela. É o modo de falha mais caro do Linux.
             if (! this.sfu.videoCodecs.some(codec => /h264/i.test(codec))) {
-                this.log('device.h264.missing', { codecs: this.sfu.videoCodecs });
-                this.fail(App.isLinux()
-                    ? `sem H.264 nesta máquina — rode: ${App.REMEDIO.h264}`
-                    : 'esta máquina não decodifica H.264, e é assim que as telas chegam');
+                // O que o motor da janela diz que sabe receber e mandar, cru: é a única
+                // pista para descobrir por que o H.264 não entrou nesta distro.
+                this.log('device.h264.missing', {
+                    codecs: this.sfu.videoCodecs,
+                    receiver: RTCRtpReceiver.getCapabilities?.('video')?.codecs?.map(codec => codec.mimeType) ?? null,
+                    sender: RTCRtpSender.getCapabilities?.('video')?.codecs?.map(codec => codec.mimeType) ?? null,
+                    userAgent: navigator.userAgent,
+                });
+                this.fail('o motor da janela desta máquina não recebe H.264 pelo WebRTC. Dá para transmitir, mas não para assistir. Abra Logs e mande a linha device.h264.missing.');
             }
 
             this.refreshPeople();
