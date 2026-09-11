@@ -1064,6 +1064,7 @@ class App {
             + `<figcaption class="${LOOK.caption}">`
             + '<span class="truncate"></span>'
             + '<span class="flex-1"></span>'
+            + '<button class="cursor-pointer rounded px-1 hover:text-white" data-native-mute type="button" title="Mutar">🔊</button>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-native-stop type="button">Parar</button>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-focus type="button">Focar</button>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-fullscreen type="button">Tela cheia</button>'
@@ -1076,6 +1077,19 @@ class App {
         tile.querySelector('figcaption span').textContent = name ?? 'alguém';
         tile.querySelector('[data-focus]').onclick = () => this.focus(peerId);
         tile.querySelector('[data-fullscreen]').onclick = () => void this.toggleFullscreen(peerId);
+
+        // O som sai direto pelo sistema, sem elemento de áudio: mudo é o Rust parar de
+        // repassar os pacotes de áudio.
+        const mute = tile.querySelector('[data-native-mute]');
+        let muted = false;
+
+        mute.onclick = () => {
+            muted = ! muted;
+            mute.textContent = muted ? '🔇' : '🔊';
+            mute.title = muted ? 'Ativar o som' : 'Mutar';
+            void invoke('watch_mute', { peerId, muted }).catch(error => this.log('media.native.mute.error', { peerId, message: error.message ?? String(error) }));
+        };
+
         tile.querySelector('[data-native-stop]').onclick = () => {
             image.src = '';
             void this.stopNative(peerId);
