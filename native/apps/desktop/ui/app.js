@@ -556,17 +556,29 @@ class App {
             // O app transmite H.264. Se o WebKit desta máquina não anuncia o codec, o
             // servidor recusa cada `consume` e a pessoa fica olhando para uma sala vazia
             // sem um único erro na tela. É o modo de falha mais caro do Linux.
-            if (! this.sfu.videoCodecs.some(codec => /h264/i.test(codec))) {
-                // O que o motor da janela diz que sabe receber e mandar, cru: é a única
-                // pista para descobrir por que o H.264 não entrou nesta distro.
+            // Sem WebRTC nenhum o aviso vem na hora de assistir, em `consume`. Aqui é só o
+            // caso em que o WebRTC existe mas o H.264 não entrou na lista.
+            if (this.sfu.canWatch() && ! this.sfu.videoCodecs.some(codec => /h264/i.test(codec))) {
+                const capabilities = api => typeof api !== 'undefined' && api.getCapabilities
+                    ? api.getCapabilities('video')?.codecs?.map(codec => codec.mimeType) ?? null
+                    : null;
+
                 this.log('device.h264.missing', {
                     codecs: this.sfu.videoCodecs,
-                    receiver: RTCRtpReceiver.getCapabilities?.('video')?.codecs?.map(codec => codec.mimeType) ?? null,
-                    sender: RTCRtpSender.getCapabilities?.('video')?.codecs?.map(codec => codec.mimeType) ?? null,
+                    receiver: capabilities(window.RTCRtpReceiver),
+                    sender: capabilities(window.RTCRtpSender),
                     userAgent: navigator.userAgent,
                 });
                 this.fail('o motor da janela desta máquina não recebe H.264 pelo WebRTC. Dá para transmitir, mas não para assistir. Abra Logs e mande a linha device.h264.missing.');
             }
+
+            // Sem WebRTC (Debian, Ubuntu, Mint e Parrot compilam o WebKitGTK sem ele) o
+            // caminho para assistir é o navegador, que tem. O botão só aparece aqui.
+            el('watch-browser').hidden = this.sfu.canWatch();
+            el('watch-browser').onclick = () => {
+                void invoke('open_url', { url: `${App.SERVER}/assistir/${this.room}` })
+                    .catch(error => this.fail(`não deu para abrir o navegador: ${error.message ?? error}`));
+            };
 
             this.refreshPeople();
             this.peopleStatsTimer = setInterval(() => {
@@ -965,7 +977,7 @@ class App {
 
             if (this.sfu?.canWatch?.() === false && ! this.warnedNoWebRTC) {
                 this.warnedNoWebRTC = true;
-                this.fail('esta máquina não tem WebRTC no motor da janela: dá para transmitir, mas não para assistir.');
+                this.fail('este sistema não tem WebRTC no motor da janela. Dá para transmitir aqui; para assistir, use o botão "Assistir no navegador".');
             }
         } finally {
             this.consumingProducers.delete(producerId);

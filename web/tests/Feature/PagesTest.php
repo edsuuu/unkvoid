@@ -20,3 +20,8 @@ it('abre os termos de uso', function (): void {
         ->assertOk()
         ->assertSee('Termos de uso');
 });
+
+it('abre a página de assistir pelo navegador com o código da sala', function (): void {
+    $this->get('/assistir/k3m9xq2vt7bd')->assertOk()->assertSee('k3m9xq2vt7bd')->assertSee('Entrar na sala');
+    $this->get('/assistir/MAIUSCULA')->assertNotFound();
+});

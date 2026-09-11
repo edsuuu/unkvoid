@@ -24,64 +24,50 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-# O que o Tauri precisa para empacotar no Ubuntu, mais o cmake, que o `opusic-sys` usa
-# para compilar o libopus do zero.
+# O .deb é compilado DENTRO de um Debian 12 (Dockerfile.linux): um binário fica preso à
+# glibc da máquina que o gera, e a VPS, Ubuntu 24.04, produzia um app que não abria em
+# Debian 12 nem em Parrot. A distro mais velha que queremos suportar é a que compila.
 #
-# A verificação é pacote a pacote de propósito. Guardar a lista inteira atrás de um
-# `dpkg -s` de um único pacote fazia a segunda execução pular tudo, e foi assim que a
-# falta do cmake só apareceu depois de quarenta minutos compilando.
-PACKAGES="build-essential curl wget file pkg-config cmake
-libwebkit2gtk-4.1-dev libssl-dev libayatana-appindicator3-dev
-librsvg2-dev libxdo-dev"
-
-MISSING=""
-
-for package in $PACKAGES; do
-    dpkg -s "$package" > /dev/null 2>&1 || MISSING="$MISSING $package"
-done
-
-if [ -n "$MISSING" ]; then
-    echo "[INFO] instalando:$MISSING"
-    sudo apt-get update
-    # shellcheck disable=SC2086
-    sudo apt-get install -y $MISSING
-fi
-
-if ! command -v cargo > /dev/null 2>&1; then
-    echo "[INFO] instalando o Rust"
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
-fi
-
-# shellcheck disable=SC1090
-[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
-
 # Esta máquina também é o SFU, e mediasoup é tempo real: um build ocupando todos os
 # núcleos vira engasgo na tela de quem está assistindo agora. Uma thread de folga e
 # prioridade baixa custam alguns minutos a mais e não custam a chamada de ninguém.
 CORES=$(nproc)
-export CARGO_BUILD_JOBS=$(( CORES > 1 ? CORES - 1 : 1 ))
+JOBS=$(( CORES > 1 ? CORES - 1 : 1 ))
+IMAGE=unkvoid-linux-builder
+NATIVE=$(cd ../.. && pwd)
 
-echo "[INFO] compilando com $CARGO_BUILD_JOBS de $CORES núcleos, em prioridade baixa"
-
-npm ci
-npm run check
 # Só o .deb: é o que o APT distribui e o que o app espera no Linux. `UNKVOID_BUNDLES`
-# ainda aceita `deb,appimage` para quem precisar do AppImage solto, mas ele baixa tool
-# própria, leva alguns minutos a mais e ninguém o atualiza sozinho.
+# ainda aceita `deb,appimage` para quem precisar do AppImage solto.
 BUNDLES="${UNKVOID_BUNDLES:-deb}"
 
+# As conferências olham o repositório inteiro (quatro níveis acima), e dentro do
+# container só existe o `native/`. Rodam aqui fora, onde o host tem Node e Python.
+npm ci
+npm run check
+
+echo "[INFO] imagem de build (Debian 12)"
+docker build -q -t "$IMAGE" -f Dockerfile.linux . > /dev/null
+
+echo "[INFO] compilando com $JOBS de $CORES núcleos, em prioridade baixa, dentro do Debian 12"
+
+# Cache do cargo e do npm ficam em pastas do próprio checkout, com o uid de quem chama:
+# o container não deixa nada de root para trás. `target-deb12` é separado do `target`
+# do host de propósito — são objetos de outra glibc.
+#
 # `createUpdaterArtifacts: false` só para este build. Com a chave pública no
 # `tauri.conf.json`, o Tauri tenta assinar o artefato de updater de TODO bundle e para o
-# build inteiro quando não acha a privada — mesmo gerando um `.deb`, que não tem
-# updater. Sem este override, tirar a chave da VPS quebrava o build do Linux.
-nice -n 19 npx tauri build --bundles "$BUNDLES" \
-    --config '{"bundle":{"createUpdaterArtifacts":false}}'
+# build inteiro quando não acha a privada — mesmo gerando um `.deb`, que não tem updater.
+docker run --rm --user "$(id -u):$(id -g)" \
+    -v "$NATIVE:/work" -w /work/apps/desktop \
+    -e HOME=/work/.home -e CARGO_HOME=/work/.cargo-home -e CARGO_TARGET_DIR=/work/target-deb12 \
+    -e CARGO_BUILD_JOBS="$JOBS" -e npm_config_cache=/work/.home/.npm \
+    "$IMAGE" bash -c "mkdir -p /work/.home && nice -n 19 npx tauri build --bundles $BUNDLES --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
 
 # O repositório APT: é por ele que o Linux instala e atualiza, com `apt install unkvoid`.
 # O download solto continua existindo para quem só quer o arquivo.
 # O mais recente, não o primeiro que a busca achar: a pasta guarda os `.deb` de todas
 # as versões já geradas nesta máquina, e `-print -quit` publicava um antigo no APT.
-DEB=$(find ../../target/release/bundle/deb -maxdepth 1 -name '*.deb' -printf '%T@ %p\n' 2>/dev/null \
+DEB=$(find ../../target-deb12/release/bundle/deb -maxdepth 1 -name '*.deb' -printf '%T@ %p\n' 2>/dev/null \
     | sort -rn | head -1 | cut -d' ' -f2- || true)
 
 if [ -n "$DEB" ]; then
@@ -113,7 +99,7 @@ esac
 for arg in "$@"; do
     if [ "$arg" = "--dry-run" ]; then
         echo "[INFO] --dry-run: instaladores gerados, nada publicado"
-        find ../../target/release/bundle -maxdepth 2 -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.sig' \) -print
+        find ../../target-deb12/release/bundle -maxdepth 2 -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.sig' \) -print
         exit 0
     fi
 done
