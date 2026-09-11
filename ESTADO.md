@@ -54,15 +54,76 @@ Ficou por último de propósito: era a única frente que não consertava nada, e
 época o macOS não transmitia, o Windows congelava e duas pessoas não conseguiam
 compartilhar na mesma sala. A fundação agora está diferente.
 
-O desenho mínimo seria um código de servidor com nome e convite, várias salas
-dentro dele, e a pessoa entrando uma vez e circulando sem digitar código de novo.
-Mexe no SFU, no protocolo de sinalização e na tela de entrada inteira.
+**O desenho foi decidido em 10/09/2026** e está abaixo. O que falta é execução,
+não decisão.
 
-**A pergunta que decide o tamanho:** o servidor precisa sobreviver a reinício do
-processo? Hoje nada é guardado — sala existe enquanto tem gente dentro, e o
-README trata isso como característica, não como falta. Servidor com nome, membros
-e canais fixos precisa de armazenamento, e aí entra um banco de dados que o
-projeto não tem.
+#### O SFU não muda
+
+Uma `Room` hoje é qualquer string que o cliente mandar, e o `RoomRegistry` cria
+sob demanda. Isso já é um canal. O que muda é quem emite a string: hoje o cliente
+sorteia em `room-code.js`, e passa a ser o Laravel.
+
+O id do canal é ULID em minúsculas. São 26 caracteres de a-z0-9, então passa no
+regex do `JoinRequest` sem tocar em uma linha. UUID não serve: 36 caracteres com
+hífens, e o limite é 32.
+
+#### As camadas
+
+| Onde | O quê | Vida |
+|---|---|---|
+| Laravel | servidor, canal, membro, convite | banco, para sempre |
+| Token assinado | canal, nome, dono, validade | um minuto |
+| SFU | `Room`, `Peer`, mídia | enquanto tem gente dentro |
+
+Isso responde a pergunta que estava aberta aqui. O servidor sobrevive a reinício
+porque mora no banco. A sala continua não sobrevivendo, e não precisa — ninguém
+quer um transport morto de volta depois de um deploy. São dois tempos de vida
+diferentes, e é de propósito.
+
+#### A entrada passa a ser autenticada
+
+Hoje não existe auth para mover: o código da sala é a credencial, e o modelo é
+"quem tem a string, entra". O Laravel decide quem entra em qual canal e assina um
+token curto. O SFU só confere a assinatura com um segredo compartilhado, sem
+chamada de rede no caminho do join.
+
+```php
+$claims = ['room' => $channel->id, 'name' => $user->name, 'owner' => $isOwner, 'exp' => time() + 60];
+$body = rtrim(strtr(base64_encode(json_encode($claims)), '+/', '-_'), '=');
+
+return $body . '.' . hash_hmac('sha256', $body, config('services.sfu.secret'));
+```
+
+Do lado do SFU, no lugar do `installId()`: comparar o HMAC com `timingSafeEqual`,
+conferir o `exp` e ler os claims. Sem biblioteca de JWT em nenhum dos dois lados.
+
+Sai do SFU com isso: o regex do código, `installId()`, `ownerInstallId`, o Set
+`banned`, `isOwner` e o ramo de dono do `PeerController`. Dono e banimento sobem
+para o servidor, que é onde as pessoas esperam que morem. A validade curta do
+token é o que faz o ban valer: quem foi expulso não consegue token novo.
+
+De brinde conserta o modelo de segurança. Hoje quem editar o app manda o
+`installId` que quiser e vira dono de sala alheia.
+
+#### A única mecânica nova
+
+Presença fora da sala. Mostrar quem está no canal antes de entrar não existe
+hoje, e não dá para deduzir: só se sabe entrando. O SFU já conta isso no
+`/health`, então a versão barata é expor a contagem por canal ali e o Laravel ler
+com cache de poucos segundos. Sem pub/sub e sem um segundo WebSocket.
+
+#### O trabalho real é o cliente
+
+O `room-code.js` inteiro sai, e com ele a tela de criar ou colar código. Entram
+barra lateral de servidores, lista de canais e quem está em cada um. Somando a
+tela de login, que também não existe, é o `app.js` que leva a pancada. O Laravel
+é CRUD de um fim de semana; o SFU é uma tarde.
+
+#### O que não construir
+
+Chat, cargos, categorias, threads, emoji. Servidor, canal, membro, convite, e
+dois papéis: dono e membro. O resto é imitar o Discord, e não é o que faz uma
+chamada funcionar.
 
 ### Publicação, hoje
 
