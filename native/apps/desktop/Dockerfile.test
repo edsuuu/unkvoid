@@ -1,0 +1,13 @@
+# A distro limpa em que o .deb é provado (validate-deb.sh): Debian 12 com as
+# dependências que o pacote declara já instaladas, para cada rodada levar segundos e
+# não os minutos de um apt-get do WebKit inteiro.
+FROM debian:12
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        xvfb xauth dbus-x11 x11-utils ca-certificates \
+        libwebkit2gtk-4.1-0 libgtk-3-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+        gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-nice gstreamer1.0-plugins-ugly \
+        gstreamer1.0-tools libayatana-appindicator3-1 librsvg2-2 \
+    && rm -rf /var/lib/apt/lists/*

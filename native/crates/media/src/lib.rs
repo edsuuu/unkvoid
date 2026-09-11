@@ -8,6 +8,7 @@ use capture::Quality;
 
 mod audio;
 mod plain;
+mod receiver;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -17,6 +18,7 @@ mod windows;
 
 pub use audio::{AudioEncoder, FRAME_MS};
 pub use plain::PlainSender;
+pub use receiver::PlainReceiver;
 
 #[cfg(target_os = "macos")]
 pub use macos::VideoToolboxEncoder as PlatformEncoder;
@@ -34,7 +36,7 @@ pub type GpuSurface = apple_cf::iosurface::IOSurface;
 pub type GpuSurface = capture::GpuSurface;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub type GpuSurface = ();
+pub type GpuSurface = capture::GpuSurface;
 
 /// Um quadro já comprimido, pronto para virar pacote RTP.
 pub struct EncodedFrame {
@@ -100,13 +102,40 @@ pub enum EncoderError {
     Unsupported,
 }
 
-/// Fora do macOS e do Windows não há encoder de hardware. O stub tem a **mesma forma**
-/// da implementação real para o app compilar e falhar com mensagem clara em vez de não
-/// compilar — o `.deb` sai, e o resto do app funciona.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// No Linux quem codifica é o x264 dentro do GStreamer, na captura. O que chega aqui já
+/// é H.264 Annex-B, e este encoder só o repassa — com a mesma forma dos outros para o
+/// `broadcast.rs` não saber a diferença.
+#[cfg(target_os = "linux")]
 pub struct PlatformEncoder;
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+impl PlatformEncoder {
+    pub fn new(_config: &EncoderConfig) -> Result<Self, EncoderError> {
+        Ok(Self)
+    }
+
+    /// ponytail: o x264 no pipe não recebe pedidos; o keyframe periódico (1 s) cobre.
+    pub fn request_keyframe(&mut self) {}
+
+    pub fn encode(
+        &mut self,
+        surface: &GpuSurface,
+        timestamp_ns: u64,
+    ) -> Result<EncodedFrame, EncoderError> {
+        Ok(EncodedFrame {
+            data: surface.data.clone(),
+            keyframe: surface.keyframe,
+            timestamp_ns,
+        })
+    }
+}
+
+/// Fora dos três sistemas não há encoder. O stub tem a **mesma forma** da implementação
+/// real para o app compilar e falhar com mensagem clara em vez de não compilar.
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+pub struct PlatformEncoder;
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 impl PlatformEncoder {
     pub fn new(_config: &EncoderConfig) -> Result<Self, EncoderError> {
         Err(EncoderError::Unsupported)

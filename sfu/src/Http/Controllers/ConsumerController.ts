@@ -1,7 +1,9 @@
 import { ValidationException } from '../../Exceptions/ApiException.js';
+import type { ConsumePlainRequest } from '../Requests/ConsumePlainRequest.js';
 import type { ConsumeRequest } from '../Requests/ConsumeRequest.js';
 import type { ConsumerRequest } from '../Requests/ConsumerRequest.js';
 import { ConsumerResource } from '../Resources/ConsumerResource.js';
+import { PlainConsumerResource } from '../Resources/PlainConsumerResource.js';
 import { StatusResource } from '../Resources/StatusResource.js';
 
 export class ConsumerController {
@@ -45,6 +47,41 @@ export class ConsumerController {
         });
 
         return new ConsumerResource(consumer, owner);
+    }
+
+    /**
+     * O mesmo consumo, mas por RTP puro numa porta UDP — para o app que não tem
+     * WebRTC na janela. As capacidades são as do próprio router: quem decodifica é o
+     * GStreamer do lado de lá, que aceita o que o servidor tiver.
+     */
+    public async storePlain(request: ConsumePlainRequest): Promise<PlainConsumerResource> {
+        const room = request.room();
+        const peer = request.peer();
+        const owner = room.findProducerOwner(request.producerId());
+        const transport = await room.plainReceiveTransportFor(peer, request.srtpParameters());
+
+        // Pausado como o outro: o cliente abre o caminho no roteador com o primeiro
+        // pacote e só então pede para retomar, já com o keyframe junto.
+        const consumer = await transport.consume({
+            producerId: request.producerId(),
+            rtpCapabilities: room.router.rtpCapabilities,
+            paused: true,
+        });
+
+        peer.consumers.set(consumer.id, consumer);
+        consumer.on('transportclose', () => peer.consumers.delete(consumer.id));
+        consumer.on('producerclose', () => {
+            peer.consumers.delete(consumer.id);
+            peer.send('consumerClosed', {
+                consumerId: consumer.id,
+                producerId: consumer.producerId,
+                kind: consumer.kind,
+                peerId: owner.peer.id,
+                source: String(owner.producer.appData.source),
+            });
+        });
+
+        return new PlainConsumerResource(consumer, transport, owner);
     }
 
     public async resume(request: ConsumerRequest): Promise<StatusResource> {
