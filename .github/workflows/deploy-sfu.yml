@@ -38,4 +38,22 @@ jobs:
             ./dist ./check.mjs ./check-heartbeat.mjs ./install.sh ./.env.example \
             ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ./ecosystem.config.cjs \
             /var/www/projects/sfu/
-      - run: cd /var/www/projects/sfu && ./install.sh
+      # O install roda SOLTO do runner, e não como filho deste passo.
+      #
+      # Ele espera a sala esvaziar por até trinta minutos, e nesse tempo o processo do
+      # passo levava um SIGTERM e morria com código 143 — quatro das cinco execuções de
+      # 11/09/2026. O `dist` novo já estava no disco e o pm2 seguia com a versão velha:
+      # o deploy falhava no único ponto que importa, depois de tudo ter dado certo.
+      #
+      # Com `setsid` o install sobrevive à morte do job e termina sozinho. O laço abaixo
+      # existe só para este passo dizer o que aconteceu; ele não segura mais o deploy.
+      - run: |
+          cd /var/www/projects/sfu
+          rm -f /tmp/sfu-install.done /tmp/sfu-install.log
+          setsid bash -c './install.sh > /tmp/sfu-install.log 2>&1; echo $? > /tmp/sfu-install.done' < /dev/null &
+          for _ in $(seq 1 160); do
+            if [ -f /tmp/sfu-install.done ]; then break; fi
+            sleep 15
+          done
+          tail -n 30 /tmp/sfu-install.log || true
+          exit "$(cat /tmp/sfu-install.done 2>/dev/null || echo 1)"
