@@ -134,6 +134,13 @@ const run = async () => {
     reply = await visitante.call('createTransport', {});
     assert.equal(reply.status, 401, 'ação sem sessão deve dar 401');
 
+    // O app de hoje ainda entra sem token, como visitante. Some quando todos souberem pedir um.
+    const antigo = await abrir();
+    const legado = await entrar(antigo, { room, name: 'Legado', installId: 'inst-1' });
+    assert.equal(legado.owner, false, 'sem token ninguém é dono');
+    assert.equal(legado.userId, 'guest:inst-1', 'e a identidade é a instalação');
+    antigo.close();
+
     // A identidade nasce no servidor: ninguém escolhe o próprio id.
     const dono = await abrir();
     const entrada = await entrar(dono, { token: token({ room, sub: '10', name: 'Dono', owner: true }) });
