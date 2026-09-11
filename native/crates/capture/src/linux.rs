@@ -44,28 +44,48 @@ pub struct LinuxCapturer {
 
 impl LinuxCapturer {
     pub fn preview(source: CaptureSource) -> Result<Vec<u8>, CaptureError> {
-        let _ = source;
-
         if std::env::var_os("DISPLAY").is_none() {
             return Ok(Vec::new());
         }
 
+        let pipeline = format!(
+            "ximagesrc use-damage=false num-buffers=1 {} ! videoconvert ! videoscale              ! video/x-raw,width=320,pixel-aspect-ratio=1/1 ! jpegenc ! fdsink fd=1",
+            region(source).map(|monitor| monitor.area()).unwrap_or_default()
+        );
+
         let output = Command::new("gst-launch-1.0")
-            .args(["-q", "ximagesrc", "use-damage=false", "num-buffers=1", "!", "videoconvert", "!", "videoscale", "!", "video/x-raw,width=320,pixel-aspect-ratio=1/1", "!", "jpegenc", "!", "fdsink", "fd=1"])
+            .arg("-q")
+            .args(pipeline.split_whitespace())
             .stderr(Stdio::null())
             .output();
 
         Ok(output.map(|output| output.stdout).unwrap_or_default())
     }
 
+    /// Um item por monitor, o principal primeiro. Sem `xrandr` fica a tela do X
+    /// inteira, que com dois monitores é os dois lado a lado.
     pub fn displays() -> Result<Vec<Display>, CaptureError> {
         if std::env::var_os("DISPLAY").is_none() {
             return Ok(Vec::new());
         }
 
-        let (width, height) = screen_size().unwrap_or((0, 0));
+        let monitors = monitors();
 
-        Ok(vec![Display { id: 1, width, height }])
+        if monitors.is_empty() {
+            let (width, height) = screen_size().unwrap_or((0, 0));
+
+            return Ok(vec![Display { id: 1, width, height }]);
+        }
+
+        Ok(monitors
+            .iter()
+            .enumerate()
+            .map(|(index, monitor)| Display {
+                id: index as u32 + 1,
+                width: monitor.width,
+                height: monitor.height,
+            })
+            .collect())
     }
 
     pub fn windows() -> Result<Vec<Window>, CaptureError> {
@@ -97,13 +117,14 @@ impl LinuxCapturer {
         // ponytail: sem pedido de keyframe por fora; um a cada segundo é o que quem entra
         // na sala espera no pior caso. `aud=true` é o que separa os quadros no pipe.
         let pipeline = format!(
-            "ximagesrc use-damage=false show-pointer={} ! video/x-raw,framerate={frame_rate}/1 \
+            "ximagesrc use-damage=false show-pointer={} {} ! video/x-raw,framerate={frame_rate}/1 \
              ! videoconvert ! videoscale ! video/x-raw,width={width},pixel-aspect-ratio=1/1 \
              ! x264enc tune=zerolatency speed-preset=ultrafast byte-stream=true aud=true \
              key-int-max={frame_rate} bitrate={bitrate} threads=0 \
              ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline \
              ! fdsink fd=1",
-            config.show_cursor
+            config.show_cursor,
+            region(config.source).map(|monitor| monitor.area()).unwrap_or_default()
         );
 
         let mut video = launch(&pipeline)?;
@@ -229,18 +250,91 @@ fn launch(pipeline: &str) -> Result<Child, CaptureError> {
         })
 }
 
+/// Um monitor como o `xrandr` o descreve: tamanho e posição dentro da tela do X.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Monitor {
+    width: u32,
+    height: u32,
+    x: u32,
+    y: u32,
+}
+
+impl Monitor {
+    /// O recorte para o `ximagesrc`. As bordas são inclusivas.
+    fn area(self) -> String {
+        format!(
+            "startx={} starty={} endx={} endy={}",
+            self.x,
+            self.y,
+            self.x + self.width - 1,
+            self.y + self.height - 1
+        )
+    }
+}
+
+/// Os monitores ligados, o principal primeiro. Dois monitores são UMA tela para o X;
+/// sem isto a captura mandava os dois lado a lado, espremidos em 16:9.
+fn monitors() -> Vec<Monitor> {
+    let Some(output) = text("xrandr", &["--current"]) else {
+        return Vec::new();
+    };
+
+    parse_monitors(&output)
+}
+
+fn parse_monitors(xrandr: &str) -> Vec<Monitor> {
+    let mut found: Vec<(bool, Monitor)> = xrandr
+        .lines()
+        .filter(|line| line.contains(" connected "))
+        .filter_map(|line| {
+            let primary = line.contains(" primary ");
+            let geometry = line.split_whitespace().find(|word| {
+                word.contains('x') && word.matches('+').count() == 2
+            })?;
+            let (size, offset) = geometry.split_once('+')?;
+            let (width, height) = size.split_once('x')?;
+            let (x, y) = offset.split_once('+')?;
+
+            Some((
+                primary,
+                Monitor {
+                    width: width.parse().ok()?,
+                    height: height.parse().ok()?,
+                    x: x.parse().ok()?,
+                    y: y.parse().ok()?,
+                },
+            ))
+        })
+        .collect();
+
+    found.sort_by_key(|(primary, _)| ! primary);
+
+    found.into_iter().map(|(_, monitor)| monitor).collect()
+}
+
+/// O monitor que uma escolha do seletor quer dizer. `None` é a tela do X inteira.
+fn region(source: CaptureSource) -> Option<Monitor> {
+    let monitors = monitors();
+
+    match source {
+        CaptureSource::Display(id) => monitors.get(id.checked_sub(1)? as usize).copied(),
+        CaptureSource::PrimaryDisplay => monitors.first().copied(),
+        CaptureSource::Window(_) => None,
+    }
+}
+
+fn text(program: &str, args: &[&str]) -> Option<String> {
+    Command::new(program)
+        .args(args)
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// Tamanho da tela pelo X, para o seletor mostrar. Sem `xdpyinfo` nem `xrandr` fica
 /// sem número — a captura em si não depende disto.
 fn screen_size() -> Option<(u32, u32)> {
-    let text = |program: &str, args: &[&str]| {
-        Command::new(program)
-            .args(args)
-            .stderr(Stdio::null())
-            .output()
-            .ok()
-            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-    };
-
     let pair = |numbers: &str| {
         let (width, height) = numbers.trim().split_once('x')?;
 
@@ -300,6 +394,22 @@ fn has_idr(data: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_monitors_become_two_displays_primary_first() {
+        let xrandr = "Screen 0: minimum 320 x 200, current 3840 x 1080, maximum 16384 x 16384\n\
+            DP-1 connected 1920x1080+1920+0 (normal left inverted right x axis y axis) 527mm x 296mm\n\
+            HDMI-1 connected primary 1920x1080+0+0 (normal left inverted right x axis y axis) 527mm x 296mm\n\
+            DP-2 disconnected (normal left inverted right x axis y axis)\n\
+               1920x1080     60.00*+\n";
+
+        let monitors = parse_monitors(xrandr);
+
+        assert_eq!(monitors.len(), 2);
+        assert_eq!(monitors[0], Monitor { width: 1920, height: 1080, x: 0, y: 0 });
+        assert_eq!(monitors[1].x, 1920);
+        assert_eq!(monitors[1].area(), "startx=1920 starty=0 endx=3839 endy=1079");
+    }
 
     #[test]
     fn splits_frames_on_the_delimiter_and_drops_it() {

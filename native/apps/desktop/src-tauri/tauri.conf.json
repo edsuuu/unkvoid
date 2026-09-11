@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Unkvoid",
-  "version": "0.0.16",
+  "version": "0.0.17",
   "identifier": "com.unkvoid.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -59,7 +59,8 @@
           "gstreamer1.0-nice",
           "gstreamer1.0-x264 | gstreamer1.0-plugins-ugly",
           "gstreamer1.0-tools",
-          "gstreamer1.0-pulseaudio | gstreamer1.0-plugins-good"
+          "gstreamer1.0-pulseaudio | gstreamer1.0-plugins-good",
+          "x11-xserver-utils"
         ]
       }
     },
