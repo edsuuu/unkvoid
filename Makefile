@@ -45,8 +45,10 @@ check:
 build:
 	cd $(DESKTOP_DIR) && npm run build
 
+# A chave do updater entra aqui. Sem ela o bundle do .app.tar.gz para no fim do
+# build pedindo senha, e o erro derruba o `make install` antes de instalar.
 mac-build:
-	cd $(DESKTOP_DIR) && npx tauri build --bundles app,dmg
+	cd $(DESKTOP_DIR) && TAURI_SIGNING_PRIVATE_KEY="$$(cat $(CHAVE))" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" npx tauri build --bundles app,dmg
 
 build-windows:
 	cd $(DESKTOP_DIR) && npx tauri build --bundles nsis,msi
@@ -81,9 +83,10 @@ release:
 install: mac-build
 	@set -e; \
 	app="$(CURDIR)/native/target/release/bundle/macos/Unkvoid.app"; \
-	if pgrep -x Unkvoid >/dev/null 2>&1; then \
+	if pgrep -x unkvoid-desktop >/dev/null 2>&1; then \
 		osascript -e 'tell application "Unkvoid" to quit' >/dev/null 2>&1 || true; \
 		sleep 2; \
+		pkill -x unkvoid-desktop 2>/dev/null || true; \
 	fi; \
 	rm -rf /Applications/Unkvoid.app; \
 	ditto "$$app" /Applications/Unkvoid.app; \
