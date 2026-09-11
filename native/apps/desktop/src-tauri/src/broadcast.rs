@@ -304,6 +304,7 @@ impl Broadcast {
             "keyframesAsked": self.keyframes.load(Ordering::Relaxed),
             "sentBytes": self.sent_bytes.load(Ordering::Relaxed),
             "audioPackets": self.audio_packets.load(Ordering::Relaxed),
+            "captureError": self.capturer.error(),
             "audioErrors": self.audio_errors.load(Ordering::Relaxed),
         })
     }

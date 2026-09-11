@@ -625,6 +625,11 @@ fn check_capture() -> i32 {
     };
 
     std::thread::sleep(std::time::Duration::from_secs(3));
+
+    if let Some(error) = capturer.error() {
+        println!("unkvoid check-capture: gst: {error}");
+    }
+
     let _ = capturer.stop();
 
     let (frames, keyframes, audio) = (

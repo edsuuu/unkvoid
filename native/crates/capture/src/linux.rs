@@ -14,10 +14,10 @@
 //! lista de telas sai vazia; o caminho é `pipewiresrc` via portal quando alguém pedir.
 //! Sem lista de janelas ainda pelo mesmo motivo.
 
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::{
@@ -40,6 +40,9 @@ pub struct LinuxCapturer {
     audio: Option<Child>,
     frames: Arc<AtomicU64>,
     audio_chunks: Arc<AtomicU64>,
+    /// A última linha de erro do gst de vídeo. É o que aparece no app quando a captura
+    /// não gera quadro nenhum — sem isto o diagnóstico culpava a rede.
+    error: Arc<Mutex<Option<String>>>,
 }
 
 impl LinuxCapturer {
@@ -127,8 +130,25 @@ impl LinuxCapturer {
             region(config.source).map(|monitor| monitor.area()).unwrap_or_default()
         );
 
-        let mut video = launch(&pipeline)?;
+        let mut video = launch(&pipeline, true)?;
         let mut stdout = video.stdout.take().expect("stdout piped");
+        let error = Arc::new(Mutex::new(None));
+
+        if let Some(stderr) = video.stderr.take() {
+            let error = Arc::clone(&error);
+
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    tracing::warn!(line = %line, "gst vídeo");
+
+                    if line.starts_with("ERROR") || line.contains("rror") {
+                        if let Ok(mut slot) = error.lock() {
+                            *slot = Some(line);
+                        }
+                    }
+                }
+            });
+        }
         let frames_thread = Arc::clone(&frames);
         let on_video = Arc::clone(&on_event);
 
@@ -169,6 +189,7 @@ impl LinuxCapturer {
             match launch(
                 "pulsesrc device=@DEFAULT_MONITOR@ ! audioconvert ! audioresample \
                  ! audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved ! fdsink fd=1",
+                false,
             ) {
                 Ok(mut child) => {
                     let mut stdout = child.stdout.take().expect("stdout piped");
@@ -205,7 +226,11 @@ impl LinuxCapturer {
             None
         };
 
-        Ok(Self { video, audio, frames, audio_chunks })
+        Ok(Self { video, audio, frames, audio_chunks, error })
+    }
+
+    pub fn error(&self) -> Option<String> {
+        self.error.lock().ok().and_then(|slot| slot.clone())
     }
 
     pub fn frames_captured(&self) -> u64 {
@@ -235,13 +260,13 @@ impl Drop for LinuxCapturer {
     }
 }
 
-fn launch(pipeline: &str) -> Result<Child, CaptureError> {
+fn launch(pipeline: &str, keep_stderr: bool) -> Result<Child, CaptureError> {
     Command::new("gst-launch-1.0")
         .arg("-q")
         .args(pipeline.split_whitespace())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(if keep_stderr { Stdio::piped() } else { Stdio::inherit() })
         .spawn()
         .map_err(|error| {
             CaptureError::Platform(format!(
