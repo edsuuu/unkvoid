@@ -461,6 +461,24 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// Abre uma URL no navegador do sistema. Existe porque no Linux o motor da janela vem
+/// sem WebRTC nas distros, e assistir passa a ser no navegador.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err("só abre https".to_string());
+    }
+
+    #[cfg(target_os = "linux")]
+    let command = std::process::Command::new("xdg-open").arg(&url).spawn();
+    #[cfg(target_os = "macos")]
+    let command = std::process::Command::new("open").arg(&url).spawn();
+    #[cfg(target_os = "windows")]
+    let command = std::process::Command::new("cmd").args(["/C", "start", "", &url]).spawn();
+
+    command.map(|_| ()).map_err(|failure| failure.to_string())
+}
+
 /// O app está rodando só para responder ao `--check`: sem interface, sem bandeja.
 struct SelfCheck(bool);
 
@@ -509,7 +527,13 @@ fn report_check(app: tauri::AppHandle, webrtc: bool, receiver: Vec<String>, send
     println!("  envia:  {}", if sender.is_empty() { "-".to_string() } else { sender.join(", ") });
     println!("  motor:  {user_agent}");
 
-    app.exit(if webrtc && h264 { 0 } else { 1 });
+    // `AppHandle::exit` deixa o laço do GTK encerrar e o código se perde no caminho:
+    // o processo saía com 0 mesmo sem H.264. O código de saída é o contrato deste
+    // comando, então ele sai daqui, direto.
+    let _ = app;
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    std::process::exit(if webrtc && h264 { 0 } else { 1 });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -541,6 +565,7 @@ pub fn run() {
         .manage(SelfCheck(checking))
         .invoke_handler(tauri::generate_handler![
             report_check,
+            open_url,
             list_displays,
             list_windows,
             source_preview,

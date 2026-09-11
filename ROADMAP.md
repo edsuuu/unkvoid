@@ -90,7 +90,14 @@ Depende de aprovar o esquema: `rooms`, `room_bans`, `releases`.
   `discord`, `discord_dev`, `retro_friends` e as pastas). A limpeza em si ainda não
   foi feita: aguarda confirmação da lista.
 
-### 4. Revisão
+### 4. Linux de verdade
+
+- O WebKitGTK de Debian, Ubuntu, Mint e Parrot vem sem WebRTC, provado em Docker.
+  Assistir no Linux é pelo navegador (`/assistir/{código}`) até existir um receptor
+  nativo: as crates `rtc-*` já estão no repositório, falta decodificar e desenhar.
+- Transmitir no Linux: captura pelo PipeWire e encoder por VA-API. É outro bloco.
+
+### 5. Revisão
 
 - Revisão de bugs na base inteira.
 

@@ -40,6 +40,11 @@ NATIVE=$(cd ../.. && pwd)
 # ainda aceita `deb,appimage` para quem precisar do AppImage solto.
 BUNDLES="${UNKVOID_BUNDLES:-deb}"
 
+# As conferências olham o repositório inteiro (quatro níveis acima), e dentro do
+# container só existe o `native/`. Rodam aqui fora, onde o host tem Node e Python.
+npm ci
+npm run check
+
 echo "[INFO] imagem de build (Debian 12)"
 docker build -q -t "$IMAGE" -f Dockerfile.linux . > /dev/null
 
@@ -56,7 +61,7 @@ docker run --rm --user "$(id -u):$(id -g)" \
     -v "$NATIVE:/work" -w /work/apps/desktop \
     -e HOME=/work/.home -e CARGO_HOME=/work/.cargo-home -e CARGO_TARGET_DIR=/work/target-deb12 \
     -e CARGO_BUILD_JOBS="$JOBS" -e npm_config_cache=/work/.home/.npm \
-    "$IMAGE" bash -c "mkdir -p /work/.home && npm ci && npm run check && nice -n 19 npx tauri build --bundles $BUNDLES --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
+    "$IMAGE" bash -c "mkdir -p /work/.home && nice -n 19 npx tauri build --bundles $BUNDLES --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
 
 # O repositório APT: é por ele que o Linux instala e atualiza, com `apt install unkvoid`.
 # O download solto continua existindo para quem só quer o arquivo.

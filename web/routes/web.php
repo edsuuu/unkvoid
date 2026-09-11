@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Route;
 Route::view('/', 'home.index')->name('home');
 Route::view('/privacidade', 'legal.privacy')->name('privacy');
 Route::view('/termos', 'legal.terms')->name('terms');
+Route::view('/assistir/{code}', 'watch.index')->where('code', '[a-z0-9-]{3,32}')->name('watch');
 
 Route::get('/downloads/latest.json', ManifestController::class)->name('downloads.manifest');
 Route::get('/downloads/{slug}', DownloadController::class)->where('slug', '[a-z-]+')->name('downloads.platform');
