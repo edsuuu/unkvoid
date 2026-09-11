@@ -29,6 +29,9 @@
                 <flux:navlist.item icon="layout-grid" :href="route('admin')" :current="request()->routeIs('admin')" wire:navigate>
                     {{ __('Painel') }}
                 </flux:navlist.item>
+                <flux:navlist.item icon="bug-ant" :href="route('admin.errors')" :current="request()->routeIs('admin.errors')" wire:navigate>
+                    {{ __('Erros dos apps') }}
+                </flux:navlist.item>
                 <flux:navlist.item icon="document-text" :href="route('log-viewer.index')" target="_blank">
                     {{ __('Logs') }}
                 </flux:navlist.item>

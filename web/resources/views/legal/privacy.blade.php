@@ -1,7 +1,7 @@
 <x-guest-layout :title="__('Política de privacidade')">
     <article class="lp-article">
         <h1>Política de privacidade</h1>
-        <p class="lp-date">Última atualização: 10 de setembro de 2026</p>
+        <p class="lp-date">Última atualização: 11 de setembro de 2026</p>
 
         <p>O Unkvoid é um aplicativo para compartilhar a tela com pessoas que você escolhe. Esta política explica o que coletamos, por quê, e o que não coletamos. Ela foi escrita para ser lida, não para ser assinada sem ler.</p>
 
@@ -14,7 +14,8 @@
         <p>Guardamos as salas que você cria, quem é o dono, e quem foi removido de cada uma. Isso é o que permite que uma sala continue sua depois que você fecha o app, e que uma pessoa removida não volte.</p>
 
         <h3>Diagnóstico</h3>
-        <p>O app guarda um registro técnico do que aconteceu na sessão: versão, sistema operacional, eventos de conexão, contadores de transmissão. Esse registro só sai da sua máquina quando você clica em enviar. Ele não contém o conteúdo da sua tela nem do seu áudio.</p>
+        <p>O app guarda um registro técnico do que aconteceu na sessão: versão, sistema operacional, eventos de conexão, contadores de transmissão. Ele não contém o conteúdo da sua tela nem do seu áudio.</p>
+        <p><strong>Quando esse registro tem erro, o trecho dele é enviado para a gente na próxima vez que o app abre</strong>, junto com a versão e o sistema operacional. É o que nos deixa consertar falhas que só acontecem em algumas máquinas e que ninguém consegue descrever depois. O nome de usuário do seu computador é trocado por <span class="lp-mono">&lt;usuario&gt;</span> antes de sair. Sessão sem erro não envia nada.</p>
 
         <h3>Servidor</h3>
         <p>Como qualquer servidor na internet, o nosso registra o endereço IP e o horário de cada conexão. Usamos isso para limitar tentativas abusivas de entrar em salas e para investigar falhas.</p>

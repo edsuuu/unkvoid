@@ -24,6 +24,8 @@
             </template>
         </div>
 
+        <p data-reveal style="font-size:12.5px;color:var(--lp-dim);margin:16px 0 0;max-width:46ch">Ao baixar, você concorda com os <a href="{{ route('terms') }}" class="lp-link" wire:navigate>Termos de uso</a> e a <a href="{{ route('privacy') }}" class="lp-link" wire:navigate>Política de privacidade</a>.</p>
+
         <div data-reveal style="margin-top:clamp(44px,8vh,88px);width:100%;display:flex;flex-wrap:wrap;justify-content:center;gap:8px">
             <span class="lp-chip">Jogar algo com amigos</span>
             <span class="lp-chip">Programação em par</span>
@@ -275,6 +277,8 @@
                     <a :href="links[platform] ?? '#download'" class="lp-link"><span class="lp-os"><span x-show="platform === 'Windows'"><x-os.windows /></span><span x-show="platform === 'macOS'"><x-os.apple /></span><span x-show="platform === 'Linux'"><x-os.linux /></span></span><span x-text="platform"></span></a>
                 </template>
             </div>
+
+            <p style="font-size:12.5px;color:var(--lp-dim);margin:0;text-align:center;max-width:52ch">Ao baixar, você concorda com os <a href="{{ route('terms') }}" class="lp-link" wire:navigate>Termos de uso</a> e a <a href="{{ route('privacy') }}" class="lp-link" wire:navigate>Política de privacidade</a>. O app manda o trecho do log quando dá erro, para a gente conseguir consertar.</p>
         </div>
 
         <div class="lp-dl-grid">
