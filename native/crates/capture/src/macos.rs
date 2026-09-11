@@ -349,6 +349,12 @@ impl MacCapturer {
         self.frames.load(Ordering::Relaxed)
     }
 
+    /// Erro da captura consultável depois de `start`. Só o Linux tem, porque só lá a
+    /// captura é outro processo que pode morrer em silêncio.
+    pub fn error(&self) -> Option<String> {
+        None
+    }
+
     pub fn audio_chunks_captured(&self) -> u64 {
         self.audio_chunks.load(Ordering::Relaxed)
     }

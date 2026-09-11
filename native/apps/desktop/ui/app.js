@@ -1892,7 +1892,20 @@ class App {
             return;
         }
 
+        const last = this.lastBroadcastStats;
+
         await this.stopSharing();
+
+        // Sem quadro capturado a culpa não é da rede: é a captura de vídeo que não
+        // produziu nada (no Linux, o gst-launch morreu ou recusou o pipeline).
+        if (last && last.captured === 0) {
+            const reason = last.captureError ? `: ${last.captureError}` : '. Rode `unkvoid-desktop --check-capture` num terminal para ver o motivo.';
+
+            this.fail(`a captura de vídeo não gerou nenhum quadro${reason}`);
+
+            return;
+        }
+
         this.fail('a transmissão não chegou ao servidor: nenhum pacote entrou em 30 s. A porta de RTP está bloqueada no caminho.');
     }
 

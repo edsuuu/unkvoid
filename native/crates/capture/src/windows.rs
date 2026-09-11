@@ -355,6 +355,12 @@ impl WindowsCapturer {
         self.frames.load(Ordering::Relaxed)
     }
 
+    /// Erro da captura consultável depois de `start`. Só o Linux tem, porque só lá a
+    /// captura é outro processo que pode morrer em silêncio.
+    pub fn error(&self) -> Option<String> {
+        None
+    }
+
     /// O som do sistema no Windows vem pelo laço do WASAPI, não pelo Graphics
     /// Capture. Ele entra no caminho da mídia mais adiante.
     pub fn audio_chunks_captured(&self) -> u64 {
