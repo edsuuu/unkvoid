@@ -10,7 +10,8 @@ on:
     paths: ['native/**', '.github/workflows/build-linux.yml']
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 concurrency:
   group: build-linux
