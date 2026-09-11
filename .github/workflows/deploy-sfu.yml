@@ -9,7 +9,8 @@ on:
     paths: ['sfu/**', '.github/workflows/deploy-sfu.yml']
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 concurrency:
   group: deploy-sfu
