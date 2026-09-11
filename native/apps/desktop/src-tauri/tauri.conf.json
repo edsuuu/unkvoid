@@ -29,6 +29,7 @@
     "active": true,
     "targets": [
       "msi",
+      "nsis",
       "deb",
       "dmg",
       "app",
@@ -67,6 +68,9 @@
     "windows": {
       "wix": {
         "language": "pt-BR"
+      },
+      "nsis": {
+        "installMode": "perMachine"
       }
     },
     "createUpdaterArtifacts": true
