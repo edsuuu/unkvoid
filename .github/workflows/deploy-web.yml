@@ -8,7 +8,8 @@ on:
     paths: ['web/**', 'infra/deploy-web.sh', '.github/workflows/deploy-web.yml']
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 concurrency:
   group: deploy-web

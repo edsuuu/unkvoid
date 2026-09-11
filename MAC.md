@@ -13,6 +13,15 @@ subiu para 0.0.9 e lê o atualizador em `https://unkvoid.com/downloads/latest.js
 
 O Linux 0.0.9 já está publicado. Falta o macOS, e ele só sai de um Mac.
 
+## O desenho do app não é trabalho do Mac
+
+A interface do app (`native/apps/desktop/ui/`) é a mesma nos três sistemas e é
+implementada no WSL a partir do `Unkvoid App.dc.html` do Claude Design, com o
+login dentro do app. Quando isso estiver na `main`, o Mac só faz o que está
+abaixo: puxar, compilar, publicar e instalar. Não redesenhe nada aqui; se a
+tela parecer antiga, é porque a `main` ainda não tem o desenho novo — confira com
+`git log -1 -- native/apps/desktop/ui/` antes de compilar.
+
 ## Antes de começar
 
 1. O código está na `main` do GitHub. `git pull` na raiz do repositório basta.
