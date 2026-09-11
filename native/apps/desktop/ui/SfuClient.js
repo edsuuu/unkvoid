@@ -373,6 +373,15 @@ export class SfuClient extends EventTarget {
             });
         }
 
+        // Sem WebRTC no motor da janela (WebKitGTK compilado sem ele, como no Parrot), a
+        // sala continua funcionando: criar, entrar e transmitir não passam por WebRTC —
+        // a tela sobe como RTP puro pelo Rust. Só assistir fica de fora.
+        if (typeof RTCPeerConnection === 'undefined') {
+            this.emit('diagnostic', { event: 'device.unsupported', data: { userAgent: navigator.userAgent } });
+
+            return joined;
+        }
+
         this.device = new Device(SfuClient.handler());
         await this.device.load({ routerRtpCapabilities: joined.routerRtpCapabilities });
 
@@ -416,7 +425,15 @@ export class SfuClient extends EventTarget {
         return transport;
     }
 
+    canWatch() {
+        return this.recvTransport !== null;
+    }
+
     async consume(producerId) {
+        if (! this.recvTransport) {
+            throw new Error('esta máquina não tem WebRTC no motor da janela: dá para transmitir, mas não para assistir');
+        }
+
         const params = await this.request('consume', {
             transportId: this.recvTransport.id,
             producerId,

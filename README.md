@@ -191,6 +191,7 @@ cargo run -p media --example plain -- <ws> <sala>     # o SFU confirmando que re
 
 | Arquivo | O que tem |
 |---|---|
+| `ROADMAP.md` | site, login, salas no Laravel e a VPS: o que foi decidido e as fases |
 | `DECISOES.md` | decisões de arquitetura e o porquê de cada uma |
 | `REDE.md` | o caminho da imagem, os ajustes de rede e o que mora fora do repositório |
 | `SEGURANCA.md` | o que está protegido, o que não está, e o que falta |

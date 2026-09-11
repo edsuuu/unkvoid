@@ -1,0 +1,32 @@
+# O .deb do Linux, gerado na VPS e publicado no repositório APT. A VPS é a única máquina
+# Linux com o toolchain, e o cache do cargo (2 GB, quarenta minutos) mora lá em
+# /var/www/projects/unkvoid/native/target — por isso o build roda naquela pasta e não no
+# checkout do runner.
+name: build-linux
+
+on:
+  push:
+    branches: [main]
+    paths: ['native/**', '.github/workflows/build-linux.yml']
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: build-linux
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'edsuuu/unkvoid' && github.actor == 'edsuuu'
+    runs-on: [self-hosted, Linux, X64, unkvoid]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - run: |
+          rsync -a --delete --exclude target --exclude node_modules --exclude dist \
+            ./native/ /var/www/projects/unkvoid/native/
+      - run: /var/www/projects/unkvoid/native/apps/desktop/build-vps.sh

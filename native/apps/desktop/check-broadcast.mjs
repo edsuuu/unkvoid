@@ -68,14 +68,39 @@ assert.deepEqual(callArgs.get('start_broadcast'), {
 assert.deepEqual(requests, ['producePlain:video/screen', 'producePlain:audio/screenAudio']);
 assert.equal(broadcast.broadcasting, true);
 
+// O servidor reiniciou: os producers antigos morreram lá, a captura continua viva aqui.
+// Republicar declara os dois de novo e reaponta o destino, sem tocar em `start_broadcast`
+// — reiniciar a captura tiraria a tela do ar e pediria a permissão outra vez.
+const antes = calls.length;
+
+assert.equal(await broadcast.republish(), true);
+assert.deepEqual(calls.slice(antes), ['renew_sfu_key', 'sfu_offer', 'sfu_offer', 'use_sfu']);
+
+// Chave nova antes de qualquer oferta: a oferta carrega a chave, e pedir depois mandaria
+// ao servidor a chave velha enquanto o Rust cifra com a nova.
+assert.equal(calls.slice(antes)[0], 'renew_sfu_key');
+
+// A lista não pode acumular: `stop` fecharia producers que já não existem, e o primeiro
+// erro derrubaria a mensagem de encerramento.
+assert.deepEqual(broadcast.producerIds, ['video-producer', 'audio-producer']);
+assert.equal(broadcast.videoProducerId, 'video-producer');
+
 assert.equal(await broadcast.stop(), 4242, 'stop devolve os quadros transmitidos');
 assert.equal(broadcast.broadcasting, false);
 assert.deepEqual(requests, [
     'producePlain:video/screen',
     'producePlain:audio/screenAudio',
+    'producePlain:video/screen',
+    'producePlain:audio/screenAudio',
     'closeProducer:video-producer/',
     'closeProducer:audio-producer/',
 ]);
+
+// Republicar sem transmissão nenhuma não fala com o Rust: o `afterReconnect` chama isto
+// toda vez que a sessão é nova, e quem só assiste passa por aqui.
+const parado = new Broadcast(sfu);
+
+assert.equal(await parado.republish(), false);
 
 // Parar duas vezes não pode mandar um segundo `stop_broadcast`: o Rust responde erro e
 // a mensagem de encerramento viraria uma falha na cara de quem só clicou uma vez.

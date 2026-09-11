@@ -77,18 +77,6 @@ BUNDLES="${UNKVOID_BUNDLES:-deb}"
 nice -n 19 npx tauri build --bundles "$BUNDLES" \
     --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
-# Os instaladores ficam servidos pelo nginx em /downloads/, para quem for testar não
-# precisar de ssh nem de esperar a release sair.
-DOWNLOADS="${UNKVOID_DOWNLOADS:-/var/www/downloads/unkvoid}"
-
-if [ -d "$DOWNLOADS" ]; then
-    find ../../target/release/bundle -maxdepth 2 -type f \
-        \( -name '*.deb' -o -name '*.AppImage' -o -name '*.sig' \) \
-        -exec cp -f {} "$DOWNLOADS/" \;
-
-    echo "[INFO] instaladores em $DOWNLOADS"
-fi
-
 # O repositório APT: é por ele que o Linux instala e atualiza, com `apt install unkvoid`.
 # O download solto continua existindo para quem só quer o arquivo.
 # O mais recente, não o primeiro que a busca achar: a pasta guarda os `.deb` de todas
@@ -96,8 +84,16 @@ fi
 DEB=$(find ../../target/release/bundle/deb -maxdepth 1 -name '*.deb' -printf '%T@ %p\n' 2>/dev/null \
     | sort -rn | head -1 | cut -d' ' -f2- || true)
 
-if [ -n "$DEB" ] && [ -d "${UNKVOID_APT:-/var/www/apt}" ]; then
+if [ -n "$DEB" ]; then
     ./apt-publish.sh "$DEB"
+fi
+
+# O card do Linux no site aponta para o .deb mais novo. O segredo mora no .env do site,
+# que está nesta mesma máquina, então nada viaja.
+WEB_ENV="${UNKVOID_WEB_ENV:-/var/www/projects/unkvoid-web/shared/.env}"
+
+if [ -n "$DEB" ] && [ -f "$WEB_ENV" ]; then
+    RELEASE_SECRET="$(grep '^RELEASE_SECRET=' "$WEB_ENV" | cut -d= -f2-)" ./publish-release.sh linux-x86_64-deb "$DEB"
 fi
 
 # Daqui para baixo é só o GitHub, e ninguém se atualiza por ele: o macOS e o Windows

@@ -1,0 +1,40 @@
+# O SFU vai para o ar a cada push na main que toque nele. O install.sh espera a sala
+# esvaziar antes de reiniciar, então um deploy pode levar até meia hora — e é por isso
+# que o timeout é folgado.
+name: deploy-sfu
+
+on:
+  push:
+    branches: [main]
+    paths: ['sfu/**', '.github/workflows/deploy-sfu.yml']
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: deploy-sfu
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'edsuuu/unkvoid' && github.actor == 'edsuuu'
+    runs-on: [self-hosted, Linux, X64, unkvoid]
+    timeout-minutes: 50
+    defaults:
+      run:
+        working-directory: sfu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm run lint
+
+      - run: |
+          rsync -a --delete --exclude node_modules --exclude .env \
+            ./dist ./check.mjs ./check-heartbeat.mjs ./install.sh ./.env.example \
+            ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ./ecosystem.config.cjs \
+            /var/www/projects/sfu/
+      - run: cd /var/www/projects/sfu && ./install.sh

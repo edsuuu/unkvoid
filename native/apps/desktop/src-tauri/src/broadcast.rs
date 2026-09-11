@@ -266,6 +266,15 @@ impl Broadcast {
         })
     }
 
+    /// Sorteia uma chave nova para republicar depois que o servidor reiniciou.
+    ///
+    /// Reapontar o destino monta um `SrtpContext` do zero, com sequenciador aleatório
+    /// novo. Repetir a chave com o contador reiniciado repetiria o keystream, e dois
+    /// trechos cifrados com o mesmo keystream se abrem um contra o outro.
+    pub fn renew_sfu_key(&mut self) {
+        self.sfu_key = PlainSender::generate_key();
+    }
+
     /// Aponta a transmissão para a porta que o servidor devolveu.
     pub fn use_sfu(&self, address: String, server_key: Option<Vec<u8>>) -> anyhow::Result<()> {
         let sender = PlainSender::connect(address.as_str(), &self.sfu_key, server_key.as_deref())?;

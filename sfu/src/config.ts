@@ -1,7 +1,20 @@
 import type { RouterRtpCodecCapability, WorkerLogTag } from 'mediasoup/types';
 import { availableParallelism } from 'node:os';
 
+/**
+ * Sem o segredo o SFU não sobe. Ele assina o token de entrada e o cabeçalho das chamadas
+ * do Laravel; um servidor que subisse sem ele aceitaria qualquer um, e é melhor ficar
+ * fora do ar do que aberto.
+ */
+const secret = process.env.SFU_SECRET ?? '';
+
+if (secret.length < 32) {
+    throw new Error('SFU_SECRET is missing or shorter than 32 characters');
+}
+
 export const config = {
+    secret,
+
     listenHost: process.env.SFU_HOST ?? '127.0.0.1',
     listenPort: Number(process.env.SFU_PORT ?? 3000),
     path: process.env.SFU_PATH ?? '/sfu',
