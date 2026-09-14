@@ -35,7 +35,10 @@ const ready = new Promise((resolve, reject) => {
 });
 
 const finish = code => {
-    server.kill('SIGTERM');
+    // SIGKILL, não SIGTERM: o mediasoup registra `process.once('SIGTERM')` dentro do SFU,
+    // então o primeiro TERM morre no handler dele e o servidor ficava de pé segurando a
+    // porta 3199 — a rodada seguinte batia em EADDRINUSE.
+    server.kill('SIGKILL');
     process.exit(code);
 };
 

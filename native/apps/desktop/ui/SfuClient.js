@@ -1,46 +1,10 @@
 import { Device } from 'mediasoup-client';
 
+/** Folga de reprodução da tela compartilhada, em milissegundos. Ver `givePlayoutRoom`. */
+const PLAYOUT_TARGET_MS = 250;
 
-/** Folga de reprodução, em milissegundos. Ver `givePlayoutRoom`. */
-const PLAYOUT_TARGET_MS = 400;
-
-/**
- * Folga de reprodução, para a retransmissão ter tempo de chegar.
- *
- * O servidor reenvia pacote perdido quando o player pede, mas o pedido leva uma ida e
- * volta — daqui até os EUA são uns 150 ms. Com a folga padrão, o pacote reenviado chega
- * depois da hora de exibir e é jogado fora: o player pediu, o servidor mandou, e a
- * imagem congelou do mesmo jeito.
- *
- * 400 ms cobrem essa ida e volta com margem. É atraso que se paga uma vez, no começo, e
- * ninguém percebe assistindo — ao contrário de congelar a cada perda.
- *
- * Só vídeo: áudio já se protege com o FEC embutido do Opus, e atrasar o som é o que se
- * nota primeiro. Nada aqui é obrigatório — o nome da propriedade mudou entre versões do
- * motor, então os dois são tentados e a falta de ambos só custa a folga.
- */
-function givePlayoutRoom(consumer) {
-    if (consumer.kind !== 'video') {
-        return;
-    }
-
-    const receiver = consumer.rtpReceiver;
-
-    if (! receiver) {
-        return;
-    }
-
-    try {
-        receiver.jitterBufferTarget = PLAYOUT_TARGET_MS;
-    } catch {
-        // Motor antigo: o nome anterior, em segundos.
-        try {
-            receiver.playoutDelayHint = PLAYOUT_TARGET_MS / 1000;
-        } catch {
-            // Sem folga. A transmissão funciona, só recupera pior de uma perda.
-        }
-    }
-}
+/** Por quanto tempo uma leitura de `getStats` vale para quem perguntar de novo. */
+const STATS_TTL_MS = 500;
 
 export class SfuClient extends EventTarget {
     /**
@@ -74,6 +38,9 @@ export class SfuClient extends EventTarget {
         this.socket = null;
         this.device = null;
         this.recvTransport = null;
+        this.sendTransport = null;
+        this.sendTransportPromise = null;
+        this.producers = new Map();
         this.pending = new Map();
         this.nextRequestId = 1;
         this.consumers = new Map();
@@ -95,6 +62,8 @@ export class SfuClient extends EventTarget {
 
         /** Ida e volta do transporte de mídia. É este o ping que a barra mostra. */
         this.transportRttMs = null;
+        this.statsReports = [];
+        this.statsAt = 0;
     }
 
     emit(name, detail) {
@@ -105,13 +74,24 @@ export class SfuClient extends EventTarget {
      * `identity` e `{ room, name, installId }`: o codigo da sala, como voce aparece para
      * os outros, e qual instalacao do app e esta. O ultimo e o que sustenta a posse da
      * sala do outro lado — ele sobrevive a reconectar, e o `peerId` nao.
+     *
+     * Pode ser uma função que devolve (a promessa d)esse objeto: o canal de voz entra com
+     * um token que vale 60 s, então ele é pedido de novo antes de CADA `join`, inclusive
+     * nas reconexões. A sala anônima continua passando o objeto puro.
+     *
+     * O token é pedido junto com a abertura do socket, e não depois: são duas idas ao
+     * servidor que não dependem uma da outra.
      */
     connect(url, identity) {
         this.url = url;
         this.identity = identity;
         this.closedByUs = false;
 
-        return this.openSocket().then(() => this.setup());
+        return Promise.all([this.openSocket(), this.resolveIdentity()]).then(([, resolved]) => this.setup(resolved));
+    }
+
+    resolveIdentity() {
+        return typeof this.identity === 'function' ? this.identity() : Promise.resolve(this.identity);
     }
 
     openSocket() {
@@ -167,7 +147,9 @@ export class SfuClient extends EventTarget {
     }
 
     scheduleReconnect() {
-        if (this.reconnectTimer) {
+        // `closedByUs` também cobre o `disconnect()` chamado de dentro do `identity()`:
+        // o token foi recusado, e insistir seria bater na mesma porta a cada segundo.
+        if (this.reconnectTimer || this.closedByUs) {
             return;
         }
 
@@ -193,7 +175,7 @@ export class SfuClient extends EventTarget {
             const joined = await this.setup();
 
             this.reconnectAttempt = 0;
-            this.emit('reconnected', { resumed: joined.resumed, peers: joined.peers ?? [] });
+            this.emit('reconnected', { resumed: joined.resumed, peers: joined.peers ?? [], can: joined.can ?? null });
         } catch (error) {
             this.emit('reconnecting', { attempt: this.reconnectAttempt, error: error.message });
             this.scheduleReconnect();
@@ -203,8 +185,13 @@ export class SfuClient extends EventTarget {
     handleMessage(message) {
         if (message.event) {
             this.emit('diagnostic', { event: `sfu.${message.event}`, data: message.data });
-        }
-        if (message.event) {
+
+            // Outra janela tomou o lugar desta, ou o servidor a expulsou: reconectar
+            // seria voltar a brigar pela mesma vaga.
+            if (message.event === 'replaced' || message.event === 'kicked') {
+                this.closedByUs = true;
+            }
+
             this.trackPeers(message.event, message.data);
             this.emit(message.event, message.data);
 
@@ -221,13 +208,17 @@ export class SfuClient extends EventTarget {
         message.ok ? waiting.resolve(message.data) : waiting.reject(new Error(message.error));
     }
 
+    /** Só o que mexe em `peers` avisa `peersChanged`: quem escuta redesenha a lista. */
     trackPeers(event, data) {
+        let changed = false;
+
         if (event === 'peerJoined') {
-            this.peers.set(data.peerId, { peerId: data.peerId, name: data.name, sharing: false, producers: [] });
+            this.peers.set(data.peerId, { peerId: data.peerId, userId: data.userId, name: data.name, sharing: false, producers: [] });
+            changed = true;
         }
 
         if (event === 'peerLeft') {
-            this.peers.delete(data.peerId);
+            changed = this.peers.delete(data.peerId);
         }
 
         if (event === 'peerConnectionLost' || event === 'peerReconnected') {
@@ -235,23 +226,36 @@ export class SfuClient extends EventTarget {
 
             if (peer) {
                 peer.reconnecting = event === 'peerConnectionLost';
+                changed = true;
             }
         }
 
         if (event === 'newProducer') {
-            this.trackProducer(data.peerId, data);
+            changed = this.trackProducer(data.peerId, data);
         }
 
         if (event === 'producerClosed') {
-            this.forgetProducer(data.peerId, data.producerId);
+            changed = this.forgetProducer(data.peerId, data.producerId);
+        }
+
+        if (event === 'producerPaused' || event === 'producerResumed') {
+            const producer = this.peers.get(data.peerId)?.producers.find(item => item.producerId === data.producerId);
+
+            if (producer) {
+                producer.paused = event === 'producerPaused';
+                changed = true;
+            }
         }
 
         if (event === 'consumerClosed') {
+            this.consumers.get(data.consumerId)?.close();
             this.consumers.delete(data.consumerId);
             this.consumerPeers.delete(data.consumerId);
         }
 
-        this.emit('peersChanged', [...this.peers.entries()]);
+        if (changed) {
+            this.emit('peersChanged', [...this.peers.entries()]);
+        }
     }
 
     /**
@@ -265,27 +269,36 @@ export class SfuClient extends EventTarget {
         const peer = this.peers.get(peerId);
 
         if (! peer) {
-            return;
+            return false;
         }
 
         peer.producers = [...(peer.producers ?? []).filter(item => item.producerId !== producerId), { producerId, kind, source }];
         peer.sharing = peer.producers.some(item => item.source === 'screen');
+
+        return true;
     }
 
     forgetProducer(peerId, producerId) {
         const peer = this.peers.get(peerId);
 
         if (! peer) {
-            return;
+            return false;
         }
 
         peer.producers = (peer.producers ?? []).filter(item => item.producerId !== producerId);
         peer.sharing = peer.producers.some(item => item.source === 'screen');
+
+        return true;
     }
 
-    /** Os consumers que carregam a midia de uma pessoa — o que pausar quando ninguem quer ver. */
-    consumersOf(peerId) {
-        return [...this.consumerPeers].filter(([, owner]) => owner === peerId).map(([consumerId]) => consumerId);
+    /**
+     * Os consumers que carregam a midia de uma pessoa — o que pausar quando ninguem quer
+     * ver. `kind` separa tela de mic: sem ele, pausar uma calava a outra.
+     */
+    consumersOf(peerId, kind = null) {
+        return [...this.consumerPeers]
+            .filter(([consumerId, owner]) => owner === peerId && (! kind || this.consumers.get(consumerId)?.kind === kind))
+            .map(([consumerId]) => consumerId);
     }
 
     /**
@@ -295,10 +308,10 @@ export class SfuClient extends EventTarget {
      * incomoda quem so quer ouvir esta no decoder, e ele so para quando o pacote deixa
      * de chegar. `pauseConsumer` e o unico jeito de o pacote deixar de chegar.
      */
-    async setPeerPaused(peerId, paused) {
+    async setPeerPaused(peerId, paused, kind = null) {
         const action = paused ? 'pauseConsumer' : 'resumeConsumer';
 
-        await Promise.all(this.consumersOf(peerId).map(consumerId => this.request(action, { consumerId })));
+        await Promise.all(this.consumersOf(peerId, kind).map(consumerId => this.request(action, { consumerId })));
     }
 
     /**
@@ -338,12 +351,12 @@ export class SfuClient extends EventTarget {
         });
     }
 
-    async setup() {
+    async setup(identity = null) {
         // A `resumeKey` e o que prova ser a mesma pessoa depois de uma queda. Ela so vale
         // com `resume`, e so pedimos resume se o transporte desta sessao continua vivo:
         // reaberto o app, ele e novo em folha e retomar deixaria o cliente sem transporte.
         const joined = await this.request('join', {
-            ...this.identity,
+            ...(identity ?? await this.resolveIdentity()),
             resumeKey: this.resumeKey,
             resume: Boolean(this.recvTransport),
         });
@@ -356,17 +369,19 @@ export class SfuClient extends EventTarget {
             return joined;
         }
 
-        this.consumers.clear();
+        // Sessão nova: o que era da antiga morreu no servidor. Fechar aqui também, senão
+        // cada decoder da sessão velha segue vivo até o app fechar.
+        this.closeMedia();
         // Uma abertura que falhou pode reconectar com outro id. Remonta a lista de
         // participantes pelo retrato do servidor em vez de guardar sessão velha.
         this.peers.clear();
-        this.consumerPeers.clear();
         this.peerLatency.clear();
         this.peers.set(joined.peerId, { peerId: joined.peerId, name: joined.name, self: true, sharing: false, producers: [] });
 
         for (const peer of joined.peers) {
             this.peers.set(peer.peerId, {
                 peerId: peer.peerId,
+                userId: peer.userId,
                 name: peer.name,
                 producers: peer.producers,
                 sharing: peer.producers.some(producer => producer.source === 'screen'),
@@ -402,9 +417,27 @@ export class SfuClient extends EventTarget {
         return joined;
     }
 
+    /** Transportes, producers e consumers desta sessão: o que morre com ela. */
+    closeMedia() {
+        for (const consumer of this.consumers.values()) {
+            consumer.close();
+        }
+
+        this.consumers.clear();
+        this.consumerPeers.clear();
+        this.recvTransport?.close();
+        this.recvTransport = null;
+        // Quem publica escuta `reconnected` e publica de novo.
+        this.sendTransport?.close();
+        this.sendTransport = null;
+        this.sendTransportPromise = null;
+        this.producers.clear();
+    }
+
     /**
-     * So o de recepcao. Publicar nao passa por WebRTC: a tela sobe como RTP puro, direto
-     * do Rust para a porta que o servidor devolve no `producePlain`.
+     * O de recepcao. A tela nao passa por aqui: ela sobe como RTP puro, direto do Rust
+     * para a porta que o servidor devolve no `producePlain`. Mic e camera (Windows/macOS)
+     * sobem pelo `createSendTransport`.
      */
     async createTransport() {
         const params = await this.request('createTransport');
@@ -423,6 +456,88 @@ export class SfuClient extends EventTarget {
                 .catch(errback));
 
         return transport;
+    }
+
+    /** O de envio, criado na primeira publicação: quem só assiste nunca paga por ele. */
+    async createSendTransport() {
+        const params = await this.request('createTransport');
+        const transport = this.device.createSendTransport({
+            id: params.transportId,
+            iceParameters: params.iceParameters,
+            iceCandidates: params.iceCandidates,
+            dtlsParameters: params.dtlsParameters,
+        });
+
+        transport.on('connect', ({ dtlsParameters }, callback, errback) =>
+            this.request('connectTransport', { transportId: transport.id, dtlsParameters })
+                .then(callback)
+                .catch(errback));
+
+        transport.on('produce', ({ kind, rtpParameters, appData }, callback, errback) =>
+            this.request('produce', { transportId: transport.id, kind, source: appData.source, rtpParameters })
+                .then(({ producerId }) => callback({ id: producerId }))
+                .catch(errback));
+
+        return transport;
+    }
+
+    /**
+     * `source` e `mic` ou `camera`; `options` vai inteiro para o `produce` do mediasoup
+     * (`codecOptions`, por exemplo). Devolve o producer do mediasoup-client.
+     *
+     * A promessa do transporte é guardada, não só o transporte: mic e câmera publicados
+     * ao mesmo tempo criariam dois, e o segundo ficaria órfão no servidor.
+     */
+    async produce(track, source, options = {}) {
+        if (! this.device) {
+            throw new Error('esta máquina não tem WebRTC no motor da janela');
+        }
+
+        this.sendTransportPromise ??= this.createSendTransport().catch(failure => {
+            this.sendTransportPromise = null;
+            throw failure;
+        });
+        this.sendTransport = await this.sendTransportPromise;
+
+        const producer = await this.sendTransport.produce({ track, appData: { source }, ...options });
+
+        this.producers.set(producer.id, producer);
+        producer.on('transportclose', () => this.producers.delete(producer.id));
+
+        return producer;
+    }
+
+    /** Pausa no servidor E aqui: só aqui continuaria subindo silêncio codificado. */
+    async pauseProducer(producerId) {
+        await this.request('pauseProducer', { producerId });
+        this.producers.get(producerId)?.pause();
+    }
+
+    async resumeProducer(producerId) {
+        await this.request('resumeProducer', { producerId });
+        this.producers.get(producerId)?.resume();
+    }
+
+    /** Um pedido que pode falhar sem travar quem chamou: a falha vai para o diagnóstico. */
+    tolerate(action, data) {
+        return this.request(action, data).catch(failure => {
+            this.emit('diagnostic', { event: `sfu.${action}.error`, data: { message: failure.message ?? String(failure) } });
+
+            return null;
+        });
+    }
+
+    async closeProducer(producerId) {
+        await this.tolerate('closeProducer', { producerId });
+        this.producers.get(producerId)?.close();
+        this.producers.delete(producerId);
+    }
+
+    async closeConsumer(consumerId) {
+        await this.tolerate('closeConsumer', { consumerId });
+        this.consumers.get(consumerId)?.close();
+        this.consumers.delete(consumerId);
+        this.consumerPeers.delete(consumerId);
     }
 
     canWatch() {
@@ -449,14 +564,57 @@ export class SfuClient extends EventTarget {
 
         this.consumers.set(consumer.id, consumer);
         this.consumerPeers.set(consumer.id, params.peerId);
-        givePlayoutRoom(consumer);
+        this.givePlayoutRoom(consumer, params.source);
         await this.request('resumeConsumer', { consumerId: consumer.id });
 
         return { consumer, ...params };
     }
 
+    /**
+     * Folga de reprodução da tela, para a retransmissão ter tempo de chegar.
+     *
+     * O servidor reenvia pacote perdido quando o player pede, mas o pedido leva uma ida e
+     * volta — daqui até os EUA são uns 150 ms. Com a folga padrão, o pacote reenviado chega
+     * depois da hora de exibir e é jogado fora: a imagem congelou do mesmo jeito.
+     *
+     * Só a tela: câmera e áudio são conversa, e atraso em conversa é o que se nota
+     * primeiro. O nome da propriedade mudou entre versões do motor, então os dois são
+     * tentados e a falta de ambos só custa a folga.
+     */
+    givePlayoutRoom(consumer, source) {
+        const receiver = consumer.rtpReceiver;
+
+        if (source !== 'screen' || ! receiver) {
+            return;
+        }
+
+        try {
+            receiver.jitterBufferTarget = PLAYOUT_TARGET_MS;
+        } catch {
+            try {
+                receiver.playoutDelayHint = PLAYOUT_TARGET_MS / 1000;
+            } catch (failure) {
+                this.emit('diagnostic', { event: 'sfu.playout.error', data: { message: failure.message ?? String(failure) } });
+            }
+        }
+    }
+
     consumersHasProducer(producerId) {
         return [...this.consumers.values()].some(consumer => consumer.producerId === producerId);
+    }
+
+    /** Os relatórios do `getStats`, guardados meio segundo: o ping e cada legenda leem os mesmos. */
+    async stats() {
+        if (! this.recvTransport) {
+            return [];
+        }
+
+        if (performance.now() - this.statsAt > STATS_TTL_MS) {
+            this.statsReports = [...(await this.recvTransport.getStats()).values()];
+            this.statsAt = performance.now();
+        }
+
+        return this.statsReports;
     }
 
     async updatePeerLatency() {
@@ -464,8 +622,8 @@ export class SfuClient extends EventTarget {
             return;
         }
 
-        const stats = await this.recvTransport.getStats();
-        const transport = [...stats.values()].find(report =>
+        const reports = await this.stats();
+        const transport = reports.find(report =>
             report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated);
         const rtt = transport?.currentRoundTripTime;
 
@@ -482,16 +640,16 @@ export class SfuClient extends EventTarget {
         }
 
         for (const [consumerId, peerId] of this.consumerPeers) {
-            const inbound = [...stats.values()].find(report =>
-                report.type === 'inbound-rtp' && report.ssrc === this.consumers.get(consumerId)?.rtpParameters?.encodings?.[0]?.ssrc);
-            const jitter = inbound?.jitter;
+            const ssrc = this.consumers.get(consumerId)?.rtpParameters?.encodings?.[0]?.ssrc;
+            const jitter = reports.find(report => report.type === 'inbound-rtp' && report.ssrc === ssrc)?.jitter;
+
             this.peerLatency.set(peerId, rtt != null ? Math.round(rtt * 1000) : jitter != null ? Math.round(jitter * 2000) : null);
         }
     }
 
     /** Sair de propósito: sem isto o servidor trata como queda e a pessoa vira fantasma. */
     async leaveRoom() {
-        await this.request('leave').catch(() => {});
+        await this.tolerate('leave');
     }
 
     disconnect() {
@@ -500,9 +658,7 @@ export class SfuClient extends EventTarget {
         this.reconnectTimer = null;
         this.socketGeneration += 1;
         this.socket?.close();
-        this.recvTransport?.close();
-        this.consumers.clear();
-        this.consumerPeers.clear();
+        this.closeMedia();
         this.peerLatency.clear();
     }
 }

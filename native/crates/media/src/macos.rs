@@ -3,9 +3,11 @@ use core::{ptr, slice};
 
 use apple_cf::cm::CMFormatDescription;
 use apple_cf::iosurface::IOSurface;
+use apple_cf::raw;
+use videotoolbox::ffi;
 use videotoolbox::prelude::*;
 
-use crate::{EncodedFrame, EncoderConfig, EncoderError};
+use crate::{EncodedFrame, EncoderConfig, EncoderError, FramePacer, cpu_forced};
 
 /// O separador de NAL do Annex-B.
 const START_CODE: [u8; 4] = [0, 0, 0, 1];
@@ -22,38 +24,120 @@ unsafe extern "C" {
     ) -> i32;
 }
 
-/// Encoder H.264 de hardware. No Apple Silicon ele roda no chip de mídia — o
+/// Encoder H.264 do VideoToolbox. No Apple Silicon ele roda no chip de mídia — o
 /// processador só entrega o buffer e recebe os bytes de volta.
 pub struct VideoToolboxEncoder {
     session: CompressionSession,
+
+    /// Só existe quando o VideoToolbox caiu para software: é quem segura os 30 fps.
+    pacer: Option<FramePacer>,
 }
 
 impl VideoToolboxEncoder {
+    /// Sem especificação de encoder o VideoToolbox escolhe o chip de mídia quando há —
+    /// inclusive o QuickSync de um Mac Intel — e cai sozinho para software quando não há.
+    /// Exigir hardware recusava transmitir numa máquina que transmitiria pior, e o dono
+    /// decidiu que pior é melhor do que nada. Saber qual veio decide só o teto.
+    ///
+    /// ponytail: nunca rodou num Mac. Em software a captura continua no tamanho pedido e o
+    /// VideoToolbox escala na entrada; reabrir a captura em 720p pouparia essa escala.
     pub fn new(config: &EncoderConfig) -> Result<Self, EncoderError> {
-        let (width, height) = config.quality.dimensions();
+        if cpu_forced() {
+            return Self::software(config);
+        }
 
-        let session = CompressionSession::builder(width as i32, height as i32, Codec::H264)
-            // Real time: prioritize low latency over compression ratio.
-            .with_real_time(true)
-            // Sem quadros B. Eles comprimem melhor, mas exigem reordenar quadros, o que
-            // acrescenta latência — inaceitável numa chamada.
-            .with_allow_frame_reordering(false)
-            .with_average_bit_rate(config.bitrate as i32)
-            .with_expected_frame_rate(config.frame_rate)
-            // Um keyframe por segundo: um fragmento RTP perdido se recupera rápido, em
-            // vez de congelar quem assiste até um GOP de dois segundos fechar.
-            .with_max_keyframe_interval(config.frame_rate as i32)
-            .build()
-            .map_err(|error| EncoderError::Start(error.to_string()))?;
+        let session = open_session(config)?;
 
-        Ok(Self { session })
+        // SEGURANÇA: a chave é o CFString estático do SDK; a sessão acabou de nascer.
+        let hardware = match unsafe {
+            session.copy_property(ffi::kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder)
+        } {
+            // O `kCFBooleanTrue` é um objeto único do processo: comparar o ponteiro basta.
+            Ok(Some(value)) => value.as_ptr() as *const c_void == unsafe { raw::kCFBooleanTrue } as *const c_void,
+            // Sistema que não responde fica com a placa: rebaixar um Mac bom por uma
+            // pergunta sem resposta custaria mais do que o risco.
+            Ok(None) | Err(_) => {
+                tracing::warn!("encoder: o VideoToolbox não disse se usa hardware; seguindo como se usasse");
+
+                true
+            }
+        };
+
+        if !hardware {
+            drop(session);
+
+            return Self::software(config);
+        }
+
+        tracing::info!("encoder: VideoToolbox por hardware");
+
+        Ok(Self { session, pacer: None })
     }
 
+    fn software(config: &EncoderConfig) -> Result<Self, EncoderError> {
+        let config = config.for_cpu();
+
+        tracing::warn!(
+            width = config.width,
+            height = config.height,
+            frame_rate = config.frame_rate,
+            "encoder: VideoToolbox por software, com o teto do processador"
+        );
+
+        Ok(Self {
+            session: open_session(&config)?,
+            pacer: Some(FramePacer::new(config.frame_rate)),
+        })
+    }
+
+    /// Se o H.264 sai do chip de mídia.
+    pub fn hardware(&self) -> bool {
+        self.pacer.is_none()
+    }
+}
+
+fn open_session(config: &EncoderConfig) -> Result<CompressionSession, EncoderError> {
+    let session = CompressionSession::builder(config.width as i32, config.height as i32, Codec::H264)
+        // Real time: prioritize low latency over compression ratio.
+        .with_real_time(true)
+        // Sem quadros B. Eles comprimem melhor, mas exigem reordenar quadros, o que
+        // acrescenta latência — inaceitável numa chamada.
+        .with_allow_frame_reordering(false)
+        .with_average_bit_rate(config.bitrate as i32)
+        .with_expected_frame_rate(config.frame_rate)
+        // Um keyframe por segundo: um fragmento RTP perdido se recupera rápido, em
+        // vez de congelar quem assiste até um GOP de dois segundos fechar.
+        .with_max_keyframe_interval(config.frame_rate as i32)
+        .build()
+        .map_err(|error| EncoderError::Start(error.to_string()))?;
+
+    // BT.709 declarado no SPS. Sem isto o VideoToolbox não escreve VUI, e o
+    // decodificador de quem assiste chuta a matriz — e a captura BGRA do
+    // ScreenCaptureKit é sRGB, que em vídeo é 709. Não é fatal: encoder que recusa a
+    // propriedade continua codificando, só sem avisar.
+    for (name, key, value) in [
+        ("primaries", unsafe { ffi::kVTCompressionPropertyKey_ColorPrimaries }, unsafe { raw::kCMFormatDescriptionColorPrimaries_ITU_R_709_2 }),
+        ("transfer", unsafe { ffi::kVTCompressionPropertyKey_TransferFunction }, unsafe { raw::kCMFormatDescriptionTransferFunction_ITU_R_709_2 }),
+        ("matrix", unsafe { ffi::kVTCompressionPropertyKey_YCbCrMatrix }, unsafe { raw::kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2 }),
+    ] {
+        // SEGURANÇA: chave e valor são os CFStrings estáticos do SDK, válidos pelo
+        // processo inteiro; a sessão é a que acabou de nascer.
+        if let Err(error) = unsafe { session.set_property(key, value.cast()) } {
+            tracing::warn!(error = %error, ajuste = name, "encoder: cor recusada");
+        }
+    }
+
+    Ok(session)
+}
+
+impl VideoToolboxEncoder {
     /// O servidor pediu um quadro-chave.
     ///
-    /// Sem efeito aqui por enquanto: o intervalo já é de um segundo, que é o teto da
-    /// travada, e o `videotoolbox` desta versão não expõe a opção por quadro. Existe para
-    /// o caminho de cima não precisar saber em que sistema está.
+    /// ponytail: sem efeito. `kVTEncodeFrameOptionKey_ForceKeyFrame` é opção por quadro
+    /// (o dicionário de `VTCompressionSessionEncodeFrame`), e o `encode` síncrono do
+    /// `videotoolbox` 0.19 passa `NULL` ali sem alternativa: o `VTCompressionSessionRef`
+    /// é privado e a variante que aceita o dicionário é só a `async`. O intervalo de um
+    /// segundo é o teto da travada até a crate abrir isso.
     pub fn request_keyframe(&mut self) {}
 
     /// Codifica um quadro. A `surface` vem da captura sem passar pelo processador.
@@ -68,6 +152,12 @@ impl VideoToolboxEncoder {
         surface: &IOSurface,
         timestamp_ns: u64,
     ) -> Result<EncodedFrame, EncoderError> {
+        if let Some(pacer) = self.pacer.as_mut()
+            && !pacer.admit(timestamp_ns)
+        {
+            return Err(EncoderError::NeedsMoreInput);
+        }
+
         // A hora de verdade da captura, em nanossegundos. Antes era um contador de
         // quadros sobre o fps nominal, e o VideoToolbox distribui o bitrate pelo relógio
         // que recebe: com a captura entregando 40 quadros por segundo e o contador

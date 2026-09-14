@@ -50,8 +50,9 @@ fn main() -> anyhow::Result<()> {
         .next()
         .and_then(|value| value.parse().ok())
         .unwrap_or(120);
-    let (width, height) = quality.dimensions();
-    let config = EncoderConfig::new(quality, 60);
+    // Um monitor 16:9 de mentira: o encoder não precisa de tela para ser medido.
+    let config = EncoderConfig::new(quality, 60, (3840, 2160));
+    let (width, height) = (config.width, config.height);
 
     println!(
         "encoder H.264 · {width}x{height} · {} Mbps · alvo {} fps\n",

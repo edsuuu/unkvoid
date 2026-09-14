@@ -54,6 +54,12 @@ echo "[INFO] release $RELEASE ativa em $PROJECT_DIR/current"
 
 sudo systemctl reload php8.4-fpm
 
+# O Reverb precisa disto, e não é opcional: o processo abriu o release que o `current`
+# apontava quando subiu, e a limpeza logo abaixo apaga release antigo. Sem o restart, o
+# chat continua de pé segurando uma pasta apagada e quebra na próxima vez que ler um
+# arquivo. `|| true` porque o site sobe mesmo sem chat — ver sfu/ecosystem.config.cjs.
+pm2 restart reverb --update-env || echo "[WARN] reverb não está no pm2 — veja sfu/ecosystem.config.cjs"
+
 # Pela data de modificação, e não pelo nome.
 #
 # O nome é um carimbo da hora local. No dia em que o fuso da máquina saiu de CEST para o

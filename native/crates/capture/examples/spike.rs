@@ -13,6 +13,9 @@ use std::time::{Duration, Instant};
 use capture::{CaptureConfig, CaptureEvent, PlatformCapturer, Quality};
 
 fn main() -> anyhow::Result<()> {
+    // No Windows é o log que diz quais processos entraram na mistura de áudio.
+    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).init();
+
     let mut args = std::env::args().skip(1);
 
     let quality = match args.next().as_deref() {
@@ -31,7 +34,7 @@ fn main() -> anyhow::Result<()> {
         println!("  #{} — {}x{}", display.id, display.width, display.height);
     }
 
-    let (width, height) = quality.dimensions();
+    let (width, height) = quality.fit(PlatformCapturer::source_size(capture::CaptureSource::PrimaryDisplay)?);
     println!("\ncapturing {width}x{height} for {seconds}s (system audio enabled)\n");
 
     let video_frames = Arc::new(AtomicU64::new(0));

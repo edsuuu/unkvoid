@@ -15,6 +15,7 @@ final class AppLoginRequest extends FormRequest
     {
         return [
             'port' => ['required', 'integer', 'min:1024', 'max:65535'],
+            'state' => ['required', 'string', 'max:64', 'regex:/^[0-9a-fA-F]+$/'],
         ];
     }
 }

@@ -5,7 +5,9 @@
 //! rouba do jogo exatamente o que ele precisa.
 //!
 //! O MFT de H.264 por hardware é o mesmo caminho que o NVENC (NVIDIA), o QuickSync
-//! (Intel) e o VCE (AMD) expõem ao Windows. Quem escolhe é o sistema.
+//! (Intel) e o VCE (AMD) expõem ao Windows. Sem nenhum que aceite, cai para o MFT de
+//! software do próprio Windows em 720p30 — a única vez em que o quadro desce para a CPU
+//! (`Backend::Cpu`).
 
 use std::collections::VecDeque;
 use std::sync::Once;
@@ -13,42 +15,52 @@ use std::sync::Once;
 use ::windows::Win32::Foundation::{HANDLE, VARIANT_BOOL};
 use ::windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_1};
 use ::windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_RENDER_TARGET, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+    D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
     D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-    D3D11_USAGE_DEFAULT, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,
-    D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VPIV_DIMENSION_TEXTURE2D, D3D11_VPOV_DIMENSION_TEXTURE2D,
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11Texture2D,
-    ID3D11VideoContext, ID3D11VideoDevice, ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator,
-    ID3D11VideoProcessorInputView, ID3D11VideoProcessorOutputView,
+    D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_COLOR_SPACE,
+    D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC,
+    D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE, D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255,
+    D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,
+    D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_OPTIMAL_QUALITY, D3D11_VPIV_DIMENSION_TEXTURE2D,
+    D3D11_VPOV_DIMENSION_TEXTURE2D, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+    ID3D11Multithread, ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoContext1, ID3D11VideoDevice,
+    ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorInputView,
+    ID3D11VideoProcessorOutputView,
 };
 use ::windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
     DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_NV12, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
 };
 use ::windows::Win32::Graphics::Dxgi::{IDXGIKeyedMutex, IDXGIResource};
 use ::windows::Win32::Media::MediaFoundation::{
-    CODECAPI_AVEncCommonLowLatency, CODECAPI_AVEncCommonMeanBitRate,
-    CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncCommonRealTime, CODECAPI_AVEncMPVGOPSize,
-    CODECAPI_AVEncVideoForceKeyFrame,
-    ICodecAPI, IMFActivate, IMFDXGIDeviceManager, IMFMediaEventGenerator, IMFMediaType, IMFSample,
-    IMFTransform, METransformHaveOutput, METransformNeedInput, MF_E_TRANSFORM_NEED_MORE_INPUT,
-    MF_EVENT_TYPE, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE,
-    MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE,
-    MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION, MFCreateDXGIDeviceManager, MFCreateDXGISurfaceBuffer,
-    MFCreateMediaType, MFCreateSample, MFMediaType_Video, MFSTARTUP_NOSOCKET, MFStartup,
-    MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
-    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
-    MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_REGISTER_TYPE_INFO, MFTEnumEx,
-    MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive,
-    eAVEncCommonRateControlMode_CBR,
+    CODECAPI_AVEncCommonLowLatency, CODECAPI_AVEncCommonMaxBitRate, CODECAPI_AVEncCommonMeanBitRate,
+    CODECAPI_AVEncCommonQualityVsSpeed, CODECAPI_AVEncCommonRateControlMode,
+    CODECAPI_AVEncCommonRealTime, CODECAPI_AVEncMPVDefaultBPictureCount, CODECAPI_AVEncMPVGOPSize,
+    CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode,
+    ICodecAPI, IMFActivate, IMFDXGIDeviceManager, IMFMediaBuffer, IMFMediaEventGenerator,
+    IMFMediaType, IMFSample, IMFTransform, METransformHaveOutput, METransformNeedInput,
+    MF_E_TRANSFORM_NEED_MORE_INPUT, MF_EVENT_TYPE, MF_MT_ALL_SAMPLES_INDEPENDENT,
+    MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
+    MF_MT_SUBTYPE, MF_MT_TRANSFER_FUNCTION, MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_VIDEO_PRIMARIES,
+    MF_MT_YUV_MATRIX, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION, MFCreateDXGIDeviceManager,
+    MFCreateDXGISurfaceBuffer, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
+    MFMediaType_Video, MFSTARTUP_NOSOCKET, MFStartup, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG,
+    MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT,
+    MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
+    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFNominalRange_16_235,
+    MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFVideoPrimaries_BT709,
+    MFVideoTransFunc_709, MFVideoTransferMatrix_BT709,
+    eAVEncCommonRateControlMode_PeakConstrainedVBR,
 };
 use ::windows::Win32::System::Com::CoTaskMemFree;
 use ::windows::Win32::System::Variant::{
     VARENUM, VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_UI4,
 };
-use ::windows::core::Interface;
+use ::windows::core::{Interface, PWSTR};
 
-use crate::{EncodedFrame, EncoderConfig, EncoderError, GpuSurface};
+use crate::{EncodedFrame, EncoderConfig, EncoderError, FramePacer, GpuSurface, cpu_forced};
 
 /// A unidade de tempo do Media Foundation: 100 nanossegundos.
 const HNS_PER_SECOND: i64 = 10_000_000;
@@ -64,6 +76,7 @@ const LOCK_TIMEOUT_MS: u32 = 1_000;
 
 pub struct MediaFoundationEncoder {
     device: ID3D11Device,
+    context: ID3D11DeviceContext,
     video_device: ID3D11VideoDevice,
     video_context: ID3D11VideoContext,
 
@@ -73,7 +86,7 @@ pub struct MediaFoundationEncoder {
     /// primeiro quadro, dentro do driver.
     _manager: IMFDXGIDeviceManager,
     transform: IMFTransform,
-    events: IMFMediaEventGenerator,
+    backend: Backend,
     width: u32,
     height: u32,
     frame_rate: f64,
@@ -110,6 +123,23 @@ pub struct MediaFoundationEncoder {
 /// `windows-capture` faz o mesmo com os handles dela, pelo mesmo motivo.
 unsafe impl Send for MediaFoundationEncoder {}
 
+/// De onde sai o H.264. O resto — ponte, conversão e escala no VideoProcessor, tipos,
+/// controle de taxa — é o mesmo para os dois; muda como a amostra é montada e bombeada.
+enum Backend {
+    /// O MFT da placa: lê a textura NV12 direto e fala por eventos, assíncrono.
+    Gpu { events: IMFMediaEventGenerator },
+
+    /// O MFT de H.264 por software do próprio Windows, para quando não há placa que
+    /// codifique. Só aceita memória do processador, então a textura NV12 — já convertida
+    /// e no tamanho final — desce por `staging`, e responde na mesma chamada. É o degrau
+    /// que o dono pediu: transmitir pior em vez de recusar, com o teto de
+    /// `EncoderConfig::for_cpu` e `pacer` segurando os 30 fps.
+    Cpu {
+        staging: ID3D11Texture2D,
+        pacer: FramePacer,
+    },
+}
+
 /// O caminho de um device para o outro, montado uma vez por tamanho de origem.
 ///
 /// São dois devices porque o da captura nasce sem suporte a vídeo (a crate que a
@@ -129,8 +159,6 @@ struct Bridge {
 
 impl MediaFoundationEncoder {
     pub fn new(config: &EncoderConfig) -> Result<Self, EncoderError> {
-        let (width, height) = config.quality.dimensions();
-
         // Um passo por linha, anunciado antes de acontecer. Daqui para baixo é tudo COM
         // e Direct3D: driver velho, placa sem encoder de hardware ou sessão sem GPU não
         // devolvem erro — derrubam o processo. A última linha no arquivo é o passo que
@@ -151,10 +179,6 @@ impl MediaFoundationEncoder {
             let video_device: ID3D11VideoDevice = device.cast().map_err(start_error)?;
             let video_context: ID3D11VideoContext = context.cast().map_err(start_error)?;
 
-            tracing::info!("encoder: procurando o MFT de H.264 por hardware");
-
-            let transform = hardware_encoder()?;
-
             // O gerente é como o MFT descobre em qual placa a textura vive. Sem ele, o
             // encoder recusa qualquer amostra que não esteja na memória do processador.
             tracing::info!("encoder: ligando o gerente de device do DXGI");
@@ -172,37 +196,57 @@ impl MediaFoundationEncoder {
                 .ResetDevice(&device, token)
                 .map_err(start_error)?;
 
-            transform
-                .ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)
-                .map_err(start_error)?;
+            tracing::info!("encoder: procurando o MFT de H.264 por hardware");
 
-            tracing::info!(width, height, "encoder: configurando os tipos de mídia");
+            let hardware = if cpu_forced() {
+                Err(EncoderError::Start("UNKVOID_ENCODER=cpu".into()))
+            } else {
+                open_encoder(MFT_ENUM_FLAG_HARDWARE, Some(&manager), config)
+            };
 
-            configure_types(&transform, width, height, config)?;
-            tune(&transform, config);
+            let (transform, backend, config) = match hardware {
+                Ok(transform) => {
+                    let events = transform.cast().map_err(start_error)?;
 
-            let events: IMFMediaEventGenerator = transform.cast().map_err(start_error)?;
+                    (transform, Backend::Gpu { events }, config.clone())
+                }
+                Err(error) => {
+                    let config = config.for_cpu();
 
-            tracing::info!("encoder: começando o streaming do MFT");
+                    tracing::warn!(
+                        error = %error,
+                        width = config.width,
+                        height = config.height,
+                        frame_rate = config.frame_rate,
+                        "encoder: sem encoder na placa, codificando no processador"
+                    );
 
-            transform
-                .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
-                .map_err(start_error)?;
-            transform
-                .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
-                .map_err(start_error)?;
+                    let transform = open_encoder(MFT_ENUM_FLAG_SYNCMFT, None, &config)?;
+                    let staging = nv12_texture(&device, config.width, config.height, true)?;
+
+                    (
+                        transform,
+                        Backend::Cpu {
+                            staging,
+                            pacer: FramePacer::new(config.frame_rate),
+                        },
+                        config,
+                    )
+                }
+            };
 
             tracing::info!("encoder: pronto");
 
             Ok(Self {
                 device,
+                context,
                 video_device,
                 video_context,
                 _manager: manager,
                 transform,
-                events,
-                width,
-                height,
+                backend,
+                width: config.width,
+                height: config.height,
                 frame_rate: config.frame_rate,
                 bridge: None,
                 force_keyframe: false,
@@ -217,12 +261,24 @@ impl MediaFoundationEncoder {
         self.force_keyframe = true;
     }
 
+    /// Se o H.264 sai do MFT da placa.
+    pub fn hardware(&self) -> bool {
+        matches!(self.backend, Backend::Gpu { .. })
+    }
+
     /// Codifica um quadro. `surface` vem da captura sem passar pela CPU.
     pub fn encode(
         &mut self,
         surface: &GpuSurface,
         timestamp_ns: u64,
     ) -> Result<EncodedFrame, EncoderError> {
+        // Antes da ponte: o quadro que o teto de 30 fps descarta não custa nem o blit.
+        if let Backend::Cpu { pacer, .. } = &mut self.backend
+            && !pacer.admit(timestamp_ns)
+        {
+            return Err(EncoderError::NeedsMoreInput);
+        }
+
         unsafe {
             self.cross_the_bridge(surface)?;
 
@@ -232,7 +288,17 @@ impl MediaFoundationEncoder {
 
             let sample = self.build_sample(timestamp_ns)?;
 
-            self.pump(Some(sample))?;
+            match self.backend {
+                Backend::Gpu { .. } => self.pump(Some(sample))?,
+                // Síncrono: entra o quadro e sai tudo o que o MFT já tiver pronto.
+                Backend::Cpu { .. } => {
+                    self.transform
+                        .ProcessInput(0, &sample, 0)
+                        .map_err(encode_error)?;
+
+                    while self.collect_output()? {}
+                }
+            }
         }
 
         self.ready
@@ -441,7 +507,9 @@ impl MediaFoundationEncoder {
                 OutputFrameRate: rate,
                 OutputWidth: self.width,
                 OutputHeight: self.height,
-                Usage: Default::default(),
+                // Qualidade em vez de velocidade: é um blit por quadro, e o filtro de
+                // escala melhor é o que separa texto legível de texto borrado.
+                Usage: D3D11_VIDEO_USAGE_OPTIMAL_QUALITY,
             };
 
             let enumerator = self
@@ -454,35 +522,102 @@ impl MediaFoundationEncoder {
                 .CreateVideoProcessor(&enumerator, 0)
                 .map_err(encode_error)?;
 
+            // Sem "processamento automático" o driver não aplica realce, redução de
+            // ruído ou o que mais achar bonito por conta própria: a tela sai como está.
+            self.video_context.VideoProcessorSetStreamAutoProcessingMode(&processor, 0, false);
+
+            // Sem isto o processador converte com tudo zerado: matriz BT.601 e faixa
+            // "indefinida", que o driver resolve como quiser. O H.264 saía sem dizer o
+            // que fez, o decodificador de quem assiste chutava BT.709 e faixa limitada, e
+            // a imagem chegava escura e lavada. Entra RGB cheio (0–255), sai NV12 BT.709
+            // limitado (16–235) — o que todo decodificador assume quando ninguém avisa.
+            //
+            // A interface nova (Windows 10) diz isso por um enum sem ambiguidade; a antiga
+            // é um campo de bits que alguns drivers lêem de outro jeito. Fica a nova
+            // quando existe, a antiga quando não.
+            match self.video_context.cast::<ID3D11VideoContext1>() {
+                Ok(context) => {
+                    context.VideoProcessorSetStreamColorSpace1(
+                        &processor,
+                        0,
+                        DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+                    );
+                    context.VideoProcessorSetOutputColorSpace1(
+                        &processor,
+                        DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
+                    );
+
+                    tracing::info!("encoder: espaço de cor pelo ID3D11VideoContext1");
+                }
+                Err(error) => {
+                    self.video_context.VideoProcessorSetStreamColorSpace(
+                        &processor,
+                        0,
+                        &color_space(D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255),
+                    );
+                    self.video_context.VideoProcessorSetOutputColorSpace(
+                        &processor,
+                        &color_space(D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235),
+                    );
+
+                    tracing::info!(error = %error, "encoder: espaço de cor pelo campo de bits antigo");
+                }
+            }
+
             Ok((processor, enumerator))
         }
     }
 
     unsafe fn create_nv12(&self) -> Result<ID3D11Texture2D, EncoderError> {
+        unsafe { nv12_texture(&self.device, self.width, self.height, false) }
+    }
+
+    /// Desce o quadro para a memória do processador, o único lugar de onde o MFT de
+    /// software lê.
+    ///
+    /// Só no degrau sem placa. A conversão e a escala continuam no VideoProcessor: o que
+    /// atravessa é o NV12 já em 720p, 1,5 byte por pixel, e não o BGRA do monitor inteiro.
+    unsafe fn read_back(
+        &self,
+        nv12: &ID3D11Texture2D,
+        staging: &ID3D11Texture2D,
+    ) -> Result<IMFMediaBuffer, EncoderError> {
         unsafe {
-            let descriptor = D3D11_TEXTURE2D_DESC {
-                Width: self.width,
-                Height: self.height,
-                MipLevels: 1,
-                ArraySize: 1,
-                Format: DXGI_FORMAT_NV12,
-                SampleDesc: DXGI_SAMPLE_DESC {
-                    Count: 1,
-                    Quality: 0,
-                },
-                Usage: D3D11_USAGE_DEFAULT,
-                BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
-                CPUAccessFlags: 0,
-                MiscFlags: 0,
-            };
+            let (width, height) = (self.width as usize, self.height as usize);
+            let size = width * height * 3 / 2;
+            let buffer = MFCreateMemoryBuffer(size as u32).map_err(encode_error)?;
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
 
-            let mut texture: Option<ID3D11Texture2D> = None;
+            self.context.CopyResource(staging, nv12);
 
-            self.device
-                .CreateTexture2D(&descriptor, None, Some(&mut texture))
+            // O `Map` espera a GPU terminar o blit e a cópia: é aqui que o quadro paga a
+            // ida à memória, dentro do `busyUs`.
+            self.context
+                .Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
                 .map_err(encode_error)?;
 
-            texture.ok_or_else(|| EncoderError::Encode("a textura NV12 não foi criada".into()))
+            let pitch = mapped.RowPitch as usize;
+            let mut start = std::ptr::null_mut();
+            let locked = buffer.Lock(&mut start, None, None);
+
+            if locked.is_ok() {
+                copy_nv12(
+                    std::slice::from_raw_parts(mapped.pData.cast::<u8>(), pitch * (height * 3 / 2 - 1) + width),
+                    pitch,
+                    width,
+                    std::slice::from_raw_parts_mut(start, size),
+                );
+            }
+
+            // Solta a textura antes de qualquer erro subir: mapeada, ela trava a próxima
+            // cópia da GPU.
+            self.context.Unmap(staging, 0);
+
+            locked.map_err(encode_error)?;
+            buffer.Unlock().map_err(encode_error)?;
+            buffer.SetCurrentLength(size as u32).map_err(encode_error)?;
+
+            Ok(buffer)
         }
     }
 
@@ -511,8 +646,13 @@ impl MediaFoundationEncoder {
                 .as_ref()
                 .ok_or_else(|| EncoderError::Encode("sem ponte para o encoder".into()))?;
 
-            let buffer = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &bridge.nv12, 0, false)
-                .map_err(encode_error)?;
+            let buffer = match &self.backend {
+                Backend::Gpu { .. } => {
+                    MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &bridge.nv12, 0, false)
+                        .map_err(encode_error)?
+                }
+                Backend::Cpu { staging, .. } => self.read_back(&bridge.nv12, staging)?,
+            };
 
             let sample = MFCreateSample().map_err(encode_error)?;
 
@@ -545,6 +685,12 @@ impl MediaFoundationEncoder {
     /// atender os dois — ignorar um evento trava a fila inteira.
     unsafe fn pump(&mut self, mut input: Option<IMFSample>) -> Result<(), EncoderError> {
         unsafe {
+            // Uma referência a mais por quadro, em troca de não emprestar `self` inteiro
+            // enquanto o laço guarda pedidos e coleta saída.
+            let Backend::Gpu { events } = &self.backend else {
+                return Err(EncoderError::Encode("fila de eventos num MFT síncrono".into()));
+            };
+            let events = events.clone();
             let mut delivered = false;
 
             // Pedido guardado de uma chamada anterior: o MFT já disse que quer entrada,
@@ -564,8 +710,7 @@ impl MediaFoundationEncoder {
             // não houver mais nenhuma — o que acontece nos primeiros quadros, enquanto
             // ele enche a própria fila. Sem a segunda saída, isto penduraria a captura.
             while !delivered || self.ready.is_empty() {
-                let event = self
-                    .events
+                let event = events
                     .GetEvent(Default::default())
                     .map_err(encode_error)?;
                 let kind = MF_EVENT_TYPE(event.GetType().map_err(encode_error)? as i32);
@@ -593,20 +738,37 @@ impl MediaFoundationEncoder {
         }
     }
 
-    unsafe fn collect_output(&mut self) -> Result<(), EncoderError> {
+    /// Pega uma saída do MFT, se houver. Devolve se pegou.
+    unsafe fn collect_output(&mut self) -> Result<bool, EncoderError> {
         unsafe {
             let mut output = [MFT_OUTPUT_DATA_BUFFER::default()];
             let mut status = 0_u32;
 
-            match self.transform.ProcessOutput(0, &mut output, &mut status) {
+            // O MFT de placa entrega a própria amostra; o de software do Windows escreve
+            // numa que quem chama fornece, do tamanho que ele diz precisar.
+            let info = self.transform.GetOutputStreamInfo(0).map_err(encode_error)?;
+
+            if info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 == 0 {
+                let buffer = MFCreateMemoryBuffer(info.cbSize.max(self.width * self.height * 3 / 2))
+                    .map_err(encode_error)?;
+                let sample = MFCreateSample().map_err(encode_error)?;
+
+                sample.AddBuffer(&buffer).map_err(encode_error)?;
+                output[0].pSample = std::mem::ManuallyDrop::new(Some(sample));
+            }
+
+            let result = self.transform.ProcessOutput(0, &mut output, &mut status);
+            // Tirada do `ManuallyDrop` antes de olhar o resultado: a amostra fornecida por
+            // nós, quando o MFT não tem saída, vazaria um quadro inteiro por chamada.
+            let sample = output[0].pSample.take();
+
+            match result {
                 Ok(()) => {}
-                Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(()),
+                Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(false),
                 Err(error) => return Err(encode_error(error)),
             }
 
-            let sample = output[0]
-                .pSample
-                .take()
+            let sample = sample
                 .ok_or_else(|| EncoderError::Encode("o encoder não devolveu amostra".into()))?;
 
             let buffer = sample
@@ -626,20 +788,21 @@ impl MediaFoundationEncoder {
 
             self.ready.push_back(EncodedFrame {
                 keyframe: is_keyframe(&data),
-                data: data,
+                data,
                 timestamp_ns: 0,
             });
 
-            Ok(())
+            Ok(true)
         }
     }
 }
 
 
 /// Quantos segundos entre quadros-chave. Quem perde um pacote fica congelado até o
-/// próximo, então isto é o teto da travada de quem assiste. Um segundo é o mesmo que o
-/// caminho do macOS já usa, pelo mesmo motivo escrito lá.
-const GOP_SECONDS: f64 = 1.0;
+/// próximo, então isto é o teto da travada de quem assiste — mas o servidor pede um
+/// quadro-chave na hora quando vê buraco, então o periódico só cobre quem acabou de
+/// entrar. Dois segundos é metade dos keyframes, e keyframe é o quadro mais caro.
+const GOP_SECONDS: f64 = 2.0;
 
 /// O valor booleano do COM para verdadeiro. Nenhum dos ajustes aqui é desligado.
 const LIGADO: VARIANT_0_0_0 = VARIANT_0_0_0 {
@@ -669,10 +832,13 @@ unsafe fn tune(transform: &IMFTransform, config: &EncoderConfig) {
     // A ordem importa: o modo primeiro, senão a taxa é lida com o significado do modo
     // antigo. Tudo em VT_UI4 e VT_BOOL porque é o que o ICodecAPI aceita — o `From<u64>`
     // que a crate oferece monta VT_UI8, que o encoder recusa.
-    let settings: [(&::windows::core::GUID, VARIANT, &str); 5] = [
+    // VBR com teto: a média é o alvo, e o pico (uma vez e meia) é o que um keyframe ou
+    // uma cena inteira mudando pode gastar sem estourar o uplink. CBR gastava o alvo
+    // inteiro numa tela parada e faltava justamente quando a cena mexia.
+    let settings: [(&::windows::core::GUID, VARIANT, &str); 9] = [
         (
             &CODECAPI_AVEncCommonRateControlMode,
-            variant(VT_UI4, VARIANT_0_0_0 { ulVal: eAVEncCommonRateControlMode_CBR.0 as u32 }),
+            variant(VT_UI4, VARIANT_0_0_0 { ulVal: eAVEncCommonRateControlMode_PeakConstrainedVBR.0 as u32 }),
             "modo de taxa",
         ),
         (
@@ -680,7 +846,25 @@ unsafe fn tune(transform: &IMFTransform, config: &EncoderConfig) {
             variant(VT_UI4, VARIANT_0_0_0 { ulVal: config.bitrate }),
             "taxa média",
         ),
+        (
+            &CODECAPI_AVEncCommonMaxBitRate,
+            variant(VT_UI4, VARIANT_0_0_0 { ulVal: config.bitrate * 3 / 2 }),
+            "taxa de pico",
+        ),
+        (
+            &CODECAPI_AVEncCommonQualityVsSpeed,
+            variant(VT_UI4, VARIANT_0_0_0 { ulVal: 100 }),
+            "qualidade sobre velocidade",
+        ),
+        (
+            &CODECAPI_AVEncMPVDefaultBPictureCount,
+            variant(VT_UI4, VARIANT_0_0_0 { ulVal: 0 }),
+            "sem quadros B",
+        ),
         (&CODECAPI_AVEncCommonLowLatency, variant(VT_BOOL, LIGADO), "baixa latência"),
+        // Outra chave para a mesma coisa: é esta que o MFT de software do Windows lê. Sem
+        // ela ele segurava 16 quadros antes do primeiro sair, meio segundo de atraso fixo.
+        (&CODECAPI_AVLowLatencyMode, variant(VT_BOOL, LIGADO), "modo de baixa latência"),
         (&CODECAPI_AVEncCommonRealTime, variant(VT_BOOL, LIGADO), "tempo real"),
         (
             &CODECAPI_AVEncMPVGOPSize,
@@ -698,7 +882,7 @@ unsafe fn tune(transform: &IMFTransform, config: &EncoderConfig) {
     tracing::info!(
         bitrate = config.bitrate,
         gop,
-        "encoder: taxa constante, baixa latência"
+        "encoder: VBR com pico, baixa latência"
     );
 }
 
@@ -767,11 +951,18 @@ unsafe fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext), Encoder
     }
 }
 
-/// O primeiro MFT de H.264 por hardware que o sistema anunciar.
+/// O primeiro MFT de H.264 da categoria pedida que aceitar a configuração inteira.
 ///
-/// `MFT_ENUM_FLAG_HARDWARE` é o que separa o encoder da placa do de software: sem ele o
-/// Windows entrega o encoder por CPU, que funciona e é exatamente o que não queremos.
-unsafe fn hardware_encoder() -> Result<IMFTransform, EncoderError> {
+/// `MFT_ENUM_FLAG_HARDWARE` traz os da placa, `MFT_ENUM_FLAG_SYNCMFT` o de software do
+/// Windows. O primeiro da lista não basta: num notebook com duas placas o sistema pode
+/// anunciar o encoder da NVIDIA na frente enquanto o device é o da Intel, e aí o gerente de
+/// device ou os tipos são recusados e a transmissão morria com uma placa boa sobrando. Cada
+/// um que recusa vai para o log com o nome, é desligado, e o seguinte tenta.
+unsafe fn open_encoder(
+    flags: MFT_ENUM_FLAG,
+    manager: Option<&IMFDXGIDeviceManager>,
+    config: &EncoderConfig,
+) -> Result<IMFTransform, EncoderError> {
     unsafe {
         let input = MFT_REGISTER_TYPE_INFO {
             guidMajorType: MFMediaType_Video,
@@ -787,7 +978,7 @@ unsafe fn hardware_encoder() -> Result<IMFTransform, EncoderError> {
 
         MFTEnumEx(
             MFT_CATEGORY_VIDEO_ENCODER,
-            MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
+            flags | MFT_ENUM_FLAG_SORTANDFILTER,
             Some(&input),
             Some(&output),
             &mut found,
@@ -795,42 +986,166 @@ unsafe fn hardware_encoder() -> Result<IMFTransform, EncoderError> {
         )
         .map_err(start_error)?;
 
-        if found.is_null() {
-            return Err(EncoderError::Start(
-                "esta máquina não tem encoder de H.264 por hardware".into(),
-            ));
-        }
-
         // O `MFTEnumEx` devolve um vetor do alocador COM com uma referência para cada
         // encoder. Quem chamou é dono das duas coisas: das referências e do vetor. Antes
         // daqui saía um `clone` — que soma mais uma referência — e nada era liberado,
         // então cada abertura de transmissão deixava para trás o vetor inteiro e um
-        // objeto COM por encoder instalado na máquina.
-        let list = std::slice::from_raw_parts_mut(found, how_many as usize);
-        let first = list.first_mut().and_then(Option::take);
+        // objeto COM por encoder instalado na máquina. As referências passam para o
+        // `Vec`, que as solta ao sair de escopo; o vetor é liberado aqui.
+        let candidates: Vec<IMFActivate> = if found.is_null() {
+            Vec::new()
+        } else {
+            let taken = std::slice::from_raw_parts_mut(found, how_many as usize)
+                .iter_mut()
+                .filter_map(Option::take)
+                .collect();
 
-        // Os outros são liberados aqui; o vetor, logo depois. Vale inclusive quando não
-        // veio nenhum: o alocador entrega o vetor do mesmo jeito.
-        for slot in list.iter_mut().skip(1) {
-            drop(slot.take());
+            CoTaskMemFree(Some(found.cast::<core::ffi::c_void>().cast_const()));
+
+            taken
+        };
+
+        for activate in candidates {
+            let name = friendly_name(&activate);
+
+            tracing::info!(name = %name, "encoder: tentando o MFT");
+
+            match try_encoder(&activate, manager, config) {
+                Ok(transform) => {
+                    tracing::info!(name = %name, "encoder: MFT escolhido");
+
+                    return Ok(transform);
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, name = %name, "encoder: MFT recusou, tentando o próximo");
+
+                    if let Err(error) = activate.ShutdownObject() {
+                        tracing::warn!(error = %error, name = %name, "encoder: MFT recusado não desligou");
+                    }
+                }
+            }
         }
 
-        CoTaskMemFree(Some(found.cast::<core::ffi::c_void>().cast_const()));
+        Err(EncoderError::Start(
+            "nenhum encoder de H.264 desta máquina aceitou a configuração".into(),
+        ))
+    }
+}
 
-        let first = first.ok_or_else(|| {
-            EncoderError::Start("esta máquina não tem encoder de H.264 por hardware".into())
-        })?;
+unsafe fn try_encoder(
+    activate: &IMFActivate,
+    manager: Option<&IMFDXGIDeviceManager>,
+    config: &EncoderConfig,
+) -> Result<IMFTransform, EncoderError> {
+    unsafe {
+        let transform: IMFTransform = activate.ActivateObject().map_err(start_error)?;
 
-        let transform: IMFTransform = first.ActivateObject().map_err(start_error)?;
+        // Só o MFT da placa recebe o gerente: é assíncrono e lê a textura direto.
+        if let Some(manager) = manager {
+            // Encoder de hardware nasce trancado: sem destrancar, ele recusa ProcessInput.
+            transform
+                .GetAttributes()
+                .map_err(start_error)?
+                .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
+                .map_err(start_error)?;
 
-        // Encoder de hardware nasce trancado: sem destrancar, ele recusa ProcessInput.
-        let attributes = transform.GetAttributes().map_err(start_error)?;
+            transform
+                .ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)
+                .map_err(start_error)?;
+        }
 
-        attributes
-            .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
+        // O MFT de software do Windows só lê quadros B, baixa latência e modo de taxa antes
+        // dos tipos; depois deles ignora calado. Medido: saía com quadros B (amostras fora
+        // de ordem) e 17 quadros de fila, meio segundo de atraso. O da placa segue lendo
+        // depois dos tipos, a ordem que já estava provada.
+        if manager.is_none() {
+            tune(&transform, config);
+        }
+
+        tracing::info!(width = config.width, height = config.height, "encoder: configurando os tipos de mídia");
+
+        configure_types(&transform, config.width, config.height, config)?;
+
+        if manager.is_some() {
+            tune(&transform, config);
+        }
+
+        tracing::info!("encoder: começando o streaming do MFT");
+
+        transform
+            .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
+            .map_err(start_error)?;
+        transform
+            .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
             .map_err(start_error)?;
 
         Ok(transform)
+    }
+}
+
+/// O nome que o fabricante deu ao MFT — "NVIDIA H.264 Encoder MFT", "H264 Encoder MFT". É o
+/// que diz no log qual placa ficou com a transmissão.
+unsafe fn friendly_name(activate: &IMFActivate) -> String {
+    unsafe {
+        let mut name = PWSTR::null();
+        let mut length = 0_u32;
+
+        if activate
+            .GetAllocatedString(&MFT_FRIENDLY_NAME_Attribute, &mut name, &mut length)
+            .is_err()
+        {
+            return "sem nome".into();
+        }
+
+        let text = name.to_string().unwrap_or_default();
+
+        CoTaskMemFree(Some(name.0.cast::<core::ffi::c_void>().cast_const()));
+
+        text
+    }
+}
+
+/// Textura NV12 no device do encoder. A de saída do VideoProcessor mora só na GPU; a de
+/// `staging` é a cópia que a CPU consegue ler, para o MFT de software.
+unsafe fn nv12_texture(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+    staging: bool,
+) -> Result<ID3D11Texture2D, EncoderError> {
+    unsafe {
+        let descriptor = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_NV12,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: if staging { D3D11_USAGE_STAGING } else { D3D11_USAGE_DEFAULT },
+            BindFlags: if staging { 0 } else { D3D11_BIND_RENDER_TARGET.0 as u32 },
+            CPUAccessFlags: if staging { D3D11_CPU_ACCESS_READ.0 as u32 } else { 0 },
+            MiscFlags: 0,
+        };
+
+        let mut texture: Option<ID3D11Texture2D> = None;
+
+        device
+            .CreateTexture2D(&descriptor, None, Some(&mut texture))
+            .map_err(encode_error)?;
+
+        texture.ok_or_else(|| EncoderError::Encode("a textura NV12 não foi criada".into()))
+    }
+}
+
+/// Linhas de NV12 (Y inteiro, depois UV pela metade) de uma textura mapeada para um buffer
+/// contíguo. A textura tem `pitch` bytes por linha — o driver alinha, e o que passa de
+/// `width` é enchimento que o encoder leria como imagem.
+fn copy_nv12(source: &[u8], pitch: usize, width: usize, destination: &mut [u8]) {
+    for (target, row) in destination.chunks_exact_mut(width).zip(source.chunks(pitch)) {
+        target.copy_from_slice(&row[..width]);
     }
 }
 
@@ -845,29 +1160,48 @@ unsafe fn configure_types(
     unsafe {
         let rate = config.frame_rate.round() as u32;
 
-        let output: IMFMediaType = MFCreateMediaType().map_err(start_error)?;
+        // Os atributos de cor no tipo de saída são o que faz alguns MFTs escreverem o
+        // VUI; outros recusam o tipo inteiro por causa deles. Tenta com, e sem quando
+        // o encoder não aceita — a entrada, que é onde a cor de verdade se define para
+        // o MFT, continua obrigatória.
+        let output_type = |with_color: bool| -> Result<IMFMediaType, EncoderError> {
+            let output: IMFMediaType = MFCreateMediaType().map_err(start_error)?;
 
-        output
-            .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
-            .map_err(start_error)?;
-        output
-            .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)
-            .map_err(start_error)?;
-        output
-            .SetUINT32(&MF_MT_AVG_BITRATE, config.bitrate)
-            .map_err(start_error)?;
-        output
-            .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
-            .map_err(start_error)?;
-        output
-            .SetUINT32(&MF_MT_ALL_SAMPLES_INDEPENDENT, 0)
-            .map_err(start_error)?;
-        set_frame_size(&output, &MF_MT_FRAME_SIZE, width, height)?;
-        set_ratio(&output, &MF_MT_FRAME_RATE, rate, 1)?;
+            output
+                .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
+                .map_err(start_error)?;
+            output
+                .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)
+                .map_err(start_error)?;
+            output
+                .SetUINT32(&MF_MT_AVG_BITRATE, config.bitrate)
+                .map_err(start_error)?;
+            output
+                .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
+                .map_err(start_error)?;
+            output
+                .SetUINT32(&MF_MT_ALL_SAMPLES_INDEPENDENT, 0)
+                .map_err(start_error)?;
+            set_frame_size(&output, &MF_MT_FRAME_SIZE, width, height)?;
+            set_ratio(&output, &MF_MT_FRAME_RATE, rate, 1)?;
 
-        transform
-            .SetOutputType(0, Some(&output), 0)
-            .map_err(start_error)?;
+            if with_color {
+                set_color(&output)?;
+            }
+
+            Ok(output)
+        };
+
+        match transform.SetOutputType(0, Some(&output_type(true)?), 0) {
+            Ok(()) => tracing::info!("encoder: tipo de saída com atributos de cor"),
+            Err(error) => {
+                tracing::warn!(error = %error, "encoder: tipo de saída recusado com cor, tentando sem");
+
+                transform
+                    .SetOutputType(0, Some(&output_type(false)?), 0)
+                    .map_err(start_error)?;
+            }
+        }
 
         let input: IMFMediaType = MFCreateMediaType().map_err(start_error)?;
 
@@ -882,12 +1216,43 @@ unsafe fn configure_types(
             .map_err(start_error)?;
         set_frame_size(&input, &MF_MT_FRAME_SIZE, width, height)?;
         set_ratio(&input, &MF_MT_FRAME_RATE, rate, 1)?;
+        set_color(&input)?;
 
         transform
             .SetInputType(0, Some(&input), 0)
             .map_err(start_error)?;
 
         Ok(())
+    }
+}
+
+/// O mesmo espaço de cor que o processador produz, dito ao encoder para que ele escreva
+/// o VUI no SPS. É o VUI que faz o decodificador do outro lado usar a matriz e a faixa
+/// certas em vez de chutar.
+unsafe fn set_color(kind: &IMFMediaType) -> Result<(), EncoderError> {
+    unsafe {
+        kind.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32)
+            .map_err(start_error)?;
+        kind.SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709.0 as u32)
+            .map_err(start_error)?;
+        kind.SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32)
+            .map_err(start_error)?;
+        kind.SetUINT32(&MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709.0 as u32)
+            .map_err(start_error)?;
+
+        Ok(())
+    }
+}
+
+/// `D3D11_VIDEO_PROCESSOR_COLOR_SPACE` é um campo de bits que a crate expõe cru:
+/// `Usage` no bit 0 (0 = reprodução), `RGB_Range` no bit 1 (0 = 0–255),
+/// `YCbCr_Matrix` no bit 2 (1 = BT.709), `YCbCr_xvYCC` no bit 3 e `Nominal_Range` nos
+/// bits 4–5. Só a faixa nominal varia entre entrada e saída.
+fn color_space(range: D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE) -> D3D11_VIDEO_PROCESSOR_COLOR_SPACE {
+    const MATRIX_BT709: u32 = 1 << 2;
+
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE {
+        _bitfield: MATRIX_BT709 | ((range.0 as u32) << 4),
     }
 }
 
@@ -951,4 +1316,29 @@ fn start_error(error: ::windows::core::Error) -> EncoderError {
 
 fn encode_error(error: ::windows::core::Error) -> EncoderError {
     EncoderError::Encode(error.message())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_space_packs_the_bitfield_like_d3d11_h() {
+        // Entrada: RGB cheio, BT.709, 0–255 → Usage 0, RGB_Range 0, matriz 1, faixa 2.
+        assert_eq!(color_space(D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255)._bitfield, 0b10_0100);
+        // Saída: BT.709, 16–235 → faixa 1.
+        assert_eq!(color_space(D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235)._bitfield, 0b01_0100);
+    }
+
+    #[test]
+    fn nv12_rows_leave_the_texture_padding_behind() {
+        // 4x2 com passo de 6: Y em duas linhas, UV em uma, dois bytes de enchimento em cada.
+        // A última linha da textura mapeada pode acabar logo depois da imagem.
+        let source = [1, 2, 3, 4, 0xEE, 0xEE, 5, 6, 7, 8, 0xEE, 0xEE, 9, 10, 11, 12];
+        let mut destination = [0; 12];
+
+        copy_nv12(&source, 6, 4, &mut destination);
+
+        assert_eq!(destination, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    }
 }

@@ -14,6 +14,7 @@
 //!
 //! O SRTP não é opcional: sem ele a tela atravessa a internet aberta.
 
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 
@@ -30,13 +31,76 @@ use rtc::srtp::protection_profile::ProtectionProfile;
 
 use crate::{audio::CHANNELS, audio::SAMPLE_RATE, EncodedFrame, FRAME_MS};
 
-/// Os SSRCs que o servidor conhece antes do primeiro pacote.
-pub const SSRC_VIDEO: u32 = 0x2234_5678;
-pub const SSRC_AUDIO: u32 = 0x2234_5679;
-
 /// Tipos de payload. 96+ é a faixa dinâmica, e o servidor devolve o que for declarado.
 pub const PAYLOAD_VIDEO: u8 = 96;
 pub const PAYLOAD_AUDIO: u8 = 111;
+
+/// De onde vem cada fluxo que sobe. Um SSRC por **origem**, não por tipo: `screen` e
+/// `camera` são os dois vídeo, e sem SSRC distinto o mediasoup mistura os dois.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Source {
+    Screen,
+    ScreenAudio,
+    Camera,
+    Mic,
+}
+
+impl Source {
+    /// O nome que atravessa a rede (`producePlain`) e que a interface manda aos comandos.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "screen" => Some(Self::Screen),
+            "screenAudio" => Some(Self::ScreenAudio),
+            "camera" => Some(Self::Camera),
+            "mic" => Some(Self::Mic),
+            _ => None,
+        }
+    }
+
+    /// Os SSRCs que o servidor conhece antes do primeiro pacote.
+    pub fn ssrc(self) -> u32 {
+        match self {
+            Self::Screen => 0x2234_5678,
+            Self::ScreenAudio => 0x2234_5679,
+            Self::Camera => 0x2234_567a,
+            Self::Mic => 0x2234_567b,
+        }
+    }
+
+    pub fn is_video(self) -> bool {
+        matches!(self, Self::Screen | Self::Camera)
+    }
+
+    fn stream(self) -> Stream {
+        let (payload, payloader, clock): (u8, Box<dyn Payloader>, u32) = if self.is_video() {
+            (PAYLOAD_VIDEO, Box::<H264Payloader>::default(), VIDEO_CLOCK)
+        } else {
+            (PAYLOAD_AUDIO, Box::<OpusPayloader>::default(), SAMPLE_RATE)
+        };
+
+        Stream {
+            packetizer: Box::new(new_packetizer(
+                MTU,
+                payload,
+                self.ssrc(),
+                payloader,
+                Box::new(new_random_sequencer()) as Box<dyn Sequencer>,
+                clock,
+            )),
+            last_video_ns: None,
+        }
+    }
+}
+
+/// O empacotador de uma origem: numeração e relógio próprios, porque cada SSRC é uma
+/// sequência independente para quem recebe.
+struct Stream {
+    packetizer: Box<dyn Packetizer>,
+
+    /// Quando o quadro anterior foi capturado. O relógio RTP anda com o tempo de
+    /// verdade, não com o fps nominal.
+    last_video_ns: Option<u64>,
+}
 
 /// 90 kHz é o relógio RTP do vídeo, fixado pelo formato de payload do H.264.
 const VIDEO_CLOCK: u32 = 90_000;
@@ -60,12 +124,10 @@ pub struct PlainSender {
     /// nossa. Sem isto o caminho de retorno era ruído: o pedido de quadro-chave chegava
     /// em todo buraco de pacote e ninguém conseguia sequer saber que ele existia.
     incoming: Option<SrtpContext>,
-    video: Box<dyn Packetizer>,
-    audio: Box<dyn Packetizer>,
 
-    /// Quando o quadro anterior foi capturado. O relógio RTP anda com o tempo de
-    /// verdade, não com o fps nominal.
-    last_video_ns: Option<u64>,
+    /// Um empacotador por origem, criado no primeiro pacote dela. Tela, câmera e
+    /// microfone sobem pelo mesmo socket e pela mesma chave, cada um com o seu SSRC.
+    streams: HashMap<Source, Stream>,
 
     /// Pacotes largados por buffer de saída cheio. Uplink saturado é diferente de erro
     /// de rede, e sem este número os dois viram a mesma linha muda no diagnóstico.
@@ -151,23 +213,7 @@ impl PlainSender {
             server,
             srtp,
             incoming,
-            video: Box::new(new_packetizer(
-                MTU,
-                PAYLOAD_VIDEO,
-                SSRC_VIDEO,
-                Box::<H264Payloader>::default() as Box<dyn Payloader>,
-                Box::new(new_random_sequencer()) as Box<dyn Sequencer>,
-                VIDEO_CLOCK,
-            )),
-            audio: Box::new(new_packetizer(
-                MTU,
-                PAYLOAD_AUDIO,
-                SSRC_AUDIO,
-                Box::<OpusPayloader>::default() as Box<dyn Payloader>,
-                Box::new(new_random_sequencer()) as Box<dyn Sequencer>,
-                SAMPLE_RATE,
-            )),
-            last_video_ns: None,
+            streams: HashMap::new(),
             dropped: 0,
             sent_bytes: 0,
         })
@@ -183,8 +229,8 @@ impl PlainSender {
      * constantes que o empacotador acima usa — descrever isso em dois lugares é como uma
      * broadcast ends up arriving as noise.
      */
-    pub fn rtp_parameters(kind: &str) -> serde_json::Value {
-        if kind == "audio" {
+    pub fn rtp_parameters(source: Source) -> serde_json::Value {
+        if ! source.is_video() {
             return serde_json::json!({
                 "codecs": [{
                     "mimeType": "audio/opus",
@@ -194,7 +240,7 @@ impl PlainSender {
                     "parameters": { "useinbandfec": 1, "usedtx": 1 },
                     "rtcpFeedback": [],
                 }],
-                "encodings": [{ "ssrc": SSRC_AUDIO }],
+                "encodings": [{ "ssrc": source.ssrc() }],
             });
         }
 
@@ -217,13 +263,17 @@ impl PlainSender {
                     { "type": "goog-remb" },
                 ],
             }],
-            "encodings": [{ "ssrc": SSRC_VIDEO }],
+            "encodings": [{ "ssrc": source.ssrc() }],
         })
     }
 
     /// Um quadro codificado vira vários pacotes RTP — um keyframe de 1440p é bem maior
     /// que uma MTU. O avanço do relógio RTP é o que diz ao outro lado quando exibir.
-    pub fn send_frame(&mut self, frame: &EncodedFrame, frame_rate: f64) -> Result<()> {
+    ///
+    /// O quadro entra por valor: os bytes viram o `Bytes` do empacotador sem cópia.
+    pub fn send_frame(&mut self, source: Source, frame: EncodedFrame, frame_rate: f64) -> Result<()> {
+        let stream = self.streams.entry(source).or_insert_with(|| source.stream());
+
         // Todo quadro que a captura ou o encoder não entregam abre um buraco no tempo.
         // Avançar sempre `90000/fps` roubava esse buraco do vídeo enquanto o áudio
         // seguia em amostras reais: uma tela parada trinta segundos deixava a
@@ -231,7 +281,7 @@ impl PlainSender {
         //
         // O avanço vai ANTES de empacotar. O packetizer soma depois de emitir, então
         // passar o intervalo lá dentro carimbaria o quadro seguinte com o buraco deste.
-        let advance = match self.last_video_ns {
+        let advance = match stream.last_video_ns {
             Some(previous) if frame.timestamp_ns > previous => {
                 let elapsed = u128::from(frame.timestamp_ns - previous);
 
@@ -244,16 +294,16 @@ impl PlainSender {
             None => 0,
         };
 
-        self.last_video_ns = Some(frame.timestamp_ns);
-        self.video.skip_samples(advance);
+        stream.last_video_ns = Some(frame.timestamp_ns);
+        stream.packetizer.skip_samples(advance);
 
         // Campos emprestados separadamente para o empacotador e o contexto SRTP poderem
         // ser mutáveis ao mesmo tempo — são campos distintos da mesma struct.
         Self::send(
             &self.socket,
             &mut self.srtp,
-            self.video.as_mut(),
-            Bytes::copy_from_slice(&frame.data),
+            stream.packetizer.as_mut(),
+            Bytes::from(frame.data),
             0,
             &mut self.dropped,
             &mut self.sent_bytes,
@@ -301,13 +351,14 @@ impl PlainSender {
     }
 
     /// O Opus chega em blocos fixos de 20 ms, então o relógio anda sempre o mesmo tanto.
-    pub fn send_audio(&mut self, opus: &[u8]) -> Result<()> {
+    pub fn send_audio(&mut self, source: Source, opus: &[u8]) -> Result<()> {
         let samples = SAMPLE_RATE / 1000 * FRAME_MS;
+        let stream = self.streams.entry(source).or_insert_with(|| source.stream());
 
         Self::send(
             &self.socket,
             &mut self.srtp,
-            self.audio.as_mut(),
+            stream.packetizer.as_mut(),
             Bytes::copy_from_slice(opus),
             samples,
             &mut self.dropped,
@@ -474,7 +525,8 @@ mod tests {
 
         sender
             .send_frame(
-                &EncodedFrame {
+                Source::Screen,
+                EncodedFrame {
                     data: data.clone(),
                     keyframe: true,
                     timestamp_ns: 0,
@@ -520,10 +572,10 @@ mod tests {
             PlainSender::connect(address, &PlainSender::generate_key(), None).expect("could not connect");
 
         sender
-            .send_audio(&[0x7F; 160])
+            .send_audio(Source::ScreenAudio, &[0x7F; 160])
             .expect("could not send audio");
         sender
-            .send_audio(&[0x7F; 160])
+            .send_audio(Source::ScreenAudio, &[0x7F; 160])
             .expect("could not send audio");
 
         let mut buffer = [0u8; 2048];
@@ -565,8 +617,8 @@ mod tests {
 
         // Três quadros de 60 fps de intervalo entre o primeiro e o segundo: dois deles
         // não chegaram a ser codificados.
-        sender.send_frame(&make_frame(1_000_000_000), 60.0).expect("1");
-        sender.send_frame(&make_frame(1_050_000_000), 60.0).expect("2");
+        sender.send_frame(Source::Screen, make_frame(1_000_000_000), 60.0).expect("1");
+        sender.send_frame(Source::Screen, make_frame(1_050_000_000), 60.0).expect("2");
 
         let mut buffer = [0u8; 2048];
         let mut timestamps = Vec::new();
@@ -583,5 +635,49 @@ mod tests {
             50 * VIDEO_CLOCK / 1000,
             "o relógio precisa andar os 50 ms de verdade, não um quadro nominal",
         );
+    }
+
+    /// Tela e câmera são os dois vídeo, com o mesmo tipo de payload. O que os separa do
+    /// lado do servidor é só o SSRC: se os dois saíssem com o mesmo, o mediasoup
+    /// entregaria os quadros de um no producer do outro.
+    #[test]
+    fn each_source_goes_out_with_its_own_ssrc() {
+        let (server_socket, address) = listener();
+        let mut sender =
+            PlainSender::connect(address, &PlainSender::generate_key(), None).expect("could not connect");
+
+        let frame = || EncodedFrame { data: vec![0, 0, 1, 0x41, 0xAB], keyframe: false, timestamp_ns: 0 };
+
+        sender.send_frame(Source::Screen, frame(), 30.0).expect("screen");
+        sender.send_frame(Source::Camera, frame(), 30.0).expect("camera");
+        sender.send_audio(Source::ScreenAudio, &[0x7F; 40]).expect("screen audio");
+        sender.send_audio(Source::Mic, &[0x7F; 40]).expect("mic");
+
+        let mut buffer = [0u8; 2048];
+        let mut seen = Vec::new();
+
+        while server_socket.recv(&mut buffer).is_ok() {
+            // O SSRC fica nos bytes 8..12 do cabeçalho, que viaja aberto.
+            seen.push((
+                buffer[1] & 0x7f,
+                u32::from_be_bytes([buffer[8], buffer[9], buffer[10], buffer[11]]),
+            ));
+        }
+
+        assert_eq!(
+            seen,
+            [
+                (PAYLOAD_VIDEO, Source::Screen.ssrc()),
+                (PAYLOAD_VIDEO, Source::Camera.ssrc()),
+                (PAYLOAD_AUDIO, Source::ScreenAudio.ssrc()),
+                (PAYLOAD_AUDIO, Source::Mic.ssrc()),
+            ]
+        );
+        assert_eq!(
+            PlainSender::rtp_parameters(Source::Camera)["encodings"][0]["ssrc"],
+            Source::Camera.ssrc()
+        );
+        assert_eq!(Source::parse("screenAudio"), Some(Source::ScreenAudio));
+        assert_eq!(Source::parse("audio"), None);
     }
 }

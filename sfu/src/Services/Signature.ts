@@ -8,12 +8,16 @@ export type JoinClaims = {
     room: string;
     sub: string;
     name: string;
-    owner: boolean;
     exp: number;
+    /** `speak`, `stream`, `video`: o que a pessoa pode produzir. */
+    can: string[];
 };
 
 /** Quanto o relógio de quem chama pode discordar do nosso antes de a assinatura ser recusada. */
 const HEADER_WINDOW_S = 300;
+
+/** Folga no vencimento do token: o relógio do app e o do site nunca batem exatamente. */
+const EXP_LEEWAY_S = 30;
 
 /**
  * Tudo o que é assinado entre o Laravel e o SFU passa por aqui, com o mesmo segredo dos
@@ -53,13 +57,14 @@ export class Signature {
             typeof claims.room !== 'string' ||
             typeof claims.sub !== 'string' ||
             typeof claims.name !== 'string' ||
-            typeof claims.owner !== 'boolean' ||
-            typeof claims.exp !== 'number'
+            typeof claims.exp !== 'number' ||
+            !Array.isArray(claims.can) ||
+            !claims.can.every((entry) => typeof entry === 'string')
         ) {
             throw new ValidationException('field token is missing claims');
         }
 
-        if (claims.exp * 1000 < Date.now()) {
+        if ((claims.exp + EXP_LEEWAY_S) * 1000 < Date.now()) {
             throw new UnauthorizedException('token expired');
         }
 

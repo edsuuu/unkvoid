@@ -14,6 +14,7 @@ import { config } from '../config.js';
 import { NotFoundException, ValidationException } from '../Exceptions/ApiException.js';
 import type { PeerDescription } from '../types.js';
 import { Peer } from './Peer.js';
+import { Webhook } from './Webhook.js';
 
 type ProducerOwner = { peer: Peer; producer: Producer };
 
@@ -61,7 +62,7 @@ export class Room {
     public addPeer(
         name: string,
         socket: WebSocket,
-        identity: { userId: string; owner: boolean },
+        identity: { userId: string; can: string[]; ip: string },
         options: { resumeKey?: string | null; resume?: boolean } = {},
     ): JoinOutcome {
         const previous = options.resumeKey ? this.findByResumeKey(options.resumeKey) : null;
@@ -89,7 +90,8 @@ export class Room {
             socket,
             randomBytes(16).toString('hex'),
             identity.userId,
-            identity.owner,
+            identity.can,
+            identity.ip,
         );
 
         this.peers.set(peer.id, peer);
@@ -111,11 +113,50 @@ export class Room {
 
             this.broadcast('peerKicked', { peerId: peer.id, name: peer.name }, peer.id);
             peer.send('kicked', { reason: 'você foi removido desta sala' });
+            // Sem fechar o socket a sessão expulsa seguia viva e alocando transports.
+            peer.socket.close(4001, 'kicked');
             this.removePeer(peer);
             kicked += 1;
         }
 
         return kicked;
+    }
+
+    /** Silencia (ou devolve a voz a) todas as sessões de uma conta. Também vem do Laravel. */
+    public async muteUser(userId: string, muted: boolean): Promise<number> {
+        let touched = 0;
+
+        for (const peer of this.peers.values()) {
+            if (peer.userId !== userId) {
+                continue;
+            }
+
+            peer.serverMuted = muted;
+            peer.send('serverMuted', { muted });
+
+            for (const producer of peer.producers.values()) {
+                if (producer.appData.source === 'mic') {
+                    await this.setProducerPaused(peer, producer, muted);
+                    touched += 1;
+                }
+            }
+        }
+
+        return touched;
+    }
+
+    public async setProducerPaused(peer: Peer, producer: Producer, paused: boolean): Promise<void> {
+        if (!paused) {
+            peer.assertNotServerMuted(String(producer.appData.source));
+        }
+
+        await (paused ? producer.pause() : producer.resume());
+
+        this.broadcast(
+            paused ? 'producerPaused' : 'producerResumed',
+            { peerId: peer.id, producerId: producer.id },
+            peer.id,
+        );
     }
 
     private findByResumeKey(resumeKey: string): Peer | null {
@@ -187,6 +228,12 @@ export class Room {
         peer.close();
         this.peers.delete(peer.id);
         this.broadcast('peerLeft', { peerId: peer.id }, peer.id);
+
+        // A conta continua no canal enquanto outra sessão dela estiver aqui (mesmo em
+        // carência: ou ela volta, ou avisa por conta própria quando expirar).
+        if (![...this.peers.values()].some((other) => other.userId === peer.userId)) {
+            Webhook.send('left', this.id, peer);
+        }
 
         // Sair de propósito também esvazia a sala. Sem isto, só a expiração da carência
         // devolvia o router ao registro, e uma sala de onde todo mundo saiu no botão
@@ -290,7 +337,7 @@ export class Room {
             .catch((failure) => {
                 throw /no more available ports/i.test(String(failure))
                     ? new ValidationException(
-                          `o servidor já está no limite de ${config.plainPortsPerWorker} transmissões ao mesmo tempo — peça para alguém parar de compartilhar`,
+                          'o servidor já está no limite de participantes por sala — tente de novo quando alguém sair',
                       )
                     : failure;
             });

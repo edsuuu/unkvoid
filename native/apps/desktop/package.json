@@ -11,15 +11,19 @@
     "build:windows": "tauri build --bundles nsis,msi",
     "build:mac": "tauri build --bundles app,dmg",
     "build:linux": "tauri build --bundles deb,appimage",
-    "check": "python3 check-language.py && python3 check-ui.py && node check-room-code.mjs && node check-broadcast.mjs && node check-consume.mjs && node check-webrtc-absent.mjs",
+    "check": "python3 check-language.py && python3 check-ui.py && node check-room-code.mjs && node check-broadcast.mjs && node check-consume.mjs && node check-webrtc-absent.mjs && node check-hub.mjs && node check-clips.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
-    "mediasoup-client": "^3.15.4"
+    "hls.js": "^1.7.3",
+    "laravel-echo": "^2.5.0",
+    "mediasoup-client": "^3.15.4",
+    "pusher-js": "^8.6.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2",
+    "jsdom": "^30.0.1",
     "tailwindcss": "^4.3.3",
     "vite": "^8"
   }

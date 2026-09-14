@@ -3,10 +3,14 @@
 declare(strict_types=1);
 
 use Rector\Caching\ValueObject\Storage\FileCacheStorage;
+use Rector\CodingStyle\Rector\Catch_\CatchExceptionNameMatchingTypeRector;
+use Rector\CodingStyle\Rector\Encapsed\EncapsedStringsToSprintfRector;
 use Rector\Config\RectorConfig;
+use Rector\EarlyReturn\Rector\If_\ChangeOrIfContinueToMultiContinueRector;
 use Rector\Exception\Configuration\InvalidConfigurationException;
 use Rector\Php83\Rector\ClassMethod\AddOverrideAttributeToOverriddenMethodsRector;
 use Rector\TypeDeclaration\Rector\StmtsAwareInterface\DeclareStrictTypesRector;
+use RectorLaravel\Rector\Class_\AddHasFactoryToModelsRector;
 use RectorLaravel\Set\LaravelSetList;
 use RectorLaravel\Set\LaravelSetProvider;
 
@@ -55,6 +59,13 @@ try {
         ])
         ->withSkip([
             AddOverrideAttributeToOverriddenMethodsRector::class,
+            // O estilo do projeto: `$exception` no catch, interpolação em vez de sprintf,
+            // HasFactory só em model que tem factory (sem o genérico o phpstan reclama), e
+            // guards de mesmo desfecho num `if` só com `||`.
+            AddHasFactoryToModelsRector::class,
+            CatchExceptionNameMatchingTypeRector::class,
+            ChangeOrIfContinueToMultiContinueRector::class,
+            EncapsedStringsToSprintfRector::class,
         ])
         ->withPreparedSets(
             deadCode: true,

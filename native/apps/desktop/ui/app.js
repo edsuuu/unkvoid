@@ -1,5 +1,6 @@
 import { SfuClient } from './SfuClient.js';
 
+import { Hub } from './Hub.js';
 import { Broadcast } from './broadcast.js';
 import { isRoomCode, newRoomCode } from './room-code.js';
 
@@ -8,9 +9,29 @@ const el = id => document.getElementById(id);
 const GRID_ICON = '<path stroke-linecap="round" stroke-linejoin="round" d="M4 5h6v6H4zM14 5h6v6h-6zM4 13h6v6H4zM14 13h6v6h-6z"/>';
 const FOCUS_ICON = '<path stroke-linecap="round" stroke-linejoin="round" d="M4 5h16v10H4zM4 17h4v2H4zM10 17h4v2h-4zM16 17h4v2h-4z"/>';
 
-/** Aparência dos elementos que o JavaScript cria. */
-/** Saturação inicial, em porcentagem. Ver o comentário de `attachVideoConfig`. */
-const SATURATION_DEFAULT = 115;
+/** Saturação inicial, em porcentagem. */
+const SATURATION_DEFAULT = 100;
+
+/**
+ * O botão "Imagem" e o painel de ajustes de cada cartão, tanto do `<video>` quanto da
+ * `<img>` do assistir nativo. Ancorado no cartão e não no corpo da página: cada
+ * transmissão tem o seu, e um painel só teria de descobrir a qual delas pertence.
+ */
+const IMAGE_PANEL = '<span class="relative flex items-center">'
+    + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-video-config type="button" title="Ajustes de imagem — só do seu lado, não mudam o que os outros veem">Imagem</button>'
+    + '<span class="panel absolute bottom-full right-0 z-30 mb-1 hidden w-56 p-3" data-video-panel>'
+    + '<label class="flex flex-col gap-1 text-xs text-ink-soft">Brilho'
+    + '<input class="accent-brand" data-brightness type="range" min="50" max="250" value="100" aria-label="Brilho desta transmissão">'
+    + '</label>'
+    + '<label class="mt-3 flex flex-col gap-1 text-xs text-ink-soft">Contraste'
+    + '<input class="accent-brand" data-contrast type="range" min="50" max="250" value="100" aria-label="Contraste desta transmissão">'
+    + '</label>'
+    + '<label class="mt-3 flex flex-col gap-1 text-xs text-ink-soft">Saturação'
+    + `<input class="accent-brand" data-saturation type="range" min="50" max="250" value="${SATURATION_DEFAULT}" aria-label="Saturação desta transmissão">`
+    + '</label>'
+    + '<button class="mt-3 cursor-pointer text-xs text-ink-dim hover:text-white" data-video-reset type="button">Voltar ao padrão</button>'
+    + '</span>'
+    + '</span>';
 
 const LOOK = {
     tile: 'group relative m-0 flex min-h-0 flex-col overflow-hidden rounded-lg bg-black',
@@ -19,8 +40,12 @@ const LOOK = {
     /* Fora do fluxo e acima de tudo: é assim que o vídeo cobre a janela inteira sem a
        barra da sala nem o respiro do `body` sobrando na borda. O arredondamento do
        cartão fica: com a legenda em `absolute`, o vídeo é o único filho no fluxo e
-       ocupa a altura toda, então a única borda que sobra é a das proporções. */
-    tileFullscreen: 'fixed inset-0 z-40',
+       ocupa a altura toda, então a única borda que sobra é a das proporções.
+
+       É a lista inteira, e não `tile` somado a isto: o `relative` de `tile` vence o
+       `fixed` no CSS do Tailwind, o cartão ficava preso na célula da grade, e com duas
+       telas a tela cheia ocupava só metade da janela e o resto ficava cinza. */
+    tileFullscreen: 'group fixed inset-0 z-40 m-0 flex min-h-0 flex-col overflow-hidden rounded-lg bg-black',
 
     caption: 'flex items-center gap-2 bg-panel px-3 py-1.5 text-xs text-ink',
 
@@ -78,6 +103,10 @@ class App {
     /** O último código fica como lembrete, mas não entra automaticamente na sala. */
     static ROOM_KEY = 'unkvoid:last-room';
 
+    /** O que a pessoa escolheu transmitir da última vez. */
+    static QUALITY_KEY = 'unkvoid:quality';
+    static FPS_KEY = 'unkvoid:fps';
+
     /** Marca que a recarga em busca do WebRTC já foi tentada nesta abertura. */
     static WEBRTC_RELOAD_KEY = 'unkvoid:webrtc-reload';
 
@@ -96,7 +125,7 @@ class App {
      * O único servidor. VITE_SERVER aponta um build local para uma pilha local, e o
      * override no localStorage serve para cutucar um build já pronto sem recompilar.
      */
-    static SERVER = import.meta.env.VITE_SERVER ?? localStorage.getItem('server') ?? 'https://unkvoid.com';
+    static SERVER = import.meta.env?.VITE_SERVER ?? localStorage.getItem('server') ?? 'https://unkvoid.com';
 
     /** A sinalização mora no mesmo host, atrás do mesmo TLS. */
     /**
@@ -125,6 +154,14 @@ class App {
         return `${App.SERVER.replace(/^http/, 'ws')}/sfu`;
     }
 
+    /** A chave do cartão da câmera de alguém: a tela dela é o `peerId` puro. */
+    static cameraKey(peerId) {
+        return `${peerId}/camera`;
+    }
+
+    /** Telas que abrem sozinhas: cada uma é um decoder, e em 4 núcleos 4 delas custam o jogo. */
+    static MAX_SCREENS = (navigator.hardwareConcurrency ?? 4) <= 4 ? 2 : 4;
+
     constructor() {
         this.logs = [];
         this.logChars = 0;
@@ -150,18 +187,26 @@ class App {
         this.broadcastStatsAt = 0;
         this.broadcastLine = null;
         this.mediaStatsTimers = new Map();
-        this.mediaStatsRuns = new Map();
         this.remoteAudios = new Map();
-        // Quem está sendo assistido pelo caminho nativo (Linux): uma janela por pessoa.
-        this.nativeWatching = new Set();
+
+        /** O microfone de cada pessoa, por producer: toca direto, sem controle de volume. */
+        this.micAudios = new Map();
+
+        /** Ensurdecido: nenhum `<audio>` toca e nenhum consumer chega. */
+        this.deafened = false;
+
+        // O que está sendo assistido pelo caminho nativo (Linux), por producer → a chave
+        // do cartão que o representa. O áudio da tela e o do mic são entradas separadas.
+        this.nativeWatching = new Map();
         this.consumingProducers = new Set();
         this.peopleStatsTimer = null;
 
         /** Quem esta pausado nao gasta banda nem decoder: o servidor para de mandar. */
         this.pausedPeers = new Set();
 
-        /** A propria tela, guardada para o botao poder mostrar e esconder sem reconsumir. */
-        this.selfStream = null;
+        /** Quem o app pausou sozinho por estar fora de vista, para nao repetir o pedido. */
+        this.hiddenPeers = new Set();
+        this.awayTimer = null;
 
         /** Grade mostra todos do mesmo tamanho; foco dá a tela toda a um só. */
         this.focused = null;
@@ -176,6 +221,9 @@ class App {
         this.attempt = 0;
         this.reconnect = null;
         this.warnedNoWebRTC = false;
+
+        /** O modo servidor, para quem tem conta. */
+        this.hub = new Hub(this, App.SERVER);
     }
 
     /**
@@ -184,6 +232,7 @@ class App {
      */
     async start() {
         this.checkWebRTC();
+        this.wireQuality();
 
         // Fora do `wireRoom`: aquele roda a cada entrada em sala, e `addEventListener`
         // soma em vez de substituir, ao contrário dos `onclick` do resto do arquivo.
@@ -198,12 +247,26 @@ class App {
 
             // O fundo escuro É o `<section>` do modal: clicar nele e não num filho quer
             // dizer que o clique caiu fora da caixa. Sem isto a única saída era o botão.
-            for (const id of ['share-modal', 'logs-modal']) {
+            for (const id of ['share-modal', 'logs-modal', 'server-modal', 'settings-modal', 'role-modal', 'channel-modal']) {
                 if (target === el(id)) {
                     el(id).hidden = true;
                 }
             }
+
+            const menu = el('member-menu');
+
+            if (! menu.hidden && target instanceof Node && ! menu.contains(target)) {
+                menu.hidden = true;
+            }
+
+            // Fora do botão fecha, e um item do próprio menu também: ele não o contém.
+            if (! el('app-menu-panel').hidden && target instanceof Node && ! el('app-menu').contains(target)) {
+                el('app-menu-panel').hidden = true;
+            }
         });
+
+        el('app-menu').onclick = () => { el('app-menu-panel').hidden = ! el('app-menu-panel').hidden; };
+        el('logs').onclick = () => this.openLogs();
 
         // A rede caiu ou voltou enquanto a tela de reconexão estava aberta. Sem escutar,
         // o texto continuaria culpando o servidor depois de a pessoa arrancar o cabo, e
@@ -219,7 +282,15 @@ class App {
         // A tela cheia é nossa, não do motor: ninguém devolve o Esc de graça, e sem isto
         // a única saída seria caçar a legenda escondida no rodapé.
         document.addEventListener('keydown', event => {
-            if (event.key === 'Escape' && this.fullscreen) {
+            if (event.key !== 'Escape') {
+                return;
+            }
+
+            const open = ['server-modal', 'settings-modal', 'role-modal', 'channel-modal', 'member-menu'].map(el).find(node => ! node.hidden);
+
+            if (open) {
+                open.hidden = true;
+            } else if (this.fullscreen) {
                 void this.toggleFullscreen(this.fullscreen);
             }
         });
@@ -228,6 +299,14 @@ class App {
         // trabalho por evento é reiniciar um temporizador — pintar a cada um deles
         // custaria um recálculo de estilo a cada pixel de movimento.
         document.addEventListener('mousemove', () => this.wakeUp());
+
+        // `visibilitychange` e nunca `blur`: em dois monitores se joga num monitor e
+        // assiste no outro, e pausar por perda de foco apagaria o que a pessoa está
+        // olhando. Voltar retoma na hora; sair espera 2 s, porque o quadro-chave custa.
+        document.addEventListener('visibilitychange', () => {
+            clearTimeout(this.awayTimer);
+            this.awayTimer = setTimeout(() => this.paintWatching(), document.hidden ? 2000 : 0);
+        });
 
         this.showDownloadProgress();
 
@@ -246,6 +325,11 @@ class App {
         setInterval(() => void this.update(), App.UPDATE_EVERY_MS);
 
         if (! await this.serverAnswered()) {
+            return;
+        }
+
+        // Token guardado e ainda válido abre direto o modo servidor.
+        if (await this.hub.restore()) {
             return;
         }
 
@@ -306,8 +390,9 @@ class App {
             try {
                 await navigator.clipboard.writeText(command);
                 el('fix-copy').textContent = 'Copiado!';
-            } catch {
+            } catch (failure) {
                 // Sem área de transferência o texto continua na tela para copiar à mão.
+                this.log('fix.copy.error', { message: failure.message ?? String(failure) });
                 el('fix-copy').textContent = 'Copie à mão';
             }
         };
@@ -393,7 +478,7 @@ class App {
         } catch (failure) {
             // Falhar a atualização não pode impedir o app de abrir: ele segue na versão
             // atual, que funciona.
-            console.warn('atualização indisponível:', failure);
+            this.log('update.error', { message: failure.message ?? String(failure) });
         }
     }
 
@@ -406,7 +491,8 @@ class App {
             }
 
             return true;
-        } catch {
+        } catch (failure) {
+            this.log('server.health.error', { message: failure.message ?? String(failure) });
             this.showOffline();
 
             return false;
@@ -451,23 +537,29 @@ class App {
     showEntry() {
         el('entry-screen').hidden = false;
         el('room').hidden = true;
+        el('hub').hidden = true;
+        this.hub.wireEntry();
 
-        el('my-name').value = localStorage.getItem(App.NAME_KEY) ?? '';
+        const account = this.hub.user;
+
+        el('my-name').value = account?.name ?? localStorage.getItem(App.NAME_KEY) ?? '';
+        el('my-initials').textContent = (account?.name ?? '').slice(0, 2).toUpperCase();
+        el('my-account-name').textContent = account?.name ?? '';
         el('room-code').value = localStorage.getItem(App.ROOM_KEY) ?? '';
         el('my-name').focus();
 
         el('create-room').onclick = () => {
             const label = el('room-code').value.trim().toLowerCase();
-            void this.enterRoom(label || newRoomCode());
+            void this.openRoom(label || newRoomCode());
         };
         el('join-form').onsubmit = event => {
             event.preventDefault();
-            void this.enterRoom(el('room-code').value.trim().toLowerCase());
+            void this.openRoom(el('room-code').value.trim().toLowerCase());
         };
     }
 
     /** Criar sorteia um código novo; entrar usa o que a pessoa colou. */
-    async enterRoom(code) {
+    async openRoom(code) {
         const name = el('my-name').value.trim();
 
         el('entry-error').textContent = '';
@@ -506,58 +598,11 @@ class App {
         this.wireRoom();
 
         try {
-            this.sfu = new SfuClient();
-            this.sfu.addEventListener('diagnostic', event => this.log(event.detail.event, event.detail.data));
-            this.sfu.addEventListener('reconnecting', event => this.log('sfu.reconnecting', event.detail));
-            this.sfu.addEventListener('reconnected', event => void this.afterReconnect(event.detail));
-            // Sem isto, desistir de reconectar era uma tela parada e nenhuma palavra.
-            this.sfu.addEventListener('closed', () => this.fail('a conexão caiu e não voltou. Saia e entre na sala de novo.'));
-            this.sfu.addEventListener('newProducer', event => {
-                if (event.detail.kind === 'video') {
-                    this.toast(`${this.sfu?.peers?.get(event.detail.peerId)?.name ?? 'alguém'} começou a transmitir`);
-                }
-
-                void this.consume(event.detail);
-            });
-            this.sfu.addEventListener('peersChanged', () => this.refreshPeople());
-            this.sfu.addEventListener('peerKicked', event => this.toast(`${event.detail.name} foi removido da sala`));
-            this.sfu.addEventListener('kicked', event => this.fail(event.detail?.reason ?? 'você foi removido desta sala'));
-            this.sfu.addEventListener('peerJoined', event => this.toast(`${event.detail.name} entrou na sala`));
-            this.sfu.addEventListener('peerLeft', event => {
-                // O nome antes de remover: depois disto o `SfuClient` já esqueceu quem era.
-                this.toast(`${this.sfu?.peers?.get(event.detail.peerId)?.name ?? 'alguém'} saiu da sala`);
-                this.showScreen(event.detail.peerId, null);
-            });
-            this.sfu.addEventListener('producerDead', event => void this.broadcastDied(event.detail));
-            this.sfu.addEventListener('producerClosed', event => {
-                if (event.detail.kind === 'video' && event.detail.source === 'screen') {
-                    this.showScreen(event.detail.peerId, null);
-                }
-            });
-            this.sfu.addEventListener('consumerClosed', event => {
-                if (event.detail.kind === 'video') {
-                    this.showScreen(event.detail.peerId, null);
-                }
-            });
-
-            this.broadcast = new Broadcast(this.sfu);
-
-            const joined = await this.sfu.connect(App.socketUrl(), {
+            await this.enterRoom(new SfuClient(), {
                 room: this.room,
                 name: this.name,
                 installId: App.installId(),
             });
-
-            this.owner = joined?.owner === true;
-
-            // Quem já estava transmitindo antes de você chegar não emite `newProducer`:
-            // sem varrer a lista inicial, você entra numa sala com telas ao vivo e não vê
-            // nenhuma até alguém recomeçar.
-            for (const peer of joined.peers) {
-                for (const producer of peer.producers) {
-                    await this.consume({ ...producer, peerId: peer.peerId });
-                }
-            }
 
             // O app transmite H.264. Se o WebKit desta máquina não anuncia o codec, o
             // servidor recusa cada `consume` e a pessoa fica olhando para uma sala vazia
@@ -580,15 +625,151 @@ class App {
                 });
                 this.fail('o motor da janela desta máquina não recebe H.264 pelo WebRTC. Dá para transmitir, mas não para assistir. Abra Logs e mande a linha device.h264.missing.');
             }
-
-            this.refreshPeople();
-            this.peopleStatsTimer = setInterval(() => {
-                void this.refreshPeopleStats();
-            }, 2000);
         } catch (failure) {
             this.fail(`não deu para entrar na sala: ${failure.message}`);
             await this.leave();
         }
+    }
+
+    /**
+     * Entra numa sala do SFU: a anônima e o canal de voz passam por aqui. `alongside`
+     * roda depois do `join`, em paralelo com o consumo inicial — é onde a voz liga o mic.
+     */
+    async enterRoom(sfu, identity, alongside = () => null) {
+        this.attachSfu(sfu);
+
+        const joined = await sfu.connect(App.socketUrl(), identity);
+
+        // Outra sala tomou o lugar desta enquanto o `join` vinha.
+        if (this.sfu !== sfu) {
+            return joined;
+        }
+
+        // Quem já estava transmitindo antes de você chegar não emite `newProducer`:
+        // sem varrer a lista inicial, você entra numa sala com telas ao vivo e não vê
+        // nenhuma até alguém recomeçar.
+        await Promise.all([this.consumePeers(joined.peers), alongside(joined)]);
+
+        this.refreshPeople();
+        clearInterval(this.peopleStatsTimer);
+        this.peopleStatsTimer = setInterval(() => void this.refreshPeopleStats(), 2000);
+
+        return joined;
+    }
+
+    /**
+     * Tudo o que uma lista publica, de uma vez: cada consumo é uma ida ao servidor. `cap` é
+     * o teto de telas, e só tela conta. O "Assistir" passa `Infinity`: ali já se decidiu.
+     */
+    consumePeers(peers, cap = App.MAX_SCREENS) {
+        let screens = [...el('stage').children].filter(tile => tile.dataset.kind === 'screen').length;
+
+        return Promise.all((peers ?? []).flatMap(peer => (peer.producers ?? []).map(producer =>
+            producer.source === 'screen' && screens++ >= cap
+                ? this.log('media.consume.capped', { peerId: peer.peerId, cap })
+                : this.consume({ ...producer, peerId: peer.peerId }))));
+    }
+
+    /**
+     * O cliente do SFU vira o da tela: a sala anônima e o canal de voz passam pelos
+     * mesmos cartões, o mesmo consumo e a mesma transmissão de tela.
+     */
+    attachSfu(sfu) {
+        this.sfu = sfu;
+        this.broadcast = new Broadcast(sfu);
+        sfu.addEventListener('diagnostic', event => this.log(event.detail.event, event.detail.data));
+        sfu.addEventListener('reconnecting', event => this.log('sfu.reconnecting', event.detail));
+        sfu.addEventListener('reconnected', event => void this.afterReconnect(event.detail));
+        // Sem isto, desistir de reconectar era uma tela parada e nenhuma palavra.
+        sfu.addEventListener('closed', () => {
+            this.fail('a conexão caiu e não voltou. Saia e entre de novo.');
+
+            if (this.hub.voice.channel) {
+                void this.hub.voice.leave();
+            }
+        });
+        sfu.addEventListener('newProducer', event => {
+            if (event.detail.source === 'screen') {
+                this.toast(`${sfu.peers.get(event.detail.peerId)?.name ?? 'alguém'} começou a transmitir`);
+            }
+
+            void this.consumePeers([{ peerId: event.detail.peerId, producers: [event.detail] }]);
+        });
+        sfu.addEventListener('peersChanged', () => this.refreshPeople());
+        sfu.addEventListener('peerKicked', event => this.toast(`${event.detail.name} foi removido`));
+        sfu.addEventListener('kicked', event => {
+            this.fail(event.detail?.reason ?? 'você foi removido');
+
+            if (this.hub.voice.channel) {
+                void this.hub.voice.leave();
+            }
+        });
+        sfu.addEventListener('peerJoined', event => this.toast(`${event.detail.name} entrou`));
+        sfu.addEventListener('peerLeft', event => {
+            // O nome antes de remover: depois disto o `SfuClient` já esqueceu quem era.
+            this.toast(`${sfu.peers.get(event.detail.peerId)?.name ?? 'alguém'} saiu`);
+            this.forgetPeer(event.detail.peerId);
+        });
+        sfu.addEventListener('producerDead', event => void this.broadcastDied(event.detail));
+        sfu.addEventListener('producerClosed', event => this.forgetProducer(event.detail));
+        sfu.addEventListener('consumerClosed', event => this.forgetProducer(event.detail));
+    }
+
+    /** Tudo o que uma pessoa mostrava: tela, câmera e microfone. */
+    forgetPeer(peerId) {
+        this.showScreen(peerId, null);
+        this.showScreen(App.cameraKey(peerId), null);
+        this.stopNativeTile(`${peerId}/mic`);
+
+        for (const [producerId, audio] of this.micAudios) {
+            if (audio.dataset.remote === peerId) {
+                this.forgetProducer({ producerId, peerId, kind: 'audio', source: 'mic' });
+            }
+        }
+    }
+
+    /** Um producer fechou do outro lado: some o cartão, o som ou a janela nativa dele. */
+    forgetProducer({ producerId, peerId, kind, source }) {
+        if (source === 'mic') {
+            const audio = this.micAudios.get(producerId);
+
+            audio?.srcObject?.getTracks?.().forEach(track => track.stop());
+            audio?.remove();
+            this.micAudios.delete(producerId);
+            void this.stopNative(producerId);
+
+            return;
+        }
+
+        if (source === 'camera') {
+            this.showScreen(App.cameraKey(peerId), null);
+
+            return;
+        }
+
+        if (kind === 'video') {
+            this.showScreen(peerId, null);
+
+            return;
+        }
+
+        // O áudio da tela: o `<audio>` sai junto, senão a faixa morta segue no DOM
+        // e o controle de volume do cartão aponta para o nada.
+        if (source === 'screenAudio') {
+            const audio = this.remoteAudios.get(peerId);
+
+            audio?.srcObject?.getTracks?.().forEach(track => track.stop());
+            audio?.remove();
+            this.remoteAudios.delete(peerId);
+
+            const control = document.querySelector(`[data-screen="${peerId}"] [data-audio-control]`);
+
+            if (control) {
+                control.hidden = true;
+            }
+        }
+
+        void this.stopNative(producerId);
     }
 
     wireRoom() {
@@ -607,7 +788,6 @@ class App {
         el('watch-pending').onclick = () => this.refreshWatch();
         el('people-refresh').onclick = () => this.refreshWatch();
         el('leave').onclick = () => this.leave();
-        el('logs').onclick = () => this.openLogs();
         el('logs-close').onclick = () => { el('logs-modal').hidden = true; };
         el('logs-clear').onclick = () => {
             this.logs = [];
@@ -643,12 +823,12 @@ class App {
      *
      * Também vai para o log, porque quem chegou depois precisa saber quem esteve na sala.
      */
-    toast(message) {
-        this.log('room.toast', { message });
+    toast(message, error = false) {
+        this.log('room.toast', { message, error });
 
         const card = document.createElement('p');
 
-        card.className = 'max-w-xs rounded-lg border border-line bg-panel px-3 py-2 text-xs text-ink shadow-lg';
+        card.className = `panel max-w-xs px-3 py-2 text-xs text-ink ${error ? 'border-danger' : ''}`;
         card.textContent = message;
         el('toasts').appendChild(card);
 
@@ -656,9 +836,17 @@ class App {
     }
 
 
-    fail(mensagem) {
-        this.log('ui.error', { message: mensagem });
-        el('room-error').textContent = mensagem;
+    fail(message) {
+        this.log('ui.error', { message });
+
+        // No modo servidor não há a faixa de erro da sala: o aviso é o do canto.
+        if (el('room').hidden) {
+            this.toast(message, true);
+
+            return;
+        }
+
+        el('room-error').textContent = message;
         el('room-error').hidden = false;
     }
 
@@ -686,12 +874,12 @@ class App {
         for (const person of people) {
             const item = document.createElement('div');
 
-            item.className = 'flex items-center gap-2 rounded px-2 py-1.5 text-sm text-white';
-            item.innerHTML = '<span class="size-2 shrink-0 rounded-full bg-emerald-400"></span>'
+            item.className = 'row-item text-sm text-white';
+            item.innerHTML = '<span class="size-2 shrink-0 rounded-full bg-online"></span>'
                 + '<span class="min-w-0 flex-1 truncate"></span>'
                 + '<span class="min-w-0 shrink truncate text-xs text-ink-soft"></span>'
-                + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-xs text-white ring-1 ring-inset ring-line hover:bg-line" data-watch type="button" hidden>Assistir</button>'
-                + '<button class="rounded px-1.5 py-0.5 text-xs text-danger hover:bg-line" data-remove type="button" hidden>Remover</button>';
+                + '<button class="btn-ghost px-1.5 py-0.5 text-xs" data-watch type="button" hidden>Assistir</button>'
+                + '<button class="btn-ghost px-1.5 py-0.5 text-xs text-danger" data-remove type="button" hidden>Remover</button>';
             item.querySelectorAll('span')[1].textContent = person.name;
             const info = person.reconnecting
                 ? 'parado'
@@ -775,17 +963,14 @@ class App {
             this.showScreen(tile.dataset.screen, null);
         }
 
-        // O tile próprio foi junto com os outros e o producer é outro, então o botão não
-        // pode continuar oferecendo ocultar uma tela que não está mais desenhada.
-        this.selfStream = null;
         el('self-view').textContent = 'Ver o que a sala vê';
 
-        for (const peer of peers ?? []) {
-            for (const producer of peer.producers ?? []) {
-                await this.consume({ producerId: producer.producerId, peerId: peer.peerId });
-            }
-        }
+        // O que o Rust assistia era da sessão velha: o servidor já não manda nada para
+        // aquelas portas, e o mapa cheio impediria assistir de novo.
+        this.nativeWatching.clear();
+        await invoke('stop_watch', { producerId: null }).catch(failure => this.log('media.native.stop.error', { message: failure.message ?? String(failure) }));
 
+        await this.consumePeers(peers);
         this.refreshPeople();
     }
 
@@ -793,7 +978,7 @@ class App {
         try {
             el('people-list').hidden = true;
             await this.sfu.request('removePeer', { peerId });
-            this.log('peer.removed', { peerId, owner: this.owner });
+            this.log('peer.removed', { peerId });
         } catch (error) {
             this.fail(`não foi possível remover: ${error.message ?? error}`);
         }
@@ -818,10 +1003,7 @@ class App {
     async watchPeer(peerId) {
         const peer = this.sfu?.peers?.get(peerId);
 
-        for (const producer of peer?.producers ?? []) {
-            await this.consume({ producerId: producer.producerId, peerId });
-        }
-
+        await this.consumePeers(peer ? [peer] : [], Infinity);
         this.paintWatchPrompt();
     }
 
@@ -841,9 +1023,9 @@ class App {
      * recebendo alguma coisa. O audio fica de fora de proposito — devolver o som do jogo
      * pela mesma maquina que o capturou e microfonia garantida.
      *
-     * Esconder pausa no servidor em vez de descartar o consumer: o SFU nao tem acao de
-     * fechar consumer, e pausado ele ja para de gastar banda.
-     * ponytail: se um dia houver `closeConsumer`, esconder deveria fechar de vez.
+     * Esconder fecha o consumer em vez de pausá-lo: pausado o servidor guarda a faixa e
+     * o transporte de volta, e a própria tela é justamente a que não precisa voltar
+     * rápido — mostrar de novo é consumir de novo.
      */
     async toggleSelfView() {
         const peerId = this.sfu?.peerId;
@@ -855,21 +1037,14 @@ class App {
 
         try {
             if (document.querySelector(`[data-screen="${peerId}"]`)) {
-                await this.sfu.setPeerPaused(peerId, true);
+                await Promise.all(this.sfu.consumersOf(peerId).map(consumerId => this.sfu.closeConsumer(consumerId)));
                 this.showScreen(peerId, null);
                 el('self-view').textContent = 'Ver o que a sala vê';
 
                 return;
             }
 
-            if (this.selfStream) {
-                await this.sfu.setPeerPaused(peerId, false);
-                this.showScreen(peerId, this.selfStream);
-            } else {
-                await this.consume({ producerId, peerId });
-                this.selfStream = document.querySelector(`[data-screen="${peerId}"] video`)?.srcObject ?? null;
-            }
-
+            await this.consume({ producerId, peerId });
             el('self-view').textContent = 'Ocultar minha tela';
         } catch (failure) {
             this.fail(`não deu para ver a própria transmissão: ${failure.message ?? failure}`);
@@ -881,6 +1056,7 @@ class App {
      *
      * Pausar so o `<video>` continuaria baixando e decodificando: o custo esta no
      * decoder, e ele so descansa quando o pacote deixa de chegar.
+     * So video: sem o filtro, pausar a tela calava o mic da pessoa, consumer do mesmo peer.
      */
     async togglePause(peerId) {
         const paused = ! this.pausedPeers.has(peerId);
@@ -889,7 +1065,7 @@ class App {
         const audio = this.remoteAudios.get(peerId);
 
         try {
-            await this.sfu.setPeerPaused(peerId, paused);
+            await this.sfu.setPeerPaused(peerId, paused, 'video');
         } catch (failure) {
             this.fail(`não deu para ${paused ? 'pausar' : 'retomar'}: ${failure.message ?? failure}`);
 
@@ -902,12 +1078,39 @@ class App {
             audio?.pause();
         } else {
             this.pausedPeers.delete(peerId);
-            void video?.play().catch(() => 0);
-            void audio?.play().catch(() => 0);
+            void video?.play().catch(failure => this.log('media.resume.error', { peerId, message: failure.message ?? String(failure) }));
+            void audio?.play().catch(failure => this.log('media.resume.error', { peerId, message: failure.message ?? String(failure) }));
         }
 
         this.paintPaused(peerId);
         this.log('media.paused', { peerId, paused });
+    }
+
+    /**
+     * Para de decodificar o que ninguém vê: o palco deu lugar ao chat, o cartão ficou atrás
+     * da tela cheia, a janela foi para trás. Só vídeo (áudio volta na hora, vídeo espera
+     * quadro-chave) e pelo cartão da tela, que já leva a câmera junto. Quem pausou à mão
+     * fica de fora, e o registro do que já está pausado impede o `paintLayout` de repetir o
+     * pedido por redesenho. No Linux quem para de repassar os pacotes é o Rust.
+     */
+    paintWatching() {
+        const away = document.hidden || el('broadcast-view').hidden || el('stage-host').hidden && el('stage-host').contains(el('stage'));
+
+        for (const tile of el('stage').children) {
+            const peerId = tile.dataset.screen;
+            const paused = away || tile.hidden;
+            const screen = this.sfu?.peers?.get(peerId)?.producers?.find(item => item.source === 'screen');
+
+            if (tile.dataset.kind !== 'screen' || this.pausedPeers.has(peerId) || paused === this.hiddenPeers.has(peerId)) {
+                continue;
+            }
+
+            this.hiddenPeers[paused ? 'add' : 'delete'](peerId);
+            void (this.nativeWatching.has(screen?.producerId)
+                ? invoke('watch_mute', { producerId: screen.producerId, muted: paused })
+                : this.sfu?.setPeerPaused(peerId, paused, 'video'))?.catch(failure =>
+                this.log('media.hidden', { peerId, paused, message: failure.message ?? String(failure) }));
+        }
     }
 
     /**
@@ -930,14 +1133,19 @@ class App {
 
         tile.toggleAttribute('data-paused', paused);
         tile.querySelector('[data-resume]').hidden = ! paused;
-        tile.querySelector('[data-pause]').textContent = paused ? 'Retomar' : 'Pausar';
+
+        const button = tile.querySelector('[data-pause]');
+
+        if (button) {
+            button.textContent = paused ? 'Retomar' : 'Pausar';
+        }
     }
 
-    async consume({ producerId, peerId: ownerPeerId }) {
+    async consume({ producerId, peerId: ownerPeerId, kind, source }) {
         // Sem WebRTC na janela (o Linux), quem recebe e desenha é o Rust com o
-        // GStreamer, numa janela ao lado. Uma chamada por pessoa, não por producer.
+        // GStreamer. Uma chamada por producer: tela, áudio da tela, mic e câmera.
         if (this.sfu?.canWatch?.() === false && App.isLinux()) {
-            return this.consumeNative(ownerPeerId);
+            return this.consumeNative({ producerId, peerId: ownerPeerId, kind, source });
         }
 
         if (this.consumingProducers.has(producerId) || this.sfu?.consumersHasProducer?.(producerId)) {
@@ -947,7 +1155,19 @@ class App {
         this.consumingProducers.add(producerId);
         this.log('media.consume.start', { producerId });
         try {
-            const { consumer, peerId } = await this.sfu.consume(producerId);
+            const { consumer, peerId, source: origin = source } = await this.sfu.consume(producerId);
+
+            if (origin === 'mic') {
+                this.playMic(producerId, peerId, consumer.track);
+
+                return;
+            }
+
+            if (origin === 'camera') {
+                this.showScreen(App.cameraKey(peerId), new MediaStream([consumer.track]), 'camera');
+
+                return;
+            }
 
             if (consumer.kind === 'audio') {
                 // O áudio da tela transmitida: o som do jogo, do vídeo. Não há microfone
@@ -956,7 +1176,10 @@ class App {
 
                 audio.srcObject = new MediaStream([consumer.track]);
                 audio.autoplay = true;
-                audio.volume = 1;
+                // Mudo e com o volume em zero ao chegar: o som da tela de alguém invadindo a
+                // sala sem aviso é pior do que um clique para ligar. Quem assiste decide.
+                audio.volume = 0;
+                audio.muted = true;
                 audio.onplay = () => this.log('media.audio.playing', { peerId });
                 audio.onerror = () => this.log('media.audio.error', {
                     peerId,
@@ -992,79 +1215,106 @@ class App {
     }
 
     /**
-     * Assistir por RTP puro: o servidor manda a mídia numa porta UDP e o GStreamer
-     * abre numa janela própria. O cartão no palco só diz que está acontecendo.
+     * O microfone de alguém toca direto: sem botão, sem volume, só o ensurdecer.
+     * Ao contrário do áudio da tela, ninguém entra numa chamada para não ouvir.
      */
-    async consumeNative(peerId) {
-        if (this.nativeWatching.has(peerId)) {
+    playMic(producerId, peerId, track) {
+        const audio = document.createElement('audio');
+
+        audio.srcObject = new MediaStream([track]);
+        audio.autoplay = true;
+        audio.muted = this.deafened;
+        audio.dataset.remote = peerId;
+        audio.dataset.source = 'mic';
+        document.body.appendChild(audio);
+        this.micAudios.set(producerId, audio);
+        void audio.play().catch(error => this.log('media.mic.autoplay.error', { peerId, message: error.message ?? String(error) }));
+    }
+
+    /**
+     * Assistir por RTP puro: o servidor manda a mídia numa porta UDP e o GStreamer
+     * decodifica do lado do Rust. Vídeo vira MJPEG num cartão; áudio sai direto pelo
+     * sistema. Uma chamada por producer, todas no mesmo transporte do servidor.
+     */
+    async consumeNative({ producerId, peerId, kind, source }) {
+        if (this.nativeWatching.has(producerId)) {
             return;
         }
 
-        const producers = this.sfu?.peers?.get(peerId)?.producers ?? [];
+        const tileKey = source === 'camera' ? App.cameraKey(peerId) : source === 'mic' ? `${peerId}/mic` : peerId;
 
-        if (! producers.some(producer => producer.kind === 'video')) {
-            return;
-        }
-
-        this.nativeWatching.add(peerId);
-        this.log('media.native.start', { peerId });
+        this.nativeWatching.set(producerId, tileKey);
+        this.log('media.native.start', { producerId, peerId, source });
 
         try {
             const keyBase64 = await invoke('watch_key');
-            const srtpParameters = { cryptoSuite: 'AES_CM_128_HMAC_SHA1_80', keyBase64 };
-            const consumers = [];
+            const consumer = await this.sfu.request('consumePlain', {
+                producerId,
+                srtpParameters: { cryptoSuite: 'AES_CM_128_HMAC_SHA1_80', keyBase64 },
+            });
 
-            for (const producer of producers) {
-                consumers.push(await this.sfu.request('consumePlain', { producerId: producer.producerId, srtpParameters }));
-            }
-
-            const video = consumers.find(consumer => consumer.kind === 'video');
-            const audio = consumers.find(consumer => consumer.kind === 'audio');
-
+            // O SSRC vem do servidor: é por ele que o Rust separa tela de câmera.
             const port = await invoke('watch_native', {
-                peerId,
-                address: `${video.ip}:${video.port}`,
-                serverKey: video.srtpParameters.keyBase64,
-                videoPayloadType: video.payloadType,
-                audioPayloadType: audio?.payloadType ?? null,
+                producerId,
+                kind,
+                address: `${consumer.ip}:${consumer.port}`,
+                serverKey: consumer.srtpParameters.keyBase64,
+                payloadType: consumer.payloadType,
+                ssrc: consumer.ssrc ?? null,
             });
 
             // Só depois de o Rust ter aberto o caminho: retomar antes mandaria o
             // keyframe para um endereço que o servidor ainda não conhece.
-            for (const consumer of consumers) {
-                await this.sfu.request('resumeConsumer', { consumerId: consumer.consumerId });
+            await this.sfu.request('resumeConsumer', { consumerId: consumer.consumerId });
+
+            if (kind === 'video') {
+                this.showNativeTile(tileKey, peerId, producerId, consumer.name, port, source);
+            } else {
+                // O áudio da tela chega mudo, como no WebRTC; o mic toca, salvo ensurdecido.
+                await invoke('watch_mute', { producerId, muted: source === 'screenAudio' || this.deafened });
             }
 
-            this.showNativeTile(peerId, video.name, port);
-            this.log('media.native.ready', { peerId });
+            this.log('media.native.ready', { producerId, peerId, source });
         } catch (failure) {
-            this.nativeWatching.delete(peerId);
-            this.log('media.native.error', { peerId, message: failure.message ?? String(failure) });
+            this.nativeWatching.delete(producerId);
+            this.log('media.native.error', { producerId, peerId, message: failure.message ?? String(failure) });
             this.fail(`não deu para assistir: ${failure.message ?? failure}`);
         }
     }
 
-    async stopNative(peerId) {
-        if (! this.nativeWatching.has(peerId)) {
+    async stopNative(producerId) {
+        if (! this.nativeWatching.has(producerId)) {
             return;
         }
 
-        this.nativeWatching.delete(peerId);
-        await invoke('stop_watch', { peerId }).catch(() => null);
+        this.nativeWatching.delete(producerId);
+        await invoke('stop_watch', { producerId }).catch(failure => this.log('media.native.stop.error', { producerId, message: failure.message ?? String(failure) }));
+    }
+
+    /** Para tudo o que alimenta um cartão: a tela e o áudio dela, ou a câmera, ou o mic. */
+    stopNativeTile(tileKey) {
+        for (const [producerId, key] of [...this.nativeWatching]) {
+            if (key === tileKey) {
+                void this.stopNative(producerId);
+            }
+        }
     }
 
     /** O cartão do assistir nativo: a `<img>` lê o MJPEG que o Rust serve em 127.0.0.1. */
-    showNativeTile(peerId, name, port) {
-        const tile = document.querySelector(`[data-screen="${peerId}"]`) ?? document.createElement('figure');
+    showNativeTile(tileKey, peerId, producerId, name, port, source) {
+        const tile = document.querySelector(`[data-screen="${tileKey}"]`) ?? document.createElement('figure');
+        const camera = source === 'camera';
 
-        tile.dataset.screen = peerId;
+        tile.dataset.screen = tileKey;
+        tile.dataset.kind = source;
         tile.innerHTML = '<span class="relative flex min-h-0 flex-1">'
             + '<img class="min-h-0 w-full flex-1 bg-black object-contain" alt="">'
             + '</span>'
             + `<figcaption class="${LOOK.caption}">`
             + '<span class="truncate"></span>'
             + '<span class="flex-1"></span>'
-            + '<button class="cursor-pointer rounded px-1 hover:text-white" data-native-mute type="button" title="Mutar">🔊</button>'
+            + (camera ? '' : '<button class="cursor-pointer rounded px-1 hover:text-white" data-native-mute type="button" title="Ativar o som">🔇</button>')
+            + (camera ? '' : IMAGE_PANEL)
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-native-stop type="button">Parar</button>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-focus type="button">Focar</button>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-fullscreen type="button">Tela cheia</button>'
@@ -1073,26 +1323,38 @@ class App {
         const image = tile.querySelector('img');
 
         image.src = `http://127.0.0.1:${port}/`;
-        image.onerror = () => this.log('media.native.image.error', { peerId, port });
-        tile.querySelector('figcaption span').textContent = name ?? 'alguém';
-        tile.querySelector('[data-focus]').onclick = () => this.focus(peerId);
-        tile.querySelector('[data-fullscreen]').onclick = () => void this.toggleFullscreen(peerId);
+        image.onerror = () => this.log('media.native.image.error', { producerId, port });
+        tile.querySelector('figcaption span').textContent = (name ?? 'alguém') + (camera ? ' (câmera)' : '');
+        tile.querySelector('[data-focus]').onclick = () => this.focus(tileKey);
+        tile.querySelector('[data-fullscreen]').onclick = () => void this.toggleFullscreen(tileKey);
 
-        // O som sai direto pelo sistema, sem elemento de áudio: mudo é o Rust parar de
-        // repassar os pacotes de áudio.
-        const mute = tile.querySelector('[data-native-mute]');
-        let muted = false;
+        if (! camera) {
+            this.attachVideoConfig(tile, image);
 
-        mute.onclick = () => {
-            muted = ! muted;
-            mute.textContent = muted ? '🔇' : '🔊';
-            mute.title = muted ? 'Ativar o som' : 'Mutar';
-            void invoke('watch_mute', { peerId, muted }).catch(error => this.log('media.native.mute.error', { peerId, message: error.message ?? String(error) }));
-        };
+            // O som sai direto pelo sistema, sem elemento de áudio: mudo é o Rust parar
+            // de repassar os pacotes do áudio da tela. Começa mudo, como no WebRTC.
+            const mute = tile.querySelector('[data-native-mute]');
+            let muted = true;
+            const applyMute = () => {
+                mute.textContent = muted ? '🔇' : '🔊';
+                mute.title = muted ? 'Ativar o som' : 'Mutar';
+
+                const audio = this.sfu?.peers?.get(peerId)?.producers?.find(item => item.source === 'screenAudio');
+
+                if (audio) {
+                    void invoke('watch_mute', { producerId: audio.producerId, muted }).catch(error => this.log('media.native.mute.error', { peerId, message: error.message ?? String(error) }));
+                }
+            };
+
+            mute.onclick = () => {
+                muted = ! muted;
+                applyMute();
+            };
+        }
 
         tile.querySelector('[data-native-stop]').onclick = () => {
             image.src = '';
-            void this.stopNative(peerId);
+            this.stopNativeTile(tileKey);
             tile.remove();
             this.paintLayout();
             this.paintWatchPrompt();
@@ -1106,12 +1368,17 @@ class App {
         this.paintWatchPrompt();
     }
 
-    /** Desenha (ou remove) a tela de quem está transmitindo. */
-    showScreen(from, stream) {
+    /**
+     * Desenha (ou remove) a tela de quem está transmitindo.
+     *
+     * `kind` é `screen` ou `camera`. A câmera é o mesmo cartão sem o que não faz sentido
+     * nela: ajuste de imagem, pausa e estatísticas são coisa de tela de jogo.
+     */
+    showScreen(from, stream, kind = 'screen') {
         const existing = document.querySelector(`[data-screen="${from}"]`);
 
         if (! stream) {
-            void this.stopNative(from);
+            this.stopNativeTile(from);
             // Tirar o elemento não para o decoder: a faixa segue viva no transporte, e
             // o app fica dias aberto. Cada transmissão encerrada deixava mais uma.
             for (const media of [existing?.querySelector('video'), this.remoteAudios.get(from)]) {
@@ -1119,7 +1386,7 @@ class App {
             }
 
             existing?.remove();
-            document.querySelector(`audio[data-remote="${from}"]`)?.remove();
+            document.querySelector(`audio[data-remote="${from}"]:not([data-source])`)?.remove();
             this.remoteAudios.delete(from);
 
             if (this.focused === from) {
@@ -1134,15 +1401,16 @@ class App {
 
             clearInterval(this.mediaStatsTimers.get(from));
             this.mediaStatsTimers.delete(from);
-        this.mediaStatsRuns.delete(from);
             this.paintLayout();
 
             return;
         }
 
         const tile = existing ?? document.createElement('figure');
+        const camera = kind === 'camera';
 
         tile.dataset.screen = from;
+        tile.dataset.kind = kind;
         tile.innerHTML = '<span class="relative flex min-h-0 flex-1">'
             + '<video class="min-h-0 w-full flex-1 bg-black object-contain" autoplay playsinline></video>'
             // O play mora por cima do vídeo, não do cartão: sobre a legenda ele cobriria
@@ -1160,21 +1428,8 @@ class App {
             + '<input class="w-20 accent-brand" data-audio-volume type="range" min="0" max="100" value="100" aria-label="Volume desta transmissão">'
             + '<span data-audio-volume-value>100%</span>'
             + '</span>'
-            + '<span class="relative flex items-center">'
-            + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-video-config type="button" title="Ajustes de imagem — só do seu lado, não mudam o que os outros veem">Imagem</button>'
-            // Ancorado no cartão e não no corpo da página: cada transmissão tem os seus,
-            // e um painel só teria de descobrir a qual delas pertence.
-            + '<span class="absolute bottom-full right-0 z-30 mb-1 hidden w-56 rounded-lg border border-line bg-panel p-3 shadow-lg" data-video-panel>'
-            + '<label class="flex flex-col gap-1 text-xs text-ink-soft">Brilho'
-            + '<input class="accent-brand" data-brightness type="range" min="50" max="250" value="100" aria-label="Brilho desta transmissão">'
-            + '</label>'
-            + '<label class="mt-3 flex flex-col gap-1 text-xs text-ink-soft">Saturação'
-            + '<input class="accent-brand" data-saturation type="range" min="50" max="250" value="115" aria-label="Saturação desta transmissão">'
-            + '</label>'
-            + '<button class="mt-3 cursor-pointer text-xs text-ink-dim hover:text-white" data-video-reset type="button">Voltar ao padrão</button>'
-            + '</span>'
-            + '</span>'
-            + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-pause type="button">Pausar</button>'
+            + (camera ? '' : IMAGE_PANEL)
+            + (camera ? '' : '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-pause type="button">Pausar</button>')
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-focus type="button">Focar</button>'
             + '<span class="flex items-center gap-1.5">'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-fullscreen type="button">Tela cheia</button>'
@@ -1183,8 +1438,6 @@ class App {
 
         const video = tile.querySelector('video');
         video.srcObject = stream;
-        this.attachAudioControl(from, tile);
-        this.attachVideoConfig(tile, video);
         video.onerror = () => this.log('media.video.error', {
             peerId: from,
             message: video.error?.message ?? `media error ${video.error?.code ?? 'unknown'}`,
@@ -1192,22 +1445,32 @@ class App {
         video.onstalled = () => this.log('media.video.stalled', { peerId: from });
         video.onwaiting = () => this.log('media.video.waiting', { peerId: from });
         video.onended = () => this.log('media.video.ended', { peerId: from });
-        const owner = this.sfu?.peers?.get(from);
+        const owner = this.sfu?.peers?.get(camera ? from.split('/')[0] : from);
 
         // `figcaption span` e não o primeiro `span` do cartão: o vídeo agora vem dentro
         // de um, e o nome de quem transmite ia parar em cima da imagem.
-        tile.querySelector('figcaption span').textContent = owner?.self ? `${owner.name} (você, sem som)` : owner?.name ?? 'transmitindo';
+        tile.querySelector('figcaption span').textContent = camera
+            ? `${owner?.self ? 'você' : owner?.name ?? 'alguém'} (câmera)`
+            : owner?.self ? `${owner.name} (você, sem som)` : owner?.name ?? 'transmitindo';
 
-        tile.querySelector('[data-pause]').onclick = () => void this.togglePause(from);
-        tile.querySelector('[data-resume]').onclick = () => void this.togglePause(from);
         tile.querySelector('[data-focus]').onclick = () => this.focus(from);
         tile.querySelector('[data-fullscreen]').onclick = () => void this.toggleFullscreen(from);
-        this.paintPaused(from);
 
         if (! existing) {
             el('stage').appendChild(tile);
         }
 
+        if (camera) {
+            this.paintLayout();
+
+            return;
+        }
+
+        this.attachAudioControl(from, tile);
+        this.attachVideoConfig(tile, video);
+        tile.querySelector('[data-pause]').onclick = () => void this.togglePause(from);
+        tile.querySelector('[data-resume]').onclick = () => void this.togglePause(from);
+        this.paintPaused(from);
         this.startMediaStats(from, video);
         this.paintLayout();
     }
@@ -1222,19 +1485,21 @@ class App {
      * clarear uma tela precisa clarear a próxima também, e ajustar tudo de novo a cada
      * pessoa que entra na sala seria pior do que não ter ajuste.
      *
-     * Saturação começa acima de 100 de propósito. O H.264 em 4:2:0 joga fora três quartos
-     * da informação de cor, e a imagem chega lavada em relação ao que quem transmite vê.
+     * O filtro só existe quando algum controle saiu de 100 (`data-tuned`): com filtro,
+     * o motor tira o vídeo do caminho direto do compositor e paga uma cópia por quadro.
      */
     attachVideoConfig(tile, video) {
         // Variáveis, não `style.filter`: o borrão de pausa mora na mesma propriedade, e
         // escrever direto ali fazia um dos dois apagar o outro.
         const controls = [
             ['--brightness', tile.querySelector('[data-brightness]'), 'unkvoid.brilho', 100],
+            ['--contrast', tile.querySelector('[data-contrast]'), 'unkvoid.contraste', 100],
             ['--saturation', tile.querySelector('[data-saturation]'), 'unkvoid.saturacao', SATURATION_DEFAULT],
         ];
 
         const apply = (property, control) => {
             video.style.setProperty(property, String(Number(control.value) / 100));
+            video.toggleAttribute('data-tuned', controls.some(([, input]) => Number(input.value) !== 100));
         };
 
         for (const [property, control, key, fallback] of controls) {
@@ -1332,6 +1597,12 @@ class App {
         };
         mute.onclick = () => {
             audio.muted = ! audio.muted;
+
+            // Desmutar com o volume em zero não daria som nenhum, e quem clicou quer ouvir.
+            if (! audio.muted && audio.volume === 0) {
+                audio.volume = 1;
+            }
+
             paint();
             this.log('media.audio.mute', { peerId, muted: audio.muted });
         };
@@ -1358,9 +1629,9 @@ class App {
         }
 
         const ssrc = consumer.rtpParameters?.encodings?.[0]?.ssrc;
-        const stats = await transport.getStats();
+        const reports = await this.sfu.stats();
 
-        return [...stats.values()].find(report => report.type === 'inbound-rtp' && report.ssrc === ssrc) ?? null;
+        return reports.find(report => report.type === 'inbound-rtp' && report.ssrc === ssrc) ?? null;
     }
 
     /**
@@ -1376,7 +1647,7 @@ class App {
     startMediaStats(peerId, video) {
         clearInterval(this.mediaStatsTimers.get(peerId));
 
-        let frames = 0;
+        let runs = 0;
         let lastFrames = 0;
         let lastInbound = null;
         let lastSample = performance.now();
@@ -1397,15 +1668,22 @@ class App {
                 return;
             }
 
-            const inbound = await this.inboundReport(peerId).catch(() => null);
+            const inbound = await this.inboundReport(peerId).catch(failure => {
+                this.log('media.stats.error', { peerId, message: failure.message ?? String(failure) });
+
+                return null;
+            });
             const now = performance.now();
             const elapsedMs = Math.max(now - lastSample, 1);
             const seconds = elapsedMs / 1000;
             const buffer = video.buffered.length
                 ? Math.max(0, video.buffered.end(video.buffered.length - 1) - video.currentTime)
                 : 0;
-            const fps = Math.round((frames - lastFrames) * 1000 / elapsedMs);
+            // O contador do motor, e não um `requestVideoFrameCallback` por quadro: aquele
+            // custava 60 chamadas por segundo por cartão, e no WebKitGTK não existe.
             const quality = video.getVideoPlaybackQuality?.();
+            const frames = quality?.totalVideoFrames ?? 0;
+            const fps = Math.round((frames - lastFrames) * 1000 / elapsedMs);
             const ping = this.sfu?.transportRttMs ?? this.sfu?.lastRttMs;
             const since = inbound && lastInbound ? lastInbound : null;
 
@@ -1429,45 +1707,27 @@ class App {
                 + ` · ${inbound?.packetsLost ?? '--'} pacotes perdidos no total`
                 + ` · jitter ${inbound?.jitter == null ? '--' : Math.round(inbound.jitter * 1000)} ms`;
 
-            this.log('media.stats', {
-                peerId,
-                pingMs: ping ?? null,
-                bufferSeconds: Number(buffer.toFixed(2)),
-                fps,
-                mbps: Number.isFinite(rate) ? Number(rate.toFixed(2)) : null,
-                lossPercent: Number.isFinite(loss) ? Number(loss.toFixed(2)) : null,
-                packetsLost: inbound?.packetsLost ?? null,
-                jitterMs: inbound?.jitter == null ? null : Math.round(inbound.jitter * 1000),
-                framesDropped: quality?.droppedVideoFrames ?? null,
-                framesDecoded: quality?.totalVideoFrames ?? null,
-            });
+            // A cada cinco voltas: uma por segundo empurrava fora do teto o que veio antes
+            // do problema. A legenda na tela continua em 1 s.
+            if (++runs % 5 === 0) {
+                this.log('media.stats', {
+                    peerId,
+                    pingMs: ping ?? null,
+                    bufferSeconds: Number(buffer.toFixed(2)),
+                    fps,
+                    mbps: Number.isFinite(rate) ? Number(rate.toFixed(2)) : null,
+                    lossPercent: Number.isFinite(loss) ? Number(loss.toFixed(2)) : null,
+                    packetsLost: inbound?.packetsLost ?? null,
+                    jitterMs: inbound?.jitter == null ? null : Math.round(inbound.jitter * 1000),
+                    framesDropped: quality?.droppedVideoFrames ?? null,
+                    framesDecoded: frames,
+                });
+            }
+
             lastFrames = frames;
             lastInbound = inbound;
             lastSample = now;
         };
-
-        // Cada `showScreen` redesenha o cartão e chamava isto de novo, e a corrente
-        // anterior seguia se reagendando para sempre — segurando o vídeo, a closure e um
-        // callback por quadro, para nada. O número da rodada é o que mata a antiga.
-        const run = (this.mediaStatsRuns.get(peerId) ?? 0) + 1;
-
-        this.mediaStatsRuns.set(peerId, run);
-
-        const countFrame = () => {
-            if (this.mediaStatsRuns.get(peerId) !== run) {
-                return;
-            }
-
-            frames += 1;
-            video.requestVideoFrameCallback(countFrame);
-        };
-
-        if ('requestVideoFrameCallback' in video) {
-            video.requestVideoFrameCallback(countFrame);
-        } else {
-            const count = () => { frames += 1; };
-            video.addEventListener('timeupdate', count);
-        }
 
         const timer = setInterval(() => void refreshPreview(), 1000);
         this.mediaStatsTimers.set(peerId, timer);
@@ -1527,8 +1787,9 @@ class App {
             const full = tile.dataset.screen === this.fullscreen;
             const thumb = focusing && tile.dataset.screen !== this.focused;
 
-            tile.className = full ? `${LOOK.tile} ${LOOK.tileFullscreen}` : LOOK.tile;
+            tile.className = full ? LOOK.tileFullscreen : LOOK.tile;
             tile.hidden = this.fullscreen ? ! full : false;
+
             tile.style.gridColumn = focusing && ! thumb ? '1 / -1' : '';
             tile.style.gridRow = focusing ? (thumb ? '2' : '1') : '';
             tile.classList.toggle('cursor-pointer', thumb);
@@ -1554,6 +1815,7 @@ class App {
             }
         }
 
+        this.paintWatching();
         this.wakeUp();
     }
 
@@ -1607,6 +1869,26 @@ class App {
     }
 
     /**
+     * O que os dois seletores oferecem antes de alguém mexer neles.
+     *
+     * 1080p60 é o padrão do HTML e é o de quem aguenta: em quatro núcleos a captura não
+     * fecha o quadro em 16 ms e a sala recebe engasgo, e no Linux o x264 na CPU não dá 60
+     * fps nem com oito. Quem já escolheu vence o palpite e sobrevive ao fechar o app — só
+     * vale o valor que ainda existe no `<select>`, porque um estranho zeraria o campo.
+     */
+    wireQuality() {
+        const cores = navigator.hardwareConcurrency ?? 4;
+        const guess = cores > 8 ? {} : { quality: cores <= 4 ? '720' : '1080', fps: cores <= 4 || App.isLinux() ? '30' : '60' };
+
+        for (const [id, key] of [['quality', App.QUALITY_KEY], ['fps', App.FPS_KEY]]) {
+            const saved = localStorage.getItem(key);
+
+            el(id).value = [...el(id).options].some(option => option.value === saved) ? saved : guess[id] ?? el(id).value;
+            el(id).onchange = () => localStorage.setItem(key, el(id).value);
+        }
+    }
+
+    /**
      * Abre a escolha do que transmitir.
      *
      * A lista vem do sistema operacional, não de um palpite: são os mesmos dados que o
@@ -1625,10 +1907,12 @@ class App {
         el('mute-calls').onchange = () => this.paintAudioOptions();
         this.paintAudioOptions();
 
-        const [displays, appWindows] = await Promise.all([
-            invoke('list_displays').catch(() => []),
-            invoke('list_windows').catch(() => []),
-        ]);
+        const listOrNone = command => invoke(command).catch(failure => {
+            this.log(`share.${command}.error`, { message: failure.message ?? String(failure) });
+
+            return [];
+        });
+        const [displays, appWindows] = await Promise.all([listOrNone('list_displays'), listOrNone('list_windows')]);
 
         this.shareSources = {
             display: displays.map(display => ({
@@ -1654,26 +1938,19 @@ class App {
     /**
      * O que dá e o que não dá em áudio, dito antes de transmitir.
      *
-     * Sem isto a pessoa marca "sem o áudio do Discord", compartilha a tela inteira no
-     * Windows, e a conversa vai junto mesmo assim — sem nada na tela explicando por quê.
-     * O sistema só deixa excluir uma árvore de processos por captura, e ela já é a nossa.
+     * Sem isto a pessoa marca "sem o áudio do Discord" no Linux e a conversa vai junto
+     * mesmo assim — sem nada na tela explicando por quê.
      */
     paintAudioOptions() {
         const audio = el('share-audio').checked;
-        const isWindows = /Win/i.test(navigator.platform);
-        const isDisplay = ! this.shareSource || this.shareSource.startsWith('display:');
 
         el('mute-calls').disabled = ! audio;
 
         // No Linux o que vai é o monitor da saída de som: o sistema inteiro, sem filtro
         // por aplicativo.
-        const note = App.isLinux()
-            ? audio && el('mute-calls').checked
-                ? 'No Linux vai o som do sistema inteiro: não dá para deixar o Discord de fora.'
-                : ''
-            : audio && el('mute-calls').checked && isWindows && isDisplay
-                ? 'Na tela inteira o Windows não separa o áudio por aplicativo. Escolha a janela do jogo em Aplicativos para deixar o Discord de fora.'
-                : '';
+        const note = App.isLinux() && audio && el('mute-calls').checked
+            ? 'No Linux vai o som do sistema inteiro: não dá para deixar o Discord de fora.'
+            : '';
 
         el('audio-note').textContent = note;
         el('audio-note').hidden = ! note;
@@ -1689,13 +1966,10 @@ class App {
         const list = el('share-sources');
         const items = this.shareSources?.[tab] ?? [];
 
-        for (const tab of document.querySelectorAll('[data-tab]')) {
-            const active = tab.dataset.tab === tab;
-
-            tab.classList.toggle('border-brand', active);
-            tab.classList.toggle('text-white', active);
-            tab.classList.toggle('border-transparent', ! active);
-            tab.classList.toggle('text-ink-soft', ! active);
+        // O `tab` do laço cobria o parâmetro, então a comparação era elemento com texto:
+        // nunca dava verdade e nenhuma aba ficava marcada.
+        for (const button of document.querySelectorAll('[data-tab]')) {
+            button.classList.toggle('pill-on', button.dataset.tab === tab);
         }
 
         this.shareSource = null;
@@ -1721,8 +1995,8 @@ class App {
 
             button.type = 'button';
             button.dataset.source = item.value;
-            button.className = 'cursor-pointer overflow-hidden rounded-lg border-2 border-transparent bg-rail text-left transition-colors hover:border-brand';
-            button.innerHTML = '<div class="flex aspect-video items-center justify-center bg-black">'
+            button.className = 'card-sm cursor-pointer overflow-hidden text-left transition-colors hover:border-brand';
+            button.innerHTML = '<div class="flex aspect-[16/10] items-center justify-center bg-black">'
                 + '<img class="size-full object-contain" alt="" hidden>'
                 + '<span class="text-xs text-ink-dim">sem prévia</span>'
                 + '</div>'
@@ -1763,8 +2037,9 @@ class App {
                     image.src = data;
                     image.hidden = false;
                     button.querySelector('span').hidden = true;
-                } catch {
+                } catch (failure) {
                     // A janela pode desaparecer enquanto o seletor está aberto.
+                    this.log('share.preview.error', { source: item.value, message: failure.message ?? String(failure) });
                 } finally {
                     this.previewInFlight.delete(item.value);
                 }
@@ -1783,7 +2058,6 @@ class App {
             const chosen = other === button;
 
             other.classList.toggle('border-brand', chosen);
-            other.classList.toggle('border-transparent', ! chosen);
         }
 
         this.shareSource = button.dataset.source;
@@ -1840,6 +2114,7 @@ class App {
         el('share').hidden = on;
         el('stop').hidden = ! on;
         el('self-view').hidden = ! on;
+        this.hub.voice.paintBar();
         if (! on) {
             // A propria tela some junto: o servidor nao manda `producerClosed` para quem
             // fechou o producer, entao o quadro ficaria congelado para sempre.
@@ -1847,7 +2122,6 @@ class App {
                 this.showScreen(this.sfu.peerId, null);
             }
 
-            this.selfStream = null;
             el('self-view').textContent = 'Ver o que a sala vê';
             clearInterval(this.broadcastStatsTimer);
             this.broadcastStatsTimer = null;
@@ -1887,6 +2161,14 @@ class App {
 
         this.paintPing();
         this.log('broadcast.stats', { ...stats, pingMs: ping, fps });
+
+        // Uma vez por abertura do app: parar e voltar a transmitir não muda a placa, e o
+        // mesmo aviso a cada transmissão viraria ruído para quem está jogando.
+        if (stats.encoder === 'cpu' && ! this.cpuEncoderWarned) {
+            this.cpuEncoderWarned = true;
+            this.log('broadcast.encoder', { encoder: stats.encoder });
+            this.toast(`sem encoder na placa de vídeo: transmitindo pelo processador${App.isLinux() ? '' : ', em 720p30'}`);
+        }
 
         if (previous) {
             const errors = {
@@ -1942,12 +2224,24 @@ class App {
         this.log('broadcast.stop');
         clearInterval(this.broadcastStatsTimer);
         this.broadcastStatsTimer = null;
-        await this.broadcast?.stop().catch(() => 0);
+        await this.broadcast?.stop().catch(failure => this.log('broadcast.stop.error', { message: failure.message ?? String(failure) }));
         this.paintSharing(false);
     }
 
     async leave() {
         this.log('room.leave');
+        await this.tearDownMedia();
+        this.room = null;
+        el('people-list').hidden = true;
+        el('room-error').hidden = true;
+        this.showEntry();
+    }
+
+    /**
+     * Sai do SFU e apaga tudo o que era da sessão: cartões, sons, janelas nativas.
+     * A sala anônima e o canal de voz saem pelo mesmo caminho.
+     */
+    async tearDownMedia() {
         await this.stopSharing();
 
         // `leaveRoom` antes de `disconnect`: fechar o socket sem avisar deixa você como
@@ -1959,25 +2253,30 @@ class App {
 
         this.sfu = null;
         this.broadcast = null;
-        this.room = null;
         this.nativeWatching.clear();
-        await invoke('stop_watch', { peerId: null }).catch(() => null);
+        await invoke('stop_watch', { producerId: null }).catch(failure => this.log('media.native.stop.error', { message: failure.message ?? String(failure) }));
         this.remoteAudios.clear();
+        this.micAudios.clear();
         this.pausedPeers.clear();
-        this.selfStream = null;
+        this.hiddenPeers.clear();
+        this.deafened = false;
         this.focused = null;
 
         if (this.fullscreen) {
             await this.toggleFullscreen(this.fullscreen);
         }
 
-        el('people-list').hidden = true;
+        for (const timer of this.mediaStatsTimers.values()) {
+            clearInterval(timer);
+        }
 
+        this.mediaStatsTimers.clear();
         el('stage').innerHTML = '';
-        el('room-error').hidden = true;
-        document.querySelectorAll('audio[data-remote]').forEach(audio => audio.remove());
-
-        this.showEntry();
+        document.querySelectorAll('audio[data-remote]').forEach(audio => {
+            audio.srcObject?.getTracks?.().forEach(track => track.stop());
+            audio.remove();
+        });
+        this.paintLayout();
     }
 
     log(event, data = {}) {
@@ -2009,7 +2308,11 @@ class App {
 
         // O arquivo tem o que a janela não tem: o que o Rust registrou e o que sobrou de
         // uma execução que terminou em crash.
-        const path = await invoke('log_path').catch(() => '');
+        const path = await invoke('log_path').catch(failure => {
+            this.log('logs.path.error', { message: failure.message ?? String(failure) });
+
+            return '';
+        });
 
         el('logs-path').textContent = path
             ? `Arquivo completo, inclusive de execuções que travaram: ${path}`
@@ -2024,10 +2327,4 @@ class App {
     }
 }
 
-const app = new App();
-
-void app.start();
-
-// Exposto de propósito: a janela do Tauri não tem console, e é por aqui que dá para
-// cutucar o estado do app pelo harness.
-window.unkvoid = app;
+export { App };

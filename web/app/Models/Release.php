@@ -45,9 +45,7 @@ final class Release extends Model
             return DB::transaction(function () use ($version, $platform, $file, $signature, $notes, $fileName, $directory): self {
                 $path = Storage::disk('s3')->putFileAs($directory, $file, $fileName);
 
-                if ($path === false) {
-                    throw new RuntimeException("não deu para gravar {$fileName} no bucket");
-                }
+                throw_if($path === false, RuntimeException::class, "não deu para gravar {$fileName} no bucket");
 
                 return self::query()->updateOrCreate(
                     ['version' => $version, 'platform' => $platform->value],
@@ -81,7 +79,7 @@ final class Release extends Model
         /** @var array<string, self> $latest */
         $latest = [];
 
-        foreach (self::query()->orderByDesc('published_at')->orderByDesc('id')->get() as $release) {
+        foreach (self::query()->latest('published_at')->orderByDesc('id')->get() as $release) {
             $latest[$release->platform->value] ??= $release;
         }
 

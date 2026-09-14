@@ -28,19 +28,13 @@ final class VerifyReleaseSignature
         $signature = (string) $request->header('X-Unkvoid-Signature', '');
         $file = $request->file('file');
 
-        if ($secret === '' || $timestamp === '' || $signature === '' || ! $file instanceof UploadedFile) {
-            abort(401, 'assinatura ausente');
-        }
+        abort_if($secret === '' || $timestamp === '' || $signature === '' || ! $file instanceof UploadedFile, 401, 'assinatura ausente');
 
-        if (abs(time() - (int) $timestamp) > self::WINDOW_SECONDS) {
-            abort(401, 'assinatura fora da janela de tempo');
-        }
+        abort_if(abs(time() - (int) $timestamp) > self::WINDOW_SECONDS, 401, 'assinatura fora da janela de tempo');
 
         $expected = hash_hmac('sha256', implode("\n", [$timestamp, $request->method(), '/'.$request->path(), hash_file('sha256', $file->getRealPath())]), $secret);
 
-        if (! hash_equals($expected, $signature)) {
-            abort(401, 'assinatura inválida');
-        }
+        abort_unless(hash_equals($expected, $signature), 401, 'assinatura inválida');
 
         return $next($request);
     }

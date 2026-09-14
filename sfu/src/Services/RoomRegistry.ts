@@ -117,6 +117,22 @@ export class RoomRegistry {
         this.rooms.delete(room.id);
     }
 
+    /** Quem está em cada sala, para o Laravel desenhar a lista de voz. */
+    public presence(): Record<string, { sub: string; name: string; sources: string[] }[]> {
+        return Object.fromEntries(
+            [...this.rooms.values()].map((room) => [
+                room.id,
+                [...room.peers.values()]
+                    .filter((peer) => !peer.isOrphaned())
+                    .map((peer) => ({
+                        sub: peer.userId,
+                        name: peer.name,
+                        sources: peer.sources(),
+                    })),
+            ]),
+        );
+    }
+
     public stats(): { rooms: number; peers: number; workers: number[] } {
         return {
             rooms: this.rooms.size,

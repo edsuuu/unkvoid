@@ -96,9 +96,13 @@ excesso estava tapando um teto baixo demais.
 |---|---|---|
 | 720p60 | 4 Mb/s | 5 Mb/s |
 | 1080p60 | 7 Mb/s | 10 Mb/s |
-| 1440p60 | 12 Mb/s | 16 Mb/s |
+| 1440p60 | 12 Mb/s | 20 Mb/s |
 
 Jogo a 60 quadros é o pior caso do H.264: a cena inteira muda a cada quadro.
+
+Os 16 Mb/s do 1440p60 subiram para 20 em 12/09/2026: 1440p tem 1,78 vez os pixels do
+1080p e recebia só 1,6 vez os bits, então cena em movimento quebrava em bloco na
+resolução que existe justamente para não quebrar.
 
 ### Recuperação de perda
 

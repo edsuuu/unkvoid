@@ -56,6 +56,9 @@ services:
     environment:
       ENABLE_RSPAMD: 1
       ENABLE_CLAMAV: 0
+      # O rspamd acima já filtra. O amavis é a segunda passada, custa 176 MB medidos, e
+      # a caixa faz 0,1 mensagem por segundo — não há fila para uma segunda passada ver.
+      ENABLE_AMAVIS: 0
       ENABLE_FAIL2BAN: 1
       ENABLE_OPENDKIM: 0
       ENABLE_OPENDMARC: 0

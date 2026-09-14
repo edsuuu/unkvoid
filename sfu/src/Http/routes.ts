@@ -11,6 +11,7 @@ import { ConsumeRequest } from './Requests/ConsumeRequest.js';
 import { ConsumerRequest } from './Requests/ConsumerRequest.js';
 import { JoinRequest } from './Requests/JoinRequest.js';
 import { ProducePlainRequest } from './Requests/ProducePlainRequest.js';
+import { ProduceRequest } from './Requests/ProduceRequest.js';
 import { ProducerRequest } from './Requests/ProducerRequest.js';
 import { RemovePeerRequest } from './Requests/RemovePeerRequest.js';
 import { Request } from './Requests/Request.js';
@@ -57,9 +58,21 @@ export const routes = (controllers: Controllers): Record<ActionName, Route> => (
         build: (data, session) => new TransportRequest(data, session),
         handle: (request) => controllers.transport.connect(request),
     },
+    [Action.Produce]: {
+        build: (data, session) => new ProduceRequest(data, session),
+        handle: (request) => controllers.producer.store(request),
+    },
     [Action.ProducePlain]: {
         build: (data, session) => new ProducePlainRequest(data, session),
         handle: (request) => controllers.producer.storePlain(request),
+    },
+    [Action.PauseProducer]: {
+        build: (data, session) => new ProducerRequest(data, session),
+        handle: (request) => controllers.producer.pause(request),
+    },
+    [Action.ResumeProducer]: {
+        build: (data, session) => new ProducerRequest(data, session),
+        handle: (request) => controllers.producer.resume(request),
     },
     [Action.CloseProducer]: {
         build: (data, session) => new ProducerRequest(data, session),
@@ -80,5 +93,9 @@ export const routes = (controllers: Controllers): Record<ActionName, Route> => (
     [Action.PauseConsumer]: {
         build: (data, session) => new ConsumerRequest(data, session),
         handle: (request) => controllers.consumer.pause(request),
+    },
+    [Action.CloseConsumer]: {
+        build: (data, session) => new ConsumerRequest(data, session),
+        handle: (request) => controllers.consumer.destroy(request),
     },
 });

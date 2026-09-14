@@ -48,9 +48,9 @@ it('renderiza os três e-mails em HTML com o desenho do site', function (): void
     $welcome = (new WelcomeNotification)->toMail($user)->render();
     expect((string) $welcome)->toContain('Bem-vindo, Edson.')->toContain('<table')->toContain('unkvoid-mark.png')->toContain('#06050a');
 
-    $login = (new NewLoginNotification('site', '203.0.113.9', 'Firefox'))->toMail($user)->render();
+    $login = new NewLoginNotification('site', '203.0.113.9', 'Firefox')->toMail($user)->render();
     expect((string) $login)->toContain('Novo acesso')->toContain('203.0.113.9')->toContain(route('password.request'));
 
-    $reset = (new ResetPasswordNotification('abc'))->toMail($user)->render();
+    $reset = new ResetPasswordNotification('abc')->toMail($user)->render();
     expect((string) $reset)->toContain('Redefinir')->toContain(route('password.reset', ['token' => 'abc', 'email' => 'edson@unkvoid.test']));
 });

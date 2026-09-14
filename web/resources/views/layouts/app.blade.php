@@ -32,6 +32,9 @@
                 <flux:navlist.item icon="bug-ant" :href="route('admin.errors')" :current="request()->routeIs('admin.errors')" wire:navigate>
                     {{ __('Erros dos apps') }}
                 </flux:navlist.item>
+                <flux:navlist.item icon="shield-check" :href="route('admin.audit')" :current="request()->routeIs('admin.audit')" wire:navigate>
+                    {{ __('Auditoria') }}
+                </flux:navlist.item>
                 <flux:navlist.item icon="document-text" :href="route('log-viewer.index')" target="_blank">
                     {{ __('Logs') }}
                 </flux:navlist.item>

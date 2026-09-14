@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 
 const calls = [];
 const callArgs = new Map();
+const offers = [];
 
 // `broadcast.js` lê a ponte do Tauri ao carregar, então ela precisa existir antes.
 globalThis.window = {
@@ -22,7 +23,9 @@ globalThis.window = {
                 callArgs.set(command, args);
 
                 if (command === 'sfu_offer') {
-                    return { ssrc: 7, payloadType: 96 };
+                    offers.push(args.source);
+
+                    return { rtpParameters: { codecs: [] }, srtpParameters: { keyBase64: 'k' } };
                 }
 
                 return command === 'stop_broadcast' ? 4242 : null;
@@ -35,6 +38,9 @@ const { Broadcast } = await import('./ui/broadcast.js');
 
 const requests = [];
 const sfu = {
+    tolerate(action, data) {
+        return this.request(action, data).catch(() => null);
+    },
     request: async (acao, dados) => {
     requests.push(`${acao}:${dados.kind ?? dados.producerId ?? ''}/${dados.source ?? ''}`);
 
@@ -66,6 +72,10 @@ assert.deepEqual(callArgs.get('start_broadcast'), {
 
 // Vídeo primeiro, e os dois declarados — o áudio da tela ia junto e era esquecido.
 assert.deepEqual(requests, ['producePlain:video/screen', 'producePlain:audio/screenAudio']);
+
+// O Rust é perguntado pela ORIGEM, não pelo tipo: tela e câmera são os dois vídeo, e
+// sem origem distinta os dois sairiam com o mesmo SSRC e o mediasoup os misturaria.
+assert.deepEqual(offers, ['screen', 'screenAudio']);
 assert.equal(broadcast.broadcasting, true);
 
 // O servidor reiniciou: os producers antigos morreram lá, a captura continua viva aqui.
@@ -112,6 +122,7 @@ assert.equal(calls.length, before, 'parar de novo não fala com o Rust');
 // Uma falha depois de iniciar a captura também precisa liberar o estado nativo, para
 // que a próxima tentativa não receba "a stream is already in progress".
 const failingSfu = {
+    tolerate: sfu.tolerate,
     request: async (acao, dados) => {
         if (acao === 'producePlain' && dados.kind === 'audio') {
             throw new Error('SFU indisponível');

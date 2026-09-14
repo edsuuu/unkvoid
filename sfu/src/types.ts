@@ -5,6 +5,7 @@ import type { Room } from './Services/Room.js';
 
 export type Session = {
     socket: WebSocket;
+    ip: string;
     room: Room | null;
     peer: Peer | null;
 };

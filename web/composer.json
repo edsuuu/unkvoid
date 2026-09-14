@@ -11,6 +11,7 @@
     "require": {
         "php": "^8.4",
         "laravel/framework": "^13.7",
+        "laravel/reverb": "^1.11",
         "laravel/sanctum": "^4.3",
         "laravel/socialite": "^5.31",
         "laravel/tinker": "^3.0",
@@ -90,6 +91,11 @@
         "test": [
             "@php artisan config:clear --ansi",
             "@php artisan test"
+        ],
+        "test:mysql": [
+            "@php -r \"(new PDO('mysql:host=127.0.0.1;port=3306', 'root', 'root'))->exec('CREATE DATABASE IF NOT EXISTS unkvoid_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci');\"",
+            "@php artisan config:clear --ansi",
+            "@php artisan test --env=testing.mysql"
         ],
         "post-autoload-dump": [
             "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",

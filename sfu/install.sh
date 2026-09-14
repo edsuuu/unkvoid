@@ -23,6 +23,11 @@ if [ ! -x "$WORKER" ]; then
     exit 1
 fi
 
+# Sem ffmpeg o SFU sobe igual, só que sem clipes: é aviso, não erro.
+if ! command -v "${SFU_FFMPEG:-ffmpeg}" > /dev/null; then
+    echo "[WARN] ffmpeg não encontrado: o SFU sobe sem clipes (apt install ffmpeg)"
+fi
+
 # Reiniciar derruba toda sala que estiver no ar: os workers do mediasoup morrem junto
 # com o processo. O app se recupera sozinho (reconecta, republica), mas custa alguns
 # segundos de tela preta para todo mundo. Então espera esvaziar primeiro, e só passa por
@@ -52,7 +57,9 @@ while true; do
     sleep 15
 done
 
-pm2 startOrRestart ecosystem.config.cjs --update-env
+# `--only sfu` porque o mesmo arquivo também define o Reverb, e o chat não tem por que
+# cair junto com um deploy de mídia. Quem reinicia o Reverb é o infra/deploy-web.sh.
+pm2 startOrRestart ecosystem.config.cjs --only sfu --update-env
 pm2 save
 sleep 2
 curl -sf http://127.0.0.1:3000/health && echo

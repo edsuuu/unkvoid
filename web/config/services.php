@@ -39,6 +39,7 @@ return [
     'sfu' => [
         'url' => (string) env('SFU_URL', 'http://127.0.0.1:3000'),
         'secret' => (string) env('SFU_SECRET', ''),
+        'public_url' => (string) env('SFU_PUBLIC_URL', 'ws://127.0.0.1:3000/sfu'),
     ],
 
     'slack' => [

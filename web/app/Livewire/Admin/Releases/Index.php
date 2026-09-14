@@ -82,7 +82,7 @@ final class Index extends Component
     {
         $releases = [];
 
-        foreach (Release::query()->orderByDesc('published_at')->orderByDesc('id')->get() as $release) {
+        foreach (Release::query()->latest('published_at')->orderByDesc('id')->get() as $release) {
             $releases[] = [
                 'id' => $release->id,
                 'version' => $release->version,

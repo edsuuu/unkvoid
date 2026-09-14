@@ -120,6 +120,37 @@ fn interleave(sample: &CMSampleBuffer) -> Option<Vec<f32>> {
     Some(interleaved)
 }
 
+/// Monitor pelo tamanho anunciado; janela pelo `frame`, que vem em pontos — só a
+/// proporção interessa aqui, e ela é a mesma em pontos e em pixels.
+fn source_size(content: &SCShareableContent, source: CaptureSource) -> Result<(u32, u32), CaptureError> {
+    match source {
+        CaptureSource::Window(id) => {
+            let window = content
+                .windows()
+                .into_iter()
+                .find(|window| u64::from(window.window_id()) == id)
+                .ok_or(CaptureError::NoDisplay)?;
+            let size = window.frame().size;
+
+            Ok((size.width.max(0.0).round() as u32, size.height.max(0.0).round() as u32))
+        }
+        CaptureSource::Display(id) => {
+            let display = content
+                .displays()
+                .into_iter()
+                .find(|display| display.display_id() == id)
+                .ok_or(CaptureError::NoDisplay)?;
+
+            Ok((display.width(), display.height()))
+        }
+        _ => {
+            let display = content.displays().into_iter().next().ok_or(CaptureError::NoDisplay)?;
+
+            Ok((display.width(), display.height()))
+        }
+    }
+}
+
 fn frame_size(sample: &CMSampleBuffer) -> (u32, u32) {
     sample
         .image_buffer()
@@ -128,6 +159,18 @@ fn frame_size(sample: &CMSampleBuffer) -> (u32, u32) {
 }
 
 impl MacCapturer {
+    /// O tamanho da origem, para a altura da saída seguir a proporção dela.
+    pub fn source_size(source: CaptureSource) -> Result<(u32, u32), CaptureError> {
+        if matches!(source, CaptureSource::Camera(_) | CaptureSource::Microphone) {
+            return Ok((0, 0));
+        }
+
+        let content =
+            SCShareableContent::get().map_err(|error| CaptureError::Platform(error.to_string()))?;
+
+        source_size(&content, source)
+    }
+
     pub fn displays() -> Result<Vec<Display>, CaptureError> {
         let content =
             SCShareableContent::get().map_err(|error| CaptureError::Platform(error.to_string()))?;
@@ -233,6 +276,10 @@ impl MacCapturer {
     where
         F: Fn(CaptureEvent) + Send + Sync + 'static,
     {
+        if matches!(config.source, CaptureSource::Camera(_) | CaptureSource::Microphone) {
+            return Err(CaptureError::Platform("camera and microphone go through the webview here".into()));
+        }
+
         let content =
             SCShareableContent::get().map_err(|error| CaptureError::Platform(error.to_string()))?;
 
@@ -292,7 +339,7 @@ impl MacCapturer {
             }
         };
 
-        let (width, height) = config.quality.dimensions();
+        let (width, height) = config.quality.fit(source_size(&content, config.source)?);
 
         let stream_config = SCStreamConfiguration::new()
             .with_width(width)

@@ -2,7 +2,11 @@
 
 declare(strict_types=1);
 
+use App\Livewire\Auth\Login;
+use App\Livewire\Auth\Register;
 use App\Models\User;
+use Database\Seeders\Seeder001Roles;
+use Livewire\Livewire;
 
 it('abre as telas de entrar e de criar conta', function (): void {
     $this->get(route('login'))->assertOk()->assertSee('Entrar com Google');
@@ -12,7 +16,7 @@ it('abre as telas de entrar e de criar conta', function (): void {
 it('entra com e-mail e senha pelo site', function (): void {
     $user = User::factory()->create(['email' => 'edson@unkvoid.test', 'password' => 'senha-forte-123']);
 
-    Livewire\Livewire::test(App\Livewire\Auth\Login::class)
+    Livewire::test(Login::class)
         ->set('email', 'Edson@unkvoid.test')
         ->set('password', 'senha-forte-123')
         ->call('login')
@@ -25,7 +29,7 @@ it('entra com e-mail e senha pelo site', function (): void {
 it('recusa senha errada sem dizer qual campo errou', function (): void {
     User::factory()->create(['email' => 'edson@unkvoid.test', 'password' => 'senha-forte-123']);
 
-    Livewire\Livewire::test(App\Livewire\Auth\Login::class)
+    Livewire::test(Login::class)
         ->set('email', 'edson@unkvoid.test')
         ->set('password', 'outra')
         ->call('login')
@@ -35,7 +39,7 @@ it('recusa senha errada sem dizer qual campo errou', function (): void {
 });
 
 it('cria a conta pelo site e já entra', function (): void {
-    Livewire\Livewire::test(App\Livewire\Auth\Register::class)
+    Livewire::test(Register::class)
         ->set('name', 'Edson')
         ->set('email', 'novo@unkvoid.test')
         ->set('password', 'senha-forte-123')
@@ -56,7 +60,7 @@ it('sai da conta', function (): void {
 });
 
 it('só deixa o administrador abrir o painel', function (): void {
-    $this->seed(Database\Seeders\Seeder001Roles::class);
+    $this->seed(Seeder001Roles::class);
 
     $common = User::factory()->create();
     $this->actingAs($common)->get(route('admin'))->assertForbidden();

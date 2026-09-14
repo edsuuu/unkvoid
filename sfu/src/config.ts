@@ -1,5 +1,5 @@
 import type { RouterRtpCodecCapability, WorkerLogTag } from 'mediasoup/types';
-import { availableParallelism } from 'node:os';
+import { availableParallelism, tmpdir } from 'node:os';
 
 /**
  * Sem o segredo o SFU não sobe. Ele assina o token de entrada e o cabeçalho das chamadas
@@ -20,6 +20,18 @@ export const config = {
     path: process.env.SFU_PATH ?? '/sfu',
     announcedAddress: process.env.SFU_ANNOUNCED_ADDRESS ?? '127.0.0.1',
     appVersion: process.env.SFU_APP_VERSION ?? '0.0.3',
+
+    // Para onde vai o aviso de quem entrou e saiu de um canal. Vazio (o padrão) desliga
+    // o aviso: um SFU que sobe sem configuração não pode ficar batendo em porta alheia.
+    laravelUrl: process.env.SFU_LARAVEL_URL ?? '',
+
+    // Quem grava o anel dos clipes e monta o clipe. Sem ele executável o SFU sobe igual,
+    // só que sem clipes: a chamada não pode depender de um recurso de gravação.
+    ffmpeg: process.env.SFU_FFMPEG ?? 'ffmpeg',
+
+    // Onde mora o anel: disco, não memória. Cada transmissão segura os últimos 5 minutos
+    // copiados do encoder, o que a 8 Mbit/s são 300 MB.
+    recordingsDir: process.env.SFU_RECORDINGS_DIR || tmpdir(),
 
     // Teto de conexões novas por IP por minuto. A sala é anônima, então o que impede
     // varrer códigos é o custo de tentar — cada tentativa precisa de um socket novo.
@@ -42,11 +54,10 @@ export const config = {
     // a porta do WebRtcServer, e o mediasoup sortearia de 10000-59999 por padrão — uma
     // faixa estreita mantém a regra de firewall em uma linha só.
     //
-    // Uma porta por transmissão: vídeo e áudio dividem o mesmo transport. Isto era 1, e
-    // como a sala inteira mora num worker só, o segundo a clicar em "compartilhar"
-    // recebia `no more available ports` — duas pessoas nunca conseguiram transmitir na
-    // mesma sala. Oito é o teto de transmissões simultâneas por worker; cada porta a
-    // mais é uma linha na regra de firewall, então a faixa continua contígua e curta.
+    // Uma porta por sentido: quem só transmite usa uma, e quem participa da voz pelo
+    // Linux usa duas (envia e recebe). Isto era 1, e como a sala inteira mora num
+    // worker só, o segundo a clicar em "compartilhar" recebia `no more available
+    // ports`. A faixa continua contígua: é uma linha só na regra de firewall.
     plainPortBase: Number(process.env.SFU_PLAIN_PORT ?? 41000),
     plainPortsPerWorker: Number(process.env.SFU_PLAIN_PORTS ?? 8),
 
@@ -56,7 +67,8 @@ export const config = {
             'info',
             'ice',
             'dtls',
-            'rtp',
+            // Sem 'rtp': o keepalive de quem assiste por RTP puro logava "no suitable
+            // Producer" a cada 5 s por espectador.
             'srtp',
             'rtcp',
             'bwe',
