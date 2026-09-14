@@ -86,6 +86,9 @@ pub struct MediaFoundationEncoder {
     frame_rate: f64,
     bridge: Option<Bridge>,
 
+    /// O teto de fps que a captura do Windows 10 não impõe — ver `FramePacer`.
+    pacer: crate::FramePacer,
+
     /// Pedido de quadro-chave esperando a próxima amostra.
     ///
     /// Guardado em vez de aplicado na hora porque a propriedade vale para o quadro
@@ -212,6 +215,7 @@ impl MediaFoundationEncoder {
                 height,
                 frame_rate: config.frame_rate,
                 bridge: None,
+                pacer: crate::FramePacer::new(config.frame_rate),
                 force_keyframe: false,
                 ready: VecDeque::new(),
                 credits: 0,
@@ -230,6 +234,11 @@ impl MediaFoundationEncoder {
         surface: &GpuSurface,
         timestamp_ns: u64,
     ) -> Result<EncodedFrame, EncoderError> {
+        // Antes da ponte: o quadro acima do teto não custa nem o blit.
+        if !self.pacer.admit(timestamp_ns) {
+            return Err(EncoderError::NeedsMoreInput);
+        }
+
         unsafe {
             self.cross_the_bridge(surface)?;
 

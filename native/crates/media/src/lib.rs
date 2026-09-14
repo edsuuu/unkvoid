@@ -96,6 +96,49 @@ impl EncoderConfig {
     }
 }
 
+/// Deixa passar um quadro a cada `1 / frame_rate` segundo, pelo relógio da captura.
+///
+/// No Windows 10 a captura não aceita teto de quadros (o intervalo mínimo só veio no 11
+/// 24H2) e chega na frequência do monitor: num de 144 Hz a placa comprimia 144 quadros com
+/// o bitrate pensado para 60, e cada um saía com menos da metade dos bits. O que sobra
+/// volta como `NeedsMoreInput` antes de custar qualquer trabalho.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) struct FramePacer {
+    interval_ns: u64,
+    next_ns: u64,
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl FramePacer {
+    pub(crate) fn new(frame_rate: f64) -> Self {
+        Self {
+            interval_ns: (1e9 / frame_rate.max(1.0)) as u64,
+            next_ns: 0,
+        }
+    }
+
+    pub(crate) fn admit(&mut self, timestamp_ns: u64) -> bool {
+        // Um quarto de quadro de folga: a captura a 60 Hz não chega a cada 16 666 µs
+        // exatos, e sem folga o quadro que devia passar chegava um tico adiantado e ficava
+        // de fora — a transmissão caía para 20 fps.
+        if timestamp_ns + self.interval_ns / 4 < self.next_ns {
+            return false;
+        }
+
+        // Tela parada não gera quadro. Voltando depois de mais de um intervalo, o relógio
+        // recomeça daqui em vez de soltar uma rajada para alcançar o tempo perdido.
+        let base = if timestamp_ns > self.next_ns + self.interval_ns {
+            timestamp_ns
+        } else {
+            self.next_ns
+        };
+
+        self.next_ns = base + self.interval_ns;
+
+        true
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EncoderError {
     #[error("hardware encoder refused to start: {0}")]
@@ -195,5 +238,45 @@ mod tests {
         // fora não pode virar captura de 1 fps nem encoder pedindo 240.
         assert_eq!(EncoderConfig::new(Quality::Hd1080, 5, (3840, 2160)).frame_rate, 30.0);
         assert_eq!(EncoderConfig::new(Quality::Hd1080, 500, (3840, 2160)).frame_rate, 60.0);
+    }
+
+    #[test]
+    fn the_pacer_turns_a_jittery_144_hz_capture_into_60_fps() {
+        let mut pacer = FramePacer::new(60.0);
+        let admitted = (0..1440_u64)
+            .filter(|frame| {
+                // A captura nunca chega a cada 6,94 ms exatos: meio milissegundo para cada lado.
+                let jitter = if frame % 2 == 0 { 500_000 } else { 0 };
+
+                pacer.admit(frame * 6_944_444 + 500_000 - jitter)
+            })
+            .count();
+
+        assert!((590..=610).contains(&admitted), "{admitted} quadros em 10 s");
+    }
+
+    #[test]
+    fn the_pacer_lets_a_60_hz_capture_through_at_60_fps() {
+        let mut pacer = FramePacer::new(60.0);
+        let admitted = (0..600_u64)
+            .filter(|frame| {
+                let jitter = if frame % 2 == 0 { 1_000_000 } else { 0 };
+
+                pacer.admit(frame * 16_666_667 + 1_000_000 - jitter)
+            })
+            .count();
+
+        assert_eq!(admitted, 600, "no Windows 11 a captura já vem no teto e nada pode cair");
+    }
+
+    #[test]
+    fn the_pacer_does_not_burst_after_a_still_screen() {
+        let mut pacer = FramePacer::new(30.0);
+
+        assert!(pacer.admit(0));
+        // Tela parada por um segundo; volta a 60 Hz.
+        assert!(pacer.admit(1_000_000_000));
+        assert!(!pacer.admit(1_016_666_667), "sem rajada para alcançar o segundo perdido");
+        assert!(pacer.admit(1_033_333_333));
     }
 }
