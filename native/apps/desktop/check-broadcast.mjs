@@ -125,4 +125,17 @@ await assert.rejects(() => partial.start('1080', 30, 'display:1', true, false), 
 assert.equal(partial.nativeActive, false);
 assert.deepEqual(partial.producerIds, []);
 
-console.log('transmissão: ok — ordem e encerramento');
+// Trocar a qualidade no ar fala só com o Rust: nenhum producer novo e nenhum fechado, que
+// é o que faria a transmissão sumir da tela de quem assiste.
+const live = new Broadcast(sfu);
+
+await live.start('1080', 60, 'display:1', true, false);
+
+const requestsBeforeChange = requests.length;
+
+await live.changeQuality('720', 30);
+assert.equal(calls.at(-1), 'change_broadcast_quality');
+assert.deepEqual(callArgs.get('change_broadcast_quality'), { quality: '720', fps: 30 });
+assert.equal(requests.length, requestsBeforeChange, 'trocar a qualidade não mexe nos producers');
+
+console.log('transmissão: ok — ordem, encerramento e troca de qualidade no ar');

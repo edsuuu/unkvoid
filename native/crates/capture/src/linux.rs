@@ -65,6 +65,14 @@ impl LinuxCapturer {
         Ok(output.map(|output| output.stdout).unwrap_or_default())
     }
 
+    /// O tamanho da origem, para a altura da saída seguir a proporção dela.
+    pub fn source_size(source: CaptureSource) -> Result<(u32, u32), CaptureError> {
+        region(source)
+            .map(|monitor| (monitor.width, monitor.height))
+            .or_else(screen_size)
+            .ok_or(CaptureError::NoDisplay)
+    }
+
     /// Um item por monitor, o principal primeiro. Sem `xrandr` fica a tela do X
     /// inteira, que com dois monitores é os dois lado a lado.
     pub fn displays() -> Result<Vec<Display>, CaptureError> {
@@ -103,7 +111,7 @@ impl LinuxCapturer {
             return Err(CaptureError::NoDisplay);
         }
 
-        let (width, height) = config.quality.dimensions();
+        let (width, height) = config.quality.fit(Self::source_size(config.source)?);
         let frame_rate = config.frame_rate.clamp(1, 60);
         let on_event = Arc::new(on_event);
         let frames = Arc::new(AtomicU64::new(0));
@@ -113,15 +121,18 @@ impl LinuxCapturer {
         let bitrate = match config.quality {
             Quality::Hd720 => 5_000,
             Quality::Hd1080 => 10_000,
-            Quality::Qhd1440 => 16_000,
+            Quality::Qhd1440 => 20_000,
+            Quality::Uhd2160 => 40_000,
         } * frame_rate
             / 60;
 
+        // BT.709 fixo antes do x264: sem ele a colorimetria dependia da resolução escolhida,
+        // e o VUI que o x264 escreve saía diferente do que o decodificador supõe.
         // ponytail: sem pedido de keyframe por fora; um a cada segundo é o que quem entra
         // na sala espera no pior caso. `aud=true` é o que separa os quadros no pipe.
         let pipeline = format!(
             "ximagesrc use-damage=false show-pointer={} {} ! video/x-raw,framerate={frame_rate}/1 \
-             ! videoconvert ! videoscale ! video/x-raw,width={width},pixel-aspect-ratio=1/1 \
+             ! videoconvert ! videoscale ! video/x-raw,format=I420,colorimetry=bt709,width={width},pixel-aspect-ratio=1/1 \
              ! x264enc tune=zerolatency speed-preset=ultrafast byte-stream=true aud=true \
              key-int-max={frame_rate} bitrate={bitrate} threads=0 \
              ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline \
@@ -141,10 +152,10 @@ impl LinuxCapturer {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                     tracing::warn!(line = %line, "gst vídeo");
 
-                    if line.starts_with("ERROR") || line.contains("rror") {
-                        if let Ok(mut slot) = error.lock() {
-                            *slot = Some(line);
-                        }
+                    if (line.starts_with("ERROR") || line.contains("rror"))
+                        && let Ok(mut slot) = error.lock()
+                    {
+                        *slot = Some(line);
                     }
                 }
             });
@@ -206,7 +217,7 @@ impl LinuxCapturer {
                                 sample_rate: 48_000,
                                 channels: 2,
                                 samples: block
-                                    .chunks_exact(4)
+                                    .as_chunks::<4>().0.iter()
                                     .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
                                     .collect(),
                             }));

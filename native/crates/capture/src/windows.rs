@@ -234,6 +234,35 @@ where
 }
 
 impl WindowsCapturer {
+    /// O tamanho da origem, para a altura da saída seguir a proporção dela.
+    pub fn source_size(source: CaptureSource) -> Result<(u32, u32), CaptureError> {
+        // Monitor e janela têm cada um o seu tipo de erro na crate; a mensagem basta.
+        fn platform(error: impl std::fmt::Display) -> CaptureError {
+            CaptureError::Platform(error.to_string())
+        }
+
+        match source {
+            CaptureSource::Window(id) => {
+                let window = CaptureWindow::from_raw_hwnd(hwnd_from_id(id));
+
+                Ok((
+                    window.width().map_err(platform)?.max(0) as u32,
+                    window.height().map_err(platform)?.max(0) as u32,
+                ))
+            }
+            CaptureSource::Display(index) => {
+                let monitor = Monitor::from_index(index as usize + 1).map_err(|_| CaptureError::NoDisplay)?;
+
+                Ok((monitor.width().map_err(platform)?, monitor.height().map_err(platform)?))
+            }
+            CaptureSource::PrimaryDisplay => {
+                let monitor = Monitor::primary().map_err(|_| CaptureError::NoDisplay)?;
+
+                Ok((monitor.width().map_err(platform)?, monitor.height().map_err(platform)?))
+            }
+        }
+    }
+
     pub fn displays() -> Result<Vec<Display>, CaptureError> {
         let monitors =
             Monitor::enumerate().map_err(|error| CaptureError::Platform(error.to_string()))?;

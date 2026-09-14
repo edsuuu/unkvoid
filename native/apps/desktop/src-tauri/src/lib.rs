@@ -33,6 +33,7 @@ fn quality_from(name: &str) -> Quality {
     match name {
         "720" => Quality::Hd720,
         "1440" => Quality::Qhd1440,
+        "2160" => Quality::Uhd2160,
         _ => Quality::Hd1080,
     }
 }
@@ -307,6 +308,31 @@ async fn stop_broadcast(state: State<'_, ActiveBroadcast>) -> Result<u64, String
     broadcast.stop().map_err(|error| error.to_string())?;
 
     Ok(frames)
+}
+
+/// Troca resolução e fps no meio da transmissão, sem fechar os producers.
+///
+/// A sala não vê a transmissão sumir: o Rust refaz captura e encoder no mesmo destino, e
+/// quem assiste só percebe a imagem mudar de tamanho no quadro-chave seguinte.
+#[tauri::command]
+async fn change_broadcast_quality(
+    state: State<'_, ActiveBroadcast>,
+    quality: String,
+    fps: u32,
+) -> Result<(), String> {
+    let mut active = state.0.lock().await;
+
+    let Some(broadcast) = active.as_mut() else {
+        return Err("no stream in progress".into());
+    };
+
+    tracing::info!(%quality, fps, "broadcast: trocando a qualidade sem parar");
+
+    broadcast.restart(quality_from(&quality), fps).map_err(|error| {
+        tracing::error!(error = %error, "broadcast: a troca de qualidade falhou");
+
+        error.to_string()
+    })
 }
 
 #[tauri::command]
@@ -591,7 +617,7 @@ fn check_capture() -> i32 {
     let frames = Arc::new(AtomicU64::new(0));
     let keyframes = Arc::new(AtomicU64::new(0));
     let audio = Arc::new(AtomicU64::new(0));
-    let config = media::EncoderConfig::new(Quality::Hd720, 30);
+    let config = media::EncoderConfig::new(Quality::Hd720, 30, (1280, 720));
 
     let encoder = match media::PlatformEncoder::new(&config) {
         Ok(encoder) => Mutex::new(encoder),
@@ -698,6 +724,7 @@ pub fn run() {
             check_update,
             restart,
             start_broadcast,
+            change_broadcast_quality,
             sfu_offer,
             renew_sfu_key,
             use_sfu,
@@ -758,11 +785,12 @@ pub fn run() {
         .on_page_load(|webview, payload| {
             use tauri::Manager;
 
-            if payload.event() == PageLoadEvent::Finished && webview.state::<SelfCheck>().0 {
-                if let Err(failure) = webview.eval(CHECK_SCRIPT) {
-                    eprintln!("unkvoid check: não deu para rodar o teste na página: {failure}");
-                    webview.app_handle().exit(2);
-                }
+            if payload.event() == PageLoadEvent::Finished
+                && webview.state::<SelfCheck>().0
+                && let Err(failure) = webview.eval(CHECK_SCRIPT)
+            {
+                eprintln!("unkvoid check: não deu para rodar o teste na página: {failure}");
+                webview.app_handle().exit(2);
             }
         })
         .run(context)

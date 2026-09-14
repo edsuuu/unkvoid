@@ -64,12 +64,16 @@ impl Watches {
 
         let mut pipeline: Vec<String> = vec!["-q".into()];
 
+        // `colorimetry=2:4:7:1` é BT.601 de faixa cheia, que é o que um JPEG significa. Sem
+        // ela o `videoconvert` entregava faixa limitada e o cartão mostrava preto cinzento.
+        // Qualidade 70 porque é recompressão de um quadro que já passou pelo H.264: acima
+        // disso só se gasta CPU preservando o defeito do H.264.
         if let Some((payload, to)) = video {
             pipeline.extend(
                 format!(
                     "udpsrc address=127.0.0.1 port={} caps=application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload={payload} \
                      ! rtpjitterbuffer latency=80 ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert \
-                     ! jpegenc quality=85 ! multipartmux boundary=unkvoid ! fdsink fd=1",
+                     ! video/x-raw,colorimetry=2:4:7:1 ! jpegenc quality=70 ! multipartmux boundary=unkvoid ! fdsink fd=1",
                     to.port()
                 )
                 .split_whitespace()

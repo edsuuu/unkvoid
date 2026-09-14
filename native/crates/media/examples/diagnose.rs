@@ -84,7 +84,7 @@ fn run_all(quality: &str, source: &str) -> ExitCode {
         };
 
         let said = String::from_utf8_lossy(&output.stdout);
-        let last = said.lines().filter(|line| !line.is_empty()).last();
+        let last = said.lines().rfind(|line| !line.is_empty());
 
         if output.status.success() {
             println!("ok         {}", last.unwrap_or(""));
@@ -202,12 +202,12 @@ fn displays() -> Result<String, String> {
 }
 
 fn encoder(quality: Quality) -> Result<String, String> {
-    let config = EncoderConfig::new(quality, 60);
+    let config = EncoderConfig::new(quality, 60, (quality.width(), quality.width() * 9 / 16));
 
     say(&format!(
         "abrindo o encoder em {}x{} a {} kbps",
-        config.quality.dimensions().0,
-        config.quality.dimensions().1,
+        config.width,
+        config.height,
         config.bitrate / 1000
     ));
 
@@ -270,7 +270,7 @@ fn capture(quality: Quality, source: CaptureSource) -> Result<String, String> {
 /// Captura e encoder juntos: é aqui que a ponte entre os dois devices do Direct3D nasce,
 /// no primeiro quadro. Um crash só neste passo aponta para a ponte, não para a abertura.
 fn pipeline(quality: Quality, source: CaptureSource) -> Result<String, String> {
-    let config = EncoderConfig::new(quality, 60);
+    let config = EncoderConfig::new(quality, 60, (quality.width(), quality.width() * 9 / 16));
 
     say("abrindo o encoder");
 
