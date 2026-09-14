@@ -30,7 +30,7 @@ pub struct VideoToolboxEncoder {
 
 impl VideoToolboxEncoder {
     pub fn new(config: &EncoderConfig) -> Result<Self, EncoderError> {
-        let (width, height) = config.quality.dimensions();
+        let (width, height) = (config.width, config.height);
 
         let session = CompressionSession::builder(width as i32, height as i32, Codec::H264)
             // Real time: prioritize low latency over compression ratio.

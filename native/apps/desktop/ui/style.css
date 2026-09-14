@@ -107,7 +107,7 @@
      * pixel. Na pausa ela não aparece porque o `grayscale` já zera a cor.
      */
     #stage video {
-        filter: brightness(var(--brightness, 1)) saturate(var(--saturation, 1));
+        filter: brightness(var(--brightness, 1)) contrast(var(--contrast, 1)) saturate(var(--saturation, 1));
     }
 
     [data-paused] video {

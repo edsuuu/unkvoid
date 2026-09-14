@@ -13,23 +13,25 @@ use std::sync::{
 use capture::{CaptureConfig, CaptureEvent, CaptureSource, PlatformCapturer, Quality};
 use media::{AudioEncoder, EncoderConfig, PlainSender, PlatformEncoder};
 
-/// O destino, compartilhado entre quem transmite (a thread da captura) e quem o define
-/// (o comando `use_sfu`, vindo da interface).
-type Target = Arc<Mutex<Option<PlainSender>>>;
-
-pub struct Broadcast {
-    capturer: PlatformCapturer,
-    sfu: Target,
-    sfu_key: [u8; 30],
-    captured: Arc<AtomicU64>,
-    encoded: Arc<AtomicU64>,
-    sent: Arc<AtomicU64>,
-    encode_errors: Arc<AtomicU64>,
-    send_errors: Arc<AtomicU64>,
-    send_dropped: Arc<AtomicU64>,
-    sent_bytes: Arc<AtomicU64>,
-    audio_packets: Arc<AtomicU64>,
-    audio_errors: Arc<AtomicU64>,
+/// O que sobrevive a trocar a qualidade no meio da transmissão: o destino e os contadores.
+///
+/// A captura e o encoder são refeitos, mas o `PlainSender` é o mesmo — mesmo SSRC, mesma
+/// numeração, mesmo contexto SRTP —, então o servidor continua vendo o mesmo producer e
+/// ninguém na sala perde a transmissão. O encoder novo começa num quadro-chave com a
+/// resolução nova, e o decodificador de quem assiste troca de tamanho sozinho.
+#[derive(Default)]
+struct Shared {
+    /// O destino, definido pelo `use_sfu` e lido pela thread da captura.
+    sfu: Mutex<Option<PlainSender>>,
+    captured: AtomicU64,
+    encoded: AtomicU64,
+    sent: AtomicU64,
+    encode_errors: AtomicU64,
+    send_errors: AtomicU64,
+    send_dropped: AtomicU64,
+    sent_bytes: AtomicU64,
+    audio_packets: AtomicU64,
+    audio_errors: AtomicU64,
 
     /// Microssegundos gastos dentro do callback da captura, somados.
     ///
@@ -38,11 +40,22 @@ pub struct Broadcast {
     /// seguinte. Dividido por `captured` dá o custo por quadro, e é o número que diz se
     /// os 60 fps que não aparecem são culpa nossa ou do jogo: a 60 Hz há 16 666 µs por
     /// quadro, e o que passar disso derruba fps sozinho.
-    busy_us: Arc<AtomicU64>,
+    busy_us: AtomicU64,
 
     /// Quantas vezes o servidor pediu um quadro-chave, ou seja, quantas vezes ele viu um
     /// buraco na sequência. É a medida de perda que existe entre nós e ele.
-    keyframes: Arc<AtomicU64>,
+    keyframes: AtomicU64,
+}
+
+pub struct Broadcast {
+    capturer: PlatformCapturer,
+    shared: Arc<Shared>,
+    sfu_key: [u8; 30],
+    quality: Quality,
+    frame_rate: u32,
+    source: CaptureSource,
+    with_audio: bool,
+    mute_calls: bool,
 }
 
 impl Broadcast {
@@ -54,7 +67,73 @@ impl Broadcast {
         with_audio: bool,
         mute_calls: bool,
     ) -> anyhow::Result<Self> {
-        let encoder_config = EncoderConfig::new(quality, frame_rate);
+        let shared = Arc::new(Shared::default());
+        let capturer = Self::launch(&shared, quality, frame_rate, source, with_audio, mute_calls)?;
+
+        Ok(Self {
+            capturer,
+            shared,
+            sfu_key: PlainSender::generate_key(),
+            quality,
+            frame_rate,
+            source,
+            with_audio,
+            mute_calls,
+        })
+    }
+
+    /// Troca resolução e fps sem derrubar a transmissão.
+    ///
+    /// Para a captura e o encoder e sobe os dois de novo, com a qualidade nova, no mesmo
+    /// destino. Se o encoder recusar a qualidade nova (placa sem H.264 em 4K, por
+    /// exemplo), volta à anterior e devolve o erro: quem pediu fica sabendo, e a sala
+    /// continua assistindo.
+    pub fn restart(&mut self, quality: Quality, frame_rate: u32) -> anyhow::Result<()> {
+        self.capturer.stop()?;
+
+        match Self::launch(&self.shared, quality, frame_rate, self.source, self.with_audio, self.mute_calls) {
+            Ok(capturer) => {
+                self.capturer = capturer;
+                self.quality = quality;
+                self.frame_rate = frame_rate;
+
+                Ok(())
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "broadcast: qualidade nova recusada, voltando à anterior");
+
+                self.capturer = Self::launch(
+                    &self.shared,
+                    self.quality,
+                    self.frame_rate,
+                    self.source,
+                    self.with_audio,
+                    self.mute_calls,
+                )?;
+
+                Err(error)
+            }
+        }
+    }
+
+    /// Abre encoder e captura ligados ao destino de `shared`.
+    fn launch(
+        shared: &Arc<Shared>,
+        quality: Quality,
+        frame_rate: u32,
+        source: CaptureSource,
+        with_audio: bool,
+        mute_calls: bool,
+    ) -> anyhow::Result<PlatformCapturer> {
+        // O tamanho da origem é o que mantém a proporção e impede esticar: 4K pedido num
+        // monitor 1080p sai em 1080p. Sem ele, o comportamento de antes (16:9 na largura
+        // da qualidade) em vez de uma transmissão que não começa.
+        let source_size = PlatformCapturer::source_size(source).unwrap_or_else(|error| {
+            tracing::warn!(error = %error, "broadcast: tamanho da origem desconhecido, saída em 16:9");
+
+            (quality.width(), quality.width() * 9 / 16)
+        });
+        let encoder_config = EncoderConfig::new(quality, frame_rate, source_size);
 
         // Quem manda no número é o encoder: ele já limitou o pedido à faixa que aceita, e
         // captura e encoder discordarem faria o vídeo chegar acelerado ou aos trancos.
@@ -65,8 +144,8 @@ impl Broadcast {
         // — e uma delas morrendo leva o processo junto, sem erro e sem pânico. Quem diz
         // onde foi é a última destas linhas que aparecer no arquivo.
         tracing::info!(
-            width = encoder_config.quality.dimensions().0,
-            height = encoder_config.quality.dimensions().1,
+            width = encoder_config.width,
+            height = encoder_config.height,
             frame_rate,
             bitrate = encoder_config.bitrate,
             "broadcast: abrindo o encoder de vídeo"
@@ -79,30 +158,7 @@ impl Broadcast {
         tracing::info!("broadcast: abrindo o encoder de áudio");
 
         let audio = Mutex::new(AudioEncoder::new(96_000)?);
-        let sfu: Target = Arc::new(Mutex::new(None));
-        let capture_target = Arc::clone(&sfu);
-        let captured = Arc::new(AtomicU64::new(0));
-        let encoded = Arc::new(AtomicU64::new(0));
-        let sent = Arc::new(AtomicU64::new(0));
-        let encode_errors = Arc::new(AtomicU64::new(0));
-        let send_errors = Arc::new(AtomicU64::new(0));
-        let send_dropped = Arc::new(AtomicU64::new(0));
-        let sent_bytes = Arc::new(AtomicU64::new(0));
-        let audio_packets = Arc::new(AtomicU64::new(0));
-        let audio_errors = Arc::new(AtomicU64::new(0));
-        let busy_us = Arc::new(AtomicU64::new(0));
-        let keyframes = Arc::new(AtomicU64::new(0));
-        let captured_callback = Arc::clone(&captured);
-        let encoded_callback = Arc::clone(&encoded);
-        let sent_callback = Arc::clone(&sent);
-        let encode_errors_callback = Arc::clone(&encode_errors);
-        let send_errors_callback = Arc::clone(&send_errors);
-        let send_dropped_callback = Arc::clone(&send_dropped);
-        let sent_bytes_callback = Arc::clone(&sent_bytes);
-        let audio_packets_callback = Arc::clone(&audio_packets);
-        let audio_errors_callback = Arc::clone(&audio_errors);
-        let busy_us_callback = Arc::clone(&busy_us);
-        let keyframes_callback = Arc::clone(&keyframes);
+        let shared = Arc::clone(shared);
 
         tracing::info!(
             source = ?source,
@@ -123,19 +179,19 @@ impl Broadcast {
             move |event| {
                 let frame = match event {
                     CaptureEvent::Video(frame) => {
-                        captured_callback.fetch_add(1, Ordering::Relaxed);
+                        shared.captured.fetch_add(1, Ordering::Relaxed);
                         frame
                     }
                     CaptureEvent::Audio(block) => {
                         let Ok(mut audio) = audio.lock() else {
-                            audio_errors_callback.fetch_add(1, Ordering::Relaxed);
+                            shared.audio_errors.fetch_add(1, Ordering::Relaxed);
                             return;
                         };
 
                         let packets = match audio.push(&block) {
                             Ok(packets) => packets,
                             Err(error) => {
-                                audio_errors_callback.fetch_add(1, Ordering::Relaxed);
+                                shared.audio_errors.fetch_add(1, Ordering::Relaxed);
                                 tracing::warn!(error = %error, "áudio: bloco recusado");
 
                                 return;
@@ -144,18 +200,17 @@ impl Broadcast {
 
                         drop(audio);
 
-                        if let Ok(mut target) = capture_target.lock()
+                        if let Ok(mut target) = shared.sfu.lock()
                             && let Some(sender) = target.as_mut()
                         {
                             for packet in &packets {
                                 match sender.send_audio(packet) {
                                     Ok(()) => {
-                                        audio_packets_callback.fetch_add(1, Ordering::Relaxed);
-                                        sent_bytes_callback
-                                            .store(sender.sent_bytes(), Ordering::Relaxed);
+                                        shared.audio_packets.fetch_add(1, Ordering::Relaxed);
+                                        shared.sent_bytes.store(sender.sent_bytes(), Ordering::Relaxed);
                                     }
                                     Err(_) => {
-                                        audio_errors_callback.fetch_add(1, Ordering::Relaxed);
+                                        shared.audio_errors.fetch_add(1, Ordering::Relaxed);
                                     }
                                 }
                             }
@@ -174,7 +229,8 @@ impl Broadcast {
                 // Antes de codificar, e uma vez por quadro: é o único momento em que
                 // dá para atender o pedido, e ler o socket aqui custa uma syscall que
                 // volta vazia na esmagadora maioria dos quadros.
-                let asked = capture_target
+                let asked = shared
+                    .sfu
                     .lock()
                     .ok()
                     .and_then(|mut target| target.as_mut().map(|sender| sender.keyframe_requested()))
@@ -187,12 +243,12 @@ impl Broadcast {
 
                     if asked {
                         encoder.request_keyframe();
-                        keyframes_callback.fetch_add(1, Ordering::Relaxed);
+                        shared.keyframes.fetch_add(1, Ordering::Relaxed);
                     }
 
                     match encoder.encode(surface, frame.timestamp_ns) {
                         Ok(encoded) => {
-                            encoded_callback.fetch_add(1, Ordering::Relaxed);
+                            shared.encoded.fetch_add(1, Ordering::Relaxed);
                             encoded
                         }
                         // `NeedsMoreInput` é a fila do encoder de hardware enchendo, não
@@ -201,7 +257,7 @@ impl Broadcast {
                         // de placa está enchendo a fila dele.
                         Err(media::EncoderError::NeedsMoreInput) => return,
                         Err(error) => {
-                            encode_errors_callback.fetch_add(1, Ordering::Relaxed);
+                            shared.encode_errors.fetch_add(1, Ordering::Relaxed);
                             tracing::debug!(error = %error, "encoder: quadro sem saída");
 
                             return;
@@ -213,44 +269,29 @@ impl Broadcast {
                 // o socket é não-bloqueante, então o pior caso é perder um pacote em vez
                 // de segurar o próximo quadro. Antes cada quadro nascia uma task do
                 // tokio, sessenta vezes por segundo, para fazer isto.
-                if let Ok(mut target) = capture_target.lock()
+                if let Ok(mut target) = shared.sfu.lock()
                     && let Some(sender) = target.as_mut()
                 {
                     match sender.send_frame(&encoded, frame_rate) {
                         Ok(()) => {
-                            sent_callback.fetch_add(1, Ordering::Relaxed);
+                            shared.sent.fetch_add(1, Ordering::Relaxed);
                             // Lido com o cadeado já na mão: uplink saturado larga pacote
                             // sem devolver erro, e sem este número some do diagnóstico.
-                            send_dropped_callback.store(sender.dropped(), Ordering::Relaxed);
-                            sent_bytes_callback.store(sender.sent_bytes(), Ordering::Relaxed);
+                            shared.send_dropped.store(sender.dropped(), Ordering::Relaxed);
+                            shared.sent_bytes.store(sender.sent_bytes(), Ordering::Relaxed);
                         }
                         Err(error) => {
-                            send_errors_callback.fetch_add(1, Ordering::Relaxed);
+                            shared.send_errors.fetch_add(1, Ordering::Relaxed);
                             tracing::warn!(error = %error, "transporte: quadro não saiu");
                         }
                     }
                 }
 
-                busy_us_callback.fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+                shared.busy_us.fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
             },
         )?;
 
-        Ok(Self {
-            capturer,
-            sfu,
-            sfu_key: PlainSender::generate_key(),
-            captured,
-            encoded,
-            sent,
-            encode_errors,
-            send_errors,
-            send_dropped,
-            busy_us,
-            keyframes,
-            sent_bytes,
-            audio_packets,
-            audio_errors,
-        })
+        Ok(capturer)
     }
 
     /// O que o servidor precisa saber antes do primeiro pacote, inclusive a chave que o
@@ -280,6 +321,7 @@ impl Broadcast {
         let sender = PlainSender::connect(address.as_str(), &self.sfu_key, server_key.as_deref())?;
 
         *self
+            .shared
             .sfu
             .lock()
             .map_err(|_| anyhow::anyhow!("broadcast state is poisoned"))? = Some(sender);
@@ -292,27 +334,29 @@ impl Broadcast {
     }
 
     pub fn stats(&self) -> serde_json::Value {
+        let shared = &self.shared;
+
         serde_json::json!({
             "active": true,
-            "captured": self.captured.load(Ordering::Relaxed),
-            "encoded": self.encoded.load(Ordering::Relaxed),
-            "sent": self.sent.load(Ordering::Relaxed),
-            "encodeErrors": self.encode_errors.load(Ordering::Relaxed),
-            "sendErrors": self.send_errors.load(Ordering::Relaxed),
-            "sendDropped": self.send_dropped.load(Ordering::Relaxed),
-            "busyUs": self.busy_us.load(Ordering::Relaxed),
-            "keyframesAsked": self.keyframes.load(Ordering::Relaxed),
-            "sentBytes": self.sent_bytes.load(Ordering::Relaxed),
-            "audioPackets": self.audio_packets.load(Ordering::Relaxed),
+            "captured": shared.captured.load(Ordering::Relaxed),
+            "encoded": shared.encoded.load(Ordering::Relaxed),
+            "sent": shared.sent.load(Ordering::Relaxed),
+            "encodeErrors": shared.encode_errors.load(Ordering::Relaxed),
+            "sendErrors": shared.send_errors.load(Ordering::Relaxed),
+            "sendDropped": shared.send_dropped.load(Ordering::Relaxed),
+            "busyUs": shared.busy_us.load(Ordering::Relaxed),
+            "keyframesAsked": shared.keyframes.load(Ordering::Relaxed),
+            "sentBytes": shared.sent_bytes.load(Ordering::Relaxed),
+            "audioPackets": shared.audio_packets.load(Ordering::Relaxed),
             "captureError": self.capturer.error(),
-            "audioErrors": self.audio_errors.load(Ordering::Relaxed),
+            "audioErrors": shared.audio_errors.load(Ordering::Relaxed),
         })
     }
 
     pub fn stop(&mut self) -> anyhow::Result<()> {
         self.capturer.stop()?;
 
-        if let Ok(mut target) = self.sfu.lock() {
+        if let Ok(mut target) = self.shared.sfu.lock() {
             *target = None;
         }
 

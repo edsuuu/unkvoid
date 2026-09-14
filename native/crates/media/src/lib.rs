@@ -48,6 +48,10 @@ pub struct EncodedFrame {
 #[derive(Debug, Clone)]
 pub struct EncoderConfig {
     pub quality: Quality,
+    /// O tamanho de saída: a largura da qualidade e a altura na proporção da origem —
+    /// ver `Quality::fit`. É o que o encoder recebe; a qualidade sozinha não basta.
+    pub width: u32,
+    pub height: u32,
     pub frame_rate: f64,
     pub bitrate: u32,
 }
@@ -58,7 +62,10 @@ impl EncoderConfig {
     pub const FPS_MIN: u32 = 30;
     pub const FPS_MAX: u32 = 60;
 
-    pub fn new(quality: Quality, frame_rate: u32) -> Self {
+    /// `source` é o tamanho do que está sendo capturado, em pixels.
+    pub fn new(quality: Quality, frame_rate: u32, source: (u32, u32)) -> Self {
+        let (width, height) = quality.fit(source);
+
         // Os mesmos valores do app web, onde já foram calibrados.
         let bitrate = match quality {
             // Medidos depois que o controle de taxa passou a ser respeitado de verdade.
@@ -68,13 +75,19 @@ impl EncoderConfig {
             // Jogo a 60 quadros é o pior caso do H.264: cena inteira mudando toda vez.
             Quality::Hd720 => 5_000_000,
             Quality::Hd1080 => 10_000_000,
-            Quality::Qhd1440 => 16_000_000,
+            // 1440p tem 1,78 vez os pixels do 1080p e recebia só 1,6 vez os bits: cena em
+            // movimento quebrava em bloco. 4K60 em H.264 fica no piso do que se recomenda
+            // para envio ao vivo nessa resolução.
+            Quality::Qhd1440 => 20_000_000,
+            Quality::Uhd2160 => 40_000_000,
         };
 
         let frame_rate = frame_rate.clamp(Self::FPS_MIN, Self::FPS_MAX);
 
         Self {
             quality,
+            width,
+            height,
             // Metade dos quadros custa perto de metade da banda: um teto pensado para
             // 60 sobra em 30, e sobra vira bitrate gasto à toa.
             bitrate: bitrate * frame_rate / Self::FPS_MAX,
@@ -158,17 +171,18 @@ mod tests {
 
     #[test]
     fn bitrate_rises_with_resolution() {
-        let baixo = EncoderConfig::new(Quality::Hd720, 60).bitrate;
-        let medio = EncoderConfig::new(Quality::Hd1080, 60).bitrate;
-        let alto = EncoderConfig::new(Quality::Qhd1440, 60).bitrate;
+        let baixo = EncoderConfig::new(Quality::Hd720, 60, (3840, 2160)).bitrate;
+        let medio = EncoderConfig::new(Quality::Hd1080, 60, (3840, 2160)).bitrate;
+        let alto = EncoderConfig::new(Quality::Qhd1440, 60, (3840, 2160)).bitrate;
+        let uhd = EncoderConfig::new(Quality::Uhd2160, 60, (3840, 2160)).bitrate;
 
-        assert!(baixo < medio && medio < alto);
+        assert!(baixo < medio && medio < alto && alto < uhd);
     }
 
     #[test]
     fn half_the_frames_cost_about_half_the_bandwidth() {
-        let cheio = EncoderConfig::new(Quality::Hd1080, 60);
-        let metade = EncoderConfig::new(Quality::Hd1080, 30);
+        let cheio = EncoderConfig::new(Quality::Hd1080, 60, (3840, 2160));
+        let metade = EncoderConfig::new(Quality::Hd1080, 30, (3840, 2160));
 
         assert_eq!(cheio.frame_rate, 60.0);
         assert_eq!(metade.frame_rate, 30.0);
@@ -179,7 +193,7 @@ mod tests {
     fn fps_out_of_range_is_clamped() {
         // A interface oferece 30 a 60, mas quem chama é o Rust: um valor solto vindo de
         // fora não pode virar captura de 1 fps nem encoder pedindo 240.
-        assert_eq!(EncoderConfig::new(Quality::Hd1080, 5).frame_rate, 30.0);
-        assert_eq!(EncoderConfig::new(Quality::Hd1080, 500).frame_rate, 60.0);
+        assert_eq!(EncoderConfig::new(Quality::Hd1080, 5, (3840, 2160)).frame_rate, 30.0);
+        assert_eq!(EncoderConfig::new(Quality::Hd1080, 500, (3840, 2160)).frame_rate, 60.0);
     }
 }

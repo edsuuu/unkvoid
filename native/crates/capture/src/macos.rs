@@ -128,6 +128,43 @@ fn frame_size(sample: &CMSampleBuffer) -> (u32, u32) {
 }
 
 impl MacCapturer {
+    /// O tamanho da origem, para a altura da saída seguir a proporção dela.
+    pub fn source_size(source: CaptureSource) -> Result<(u32, u32), CaptureError> {
+        let content =
+            SCShareableContent::get().map_err(|error| CaptureError::Platform(error.to_string()))?;
+
+        Self::size_of(&content, source)
+    }
+
+    fn size_of(content: &SCShareableContent, source: CaptureSource) -> Result<(u32, u32), CaptureError> {
+        match source {
+            CaptureSource::Window(id) => {
+                let window = content
+                    .windows()
+                    .into_iter()
+                    .find(|window| u64::from(window.window_id()) == id)
+                    .ok_or(CaptureError::NoDisplay)?;
+                let size = window.frame().size;
+
+                Ok((size.width.max(0.0).round() as u32, size.height.max(0.0).round() as u32))
+            }
+            CaptureSource::Display(id) => {
+                let display = content
+                    .displays()
+                    .into_iter()
+                    .find(|display| display.display_id() == id)
+                    .ok_or(CaptureError::NoDisplay)?;
+
+                Ok((display.width(), display.height()))
+            }
+            CaptureSource::PrimaryDisplay => {
+                let display = content.displays().into_iter().next().ok_or(CaptureError::NoDisplay)?;
+
+                Ok((display.width(), display.height()))
+            }
+        }
+    }
+
     pub fn displays() -> Result<Vec<Display>, CaptureError> {
         let content =
             SCShareableContent::get().map_err(|error| CaptureError::Platform(error.to_string()))?;
@@ -292,7 +329,7 @@ impl MacCapturer {
             }
         };
 
-        let (width, height) = config.quality.dimensions();
+        let (width, height) = config.quality.fit(Self::size_of(&content, config.source)?);
 
         let stream_config = SCStreamConfiguration::new()
             .with_width(width)

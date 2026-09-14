@@ -9,8 +9,8 @@ const GRID_ICON = '<path stroke-linecap="round" stroke-linejoin="round" d="M4 5h
 const FOCUS_ICON = '<path stroke-linecap="round" stroke-linejoin="round" d="M4 5h16v10H4zM4 17h4v2H4zM10 17h4v2h-4zM16 17h4v2h-4z"/>';
 
 /** Aparência dos elementos que o JavaScript cria. */
-/** Saturação inicial, em porcentagem. Ver o comentário de `attachVideoConfig`. */
-const SATURATION_DEFAULT = 115;
+/** Saturação inicial, em porcentagem: 100 é a cor como ela saiu da tela de quem transmite. */
+const SATURATION_DEFAULT = 100;
 
 const LOOK = {
     tile: 'group relative m-0 flex min-h-0 flex-col overflow-hidden rounded-lg bg-black',
@@ -19,8 +19,12 @@ const LOOK = {
     /* Fora do fluxo e acima de tudo: é assim que o vídeo cobre a janela inteira sem a
        barra da sala nem o respiro do `body` sobrando na borda. O arredondamento do
        cartão fica: com a legenda em `absolute`, o vídeo é o único filho no fluxo e
-       ocupa a altura toda, então a única borda que sobra é a das proporções. */
-    tileFullscreen: 'fixed inset-0 z-40',
+       ocupa a altura toda, então a única borda que sobra é a das proporções.
+
+       É a lista inteira, e não `tile` somado a isto: o `relative` de `tile` vence o
+       `fixed` no CSS do Tailwind, o cartão ficava preso na célula da grade, e com duas
+       telas a tela cheia ocupava só metade da janela e o resto ficava cinza. */
+    tileFullscreen: 'group fixed inset-0 z-40 m-0 flex min-h-0 flex-col overflow-hidden rounded-lg bg-black',
 
     caption: 'flex items-center gap-2 bg-panel px-3 py-1.5 text-xs text-ink',
 
@@ -159,6 +163,7 @@ class App {
 
         /** Quem esta pausado nao gasta banda nem decoder: o servidor para de mandar. */
         this.pausedPeers = new Set();
+        this.hiddenTimer = null;
 
         /** A propria tela, guardada para o botao poder mostrar e esconder sem reconsumir. */
         this.selfStream = null;
@@ -179,11 +184,72 @@ class App {
     }
 
     /**
+     * Qualidade inicial pelo número de núcleos, e a escolha da pessoa lembrada.
+     *
+     * Quatro núcleos ou menos transmitindo 1080p60 disputam a CPU com o próprio jogo, e
+     * quem baixou para 720p30 porque o PC é fraco não deveria escolher de novo toda vez.
+     */
+    wireQuality() {
+        const weak = (navigator.hardwareConcurrency || 8) <= 4;
+
+        for (const [id, key, guess] of [['quality', 'unkvoid:quality', '720'], ['fps', 'unkvoid:fps', '30']]) {
+            const select = el(id);
+            const wanted = localStorage.getItem(key) ?? (weak ? guess : null);
+
+            if (wanted && [...select.options].some(option => option.value === wanted)) {
+                select.value = wanted;
+            }
+
+            select.onchange = () => localStorage.setItem(key, select.value);
+        }
+    }
+
+    /** Pausa ou retoma só o vídeo de quem transmite, deixando de fora quem foi pausado à mão. */
+    async pauseVideo(paused) {
+        if (! this.sfu) {
+            return;
+        }
+
+        for (const tile of document.querySelectorAll('[data-screen]')) {
+            const peerId = tile.dataset.screen;
+
+            if (this.pausedPeers.has(peerId)) {
+                continue;
+            }
+
+            await this.sfu.setPeerPaused(peerId, paused, 'video').catch(error => this.log('media.visibility.error', {
+                peerId,
+                paused,
+                message: error.message ?? String(error),
+            }));
+        }
+
+        this.log('media.visibility', { paused });
+    }
+
+    /**
      * Ordem de abertura: atualizar, exigir o servidor, e só então deixar entrar. Entrar
      * num app desatualizado ou sem servidor só produziria erro mais adiante.
      */
     async start() {
         this.checkWebRTC();
+        this.wireQuality();
+
+        // Janela minimizada ou coberta não precisa decodificar vídeo; o som continua.
+        // Pausar espera dois segundos, porque retomar vídeo custa esperar um quadro-chave.
+        // ponytail: o cartão nativo do Linux não entra aqui, porque lá não há consumer de
+        // vídeo no `SfuClient`; o caminho de saída é o `watch_mute` por producer.
+        document.addEventListener('visibilitychange', () => {
+            clearTimeout(this.hiddenTimer);
+
+            if (document.hidden) {
+                this.hiddenTimer = setTimeout(() => void this.pauseVideo(true), 2000);
+
+                return;
+            }
+
+            void this.pauseVideo(false);
+        });
 
         // Fora do `wireRoom`: aquele roda a cada entrada em sala, e `addEventListener`
         // soma em vez de substituir, ao contrário dos `onclick` do resto do arquivo.
@@ -603,6 +669,7 @@ class App {
         el('layout').onclick = () => this.toggleLayout();
         el('share').onclick = () => this.openShareModal();
         el('stop').onclick = () => this.stopSharing();
+        el('live-quality').onchange = () => void this.changeQuality();
         el('self-view').onclick = () => this.toggleSelfView();
         el('watch-pending').onclick = () => this.refreshWatch();
         el('people-refresh').onclick = () => this.refreshWatch();
@@ -956,7 +1023,10 @@ class App {
 
                 audio.srcObject = new MediaStream([consumer.track]);
                 audio.autoplay = true;
-                audio.volume = 1;
+                // Chega mudo e com o volume em zero: o som da tela de alguém invadindo a sala
+                // sem aviso é pior do que um clique para ligar. Quem assiste decide.
+                audio.volume = 0;
+                audio.muted = true;
                 audio.onplay = () => this.log('media.audio.playing', { peerId });
                 audio.onerror = () => this.log('media.audio.error', {
                     peerId,
@@ -1064,7 +1134,7 @@ class App {
             + `<figcaption class="${LOOK.caption}">`
             + '<span class="truncate"></span>'
             + '<span class="flex-1"></span>'
-            + '<button class="cursor-pointer rounded px-1 hover:text-white" data-native-mute type="button" title="Mutar">🔊</button>'
+            + '<button class="cursor-pointer rounded px-1 hover:text-white" data-native-mute type="button" title="Ativar o som">🔇</button>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-native-stop type="button">Parar</button>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-focus type="button">Focar</button>'
             + '<button class="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft hover:bg-line hover:text-white" data-fullscreen type="button">Tela cheia</button>'
@@ -1079,15 +1149,19 @@ class App {
         tile.querySelector('[data-fullscreen]').onclick = () => void this.toggleFullscreen(peerId);
 
         // O som sai direto pelo sistema, sem elemento de áudio: mudo é o Rust parar de
-        // repassar os pacotes de áudio.
+        // repassar os pacotes de áudio. Começa mudo, como no cartão do WebRTC.
         const mute = tile.querySelector('[data-native-mute]');
-        let muted = false;
-
-        mute.onclick = () => {
-            muted = ! muted;
+        let muted = true;
+        const applyMute = () => {
             mute.textContent = muted ? '🔇' : '🔊';
             mute.title = muted ? 'Ativar o som' : 'Mutar';
             void invoke('watch_mute', { peerId, muted }).catch(error => this.log('media.native.mute.error', { peerId, message: error.message ?? String(error) }));
+        };
+
+        applyMute();
+        mute.onclick = () => {
+            muted = ! muted;
+            applyMute();
         };
 
         tile.querySelector('[data-native-stop]').onclick = () => {
@@ -1168,8 +1242,11 @@ class App {
             + '<label class="flex flex-col gap-1 text-xs text-ink-soft">Brilho'
             + '<input class="accent-brand" data-brightness type="range" min="50" max="250" value="100" aria-label="Brilho desta transmissão">'
             + '</label>'
+            + '<label class="mt-3 flex flex-col gap-1 text-xs text-ink-soft">Contraste'
+            + '<input class="accent-brand" data-contrast type="range" min="50" max="250" value="100" aria-label="Contraste desta transmissão">'
+            + '</label>'
             + '<label class="mt-3 flex flex-col gap-1 text-xs text-ink-soft">Saturação'
-            + '<input class="accent-brand" data-saturation type="range" min="50" max="250" value="115" aria-label="Saturação desta transmissão">'
+            + `<input class="accent-brand" data-saturation type="range" min="50" max="250" value="${SATURATION_DEFAULT}" aria-label="Saturação desta transmissão">`
             + '</label>'
             + '<button class="mt-3 cursor-pointer text-xs text-ink-dim hover:text-white" data-video-reset type="button">Voltar ao padrão</button>'
             + '</span>'
@@ -1221,15 +1298,13 @@ class App {
      * Cada transmissão tem o seu painel, mas o valor é guardado uma vez só: quem precisa
      * clarear uma tela precisa clarear a próxima também, e ajustar tudo de novo a cada
      * pessoa que entra na sala seria pior do que não ter ajuste.
-     *
-     * Saturação começa acima de 100 de propósito. O H.264 em 4:2:0 joga fora três quartos
-     * da informação de cor, e a imagem chega lavada em relação ao que quem transmite vê.
      */
     attachVideoConfig(tile, video) {
         // Variáveis, não `style.filter`: o borrão de pausa mora na mesma propriedade, e
         // escrever direto ali fazia um dos dois apagar o outro.
         const controls = [
             ['--brightness', tile.querySelector('[data-brightness]'), 'unkvoid.brilho', 100],
+            ['--contrast', tile.querySelector('[data-contrast]'), 'unkvoid.contraste', 100],
             ['--saturation', tile.querySelector('[data-saturation]'), 'unkvoid.saturacao', SATURATION_DEFAULT],
         ];
 
@@ -1332,6 +1407,12 @@ class App {
         };
         mute.onclick = () => {
             audio.muted = ! audio.muted;
+
+            // Desmutar com o volume em zero não daria som nenhum, e quem clicou quer ouvir.
+            if (! audio.muted && audio.volume === 0) {
+                audio.volume = 1;
+            }
+
             paint();
             this.log('media.audio.mute', { peerId, muted: audio.muted });
         };
@@ -1527,7 +1608,7 @@ class App {
             const full = tile.dataset.screen === this.fullscreen;
             const thumb = focusing && tile.dataset.screen !== this.focused;
 
-            tile.className = full ? `${LOOK.tile} ${LOOK.tileFullscreen}` : LOOK.tile;
+            tile.className = full ? LOOK.tileFullscreen : LOOK.tile;
             tile.hidden = this.fullscreen ? ! full : false;
             tile.style.gridColumn = focusing && ! thumb ? '1 / -1' : '';
             tile.style.gridRow = focusing ? (thumb ? '2' : '1') : '';
@@ -1840,6 +1921,8 @@ class App {
         el('share').hidden = on;
         el('stop').hidden = ! on;
         el('self-view').hidden = ! on;
+        el('live-quality').hidden = ! on;
+        el('live-quality').value = `${el('quality').value}-${el('fps').value}`;
         if (! on) {
             // A propria tela some junto: o servidor nao manda `producerClosed` para quem
             // fechou o producer, entao o quadro ficaria congelado para sempre.
@@ -1936,6 +2019,33 @@ class App {
         }
 
         this.fail('a transmissão não chegou ao servidor: nenhum pacote entrou em 30 s. A porta de RTP está bloqueada no caminho.');
+    }
+
+    /**
+     * Troca a qualidade no ar, pelo seletor que aparece enquanto se transmite.
+     *
+     * Os dois seletores do modal acompanham, para a próxima transmissão e o
+     * `localStorage` começarem de onde a pessoa deixou.
+     */
+    async changeQuality() {
+        const select = el('live-quality');
+        const [quality, fps] = select.value.split('-');
+        const previous = `${el('quality').value}-${el('fps').value}`;
+
+        this.log('broadcast.quality', { quality, fps });
+
+        try {
+            await this.broadcast.changeQuality(quality, Number(fps));
+            el('quality').value = quality;
+            el('fps').value = fps;
+            localStorage.setItem('unkvoid:quality', quality);
+            localStorage.setItem('unkvoid:fps', fps);
+            this.toast(`transmitindo em ${quality === '2160' ? '4K' : `${quality}p`} a ${fps} fps`);
+        } catch (failure) {
+            select.value = previous;
+            this.log('broadcast.quality.error', { message: failure.message ?? String(failure) });
+            this.fail(`não deu para trocar a qualidade: ${failure.message ?? failure}`);
+        }
     }
 
     async stopSharing() {

@@ -15,32 +15,39 @@ use ::windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE
 use ::windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
     D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-    D3D11_USAGE_DEFAULT, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,
-    D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VPIV_DIMENSION_TEXTURE2D, D3D11_VPOV_DIMENSION_TEXTURE2D,
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11Texture2D,
-    ID3D11VideoContext, ID3D11VideoDevice, ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator,
-    ID3D11VideoProcessorInputView, ID3D11VideoProcessorOutputView,
+    D3D11_USAGE_DEFAULT, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_COLOR_SPACE,
+    D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC,
+    D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE, D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255,
+    D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,
+    D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_OPTIMAL_QUALITY, D3D11_VPIV_DIMENSION_TEXTURE2D,
+    D3D11_VPOV_DIMENSION_TEXTURE2D, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+    ID3D11Multithread, ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoContext1, ID3D11VideoDevice,
+    ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorInputView,
+    ID3D11VideoProcessorOutputView,
 };
 use ::windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
     DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_NV12, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
 };
 use ::windows::Win32::Graphics::Dxgi::{IDXGIKeyedMutex, IDXGIResource};
 use ::windows::Win32::Media::MediaFoundation::{
-    CODECAPI_AVEncCommonLowLatency, CODECAPI_AVEncCommonMeanBitRate,
-    CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncCommonRealTime, CODECAPI_AVEncMPVGOPSize,
+    CODECAPI_AVEncCommonLowLatency, CODECAPI_AVEncCommonMaxBitRate, CODECAPI_AVEncCommonMeanBitRate,
+    CODECAPI_AVEncCommonQualityVsSpeed, CODECAPI_AVEncCommonRateControlMode,
+    CODECAPI_AVEncCommonRealTime, CODECAPI_AVEncMPVDefaultBPictureCount, CODECAPI_AVEncMPVGOPSize,
     CODECAPI_AVEncVideoForceKeyFrame,
     ICodecAPI, IMFActivate, IMFDXGIDeviceManager, IMFMediaEventGenerator, IMFMediaType, IMFSample,
     IMFTransform, METransformHaveOutput, METransformNeedInput, MF_E_TRANSFORM_NEED_MORE_INPUT,
     MF_EVENT_TYPE, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE,
     MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE,
+    MF_MT_TRANSFER_FUNCTION, MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_VIDEO_PRIMARIES, MF_MT_YUV_MATRIX,
     MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION, MFCreateDXGIDeviceManager, MFCreateDXGISurfaceBuffer,
     MFCreateMediaType, MFCreateSample, MFMediaType_Video, MFSTARTUP_NOSOCKET, MFStartup,
     MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
     MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
     MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_REGISTER_TYPE_INFO, MFTEnumEx,
-    MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive,
-    eAVEncCommonRateControlMode_CBR,
+    MFNominalRange_16_235, MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive,
+    MFVideoPrimaries_BT709, MFVideoTransFunc_709, MFVideoTransferMatrix_BT709,
+    eAVEncCommonRateControlMode_PeakConstrainedVBR,
 };
 use ::windows::Win32::System::Com::CoTaskMemFree;
 use ::windows::Win32::System::Variant::{
@@ -129,7 +136,7 @@ struct Bridge {
 
 impl MediaFoundationEncoder {
     pub fn new(config: &EncoderConfig) -> Result<Self, EncoderError> {
-        let (width, height) = config.quality.dimensions();
+        let (width, height) = (config.width, config.height);
 
         // Um passo por linha, anunciado antes de acontecer. Daqui para baixo é tudo COM
         // e Direct3D: driver velho, placa sem encoder de hardware ou sessão sem GPU não
@@ -441,7 +448,9 @@ impl MediaFoundationEncoder {
                 OutputFrameRate: rate,
                 OutputWidth: self.width,
                 OutputHeight: self.height,
-                Usage: Default::default(),
+                // Qualidade em vez de velocidade: é um blit por quadro, e o filtro de
+                // escala melhor é o que separa texto legível de texto borrado.
+                Usage: D3D11_VIDEO_USAGE_OPTIMAL_QUALITY,
             };
 
             let enumerator = self
@@ -453,6 +462,48 @@ impl MediaFoundationEncoder {
                 .video_device
                 .CreateVideoProcessor(&enumerator, 0)
                 .map_err(encode_error)?;
+
+            // Sem "processamento automático" o driver não aplica realce, redução de
+            // ruído ou o que mais achar bonito por conta própria: a tela sai como está.
+            self.video_context.VideoProcessorSetStreamAutoProcessingMode(&processor, 0, false);
+
+            // Sem isto o processador converte com tudo zerado: matriz BT.601 e faixa
+            // "indefinida", que o driver resolve como quiser. O H.264 saía sem dizer o
+            // que fez, o decodificador de quem assiste chutava BT.709 e faixa limitada, e
+            // a imagem chegava escura e lavada. Entra RGB cheio (0–255), sai NV12 BT.709
+            // limitado (16–235) — o que todo decodificador assume quando ninguém avisa.
+            //
+            // A interface nova (Windows 10) diz isso por um enum sem ambiguidade; a antiga
+            // é um campo de bits que alguns drivers lêem de outro jeito. Fica a nova
+            // quando existe, a antiga quando não.
+            match self.video_context.cast::<ID3D11VideoContext1>() {
+                Ok(context) => {
+                    context.VideoProcessorSetStreamColorSpace1(
+                        &processor,
+                        0,
+                        DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+                    );
+                    context.VideoProcessorSetOutputColorSpace1(
+                        &processor,
+                        DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
+                    );
+
+                    tracing::info!("encoder: espaço de cor pelo ID3D11VideoContext1");
+                }
+                Err(error) => {
+                    self.video_context.VideoProcessorSetStreamColorSpace(
+                        &processor,
+                        0,
+                        &color_space(D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255),
+                    );
+                    self.video_context.VideoProcessorSetOutputColorSpace(
+                        &processor,
+                        &color_space(D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235),
+                    );
+
+                    tracing::info!(error = %error, "encoder: espaço de cor pelo campo de bits antigo");
+                }
+            }
 
             Ok((processor, enumerator))
         }
@@ -626,7 +677,7 @@ impl MediaFoundationEncoder {
 
             self.ready.push_back(EncodedFrame {
                 keyframe: is_keyframe(&data),
-                data: data,
+                data,
                 timestamp_ns: 0,
             });
 
@@ -637,9 +688,10 @@ impl MediaFoundationEncoder {
 
 
 /// Quantos segundos entre quadros-chave. Quem perde um pacote fica congelado até o
-/// próximo, então isto é o teto da travada de quem assiste. Um segundo é o mesmo que o
-/// caminho do macOS já usa, pelo mesmo motivo escrito lá.
-const GOP_SECONDS: f64 = 1.0;
+/// próximo, então isto é o teto da travada de quem assiste — mas o servidor pede um
+/// quadro-chave na hora quando vê buraco, então o periódico só cobre quem acabou de
+/// entrar. Dois segundos é metade dos keyframes, e keyframe é o quadro mais caro.
+const GOP_SECONDS: f64 = 2.0;
 
 /// O valor booleano do COM para verdadeiro. Nenhum dos ajustes aqui é desligado.
 const LIGADO: VARIANT_0_0_0 = VARIANT_0_0_0 {
@@ -669,16 +721,34 @@ unsafe fn tune(transform: &IMFTransform, config: &EncoderConfig) {
     // A ordem importa: o modo primeiro, senão a taxa é lida com o significado do modo
     // antigo. Tudo em VT_UI4 e VT_BOOL porque é o que o ICodecAPI aceita — o `From<u64>`
     // que a crate oferece monta VT_UI8, que o encoder recusa.
-    let settings: [(&::windows::core::GUID, VARIANT, &str); 5] = [
+    // VBR com teto: a média é o alvo, e o pico (uma vez e meia) é o que um keyframe ou
+    // uma cena inteira mudando pode gastar sem estourar o uplink. CBR gastava o alvo
+    // inteiro numa tela parada e faltava justamente quando a cena mexia.
+    let settings: [(&::windows::core::GUID, VARIANT, &str); 8] = [
         (
             &CODECAPI_AVEncCommonRateControlMode,
-            variant(VT_UI4, VARIANT_0_0_0 { ulVal: eAVEncCommonRateControlMode_CBR.0 as u32 }),
+            variant(VT_UI4, VARIANT_0_0_0 { ulVal: eAVEncCommonRateControlMode_PeakConstrainedVBR.0 as u32 }),
             "modo de taxa",
         ),
         (
             &CODECAPI_AVEncCommonMeanBitRate,
             variant(VT_UI4, VARIANT_0_0_0 { ulVal: config.bitrate }),
             "taxa média",
+        ),
+        (
+            &CODECAPI_AVEncCommonMaxBitRate,
+            variant(VT_UI4, VARIANT_0_0_0 { ulVal: config.bitrate * 3 / 2 }),
+            "taxa de pico",
+        ),
+        (
+            &CODECAPI_AVEncCommonQualityVsSpeed,
+            variant(VT_UI4, VARIANT_0_0_0 { ulVal: 100 }),
+            "qualidade sobre velocidade",
+        ),
+        (
+            &CODECAPI_AVEncMPVDefaultBPictureCount,
+            variant(VT_UI4, VARIANT_0_0_0 { ulVal: 0 }),
+            "sem quadros B",
         ),
         (&CODECAPI_AVEncCommonLowLatency, variant(VT_BOOL, LIGADO), "baixa latência"),
         (&CODECAPI_AVEncCommonRealTime, variant(VT_BOOL, LIGADO), "tempo real"),
@@ -698,7 +768,7 @@ unsafe fn tune(transform: &IMFTransform, config: &EncoderConfig) {
     tracing::info!(
         bitrate = config.bitrate,
         gop,
-        "encoder: taxa constante, baixa latência"
+        "encoder: VBR com pico, baixa latência"
     );
 }
 
@@ -845,29 +915,48 @@ unsafe fn configure_types(
     unsafe {
         let rate = config.frame_rate.round() as u32;
 
-        let output: IMFMediaType = MFCreateMediaType().map_err(start_error)?;
+        // Os atributos de cor no tipo de saída são o que faz alguns MFTs escreverem o
+        // VUI; outros recusam o tipo inteiro por causa deles. Tenta com, e sem quando
+        // o encoder não aceita — a entrada, que é onde a cor de verdade se define para
+        // o MFT, continua obrigatória.
+        let output_type = |with_color: bool| -> Result<IMFMediaType, EncoderError> {
+            let output: IMFMediaType = MFCreateMediaType().map_err(start_error)?;
 
-        output
-            .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
-            .map_err(start_error)?;
-        output
-            .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)
-            .map_err(start_error)?;
-        output
-            .SetUINT32(&MF_MT_AVG_BITRATE, config.bitrate)
-            .map_err(start_error)?;
-        output
-            .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
-            .map_err(start_error)?;
-        output
-            .SetUINT32(&MF_MT_ALL_SAMPLES_INDEPENDENT, 0)
-            .map_err(start_error)?;
-        set_frame_size(&output, &MF_MT_FRAME_SIZE, width, height)?;
-        set_ratio(&output, &MF_MT_FRAME_RATE, rate, 1)?;
+            output
+                .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
+                .map_err(start_error)?;
+            output
+                .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)
+                .map_err(start_error)?;
+            output
+                .SetUINT32(&MF_MT_AVG_BITRATE, config.bitrate)
+                .map_err(start_error)?;
+            output
+                .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
+                .map_err(start_error)?;
+            output
+                .SetUINT32(&MF_MT_ALL_SAMPLES_INDEPENDENT, 0)
+                .map_err(start_error)?;
+            set_frame_size(&output, &MF_MT_FRAME_SIZE, width, height)?;
+            set_ratio(&output, &MF_MT_FRAME_RATE, rate, 1)?;
 
-        transform
-            .SetOutputType(0, Some(&output), 0)
-            .map_err(start_error)?;
+            if with_color {
+                set_color(&output)?;
+            }
+
+            Ok(output)
+        };
+
+        match transform.SetOutputType(0, Some(&output_type(true)?), 0) {
+            Ok(()) => tracing::info!("encoder: tipo de saída com atributos de cor"),
+            Err(error) => {
+                tracing::warn!(error = %error, "encoder: tipo de saída recusado com cor, tentando sem");
+
+                transform
+                    .SetOutputType(0, Some(&output_type(false)?), 0)
+                    .map_err(start_error)?;
+            }
+        }
 
         let input: IMFMediaType = MFCreateMediaType().map_err(start_error)?;
 
@@ -882,12 +971,43 @@ unsafe fn configure_types(
             .map_err(start_error)?;
         set_frame_size(&input, &MF_MT_FRAME_SIZE, width, height)?;
         set_ratio(&input, &MF_MT_FRAME_RATE, rate, 1)?;
+        set_color(&input)?;
 
         transform
             .SetInputType(0, Some(&input), 0)
             .map_err(start_error)?;
 
         Ok(())
+    }
+}
+
+/// O mesmo espaço de cor que o processador produz, dito ao encoder para que ele escreva
+/// o VUI no SPS. É o VUI que faz o decodificador do outro lado usar a matriz e a faixa
+/// certas em vez de chutar.
+unsafe fn set_color(kind: &IMFMediaType) -> Result<(), EncoderError> {
+    unsafe {
+        kind.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32)
+            .map_err(start_error)?;
+        kind.SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709.0 as u32)
+            .map_err(start_error)?;
+        kind.SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32)
+            .map_err(start_error)?;
+        kind.SetUINT32(&MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709.0 as u32)
+            .map_err(start_error)?;
+
+        Ok(())
+    }
+}
+
+/// `D3D11_VIDEO_PROCESSOR_COLOR_SPACE` é um campo de bits que a crate expõe cru:
+/// `Usage` no bit 0 (0 = reprodução), `RGB_Range` no bit 1 (0 = 0–255),
+/// `YCbCr_Matrix` no bit 2 (1 = BT.709), `YCbCr_xvYCC` no bit 3 e `Nominal_Range` nos
+/// bits 4–5. Só a faixa nominal varia entre entrada e saída.
+fn color_space(range: D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE) -> D3D11_VIDEO_PROCESSOR_COLOR_SPACE {
+    const MATRIX_BT709: u32 = 1 << 2;
+
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE {
+        _bitfield: MATRIX_BT709 | ((range.0 as u32) << 4),
     }
 }
 
@@ -951,4 +1071,17 @@ fn start_error(error: ::windows::core::Error) -> EncoderError {
 
 fn encode_error(error: ::windows::core::Error) -> EncoderError {
     EncoderError::Encode(error.message())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_space_packs_the_bitfield_like_d3d11_h() {
+        // Entrada: RGB cheio, BT.709, 0–255 → Usage 0, RGB_Range 0, matriz 1, faixa 2.
+        assert_eq!(color_space(D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255)._bitfield, 0b10_0100);
+        // Saída: BT.709, 16–235 → faixa 1.
+        assert_eq!(color_space(D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235)._bitfield, 0b01_0100);
+    }
 }

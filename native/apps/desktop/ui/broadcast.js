@@ -35,6 +35,18 @@ export class Broadcast {
     }
 
     /**
+     * Troca resolução e fps sem parar: os producers continuam os mesmos, e a sala só vê a
+     * imagem mudar de tamanho no quadro-chave seguinte.
+     */
+    async changeQuality(quality, fps) {
+        if (! this.nativeActive) {
+            return;
+        }
+
+        await invoke('change_broadcast_quality', { quality, fps });
+    }
+
+    /**
      * O servidor reiniciou e levou junto os producers e a porta de RTP. A captura aqui
      * nunca parou, então republicar é declarar de novo e reapontar o destino: a GPU não é
      * tocada e quem transmite não vê a transmissão piscar.

@@ -279,7 +279,7 @@ unsafe fn pump(
                 sink(CaptureEvent::Audio(AudioChunk {
                     sample_rate: SAMPLE_RATE,
                     channels: CHANNELS,
-                    samples: samples,
+                    samples,
                 }));
             }
         }

@@ -295,10 +295,11 @@ export class SfuClient extends EventTarget {
      * incomoda quem so quer ouvir esta no decoder, e ele so para quando o pacote deixa
      * de chegar. `pauseConsumer` e o unico jeito de o pacote deixar de chegar.
      */
-    async setPeerPaused(peerId, paused) {
+    async setPeerPaused(peerId, paused, kind = null) {
         const action = paused ? 'pauseConsumer' : 'resumeConsumer';
+        const consumerIds = this.consumersOf(peerId).filter(consumerId => ! kind || this.consumers.get(consumerId)?.kind === kind);
 
-        await Promise.all(this.consumersOf(peerId).map(consumerId => this.request(action, { consumerId })));
+        await Promise.all(consumerIds.map(consumerId => this.request(action, { consumerId })));
     }
 
     /**

@@ -31,7 +31,7 @@ fn main() -> anyhow::Result<()> {
         println!("  #{} — {}x{}", display.id, display.width, display.height);
     }
 
-    let (width, height) = quality.dimensions();
+    let (width, height) = quality.fit(PlatformCapturer::source_size(capture::CaptureSource::PrimaryDisplay)?);
     println!("\ncapturing {width}x{height} for {seconds}s (system audio enabled)\n");
 
     let video_frames = Arc::new(AtomicU64::new(0));
