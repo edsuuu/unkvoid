@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
 use windows_capture::encoder::ImageFormat;
 use windows_capture::frame::Frame;
-use windows_capture::graphics_capture_api::InternalCaptureControl;
+use windows_capture::graphics_capture_api::{GraphicsCaptureApi, InternalCaptureControl};
 use windows_capture::monitor::Monitor;
 use windows_capture::settings::{
     ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
@@ -48,22 +48,12 @@ fn start_capture<T>(
 where
     T: TryInto<windows_capture::settings::GraphicsCaptureItemType> + Send + 'static,
 {
-    let settings = Settings::new(
+    let settings = supported_settings(
         target,
-        if config.show_cursor {
-            CursorCaptureSettings::WithCursor
-        } else {
-            CursorCaptureSettings::WithoutCursor
-        },
-        DrawBorderSettings::WithoutBorder,
-        SecondaryWindowSettings::Default,
+        config.show_cursor,
         // O teto de quadros começa aqui: pedir 30 e deixar a captura entregar 60 faria o
         // encoder jogar metade fora depois de já ter pago por ela.
-        MinimumUpdateIntervalSettings::Custom(std::time::Duration::from_secs_f64(
-            1.0 / f64::from(config.frame_rate.max(1)),
-        )),
-        DirtyRegionSettings::Default,
-        ColorFormat::Bgra8,
+        std::time::Duration::from_secs_f64(1.0 / f64::from(config.frame_rate.max(1))),
         (sink, frames),
     );
 
@@ -71,6 +61,49 @@ where
         tracing::error!(error = %error, "Windows Graphics Capture recusou a captura");
         CaptureError::Platform(error.to_string())
     })
+}
+
+/// A crate recusa a captura inteira quando recebe uma chave que este Windows não tem: a
+/// borda só dá para desligar do Windows 11 em diante, o intervalo mínimo veio no 11 24H2
+/// e o cursor no 10 2004. O que faltar fica no padrão do sistema — a borda amarela
+/// aparece, e a captura chega na frequência do monitor.
+fn supported_settings<T, Flags>(
+    target: T,
+    show_cursor: bool,
+    interval: std::time::Duration,
+    flags: Flags,
+) -> Settings<Flags, T>
+where
+    T: TryInto<windows_capture::settings::GraphicsCaptureItemType>,
+{
+    let cursor = match GraphicsCaptureApi::is_cursor_settings_supported() {
+        Ok(true) if show_cursor => CursorCaptureSettings::WithCursor,
+        Ok(true) => CursorCaptureSettings::WithoutCursor,
+        _ => CursorCaptureSettings::Default,
+    };
+
+    let border = if GraphicsCaptureApi::is_border_settings_supported().unwrap_or(false) {
+        DrawBorderSettings::WithoutBorder
+    } else {
+        DrawBorderSettings::Default
+    };
+
+    let update_interval = if GraphicsCaptureApi::is_minimum_update_interval_supported().unwrap_or(false) {
+        MinimumUpdateIntervalSettings::Custom(interval)
+    } else {
+        MinimumUpdateIntervalSettings::Default
+    };
+
+    Settings::new(
+        target,
+        cursor,
+        border,
+        SecondaryWindowSettings::Default,
+        update_interval,
+        DirtyRegionSettings::Default,
+        ColorFormat::Bgra8,
+        flags,
+    )
 }
 
 /// Capture via Windows Graphics Capture. Requires Windows 10 1903 or newer.
@@ -210,14 +243,10 @@ where
 {
         let path = std::env::temp_dir().join(format!("unkvoid-preview-{}.jpg", std::process::id()));
         let (enviado, recebido) = mpsc::channel();
-        let settings = Settings::new(
+        let settings = supported_settings(
             target,
-            CursorCaptureSettings::WithoutCursor,
-            DrawBorderSettings::WithoutBorder,
-            SecondaryWindowSettings::Default,
-            MinimumUpdateIntervalSettings::Custom(std::time::Duration::from_millis(100)),
-            DirtyRegionSettings::Default,
-            ColorFormat::Bgra8,
+            false,
+            std::time::Duration::from_millis(100),
             (path.clone(), enviado),
         );
 
