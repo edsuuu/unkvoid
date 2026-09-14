@@ -77,15 +77,31 @@ pub enum Quality {
     Hd720,
     Hd1080,
     Qhd1440,
+    Uhd2160,
 }
 
 impl Quality {
-    pub fn dimensions(self) -> (u32, u32) {
+    /// A qualidade escolhe só a largura; a altura vem da proporção da origem.
+    pub fn width(self) -> u32 {
         match self {
-            Self::Hd720 => (1280, 720),
-            Self::Hd1080 => (1920, 1080),
-            Self::Qhd1440 => (2560, 1440),
+            Self::Hd720 => 1280,
+            Self::Hd1080 => 1920,
+            Self::Qhd1440 => 2560,
+            Self::Uhd2160 => 3840,
         }
+    }
+
+    /// O tamanho de saída para uma origem de `source` pixels: a largura da qualidade
+    /// (nunca acima da origem — um monitor 720p não sobe para 1080p) e a altura que
+    /// mantém a proporção, as duas pares, como o H.264 em 4:2:0 exige.
+    ///
+    /// Sem isto um ultrawide 21:9 e um monitor em pé saíam espremidos em 16:9.
+    pub fn fit(self, source: (u32, u32)) -> (u32, u32) {
+        let (source_width, source_height) = (source.0.max(2), source.1.max(2));
+        let width = self.width().min(source_width);
+        let height = (u64::from(width) * u64::from(source_height) / u64::from(source_width)) as u32;
+
+        (width & !1, height.clamp(2, source_height) & !1)
     }
 }
 
@@ -100,6 +116,12 @@ pub enum CaptureSource {
     PrimaryDisplay,
     Display(u32),
     Window(u64),
+
+    /// A câmera `/dev/video<n>`. Só no Linux: nos outros sistemas o webview a captura.
+    Camera(u32),
+
+    /// O microfone padrão do sistema. Só no Linux, pelo mesmo motivo.
+    Microphone,
 }
 
 #[derive(Debug, Clone)]
@@ -140,12 +162,21 @@ impl CaptureConfig {
     /// do app silenciado também sai da imagem. Para o Discord isso é ganho duplo: a
     /// conversa privada não vaza para a sala.
     ///
-    /// No Windows esta lista ainda não vale: o laço por processo do WASAPI exclui uma
-    /// árvore só, e ela já é a nossa — ver o cabeçalho de `windows_audio.rs`.
+    /// No Windows não há bundle, e quem vale é `MUTED_EXECUTABLES`.
     pub const MUTED_APPS: &'static [&'static str] = &[
         "com.hnc.Discord",
         "com.hnc.DiscordPTB",
         "com.hnc.DiscordCanary",
+    ];
+
+    /// Os mesmos aplicativos no Windows, pelo nome do executável, sem diferenciar
+    /// maiúsculas. O Discord toca a chamada num processo filho com o mesmo nome; o
+    /// `DiscordSystemHelper.exe` nasce fora da árvore dele e precisa vir pelo nome.
+    pub const MUTED_EXECUTABLES: &'static [&'static str] = &[
+        "Discord.exe",
+        "DiscordPTB.exe",
+        "DiscordCanary.exe",
+        "DiscordSystemHelper.exe",
     ];
 }
 
@@ -179,7 +210,8 @@ pub struct VideoFrame {
     /// cópia pela CPU — é isso que torna 1440p60 possível sem sobrecarregar a máquina.
     ///
     /// O campo existe em todos os sistemas para o app compilar em qualquer um; só o
-    /// tipo lá dentro muda. Fora do macOS ele ainda vem sempre vazio.
+    /// tipo lá dentro muda: textura do Direct3D no Windows, buffer do ScreenCaptureKit
+    /// no macOS, e no Linux o H.264 que o GStreamer já entregou pronto.
     pub surface: Option<GpuSurface>,
 }
 
@@ -223,10 +255,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn quality_maps_to_the_agreed_resolutions() {
-        assert_eq!(Quality::Hd720.dimensions(), (1280, 720));
-        assert_eq!(Quality::Hd1080.dimensions(), (1920, 1080));
-        assert_eq!(Quality::Qhd1440.dimensions(), (2560, 1440));
+    fn quality_keeps_the_source_aspect_and_never_upscales() {
+        assert_eq!(Quality::Hd1080.fit((1920, 1080)), (1920, 1080));
+        assert_eq!(Quality::Hd720.fit((3840, 2160)), (1280, 720));
+        // Ultrawide: 1920 * 1440 / 3440 = 803,7 → par.
+        assert_eq!(Quality::Hd1080.fit((3440, 1440)), (1920, 802));
+        // Monitor em pé continua em pé.
+        assert_eq!(Quality::Qhd1440.fit((1080, 1920)), (1080, 1920));
+        // Monitor 720p pedido em 1080p fica em 720p, e 4K num monitor 1080p fica em 1080p.
+        assert_eq!(Quality::Hd1080.fit((1280, 720)), (1280, 720));
+        assert_eq!(Quality::Uhd2160.fit((1920, 1080)), (1920, 1080));
+        assert_eq!(Quality::Uhd2160.fit((3840, 2160)), (3840, 2160));
+        // Janela ímpar sai par.
+        assert_eq!(Quality::Hd1080.fit((1001, 601)), (1000, 600));
+        // Origem desconhecida não divide por zero.
+        assert_eq!(Quality::Hd1080.fit((0, 0)), (2, 2));
     }
 
     #[test]

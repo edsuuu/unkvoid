@@ -69,18 +69,15 @@ export class Broadcast {
         // e descartá-los em silêncio.
         let target = null;
 
-        for (const kind of ['video', 'audio']) {
-            const offer = await invoke('sfu_offer', { kind });
+        for (const source of ['screen', 'screenAudio']) {
+            const kind = source === 'screen' ? 'video' : 'audio';
+            const offer = await invoke('sfu_offer', { source });
 
-            const producer = await this.sfu.request('producePlain', {
-                kind,
-                source: kind === 'video' ? 'screen' : 'screenAudio',
-                ...offer,
-            });
+            const producer = await this.sfu.request('producePlain', { kind, source, ...offer });
 
             this.producerIds.push(producer.producerId);
 
-            if (kind === 'video') {
+            if (source === 'screen') {
                 this.videoProducerId = producer.producerId;
             }
 
@@ -111,8 +108,7 @@ export class Broadcast {
 
         // Parar a captura não fecha os producers já registrados no mediasoup. Fechá-los
         // primeiro avisa todos os espectadores imediatamente, sem esperar o socket cair.
-        await Promise.all(producerIds.map(producerId =>
-            this.sfu.request('closeProducer', { producerId }).catch(() => null)));
+        await Promise.all(producerIds.map(producerId => this.sfu.tolerate('closeProducer', { producerId })));
 
         try {
             return await invoke('stop_broadcast');

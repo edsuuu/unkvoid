@@ -21,9 +21,7 @@ final class LoginController
         $email = mb_strtolower(mb_trim($request->string('email')->toString()));
         $user = User::query()->where('email', $email)->first();
 
-        if (is_null($user) || is_null($user->password) || ! Hash::check($request->string('password')->toString(), $user->password)) {
-            throw new InvalidCredentialsException;
-        }
+        throw_if(is_null($user) || is_null($user->password) || ! Hash::check($request->string('password')->toString(), $user->password), InvalidCredentialsException::class);
 
         $device = $request->string('device')->toString();
         $user->notifyQuietly(new NewLoginNotification('app: '.$device, (string) $request->ip(), (string) $request->userAgent()));

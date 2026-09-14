@@ -8,7 +8,7 @@ const LEGACY_CODE = /^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/;
 
 /**
  * Entrar na sala é apresentar o token que o Laravel assinou. Quem pode entrar, com que
- * nome e se é dono foi decidido lá, contra o banco; aqui só se confere a assinatura e a
+ * nome e o que pode produzir foi decidido lá, contra o banco; aqui só se confere a assinatura e a
  * validade. Nenhuma chamada de rede no caminho do join.
  */
 export class JoinRequest extends Request {
@@ -22,19 +22,26 @@ export class JoinRequest extends Request {
         }
 
         // ponytail: o join antigo, sem token, continua aceito enquanto houver app
-        // instalado que não sabe pedir um. Entra como visitante, nunca como dono.
+        // instalado que não sabe pedir um. Entra como visitante, com tudo liberado.
         // Apagar quando o app com login estiver publicado nos três sistemas.
         const room = this.string('room');
         const name = this.string('name').trim();
 
-        if (!LEGACY_CODE.test(room) || name === '' || name.length > 40) {
+        // 26 caracteres é um ULID: canal de servidor, que só entra com token assinado.
+        if (room.length === 26 || !LEGACY_CODE.test(room) || name === '' || name.length > 40) {
             throw new ValidationException('field token is required');
         }
 
         const installId =
             typeof this.data.installId === 'string' ? this.data.installId : randomUUID();
 
-        this.claims = { room, sub: `guest:${installId}`, name, owner: false, exp: 0 };
+        this.claims = {
+            room,
+            sub: `guest:${installId}`,
+            name,
+            exp: 0,
+            can: ['speak', 'stream', 'video'],
+        };
     }
 
     public roomCode(): string {
@@ -49,8 +56,8 @@ export class JoinRequest extends Request {
         return this.claims.sub;
     }
 
-    public isOwner(): boolean {
-        return this.claims.owner;
+    public can(): string[] {
+        return this.claims.can;
     }
 
     /**

@@ -3,6 +3,12 @@
  * `!important` quem vence é a camada declarada PRIMEIRO — o contrário do normal. Por
  * isso `unkvoid` é anunciada antes do Tailwind: é assim que o `display` das transições
  * ganha do `[hidden] { display: none !important }` que vem no reset dele.
+ *
+ * O vocabulário do desenho, por isso mesmo, NÃO pode morar em `unkvoid`: o reset do
+ * Tailwind zera borda e espaçamento de tudo (`* { border: 0; padding: 0 }`) numa camada
+ * posterior, e apagaria cada `padding` e cada `border` daqui. Ele vai em `components`,
+ * que o próprio Tailwind declara entre o reset e os utilitários — depois do reset, para
+ * valer, e antes dos utilitários, para um `px-2` no elemento continuar ajustando o caso.
  */
 @layer unkvoid;
 
@@ -14,24 +20,232 @@
  * o valor de `--color-content` muda o fundo em todo lugar sem caçar hexadecimal.
  */
 @theme {
-    --color-back: #151619;
-    --color-rail: #1e1f22;
-    --color-column: #2b2d31;
-    --color-content: #313338;
-    --color-panel: #232428;
-    --color-row: #26282c;
-    --color-line: #35373c;
+    --color-back: #06050a;
+    --color-rail: #0a0812;
+    --color-column: rgba(255, 255, 255, 0.035);
+    --color-content: rgba(255, 255, 255, 0.02);
+    --color-panel: rgba(16, 13, 26, 0.92);
+    --color-row: rgba(255, 255, 255, 0.05);
+    --color-line: rgba(255, 255, 255, 0.09);
 
-    --color-ink: #dbdee1;
-    --color-ink-strong: #f2f3f5;
-    --color-ink-soft: #949ba4;
-    --color-ink-dim: #80848e;
+    --color-ink: #ece9f3;
+    --color-ink-strong: #ffffff;
+    --color-ink-soft: #a89fc0;
+    --color-ink-dim: #8a80a6;
+    --color-ink-faint: #6f6889;
 
-    --color-brand: #5865f2;
-    --color-brand-dark: #4752c4;
-    --color-online: #23a55a;
-    --color-danger: #f23f43;
-    --color-danger-dark: #a12828;
+    --color-brand: #8a7cf5;
+    --color-brand-dark: #5a3fd6;
+    --color-lilac: #9a9cff;
+    --color-lilac-2: #aeb0ff;
+    --color-online: #34d399;
+    --color-danger: #fb7185;
+    --color-danger-dark: #9f1239;
+
+    --font-sans: Archivo, Helvetica, Arial, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+@layer components {
+    /*
+     * O vocabulário do desenho: cada classe daqui existe porque substitui uma cadeia de
+     * utilitários que se repetia no markup. A camada está explicada no topo do arquivo.
+     */
+    .card,
+    .card-sm {
+        background: var(--color-column);
+        backdrop-filter: blur(20px);
+        border: 1px solid var(--color-line);
+        border-radius: 20px;
+    }
+
+    .card {
+        border-radius: 22px;
+        box-shadow: 0 30px 80px -40px rgba(0, 0, 0, 0.9);
+    }
+
+    .panel {
+        background: var(--color-panel);
+        backdrop-filter: blur(22px);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 14px;
+        box-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.95);
+    }
+
+    /* O fundo dos seis modais, que antes repetiam a mesma cadeia de sete utilitários. */
+    .overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: rgba(6, 5, 10, 0.72);
+        backdrop-filter: blur(6px);
+    }
+
+    .label-mono {
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--color-ink-dim);
+    }
+
+    .field {
+        border: 1px solid var(--color-line);
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 12px;
+        padding: 12px 14px;
+        font-size: 14px;
+        color: var(--color-ink-strong);
+    }
+
+    .field:focus {
+        border-color: rgba(138, 124, 245, 0.5);
+        outline: none;
+    }
+
+    .field::placeholder {
+        color: var(--color-ink-faint);
+    }
+
+    .btn-primary {
+        background: linear-gradient(180deg, var(--color-brand), var(--color-brand-dark));
+        border-radius: 12px;
+        box-shadow: 0 14px 34px -16px rgba(90, 63, 214, 0.9);
+        color: var(--color-ink-strong);
+        cursor: pointer;
+        font-weight: 600;
+        padding: 13px;
+    }
+
+    .btn-ghost {
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid var(--color-line);
+        border-radius: 12px;
+        color: var(--color-ink);
+        cursor: pointer;
+    }
+
+    .btn-primary:hover {
+        filter: brightness(1.1);
+    }
+
+    .btn-ghost:hover {
+        border-color: rgba(138, 124, 245, 0.5);
+        color: var(--color-ink-strong);
+    }
+
+    .btn-primary:disabled,
+    .btn-ghost:disabled {
+        box-shadow: none;
+        cursor: not-allowed;
+        filter: none;
+        opacity: 0.45;
+    }
+
+    .pill {
+        border: 1px solid var(--color-line);
+        border-radius: 999px;
+        color: var(--color-ink-dim);
+        font-size: 13px;
+        padding: 7px 14px;
+    }
+
+    .pill-on {
+        background: rgba(138, 124, 245, 0.18);
+        border-color: rgba(138, 124, 245, 0.35);
+        color: var(--color-ink);
+    }
+
+    .avatar {
+        align-items: center;
+        background: linear-gradient(180deg, var(--color-brand), var(--color-brand-dark));
+        border-radius: 50%;
+        color: var(--color-ink-strong);
+        display: inline-flex;
+        font-weight: 700;
+        justify-content: center;
+    }
+
+    /* Quem não é você não ganha o violeta: ele marca o que é seu na tela. */
+    .avatar-flat {
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--color-ink);
+        font-weight: 600;
+    }
+
+    .row-item {
+        align-items: center;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        display: flex;
+        gap: 10px;
+        padding: 9px 11px;
+    }
+
+    .row-item:hover {
+        background: var(--color-row);
+    }
+
+    .row-item-on,
+    .row-item-on:hover {
+        background: rgba(138, 124, 245, 0.12);
+        border-color: rgba(138, 124, 245, 0.32);
+    }
+
+    .divider-or {
+        align-items: center;
+        display: flex;
+        gap: 12px;
+    }
+
+    .divider-or::before,
+    .divider-or::after {
+        background: var(--color-line);
+        content: "";
+        flex: 1;
+        height: 1px;
+    }
+
+    /* A bolha diz de quem é a mensagem pelo canto reto e pela cor, sem precisar de rótulo. */
+    .bubble {
+        background: var(--color-row);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        border-top-left-radius: 4px;
+        padding: 8px 11px;
+        text-align: left;
+    }
+
+    .bubble-mine {
+        background: linear-gradient(180deg, var(--color-brand), var(--color-brand-dark));
+        border-color: transparent;
+        border-top-left-radius: 12px;
+        border-top-right-radius: 4px;
+        color: var(--color-ink-strong);
+    }
+
+    .code-chip {
+        background: rgba(138, 124, 245, 0.16);
+        border-radius: 7px;
+        color: var(--color-lilac-2);
+        font-family: var(--font-mono);
+        padding: 3px 8px;
+    }
+
+    /*
+     * Sem conta, os itens que só existem com conta não aparecem — e vice-versa. É um
+     * atributo no `body` em vez de um `hidden` por elemento porque a resposta é a mesma
+     * para todos eles e muda nos dois lugares (entrar e sair) de uma vez.
+     */
+    body:not([data-account]) [data-account-only],
+    body[data-account] [data-anon-only] {
+        display: none;
+    }
+
 }
 
 @layer unkvoid {
@@ -44,6 +258,10 @@
      */
     #share-modal,
     #logs-modal,
+    #server-modal,
+    #settings-modal,
+    #role-modal,
+    #channel-modal,
     #people-list,
     #update-screen,
     #offline-screen {
@@ -54,6 +272,10 @@
 
     #share-modal[hidden],
     #logs-modal[hidden],
+    #server-modal[hidden],
+    #settings-modal[hidden],
+    #role-modal[hidden],
+    #channel-modal[hidden],
     #update-screen[hidden],
     #offline-screen[hidden] {
         display: flex !important;
@@ -105,9 +327,13 @@
      * A saturação precisa estar aqui, e não só na variável: o controle gravava
      * `--saturation` e este filtro nunca a lia, então arrastar a barra não mudava um
      * pixel. Na pausa ela não aparece porque o `grayscale` já zera a cor.
+     *
+     * Só com `data-tuned` (algum controle fora de 100): um `filter` qualquer, mesmo
+     * neutro, tira o vídeo do caminho direto do compositor e custa uma cópia por quadro.
      */
-    #stage video {
-        filter: brightness(var(--brightness, 1)) saturate(var(--saturation, 1));
+    #stage video[data-tuned],
+    #stage img[data-tuned] {
+        filter: brightness(var(--brightness, 1)) contrast(var(--contrast, 1)) saturate(var(--saturation, 1));
     }
 
     [data-paused] video {
@@ -129,9 +355,13 @@
 
     body {
         /* O app não rola: cada coluna cuida do próprio overflow. */
-        @apply m-0 flex h-screen gap-2 overflow-hidden bg-back p-2 text-[15px]/[1.55] text-ink;
+        @apply m-0 flex h-screen gap-2 overflow-hidden p-2 text-[15px]/[1.55] text-ink;
 
-        font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+        /* O mesmo halo violeta da landing, e é ele que faz o vidro dos cartões aparecer. */
+        background:
+            radial-gradient(90% 60% at 50% 0%, rgba(86, 63, 214, 0.16), rgba(6, 5, 10, 0) 62%),
+            var(--color-back);
+        font-family: var(--font-sans);
         -webkit-font-smoothing: antialiased;
     }
 }

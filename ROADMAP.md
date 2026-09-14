@@ -61,7 +61,9 @@ Cada fase é um fluxo independente, revisada e commitada antes da seguinte.
 
 ### 2. Salas, versões e o app
 
-Depende de aprovar o esquema: `rooms`, `room_bans`, `releases`.
+> Superado em 11/09/2026: no lugar de `rooms`/`room_bans` entrou o modelo de servidores
+> com canais, cargos e chat, descrito em [SERVIDORES.md](SERVIDORES.md). A sala anônima
+> continua fora do banco. O que segue é o desenho original, mantido como histórico.
 
 - Salas com dono anônimo ou com conta: `rooms` guarda `user_id` **ou** `guest_id`
   (o UUID que o app já gera), e `room_bans` guarda o mesmo par. O token do SFU leva

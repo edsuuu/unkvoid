@@ -25,13 +25,13 @@ final class GoogleCallbackController
                 'message' => $exception->getMessage(),
             ]);
 
-            return redirect()->route('login')->with('status', 'Não deu para entrar com o Google. Tente de novo.');
+            return to_route('login')->with('status', 'Não deu para entrar com o Google. Tente de novo.');
         }
 
         $email = mb_strtolower(mb_trim((string) $googleUser->getEmail()));
 
         if ($email === '') {
-            return redirect()->route('login')->with('status', 'A conta do Google não tem e-mail.');
+            return to_route('login')->with('status', 'A conta do Google não tem e-mail.');
         }
 
         try {
@@ -74,13 +74,14 @@ final class GoogleCallbackController
         }
 
         // O app abriu o navegador com uma porta local esperando o token: em vez de sessão,
-        // ele recebe um token do Sanctum e a página some. Ver AppLoginController.
+        // ele recebe um token do Sanctum e o `state` de volta, e a página some. Ver AppLoginController.
         $port = $request->session()->pull('app_port');
+        $state = $request->session()->pull('app_state');
 
-        if (is_int($port)) {
+        if (is_int($port) && is_string($state)) {
             $token = $user->createToken('app')->plainTextToken;
 
-            return redirect()->away("http://127.0.0.1:{$port}/?token=".urlencode($token));
+            return redirect()->away("http://127.0.0.1:{$port}/?token=".urlencode($token).'&state='.$state);
         }
 
         Auth::login($user, true);

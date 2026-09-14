@@ -1,16 +1,22 @@
-//! O outro sentido do RTP puro: receber a transmissão de alguém numa porta UDP.
+//! O outro sentido do RTP puro: receber as transmissões numa porta UDP.
 //!
 //! Existe para o app sem WebRTC na janela (o Linux). O servidor manda SRTP para o
 //! endereço de onde veio o primeiro pacote — por isso o primeiro ato aqui é mandar um
 //! pacote válido, para o roteador de casa abrir o caminho de volta. Depois é só abrir o
 //! que chega e repassar, já em RTP limpo, para quem decodifica na própria máquina.
 //!
+//! É UM socket por sessão no servidor: o mediasoup tem um transporte de saída por peer, e
+//! por ele chegam a tela, a câmera e o microfone de todo mundo, cada um com o seu SSRC.
+//! Um socket por producer não funcionaria — o `comedia` aprende um endereço só e
+//! descarta o resto. Então o que separa os fluxos aqui é o SSRC, e cada um vai para a
+//! porta local do decodificador que o pediu.
+//!
 //! ponytail: sem RTCP de volta (sem NACK nem PLI). Perda de pacote é imagem quebrada
 //! até o próximo keyframe periódico; o receptor pede um ao retomar o consumer.
 
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
@@ -21,33 +27,43 @@ const KEY_LEN: usize = 16;
 const SALT_LEN: usize = 14;
 
 /// Entre um pacote de manutenção e o outro. Roteadores de casa esquecem um mapeamento
-/// UDP em trinta segundos de silêncio; aqui o silêncio nunca chega a cinco.
-const KEEPALIVE: Duration = Duration::from_secs(5);
+/// UDP em trinta segundos de silêncio; aqui o silêncio nunca chega a vinte.
+const KEEPALIVE: Duration = Duration::from_secs(20);
+
+/// Para onde vai o que chega de um producer: a porta local do decodificador dele.
+struct Route {
+    id: String,
+    payload_type: u8,
+    to: SocketAddr,
+    /// O SSRC que o servidor devolveu no `consumePlain`; sem ele, aprendido no primeiro
+    /// pacote do mesmo tipo de payload.
+    ssrc: Option<u32>,
+    /// Mudo é não repassar: o decodificador só vê silêncio e retoma quando volta.
+    muted: bool,
+}
+
+#[derive(Default)]
+struct Routes {
+    active: Vec<Route>,
+    /// SSRCs de producers já fechados. O servidor ainda manda um resto deles depois do
+    /// `closeConsumer`, e sem esta lista esse resto era "aprendido" pela próxima rota
+    /// sem SSRC — a câmera nova passava a receber a tela velha.
+    retired: Vec<u32>,
+}
 
 pub struct PlainReceiver {
     stop: Arc<AtomicBool>,
-    /// Mudo é não repassar o áudio: o decodificador só vê silêncio e retoma quando volta.
-    muted: Arc<AtomicBool>,
     packets: Arc<AtomicU64>,
+    routes: Arc<Mutex<Routes>>,
     local: SocketAddr,
+    server: SocketAddr,
 }
 
 impl PlainReceiver {
-    /// `key` é a chave deste lado (a que foi ao servidor), `server_key` a dele. O que
-    /// chegar com `video_payload` vai para `video_to`, com `audio_payload` para
-    /// `audio_to` — dois destinos locais, um por decodificador.
-    pub fn start(
-        server: impl ToSocketAddrs,
-        key: &[u8],
-        server_key: &[u8],
-        video: Option<(u8, SocketAddr)>,
-        audio: Option<(u8, SocketAddr)>,
-    ) -> Result<Self> {
-        let server = server
-            .to_socket_addrs()
-            .context("could not resolve the SFU address")?
-            .next()
-            .ok_or_else(|| anyhow!("the SFU address resolved to nothing"))?;
+    /// `key` é a chave deste lado (a que foi ao servidor), `server_key` a dele. Os
+    /// destinos entram depois, um por producer, em `route`.
+    pub fn start(server: impl ToSocketAddrs, key: &[u8], server_key: &[u8]) -> Result<Self> {
+        let server = resolve(server)?;
 
         let socket = UdpSocket::bind(if server.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })
             .context("could not open the UDP socket for the SFU")?;
@@ -59,13 +75,13 @@ impl PlainReceiver {
         let mut incoming = context(server_key)?;
         let relay = UdpSocket::bind("127.0.0.1:0").context("could not open the local relay socket")?;
         let stop = Arc::new(AtomicBool::new(false));
-        let muted = Arc::new(AtomicBool::new(false));
         let packets = Arc::new(AtomicU64::new(0));
+        let routes: Arc<Mutex<Routes>> = Arc::default();
         let local = socket.local_addr()?;
 
         let stop_thread = Arc::clone(&stop);
-        let muted_thread = Arc::clone(&muted);
         let packets_thread = Arc::clone(&packets);
+        let routes_thread = Arc::clone(&routes);
 
         std::thread::spawn(move || {
             let ssrc: u32 = rand::random();
@@ -97,30 +113,50 @@ impl PlainReceiver {
                 };
 
                 let payload_type = plain[1] & 0x7f;
+                let ssrc = u32::from_be_bytes([plain[8], plain[9], plain[10], plain[11]]);
 
-                let target = match (video, audio) {
-                    (Some((wanted, to)), _) if wanted == payload_type => to,
-                    (_, Some((wanted, to))) if wanted == payload_type => {
-                        if muted_thread.load(Ordering::Relaxed) {
-                            continue;
-                        }
+                let target = routes_thread.lock().ok().and_then(|mut routes| {
+                    let route = pick_route(&mut routes, ssrc, payload_type)?;
 
-                        to
-                    }
-                    _ => continue,
-                };
+                    (! route.muted).then_some(route.to)
+                });
 
-                if relay.send_to(&plain, target).is_ok() {
+                if let Some(target) = target
+                    && relay.send_to(&plain, target).is_ok()
+                {
                     packets_thread.fetch_add(1, Ordering::Relaxed);
                 }
             }
         });
 
-        Ok(Self { stop, muted, packets, local })
+        Ok(Self { stop, packets, routes, local, server })
     }
 
-    pub fn set_muted(&self, muted: bool) {
-        self.muted.store(muted, Ordering::Relaxed);
+    /// O que chegar com `ssrc` vai para `to`. Sem SSRC, vai o primeiro fluxo de
+    /// `payload_type` que ninguém reclamou — ver `pick_route`.
+    pub fn route(&self, id: String, payload_type: u8, to: SocketAddr, ssrc: Option<u32>) {
+        if let Ok(mut routes) = self.routes.lock() {
+            routes.active.retain(|route| route.id != id);
+            routes.active.push(Route { id, payload_type, to, ssrc, muted: false });
+        }
+    }
+
+    pub fn unroute(&self, id: &str) {
+        if let Ok(mut routes) = self.routes.lock() {
+            let (gone, kept): (Vec<Route>, Vec<Route>) =
+                std::mem::take(&mut routes.active).into_iter().partition(|route| route.id == id);
+
+            routes.active = kept;
+            routes.retired.extend(gone.into_iter().filter_map(|route| route.ssrc));
+        }
+    }
+
+    pub fn set_muted(&self, id: &str, muted: bool) {
+        if let Ok(mut routes) = self.routes.lock()
+            && let Some(route) = routes.active.iter_mut().find(|route| route.id == id)
+        {
+            route.muted = muted;
+        }
     }
 
     pub fn packets(&self) -> u64 {
@@ -129,6 +165,10 @@ impl PlainReceiver {
 
     pub fn local_addr(&self) -> SocketAddr {
         self.local
+    }
+
+    pub fn server(&self) -> SocketAddr {
+        self.server
     }
 
     pub fn stop(&self) {
@@ -140,6 +180,37 @@ impl Drop for PlainReceiver {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// A rota de um pacote: a que tem este SSRC, senão a mais antiga do mesmo tipo de
+/// payload que ainda não aprendeu o seu — e ela aprende agora, a menos que o SSRC seja
+/// o resto de um producer já fechado.
+///
+/// O caminho de aprender existe para servidor antigo, que não devolve o SSRC no
+/// `consumePlain`; com ele devolvido a rota casa exato e nunca troca de lugar.
+fn pick_route(routes: &mut Routes, ssrc: u32, payload_type: u8) -> Option<&Route> {
+    let index = routes.active.iter().position(|route| route.ssrc == Some(ssrc)).or_else(|| {
+        if routes.retired.contains(&ssrc) {
+            return None;
+        }
+
+        routes
+            .active
+            .iter()
+            .position(|route| route.ssrc.is_none() && route.payload_type == payload_type)
+    })?;
+
+    routes.active[index].ssrc = Some(ssrc);
+
+    Some(&routes.active[index])
+}
+
+pub fn resolve(server: impl ToSocketAddrs) -> Result<SocketAddr> {
+    server
+        .to_socket_addrs()
+        .context("could not resolve the SFU address")?
+        .next()
+        .ok_or_else(|| anyhow!("the SFU address resolved to nothing"))
 }
 
 fn context(key: &[u8]) -> Result<SrtpContext> {
@@ -185,5 +256,49 @@ mod tests {
 
         assert_eq!(&plain[..], &punch(1234, 1)[..]);
         assert_eq!(plain[1] & 0x7f, 96);
+    }
+
+    fn to(port: u16) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    fn route(id: &str, payload_type: u8, port: u16, ssrc: Option<u32>) -> Route {
+        Route { id: id.into(), payload_type, to: to(port), ssrc, muted: false }
+    }
+
+    /// Tela e câmera chegam com o mesmo tipo de payload; só o SSRC os separa.
+    #[test]
+    fn a_route_learns_its_ssrc_on_the_first_packet_and_keeps_it() {
+        let mut routes = Routes {
+            active: vec![
+                route("screen", 101, 1, None),
+                route("camera", 101, 2, None),
+                route("mic", 100, 3, None),
+            ],
+            retired: vec![0xEE],
+        };
+
+        // O resto de um producer fechado não é aprendido por ninguém.
+        assert!(pick_route(&mut routes, 0xEE, 101).is_none());
+        assert_eq!(pick_route(&mut routes, 0xAA, 101).map(|route| route.to), Some(to(1)));
+        assert_eq!(pick_route(&mut routes, 0xBB, 101).map(|route| route.to), Some(to(2)));
+        assert_eq!(pick_route(&mut routes, 0xBB, 101).map(|route| route.to), Some(to(2)));
+        assert_eq!(pick_route(&mut routes, 0xAA, 101).map(|route| route.to), Some(to(1)));
+        assert_eq!(pick_route(&mut routes, 0xCC, 100).map(|route| route.to), Some(to(3)));
+        // Um terceiro vídeo que ninguém pediu não tem para onde ir.
+        assert!(pick_route(&mut routes, 0xDD, 101).is_none());
+    }
+
+    /// Com o SSRC devolvido pelo servidor a rota casa exato, mesmo que outra do mesmo
+    /// tipo esteja livre para aprender.
+    #[test]
+    fn a_known_ssrc_matches_exactly_and_never_steals_a_learning_route() {
+        let mut routes = Routes {
+            active: vec![route("screen", 101, 1, None), route("camera", 101, 2, Some(0xBB))],
+            retired: Vec::new(),
+        };
+
+        assert_eq!(pick_route(&mut routes, 0xBB, 101).map(|route| route.to), Some(to(2)));
+        assert_eq!(pick_route(&mut routes, 0xAA, 101).map(|route| route.to), Some(to(1)));
     }
 }

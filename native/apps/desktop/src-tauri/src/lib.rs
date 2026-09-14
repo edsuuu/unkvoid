@@ -5,19 +5,18 @@
 
 mod broadcast;
 mod logbook;
+mod login;
 mod watch;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use broadcast::Broadcast;
-use capture::{CaptureSource, PlatformCapturer, Quality};
+use broadcast::{ActiveSession, Broadcast};
+use capture::{CaptureConfig, CaptureSource, PlatformCapturer, Quality};
+use media::Source;
 use serde::Serialize;
 use tauri::webview::PageLoadEvent;
 use tauri::{Emitter, State};
-
-#[derive(Default)]
-struct ActiveBroadcast(tokio::sync::Mutex<Option<Broadcast>>);
 
 /// A interface manda `display:<id>` ou `window:<id>`; qualquer outra coisa é o monitor
 /// principal, que é o caso em que ninguém escolheu nada.
@@ -33,6 +32,7 @@ fn quality_from(name: &str) -> Quality {
     match name {
         "720" => Quality::Hd720,
         "1440" => Quality::Qhd1440,
+        "2160" => Quality::Uhd2160,
         _ => Quality::Hd1080,
     }
 }
@@ -51,6 +51,23 @@ struct WindowInfo {
     application: String,
 }
 
+#[derive(Serialize)]
+struct CameraInfo {
+    id: String,
+    name: String,
+}
+
+/// As câmeras que o Rust captura. Vazio fora do Linux: lá o webview faz `getUserMedia`.
+#[tauri::command]
+fn list_cameras() -> Vec<CameraInfo> {
+    #[cfg(target_os = "linux")]
+    let found = PlatformCapturer::cameras();
+    #[cfg(not(target_os = "linux"))]
+    let found: Vec<(String, String)> = Vec::new();
+
+    found.into_iter().map(|(id, name)| CameraInfo { id, name }).collect()
+}
+
 #[tauri::command]
 fn list_displays() -> Result<Vec<DisplayInfo>, String> {
     PlatformCapturer::displays()
@@ -65,6 +82,14 @@ fn list_displays() -> Result<Vec<DisplayInfo>, String> {
                 .collect()
         })
         .map_err(|error| error.to_string())
+}
+
+/// Quantos núcleos a interface tem para dividir entre qualidade e número de cartões.
+///
+/// 1 no pior caso: melhor subestimar numa máquina fraca do que travar perguntando.
+#[tauri::command]
+fn machine_cores() -> usize {
+    std::thread::available_parallelism().map(std::num::NonZeroUsize::get).unwrap_or(1)
 }
 
 /// Miniatura do que será transmitido, como data URL para a interface mostrar.
@@ -123,16 +148,16 @@ fn log_path() -> String {
 /// `source` vem como `display:<id>` ou `window:<id>`; ausente é o monitor principal.
 #[tauri::command]
 async fn start_broadcast(
-    state: State<'_, ActiveBroadcast>,
+    state: State<'_, ActiveSession>,
     quality: String,
     fps: u32,
     source: Option<String>,
     audio: bool,
     mute_calls: bool,
 ) -> Result<(), String> {
-    let mut active = state.0.lock().await;
+    let mut session = state.0.lock().await;
 
-    if active.is_some() {
+    if session.screen.is_some() {
         return Err("a stream is already in progress".into());
     }
 
@@ -148,17 +173,26 @@ async fn start_broadcast(
         "broadcast: ligando captura e encoder"
     );
 
-    let started = Broadcast::start(
-        quality_from(&quality),
-        fps,
-        source_from(source.as_deref()),
-        audio,
-        mute_calls,
-    );
+    // Abrir captura e encoder bloqueia (no Linux é um `gst-launch` a mais); o tokio é
+    // avisado para não esperar esta thread enquanto isso.
+    let started = tokio::task::block_in_place(|| {
+        session.start(
+            CaptureConfig {
+                quality: quality_from(&quality),
+                frame_rate: fps,
+                source: source_from(source.as_deref()),
+                capture_audio: audio,
+                mute_listed_apps: mute_calls,
+                ..CaptureConfig::default()
+            },
+            Some(Source::Screen),
+            audio.then_some(Source::ScreenAudio),
+        )
+    });
 
     match started {
         Ok(broadcast) => {
-            *active = Some(broadcast);
+            session.screen = Some(broadcast);
             tracing::info!("broadcast: no ar");
 
             Ok(())
@@ -171,48 +205,42 @@ async fn start_broadcast(
     }
 }
 
-/// O que mandar ao servidor para abrir o ingest puro: codec, SSRC e a chave SRTP.
+/// O que mandar ao servidor para abrir o ingest puro de uma origem: codec, SSRC e a
+/// chave SRTP da sessão.
 #[tauri::command]
 async fn sfu_offer(
-    state: State<'_, ActiveBroadcast>,
-    kind: String,
+    state: State<'_, ActiveSession>,
+    source: String,
 ) -> Result<serde_json::Value, String> {
-    let active = state.0.lock().await;
+    let source = Source::parse(&source).ok_or_else(|| format!("origem desconhecida: {source}"))?;
 
-    Ok(active
-        .as_ref()
-        .ok_or_else(|| "no active stream".to_string())?
-        .sfu_offer(&kind))
+    Ok(state.0.lock().await.sfu_offer(source))
 }
 
 /// Chave SRTP nova antes de republicar num servidor que reiniciou.
 ///
-/// Ver `Broadcast::renew_sfu_key`: reapontar o destino recomeça a numeração dos pacotes,
+/// Ver `Session::renew_sfu_key`: reapontar o destino recomeça a numeração dos pacotes,
 /// e repetir a chave com o contador zerado repetiria o keystream.
 #[tauri::command]
-async fn renew_sfu_key(state: State<'_, ActiveBroadcast>) -> Result<(), String> {
-    let mut active = state.0.lock().await;
-
-    active
-        .as_mut()
-        .ok_or_else(|| "no active stream".to_string())?
-        .renew_sfu_key();
+async fn renew_sfu_key(state: State<'_, ActiveSession>) -> Result<(), String> {
+    state.0.lock().await.renew_sfu_key();
 
     Ok(())
 }
 
-/// Aponta a transmissão para a porta que o servidor devolveu no `producePlain`.
+/// Aponta a sessão para a porta que o servidor devolveu no `producePlain`. Uma vez por
+/// sessão basta: as origens que subirem depois passam pelo mesmo remetente.
 ///
 /// `server_key` é a chave SRTP de SAÍDA do servidor, que vem na mesma resposta. É com ela
 /// que este lado abre o caminho de volta e enxerga o pedido de quadro-chave — sem ela a
 /// transmissão sobe igual, só demora mais a se recompor de uma perda.
 #[tauri::command]
 async fn use_sfu(
-    state: State<'_, ActiveBroadcast>,
+    state: State<'_, ActiveSession>,
     address: String,
     server_key: Option<String>,
 ) -> Result<(), String> {
-    let active = state.0.lock().await;
+    let session = state.0.lock().await;
 
     let key = server_key
         .map(|value| {
@@ -224,11 +252,7 @@ async fn use_sfu(
         })
         .transpose()?;
 
-    active
-        .as_ref()
-        .ok_or_else(|| "no active stream".to_string())?
-        .use_sfu(address, key)
-        .map_err(|error| error.to_string())
+    session.use_sfu(&address, key).map_err(|error| error.to_string())
 }
 
 struct NativeWatches(Mutex<watch::Watches>);
@@ -243,16 +267,19 @@ fn watch_key(state: State<'_, NativeWatches>) -> Result<String, String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(watches.key()))
 }
 
-/// Recebe a transmissão de alguém por RTP puro e devolve a porta do MJPEG em
-/// 127.0.0.1 para o cartão desenhar. É o jeito de assistir onde o webview não tem WebRTC.
+/// Recebe um producer de alguém por RTP puro e devolve a porta do MJPEG em 127.0.0.1
+/// para o cartão desenhar (zero para áudio). É o jeito de assistir onde o webview não
+/// tem WebRTC. `ssrc` é o que o `consumePlain` devolveu; sem ele o receptor aprende no
+/// primeiro pacote.
 #[tauri::command]
 fn watch_native(
     state: State<'_, NativeWatches>,
-    peer_id: String,
+    producer_id: String,
+    kind: String,
     address: String,
     server_key: String,
-    video_payload_type: Option<u8>,
-    audio_payload_type: Option<u8>,
+    payload_type: u8,
+    ssrc: Option<u32>,
 ) -> Result<u16, String> {
     use base64::Engine;
 
@@ -262,58 +289,62 @@ fn watch_native(
 
     let mut watches = state.0.lock().map_err(|_| "watch state is poisoned".to_string())?;
 
-    watches
-        .start(peer_id, &address, &server_key, video_payload_type, audio_payload_type)
+    tracing::info!(producer = %producer_id, %kind, "watch: pedido");
+
+    // Abrir o `gst-launch` bloqueia; o tokio é avisado para não esperar esta thread.
+    tokio::task::block_in_place(|| watches.start(producer_id, &kind, &address, &server_key, payload_type, ssrc))
         .map_err(|error| error.to_string())
 }
 
-/// Fecha a janela de uma transmissão, ou de todas quando `peer_id` vem vazio.
+/// Fecha um producer assistido, ou todos quando `producer_id` vem vazio.
 #[tauri::command]
-fn stop_watch(state: State<'_, NativeWatches>, peer_id: Option<String>) -> Result<(), String> {
+fn stop_watch(state: State<'_, NativeWatches>, producer_id: Option<String>) -> Result<(), String> {
     let mut watches = state.0.lock().map_err(|_| "watch state is poisoned".to_string())?;
 
-    watches.stop(peer_id.as_deref());
+    watches.stop(producer_id.as_deref());
 
     Ok(())
 }
 
-/// Mudo de uma transmissão assistida pelo caminho nativo.
+/// Mudo de um producer assistido pelo caminho nativo.
 #[tauri::command]
-fn watch_mute(state: State<'_, NativeWatches>, peer_id: String, muted: bool) -> Result<(), String> {
+fn watch_mute(state: State<'_, NativeWatches>, producer_id: String, muted: bool) -> Result<(), String> {
     let watches = state.0.lock().map_err(|_| "watch state is poisoned".to_string())?;
 
-    watches.set_muted(&peer_id, muted);
+    watches.set_muted(&producer_id, muted);
 
     Ok(())
 }
 
 #[tauri::command]
-fn watch_stats(state: State<'_, NativeWatches>, peer_id: String) -> Result<u64, String> {
+fn watch_stats(state: State<'_, NativeWatches>) -> Result<u64, String> {
     let watches = state.0.lock().map_err(|_| "watch state is poisoned".to_string())?;
 
-    Ok(watches.packets(&peer_id))
+    Ok(watches.packets())
 }
 
 #[tauri::command]
-async fn stop_broadcast(state: State<'_, ActiveBroadcast>) -> Result<u64, String> {
-    let mut active = state.0.lock().await;
+async fn stop_broadcast(state: State<'_, ActiveSession>) -> Result<u64, String> {
+    let mut session = state.0.lock().await;
 
-    let Some(mut broadcast) = active.take() else {
+    let Some(mut broadcast) = session.screen.take() else {
         return Ok(0);
     };
 
     let frames = broadcast.frames();
 
-    broadcast.stop().map_err(|error| error.to_string())?;
+    tokio::task::block_in_place(|| broadcast.stop()).map_err(|error| error.to_string())?;
+    session.release_if_idle();
 
     Ok(frames)
 }
 
 #[tauri::command]
-async fn broadcast_stats(state: State<'_, ActiveBroadcast>) -> Result<serde_json::Value, String> {
-    let active = state.0.lock().await;
+async fn broadcast_stats(state: State<'_, ActiveSession>) -> Result<serde_json::Value, String> {
+    let session = state.0.lock().await;
 
-    Ok(active
+    Ok(session
+        .screen
         .as_ref()
         .map(Broadcast::stats)
         .unwrap_or_else(|| serde_json::json!({ "active": false })))
@@ -583,6 +614,61 @@ fn report_check(app: tauri::AppHandle, webrtc: bool, receiver: Vec<String>, send
     std::process::exit(if webrtc && h264 { 0 } else { 1 });
 }
 
+/// `--check-capture mic` ou `--check-capture camera`: um segundo do microfone ou da
+/// primeira câmera pelo Rust, que só o Linux captura assim. Sai 0 quando chegou algo.
+#[cfg(target_os = "linux")]
+fn check_native(mic: bool) -> i32 {
+    let source = if mic {
+        CaptureSource::Microphone
+    } else {
+        match PlatformCapturer::cameras().first().and_then(|(id, _)| broadcast::camera_index(id).ok()) {
+            Some(index) => CaptureSource::Camera(index),
+            None => {
+                println!("unkvoid check-capture: nenhuma câmera em /dev/video*");
+                return 1;
+            }
+        }
+    };
+
+    let capturer = PlatformCapturer::start(
+        &capture::CaptureConfig { source, quality: Quality::Hd720, frame_rate: 30, ..capture::CaptureConfig::default() },
+        |_| {},
+    );
+
+    let mut capturer = match capturer {
+        Ok(capturer) => capturer,
+        Err(error) => {
+            println!("unkvoid check-capture: captura: {error}");
+            return 1;
+        }
+    };
+
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    if let Some(error) = capturer.error() {
+        println!("unkvoid check-capture: gst: {error}");
+    }
+
+    let _ = capturer.stop();
+
+    let (what, count) = if mic {
+        ("blocos de áudio do microfone", capturer.audio_chunks_captured())
+    } else {
+        ("quadros da câmera", capturer.frames_captured())
+    };
+
+    println!("unkvoid check-capture: {count} {what} em 1 s");
+
+    i32::from(count == 0)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn check_native(_mic: bool) -> i32 {
+    println!("unkvoid check-capture: microfone e câmera vão pelo webview neste sistema");
+
+    1
+}
+
 /// Três segundos de captura da tela principal passando pelo encoder. Sai 0 com pelo
 /// menos um keyframe codificado; 1 quando nada saiu, e diz o que faltou.
 fn check_capture() -> i32 {
@@ -591,7 +677,14 @@ fn check_capture() -> i32 {
     let frames = Arc::new(AtomicU64::new(0));
     let keyframes = Arc::new(AtomicU64::new(0));
     let audio = Arc::new(AtomicU64::new(0));
-    let config = media::EncoderConfig::new(Quality::Hd720, 30);
+    let source = match PlatformCapturer::source_size(CaptureSource::PrimaryDisplay) {
+        Ok(source) => source,
+        Err(error) => {
+            println!("unkvoid check-capture: tela: {error}");
+            return 1;
+        }
+    };
+    let config = media::EncoderConfig::new(Quality::Hd720, 30, source);
 
     let encoder = match media::PlatformEncoder::new(&config) {
         Ok(encoder) => Mutex::new(encoder),
@@ -670,8 +763,12 @@ pub fn run() {
 
     // Captura e codificação de vídeo, sem sala nem janela: é o que prova, numa distro
     // limpa, que compartilhar a tela funciona antes de alguém apresentar com ela.
-    if arguments.iter().any(|argument| argument == "--check-capture") {
-        std::process::exit(check_capture());
+    if let Some(at) = arguments.iter().position(|argument| argument == "--check-capture") {
+        std::process::exit(match arguments.get(at + 1).map(String::as_str) {
+            Some("mic") => check_native(true),
+            Some("camera") => check_native(false),
+            _ => check_capture(),
+        });
     }
 
     let checking = arguments.iter().any(|argument| argument == "--check");
@@ -687,12 +784,14 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .manage(ActiveBroadcast::default())
+        .manage(ActiveSession::default())
         .manage(SelfCheck(checking))
         .invoke_handler(tauri::generate_handler![
             report_check,
             list_displays,
             list_windows,
+            list_cameras,
+            machine_cores,
             source_preview,
             app_version,
             check_update,
@@ -703,6 +802,13 @@ pub fn run() {
             use_sfu,
             stop_broadcast,
             broadcast_stats,
+            broadcast::start_voice,
+            broadcast::stop_voice,
+            broadcast::set_voice_muted,
+            broadcast::start_camera,
+            broadcast::stop_camera,
+            login::google_login,
+            login::open_url,
             watch_key,
             watch_native,
             stop_watch,
@@ -733,6 +839,11 @@ pub fn run() {
 
             enable_webrtc(app.handle());
 
+            // O `gst-inspect` do microfone roda agora, fora de qualquer cadeado, para a
+            // resposta já estar em cache quando alguém ligar a voz.
+            #[cfg(target_os = "linux")]
+            std::thread::spawn(PlatformCapturer::warm_up);
+
             // O que sobrou do erro da vez passada sobe agora. Um pânico ou uma morte suja
             // dentro de uma chamada do sistema leva o processo junto, e não sobra ninguém
             // para avisar na hora — o log no disco é a única testemunha.
@@ -758,13 +869,27 @@ pub fn run() {
         .on_page_load(|webview, payload| {
             use tauri::Manager;
 
-            if payload.event() == PageLoadEvent::Finished && webview.state::<SelfCheck>().0 {
-                if let Err(failure) = webview.eval(CHECK_SCRIPT) {
-                    eprintln!("unkvoid check: não deu para rodar o teste na página: {failure}");
-                    webview.app_handle().exit(2);
-                }
+            if payload.event() == PageLoadEvent::Finished
+                && webview.state::<SelfCheck>().0
+                && let Err(failure) = webview.eval(CHECK_SCRIPT)
+            {
+                eprintln!("unkvoid check: não deu para rodar o teste na página: {failure}");
+                webview.app_handle().exit(2);
             }
         })
-        .run(context)
-        .expect("error starting the app");
+        .build(context)
+        .expect("error starting the app")
+        .run(|app, event| {
+            use tauri::Manager;
+
+            // Nenhum `gst-launch` sobrevive ao app: no Linux cada transmissão e cada
+            // cartão assistido é um processo à parte, e a janela sumir não os mata.
+            if let tauri::RunEvent::Exit = event {
+                if let Ok(mut watches) = app.state::<NativeWatches>().0.lock() {
+                    watches.stop(None);
+                }
+
+                app.state::<ActiveSession>().0.blocking_lock().stop_all();
+            }
+        });
 }

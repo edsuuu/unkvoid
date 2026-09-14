@@ -84,7 +84,7 @@ fn run_all(quality: &str, source: &str) -> ExitCode {
         };
 
         let said = String::from_utf8_lossy(&output.stdout);
-        let last = said.lines().filter(|line| !line.is_empty()).last();
+        let last = said.lines().rfind(|line| !line.is_empty());
 
         if output.status.success() {
             println!("ok         {}", last.unwrap_or(""));
@@ -163,7 +163,7 @@ fn run_step(step: &str, quality: &str, source: &str) -> ExitCode {
 
     let outcome = match step {
         "displays" => displays(),
-        "encoder" => encoder(quality),
+        "encoder" => encoder(quality, source),
         "audio" => audio(),
         "capture" => capture(quality, source),
         "pipeline" => pipeline(quality, source),
@@ -201,13 +201,14 @@ fn displays() -> Result<String, String> {
         .join(", "))
 }
 
-fn encoder(quality: Quality) -> Result<String, String> {
-    let config = EncoderConfig::new(quality, 60);
+fn encoder(quality: Quality, source: CaptureSource) -> Result<String, String> {
+    let size = PlatformCapturer::source_size(source).map_err(|error| error.to_string())?;
+    let config = EncoderConfig::new(quality, 60, size);
 
     say(&format!(
         "abrindo o encoder em {}x{} a {} kbps",
-        config.quality.dimensions().0,
-        config.quality.dimensions().1,
+        config.width,
+        config.height,
         config.bitrate / 1000
     ));
 
@@ -270,17 +271,36 @@ fn capture(quality: Quality, source: CaptureSource) -> Result<String, String> {
 /// Captura e encoder juntos: é aqui que a ponte entre os dois devices do Direct3D nasce,
 /// no primeiro quadro. Um crash só neste passo aponta para a ponte, não para a abertura.
 fn pipeline(quality: Quality, source: CaptureSource) -> Result<String, String> {
-    let config = EncoderConfig::new(quality, 60);
+    let size = PlatformCapturer::source_size(source).map_err(|error| error.to_string())?;
+    let config = EncoderConfig::new(quality, 60, size);
 
     say("abrindo o encoder");
 
-    let encoder = std::sync::Mutex::new(PlatformEncoder::new(&config).map_err(|e| e.to_string())?);
+    let encoder = PlatformEncoder::new(&config).map_err(|error| error.to_string())?;
+
+    say(if encoder.hardware() {
+        "encoder da placa de vídeo"
+    } else {
+        "encoder do processador (teto de 720p30)"
+    });
+
+    let encoder = std::sync::Mutex::new(encoder);
     let encoded = Arc::new(AtomicU64::new(0));
     let bytes = Arc::new(AtomicU64::new(0));
     let refused = Arc::new(AtomicU64::new(0));
     let first = Arc::new(AtomicU64::new(0));
-    let (encoded_seen, bytes_seen, refused_seen, first_seen) =
-        (encoded.clone(), bytes.clone(), refused.clone(), first.clone());
+    let busy_us = Arc::new(AtomicU64::new(0));
+    let (encoded_seen, bytes_seen, refused_seen, first_seen, busy_seen) =
+        (encoded.clone(), bytes.clone(), refused.clone(), first.clone(), busy_us.clone());
+
+    // `UNKVOID_DUMP=<arquivo>` grava o H.264 que saiu, em Annex-B, para abrir num
+    // decodificador: contar quadros não prova que alguém consegue exibi-los.
+    let dump = match std::env::var_os("UNKVOID_DUMP") {
+        Some(path) => Some(std::sync::Mutex::new(
+            std::fs::File::create(path).map_err(|error| error.to_string())?,
+        )),
+        None => None,
+    };
 
     say("abrindo a captura");
 
@@ -318,10 +338,27 @@ fn pipeline(quality: Quality, source: CaptureSource) -> Result<String, String> {
                 return;
             };
 
-            match encoder.encode(surface, frame.timestamp_ns) {
+            // O mesmo relógio do `busyUs` do app: o que o encoder segura da thread da captura.
+            let started = Instant::now();
+            let outcome = encoder.encode(surface, frame.timestamp_ns);
+
+            busy_seen.fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+
+            match outcome {
                 Ok(done) => {
                     if encoded_seen.fetch_add(1, Ordering::Relaxed) == 0 {
-                        say(&format!("primeiro quadro codificado: {} bytes", done.data.len()));
+                        say(&format!(
+                            "primeiro quadro codificado: {} bytes, NALs {:?}",
+                            done.data.len(),
+                            nal_types(&done.data)
+                        ));
+                    }
+
+                    if let Some(file) = dump.as_ref()
+                        && let Ok(mut file) = file.lock()
+                        && let Err(error) = file.write_all(&done.data)
+                    {
+                        say(&format!("não gravou o quadro no UNKVOID_DUMP: {error}"));
                     }
 
                     bytes_seen.fetch_add(done.data.len() as u64, Ordering::Relaxed);
@@ -358,9 +395,21 @@ fn pipeline(quality: Quality, source: CaptureSource) -> Result<String, String> {
         ));
     }
 
+    let attempts = first.load(Ordering::Relaxed).max(1);
+
     Ok(format!(
-        "{done} quadros codificados, {} KB, {} recusas",
+        "{done} quadros codificados ({:.0} fps), {} KB, {} recusas, {} µs por quadro capturado",
+        done as f64 / WINDOW.as_secs_f64(),
         bytes.load(Ordering::Relaxed) / 1024,
-        refused.load(Ordering::Relaxed)
+        refused.load(Ordering::Relaxed),
+        busy_us.load(Ordering::Relaxed) / attempts
     ))
+}
+
+/// Os tipos de NAL de um quadro Annex-B: 7 é SPS, 8 é PPS, 5 é IDR, 1 é quadro P.
+fn nal_types(data: &[u8]) -> Vec<u8> {
+    data.windows(4)
+        .filter(|window| window[..3] == [0, 0, 1])
+        .map(|window| window[3] & 0x1F)
+        .collect()
 }

@@ -34,7 +34,7 @@ final class Index extends Component
 
     public function render(): View
     {
-        $query = ErrorReport::query()->orderByDesc('last_seen_at')->orderByDesc('id');
+        $query = ErrorReport::query()->latest('last_seen_at')->orderByDesc('id');
 
         if (mb_trim($this->platform) !== '') {
             $query->where('platform', $this->platform);

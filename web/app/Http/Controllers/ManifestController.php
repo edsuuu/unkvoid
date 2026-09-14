@@ -23,7 +23,7 @@ final class ManifestController
     {
         $latest = Release::latestPerPlatform();
 
-        abort_if(empty($latest), 404);
+        abort_if($latest === [], 404);
 
         $newest = null;
 

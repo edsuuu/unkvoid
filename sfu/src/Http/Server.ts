@@ -2,11 +2,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 
 import { config } from '../config.js';
-import {
-    ApiException,
-    NotFoundException,
-    ValidationException,
-} from '../Exceptions/ApiException.js';
+import { NotFoundException, ValidationException } from '../Exceptions/ApiException.js';
+import { Clip } from '../Services/Clip.js';
+import { Recorder } from '../Services/Recorder.js';
 import { RoomRegistry } from '../Services/RoomRegistry.js';
 import { Signature } from '../Services/Signature.js';
 import type { Session } from '../types.js';
@@ -19,7 +17,7 @@ const WINDOW_MS = 60_000;
 /** Um corpo maior que isto não é uma chamada do Laravel. */
 const MAX_BODY_BYTES = 16 * 1024;
 
-const KICK_PATH = /^\/rooms\/([a-z0-9-]+)\/kick$/;
+const ROOM_ACTION_PATH = /^\/rooms\/([a-z0-9-]+)\/(kick|mute|clips)$/;
 
 /**
  * Um socket meio aberto — tampa do notebook fechada, Wi-Fi trocado por 4G — nunca manda
@@ -43,6 +41,7 @@ export class Server {
     private readonly alive = new WeakSet<WebSocket>();
 
     public async start(): Promise<void> {
+        Recorder.boot();
         await this.registry.boot();
 
         const http = createServer((request, response) => void this.serve(request, response));
@@ -75,7 +74,8 @@ export class Server {
 
     /**
      * O pouco de HTTP que existe: o `/health` que o app consulta antes de entrar, e a
-     * porta pela qual o Laravel manda expulsar alguém. Tudo o mais é WebSocket.
+     * porta pela qual o Laravel manda expulsar ou silenciar alguém e pergunta quem está
+     * em cada sala. Tudo o mais é WebSocket.
      */
     private async serve(request: IncomingMessage, response: ServerResponse): Promise<void> {
         const path = (request.url ?? '').split('?')[0] ?? '';
@@ -91,22 +91,21 @@ export class Server {
                 return;
             }
 
-            const kick = KICK_PATH.exec(path);
+            const roomAction = ROOM_ACTION_PATH.exec(path);
 
-            if (request.method === 'POST' && kick?.[1]) {
+            if (request.method === 'POST' && roomAction?.[1]) {
                 const body = await this.body(request);
 
-                // Assinado pelo Laravel com o mesmo segredo do token. Sem isto qualquer um
-                // que alcançasse a porta 3000 expulsaria quem quisesse.
-                Signature.verifyHeader(
-                    request.headers['x-unkvoid-timestamp']?.toString(),
-                    request.headers['x-unkvoid-signature']?.toString(),
-                    'POST',
-                    path,
-                    body,
-                );
+                this.verifySignature(request, path, body);
 
-                const { userId } = JSON.parse(body) as { userId?: unknown };
+                if (roomAction[2] === 'clips') {
+                    Clip.accept(this.registry.find(roomAction[1]), Clip.order(body));
+                    this.reply(response, 202, { accepted: true });
+
+                    return;
+                }
+
+                const { userId, muted } = JSON.parse(body) as { userId?: unknown; muted?: unknown };
 
                 if (typeof userId !== 'string' || userId === '') {
                     throw new ValidationException('field userId is required');
@@ -114,16 +113,35 @@ export class Server {
 
                 // Sala que não está no ar não tem quem expulsar: o banimento já foi gravado
                 // do outro lado, e é ele que impede a volta.
-                this.reply(response, 200, {
-                    kicked: this.registry.find(kick[1])?.kickUser(userId) ?? 0,
-                });
+                const room = this.registry.find(roomAction[1]);
+
+                if (roomAction[2] === 'kick') {
+                    this.reply(response, 200, { kicked: room?.kickUser(userId) ?? 0 });
+
+                    return;
+                }
+
+                if (typeof muted !== 'boolean') {
+                    throw new ValidationException('field muted must be true or false');
+                }
+
+                this.reply(response, 200, { muted: (await room?.muteUser(userId, muted)) ?? 0 });
+
+                return;
+            }
+
+            if (request.method === 'GET' && path === '/presence') {
+                this.verifySignature(request, path, '');
+                this.reply(response, 200, { rooms: this.registry.presence() });
 
                 return;
             }
 
             throw new NotFoundException();
         } catch (exception) {
-            const status = exception instanceof ApiException ? exception.status : 500;
+            // Corpo que não é JSON estoura `SyntaxError` no `JSON.parse`: é erro de quem
+            // chamou, não do servidor.
+            const status = exception instanceof SyntaxError ? 422 : Kernel.statusOf(exception);
             const message = exception instanceof Error ? exception.message : 'unexpected error';
 
             if (status === 500) {
@@ -132,6 +150,20 @@ export class Server {
 
             this.reply(response, status, { ok: false, error: message });
         }
+    }
+
+    /**
+     * Assinado pelo Laravel com o mesmo segredo do token. Sem isto qualquer um que
+     * alcançasse a porta 3000 expulsaria quem quisesse.
+     */
+    private verifySignature(request: IncomingMessage, path: string, body: string): void {
+        Signature.verifyHeader(
+            request.headers['x-unkvoid-timestamp']?.toString(),
+            request.headers['x-unkvoid-signature']?.toString(),
+            request.method ?? '',
+            path,
+            body,
+        );
     }
 
     private body(request: IncomingMessage): Promise<string> {
@@ -162,13 +194,15 @@ export class Server {
     }
 
     private accept(socket: WebSocket, request: IncomingMessage): void {
-        if (this.tooMany(addressOf(request))) {
+        const ip = addressOf(request);
+
+        if (this.tooMany(ip)) {
             socket.close(1013, 'too many connections — try again in a minute');
 
             return;
         }
 
-        const session: Session = { socket, room: null, peer: null };
+        const session: Session = { socket, ip, room: null, peer: null };
 
         this.sessions.set(socket, session);
 
@@ -182,8 +216,14 @@ export class Server {
     private tooMany(address: string): boolean {
         const now = Date.now();
         const hits = (this.recent.get(address) ?? []).filter((at) => now - at < WINDOW_MS);
+        const over = hits.length >= config.connectionsPerMinute;
 
-        hits.push(now);
+        // Quem já passou do teto não entra na conta: senão cada tentativa recusada
+        // empurrava a janela para a frente e o bloqueio nunca expirava.
+        if (!over) {
+            hits.push(now);
+        }
+
         this.recent.set(address, hits);
 
         // ponytail: varre o mapa inteiro quando ele cresce. Um LRU só valeria a pena na
@@ -196,7 +236,7 @@ export class Server {
             }
         }
 
-        return hits.length > config.connectionsPerMinute;
+        return over;
     }
 
     private async handle(session: Session, raw: RawData): Promise<void> {
@@ -243,8 +283,9 @@ export class Server {
  * 127.0.0.1: quem chega aqui já passou pelo proxy, e ninguém fala com ele direto.
  */
 const addressOf = (request: IncomingMessage): string => {
+    const real = request.headers['x-real-ip']?.toString().trim();
     const forwarded = request.headers['x-forwarded-for'];
     const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim();
 
-    return first || request.socket.remoteAddress || 'desconhecido';
+    return real || first || request.socket.remoteAddress || 'desconhecido';
 };

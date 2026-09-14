@@ -37,6 +37,14 @@ final class User extends Authenticatable implements Auditable
 
     public const string ROLE_ADMIN = 'Administrador';
 
+    /**
+     * O id de dentro de um `user:<id>`.
+     */
+    public static function fromSubject(string $subject): int
+    {
+        return (int) mb_substr($subject, 5);
+    }
+
     public function initials(): string
     {
         return Str::of($this->name)
@@ -49,6 +57,14 @@ final class User extends Authenticatable implements Auditable
     public function isAdmin(): bool
     {
         return $this->hasRole(self::ROLE_ADMIN);
+    }
+
+    /**
+     * O `sub` que o SFU carrega: `user:<id>`.
+     */
+    public function subject(): string
+    {
+        return 'user:'.$this->id;
     }
 
     /**

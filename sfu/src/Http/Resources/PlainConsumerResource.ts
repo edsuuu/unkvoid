@@ -23,6 +23,8 @@ export class PlainConsumerResource implements Resource {
             kind: this.consumer.kind,
             payloadType: codec?.payloadType ?? null,
             clockRate: codec?.clockRate ?? null,
+            // Vídeo e áudio chegam pela mesma porta: é por aqui que o receptor separa um do outro.
+            ssrc: this.consumer.rtpParameters.encodings?.[0]?.ssrc ?? null,
             ip: this.transport.tuple.localAddress,
             port: this.transport.tuple.localPort,
             srtpParameters: this.transport.srtpParameters,

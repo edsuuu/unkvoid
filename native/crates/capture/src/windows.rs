@@ -200,6 +200,9 @@ impl WindowsCapturer {
                     .next()
                     .ok_or(CaptureError::NoDisplay)?,
             ),
+            crate::CaptureSource::Camera(_) | crate::CaptureSource::Microphone => Err(
+                CaptureError::Platform("no preview for camera or microphone here".into()),
+            ),
         }
     }
 }
@@ -234,6 +237,36 @@ where
 }
 
 impl WindowsCapturer {
+    /// O tamanho da origem, para a altura da saída seguir a proporção dela.
+    pub fn source_size(source: CaptureSource) -> Result<(u32, u32), CaptureError> {
+        // Monitor e janela têm cada um o seu tipo de erro na crate; a mensagem basta.
+        fn platform(error: impl std::fmt::Display) -> CaptureError {
+            CaptureError::Platform(error.to_string())
+        }
+
+        match source {
+            CaptureSource::Window(id) => {
+                let window = CaptureWindow::from_raw_hwnd(hwnd_from_id(id));
+
+                Ok((
+                    window.width().map_err(platform)?.max(0) as u32,
+                    window.height().map_err(platform)?.max(0) as u32,
+                ))
+            }
+            CaptureSource::Display(index) => {
+                let monitor = Monitor::from_index(index as usize + 1).map_err(|_| CaptureError::NoDisplay)?;
+
+                Ok((monitor.width().map_err(platform)?, monitor.height().map_err(platform)?))
+            }
+            CaptureSource::PrimaryDisplay => {
+                let monitor = Monitor::primary().map_err(|_| CaptureError::NoDisplay)?;
+
+                Ok((monitor.width().map_err(platform)?, monitor.height().map_err(platform)?))
+            }
+            CaptureSource::Camera(_) | CaptureSource::Microphone => Ok((0, 0)),
+        }
+    }
+
     pub fn displays() -> Result<Vec<Display>, CaptureError> {
         let monitors =
             Monitor::enumerate().map_err(|error| CaptureError::Platform(error.to_string()))?;
@@ -273,6 +306,10 @@ impl WindowsCapturer {
     where
         F: Fn(CaptureEvent) + Send + Sync + 'static,
     {
+        if matches!(config.source, CaptureSource::Camera(_) | CaptureSource::Microphone) {
+            return Err(CaptureError::Platform("camera and microphone go through the webview here".into()));
+        }
+
         let frames = Arc::new(AtomicU64::new(0));
         let sink: EventSink = Arc::new(on_event);
 
@@ -310,21 +347,22 @@ impl WindowsCapturer {
         // Compartilhar uma janela com o áudio de chamada de fora vira a pergunta do
         // avesso: em vez de excluir o Discord — o que o Windows não deixa fazer junto
         // com excluir a nós mesmos — grava-se só a árvore do processo daquela janela.
-        // Entra o som do jogo, e Discord, navegador e nós ficamos de fora de graça.
+        // Na tela inteira não há processo só, e a mistura grava cada um que toca som.
         let scope = match config.source {
-            CaptureSource::Window(id) if config.mute_listed_apps => {
+            _ if !config.mute_listed_apps => AudioScope::ExcludeSelf,
+            CaptureSource::Window(id) => {
                 let mut pid = 0_u32;
 
                 unsafe { GetWindowThreadProcessId(HWND(hwnd_from_id(id)), Some(&mut pid)) };
 
                 if pid == 0 {
-                    // Janela sem dono legível: melhor gravar tudo menos nós do que nada.
-                    AudioScope::ExcludeSelf
+                    // Janela sem dono legível: a mistura ainda deixa o Discord de fora.
+                    AudioScope::ExceptMuted
                 } else {
                     AudioScope::OnlyProcess(pid)
                 }
             }
-            _ => AudioScope::ExcludeSelf,
+            _ => AudioScope::ExceptMuted,
         };
 
         // O áudio não derruba a transmissão: sem permissão ou em Windows antigo, o vídeo

@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
-use media::{EncodedFrame, PlainSender};
+use media::{EncodedFrame, PlainSender, Source};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
                 let sender = sender.as_mut().expect("checked by the guard");
 
                 // Keyframe primeiro: sem ele o servidor não tem o que pontuar.
-                sender.send_frame(&frame(sent.is_multiple_of(60), 4_000), 30.0)?;
+                sender.send_frame(Source::Screen, frame(sent.is_multiple_of(60), 4_000), 30.0)?;
                 sent += 1;
             }
 
@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
                     socket.send(call("producePlain", json!({
                         "kind": "video",
                         "source": "screen",
-                        "rtpParameters": PlainSender::rtp_parameters("video"),
+                        "rtpParameters": PlainSender::rtp_parameters(Source::Screen),
                         "srtpParameters": {
                             "cryptoSuite": PlainSender::CRYPTO_SUITE,
                             "keyBase64": key_base64,

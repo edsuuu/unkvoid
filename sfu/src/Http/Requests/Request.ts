@@ -45,7 +45,7 @@ export class Request {
     protected object<T extends object>(key: string): T {
         const value = this.data[key];
 
-        if (typeof value !== 'object' || value === null) {
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) {
             throw new ValidationException(`field ${key} is required`);
         }
 

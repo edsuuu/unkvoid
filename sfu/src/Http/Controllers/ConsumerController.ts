@@ -103,4 +103,13 @@ export class ConsumerController {
 
         return new StatusResource('paused');
     }
+
+    public destroy(request: ConsumerRequest): StatusResource {
+        const peer = request.peer();
+
+        peer.getConsumer(request.consumerId()).close();
+        peer.consumers.delete(request.consumerId());
+
+        return new StatusResource('closed');
+    }
 }

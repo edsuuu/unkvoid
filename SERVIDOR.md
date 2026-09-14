@@ -1,52 +1,45 @@
-# O servidor, do zero
+# O servidor
 
-Como levantar de novo o que hoje roda em `discord.unkvoid.com`, na ordem em que
-as peças dependem umas das outras.
+**Para levantar uma máquina do zero, em ordem de execução, o roteiro é
+[infra/INSTALAR-VPS.md](infra/INSTALAR-VPS.md).** Aquele arquivo tem o comando de cada
+passo; este tem o porquê — as medições da máquina que existe, o que cada número
+resolveu, e o que desligar.
 
-Escrito olhando a máquina que existe, não de memória. O que estiver aqui foi
-verificado; o que não deu para verificar está marcado.
+Hoje é um Ubuntu 24.04 na Contabo com 4 vCPU e 8 GB de RAM, acumulando servidor de
+mídia, site, e-mail, repositório APT e runner, mais meia dúzia de projetos mortos. A
+máquina que substitui essa é um **Cloud VPS 8** — 8 vCPU, 24 GB, 300 GB de SSD, porta de
+600 Mb/s — e hospeda **duas coisas**: o servidor de e-mail e este projeto.
 
-Hoje é um Ubuntu 24.04 na Contabo. A mesma máquina é servidor de mídia, servidor
-de download e repositório APT.
+Escrito olhando a máquina que existe, não de memória. O que estiver aqui foi verificado;
+o que não deu para verificar está marcado.
 
-## A ordem
+## Onde está cada assunto
 
-1. Firewall — sem ele, nada do resto responde
-2. Pacotes base, Node, pm2
-3. nginx e certificado
-4. O SFU
-5. O repositório APT
-6. A pasta de downloads e o manifesto de atualização
+| Assunto | Onde |
+|---|---|
+| Instalar do zero, na ordem, com comando copiável | [infra/INSTALAR-VPS.md](infra/INSTALAR-VPS.md) |
+| Teto de espectadores por banda, e a região | [infra/INSTALAR-VPS.md](infra/INSTALAR-VPS.md), seções 1.2 a 1.4 |
+| Migrar o e-mail sem derrubar a caixa | [infra/INSTALAR-VPS.md](infra/INSTALAR-VPS.md), seção 11 |
+| Quais portas abrir, e por que a faixa é larga | [UDP.md](UDP.md) e o roteiro, seção 2 |
+| O caminho da imagem e os buffers de socket | [REDE.md](REDE.md) |
+| Publicar uma versão no repositório APT | aqui embaixo, seção 2 |
+| O que está medido nesta máquina e o que desligar | aqui embaixo, seções 4 e 5 |
 
-## 1. Firewall
+## 1. Firewall: por que ele é sempre o primeiro suspeito
 
-**É o primeiro passo porque é o que mais custou.** O firewall da Contabo é do
-painel, não da máquina: `ufw status` diz `inactive` e o `iptables` está limpo, e
-mesmo assim o tráfego é descartado antes de chegar. Procurar no servidor não
-acha nada.
+**O firewall da Contabo é do painel, não da máquina.** `ufw status` diz `inactive`, o
+`iptables` está limpo, e mesmo assim o tráfego é descartado antes de chegar. Procurar no
+servidor não acha nada, e foi isso que custou uma noite inteira.
 
-No painel, em Serviços de Rede → Firewall. O campo de portas aceita intervalo
-(`41000-42000`) e lista separada por vírgula — não precisa de uma regra por
-porta.
+A tabela de portas mora no roteiro (seção 2), porque ela muda com `SFU_WORKERS`. O que
+não muda é o sintoma: **o mediasoup sorteia** uma porta dentro da faixa do worker e só
+confere se ela está livre nesta máquina, nunca se é alcançável de fora. Uma porta
+sorteada fora do que o firewall abre vira uma transmissão em que todo contador marca
+saúde, o socket aceita cada byte, e nada chega do outro lado. Preto, reinicia e pega,
+muda a qualidade e morre de novo.
 
-| Protocolo | Portas | Para quê |
-|---|---|---|
-| TCP | 22 | ssh |
-| TCP | 80, 443 | nginx |
-| TCP e UDP | 40000-40003 | WebRTC de quem assiste, uma porta por worker do mediasoup |
-| UDP | 41000-42000 | RTP puro de quem transmite pelo app |
-| TCP | 30033 | TeamSpeak |
-| UDP | 9987 | TeamSpeak |
-
-A faixa de RTP é larga de propósito. O mediasoup **sorteia** uma porta dentro da
-faixa do worker e só confere se ela está livre na máquina, nunca se é alcançável
-de fora. Uma porta sorteada fora do que o firewall abre vira uma transmissão em
-que todo contador marca saúde, o socket aceita cada byte, e nada chega do outro
-lado. Foi exatamente esse o sintoma que custou uma noite: preto, reinicia e
-pega, muda a qualidade e morre de novo.
-
-Confira de fora, não de dentro. TCP dá para testar com `nc -z`; UDP só com uma
-captura do outro lado:
+Confira de fora, não de dentro. TCP dá para testar com `nc -z`; UDP só com uma captura
+do outro lado:
 
 ```bash
 # na VPS
@@ -58,131 +51,7 @@ printf 'teste' | nc -u -w0 SEU.IP.AQUI 41500
 
 Se não aparecer no tcpdump, é o firewall do painel, não o código.
 
-## 2. Pacotes base, Node, pm2
-
-```bash
-sudo apt update && sudo apt install -y \
-  build-essential curl wget file pkg-config cmake git nginx \
-  libwebkit2gtk-4.1-dev libssl-dev libayatana-appindicator3-dev \
-  librsvg2-dev libxdo-dev
-```
-
-Os cinco últimos são para compilar o app Linux nesta máquina. O `cmake` é do
-`opusic-sys`, que compila o libopus do zero — sem ele o build morre depois de
-quarenta minutos, não no começo.
-
-Node e pm2, nas versões que estão rodando hoje:
-
-```bash
-curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
-sudo apt install -y nodejs
-sudo npm install -g pnpm pm2
-```
-
-| Ferramenta | Versão hoje |
-|---|---|
-| Node | 24.19.0 |
-| npm | 11.17.0 |
-| pnpm | 11.21.0 |
-| pm2 | 7.0.4 |
-
-Rust, só se esta máquina for compilar o app Linux:
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
-```
-
-## 3. nginx e certificado
-
-As pastas, com dono `ubuntu` para publicar sem `sudo`:
-
-```bash
-sudo mkdir -p /var/www/apt /var/www/downloads/unkvoid /var/www/projects
-sudo chown -R ubuntu:ubuntu /var/www/apt /var/www/downloads /var/www/projects
-```
-
-O site, em `/etc/nginx/sites-available/discord`:
-
-```nginx
-server {
-    server_name discord.unkvoid.com;
-
-    # A sinalização do SFU. `upgrade` porque é WebSocket, e `proxy_buffering off`
-    # porque bufferizar sinalização é atrasar o começo de cada transmissão.
-    location /sfu {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_read_timeout 600s;
-        proxy_send_timeout 600s;
-        proxy_buffering off;
-    }
-
-    location /health {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-        add_header Access-Control-Allow-Origin "*" always;
-    }
-
-    location /apt/ {
-        alias /var/www/apt/;
-        autoindex on;
-    }
-
-    location = /downloads { return 301 /downloads/; }
-
-    # `no-store` é o que faz o manifesto de atualização valer no minuto em que
-    # sobe. Com cache, o app continua vendo a versão de ontem.
-    location /downloads/ {
-        alias /var/www/downloads/unkvoid/;
-        autoindex on;
-        add_header Cache-Control "no-store" always;
-    }
-
-    location / { return 404; }
-}
-```
-
-**A mídia não passa por aqui.** Ela vai direto por UDP nas portas 40000-40003 e
-41000-42000. O nginx só carrega sinalização e arquivo.
-
-```bash
-sudo ln -s /etc/nginx/sites-available/discord /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d discord.unkvoid.com
-```
-
-O certbot reescreve o bloco acrescentando o `listen 443 ssl` e o redirecionamento
-do 80. Não mexa nas linhas que ele marca com `# managed by Certbot`.
-
-## 4. O SFU
-
-Do seu Mac, com o alias `vps` no `~/.ssh/config`:
-
-```bash
-cd sfu && ./deploy.sh vps
-```
-
-Ele compila o TypeScript aqui, manda por rsync, instala as dependências de
-produção e sobe pelo pm2. Termina batendo no `/health`, então um deploy que
-imprime `{"ok":true,...}` é um deploy que subiu de verdade.
-
-O `.env` fica **só na VPS**, em `/var/www/projects/sfu/.env`, com o
-`SFU_SECRET`. O `ecosystem.config.cjs` define o resto: 4 workers, mídia em
-40000, RTP puro a partir de 41000 com 8 portas por worker.
-
-Para o pm2 voltar sozinho depois de um reboot:
-
-```bash
-pm2 startup   # e rode a linha que ele imprimir
-pm2 save
-```
-
-## 5. O repositório APT
+## 2. O repositório APT
 
 É por aqui que o Linux instala e atualiza. O formato é o "plano": um diretório
 só, sem a árvore `dists/pool`. O APT aceita, e do lado de quem instala isso é uma
@@ -242,9 +111,9 @@ meio.
 ### Do lado de quem instala
 
 ```bash
-curl -fsSL https://discord.unkvoid.com/apt/unkvoid.gpg \
+curl -fsSL https://unkvoid.com/apt/unkvoid.gpg \
   | sudo tee /usr/share/keyrings/unkvoid.gpg > /dev/null
-echo "deb [signed-by=/usr/share/keyrings/unkvoid.gpg] https://discord.unkvoid.com/apt ./" \
+echo "deb [signed-by=/usr/share/keyrings/unkvoid.gpg] https://unkvoid.com/apt ./" \
   | sudo tee /etc/apt/sources.list.d/unkvoid.list
 sudo apt update && sudo apt install unkvoid
 ```
@@ -256,10 +125,10 @@ com `pkexec` no meio da abertura faria o que o `apt` já faz.
 Para conferir que a assinatura fecha, de uma máquina limpa:
 
 ```bash
-gpg --verify <(curl -s https://discord.unkvoid.com/apt/InRelease)
+gpg --verify <(curl -s https://unkvoid.com/apt/InRelease)
 ```
 
-## 6. Downloads e manifesto de atualização
+## 3. Downloads e manifesto de atualização
 
 Nada disso mora no disco do servidor. Os instaladores do macOS e do Windows vão
 para o MinIO pela API assinada de `publish-release.sh`, e o `latest.json` que o
@@ -273,32 +142,162 @@ máquina é exposta à internet: quem a tiver publica atualização para todo mu
 que instalou o app. O passo a passo dela está no
 [AUTO-UPDATE.md](AUTO-UPDATE.md).
 
-## O que mais roda nesta máquina
+## 4. A config que aguenta o tráfego
+
+Medido nesta máquina em 12/09/2026: 4 vCPU (AMD EPYC), 7941 MB de RAM com 5715
+livres, 145 GB de disco com 38 usados, load 0,11 e 0,06% de steal. **O que estoura
+primeiro é a banda de saída, não a CPU.** O SFU replica a transmissão por
+espectador: 1080p60 a 10 Mb/s vira 180 Mb/s com 17 pessoas assistindo, e aí acaba
+o uplink. A CPU dos workers, nesse ponto, está empurrando ~19 mil pacotes por
+segundo divididos por quatro núcleos — uma ordem de grandeza longe de saturar.
+
+**Antes de qualquer ajuste, o SFU que está no ar é de um deploy velho.** O `pm2 env`
+dele mostra `SFU_PLAIN_PORTS=8` e nenhum `SFU_CONNECTIONS_PER_MINUTE`, então hoje o
+teto real é 8 transmissões por sala (ou 1 transmissão e 3 espectadores de Linux, que
+gastam duas portas cada) e 20 entradas por minuto por IP — o padrão do `config.ts`.
+O `ecosystem.config.cjs` do repositório já diz 64 e 120; um `./deploy.sh vps` vale
+mais do que qualquer linha das tabelas abaixo.
+
+Cada arquivo versionado e onde ele entra:
+
+| Arquivo do repositório | Vai para | O que muda |
+|---|---|---|
+| `infra/nginx.conf` | `/etc/nginx/nginx.conf` | `worker_rlimit_nofile` (novo), `worker_connections` 768 → 4096, `gzip_types`, `keepalive_timeout` |
+| `infra/nginx-unkvoid.conf` | `/etc/nginx/sites-available/unkvoid` | o Reverb em `/app`, cache do `/build/`, `limit_rate` no download |
+| `infra/sysctl-unkvoid.conf` | `/etc/sysctl.d/99-unkvoid.conf` | buffer UDP de **envio**, backlog, e as portas do SFU fora do sorteio do kernel |
+| `sfu/ecosystem.config.cjs` | `/var/www/projects/sfu/` | o Reverb no pm2, com `watch` desligado |
+
+Ao aplicar o sysctl, apague os dois arquivos que ele substitui:
+`99-unkvoid-udp.conf` (virou este) e `99-livekit.conf` (sobrou de um teste de
+LiveKit, e é quem prende `rmem_max` em 5 MB — um passo acima do `rmem_default`).
+
+### O que não dá para versionar
+
+**php-fpm não aceita drop-in**: um segundo arquivo em `pool.d/` com `[www]` faz o
+serviço recusar com `cannot redeclare pool`. É edição no lugar, em
+`/etc/php/8.4/fpm/pool.d/www.conf`:
+
+| Diretiva | Nesta máquina (8 GB) | Na máquina nova (24 GB) |
+|---|---|---|
+| `pm.max_children` | 5, o padrão da distro | 32 |
+| `pm.start_servers` | 2 | 5 |
+| `pm.min_spare_servers` | 1 | 5 |
+| `pm.max_spare_servers` | 3 | 10 |
+
+5 é o padrão da distro, não uma escolha, e é o teto de **requisições PHP
+simultâneas** — cada mensagem do chat pelo Livewire é uma. O processo mede 55-80 MB
+de RSS, então 32 filhos são ~2,5 GB de pico contra 24 GB; `dynamic` fica porque
+idle são 5 filhos, ~400 MB. Os valores da coluna da direita estão no roteiro, seção
+6, que é onde eles se aplicam.
+
+Em `/etc/php/8.4/fpm/php.ini`, para o painel conseguir publicar o instalador que
+o nginx já aceita em 200 MB (`upload_max_filesize = 2M` e `post_max_size = 8M`
+hoje matam o envio **depois** de subir o arquivo inteiro):
+
+```ini
+upload_max_filesize = 210M
+post_max_size = 215M
+max_execution_time = 120
+```
+
+**Swap não existe nesta máquina**, e ela compila Rust nela mesma pelo runner. Sem
+swap, um pico de build faz o OOM killer escolher a vítima mais gorda — um worker
+do mediasoup, no meio de uma transmissão. Vale igual com 24 GB: o que decide é a
+forma do pico, não o tamanho da RAM.
+
+```bash
+sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+**MySQL e MinIO não mudam.** O banco `unkvoid` tem 0,6 MB: o `innodb_buffer_pool_size`
+de 128 MB já cabe o banco duzentas vezes, e `max_connections` de 151 é cinco vezes
+o que 32 filhos do php-fpm mais o Reverb somam. O gatilho para mexer é o banco
+passar de 200 MB — aí `innodb_buffer_pool_size=512M` no `command:` do
+`infra/docker-compose.yml`.
+
+### O que desligar
+
+Medido com `ps`, `docker stats` e `ss`: tudo abaixo está ligado e não serve mais.
+
+| O quê | Ganho | Por que sai |
+|---|---|---|
+| `filebrowser.service` | 25 MB e **a porta 8080** | Gerenciador de arquivos de uma pasta de Minecraft; o site que o expunha (`tarkas.unkvoid.com:8443`) só devolve 404. É ele que ocupa a porta que o Reverb precisa. |
+| `pm2 delete reverb` | 61 MB | É o Reverb do projeto `discord`, na 8081, servindo um Laravel que já não existe. |
+| `systemctl disable --now php8.3-fpm` | 50 MB | Nenhum site aponta para `php8.3-fpm.sock`; o `retro` usa o socket do 8.4. |
+| `systemctl disable --now mysql` (o do sistema, na 3306) | 395 MB | Só tem `discord`, `discord_dev` e `retro_friends`. O Unkvoid usa o MySQL do docker, na 3307. Faça o dump antes. |
+| `ENABLE_AMAVIS=0` no `mailserver` | 176 MB | O rspamd já filtra; o amavis é a segunda passada, e a caixa faz 0,1 mensagem por segundo. |
+| `rm /etc/nginx/sites-enabled/{files,ia.unkvoid.com,retro}` | — | `files` só devolve 404, `ia.unkvoid.com` aponta para a 20128 onde não há ninguém, e o root do `retro` (`/var/www/projects/retro`) não existe. |
+| `systemctl disable actions.runner.edsuuu-{retro-friends,tarkas}` | — | As duas unidades estão em `failed` desde sempre. |
+| `docker stop teamspeak-server` | 28 MB e 2,7% de CPU | Só se ninguém mais usa o TeamSpeak — é decisão do dono, não da infra. |
+| `/var/www/projects/discord` | 78 MB de disco | Projeto morto. |
+
+São ~1,1 GB de RAM sem tocar em nada do Unkvoid, e a porta 8080 liberada para o
+Reverb. O `target/` do Rust em `/var/www/projects/unkvoid/native` (9,4 GB) **fica**:
+é o cache que faz o build do `.deb` não levar quarenta minutos.
+
+### Quando esta máquina não bastar
+
+O gatilho é medível, e é um só: **eth0 passando de 75% da porta de saída sustentados
+por cinco minutos** — 150 Mb/s nesta máquina, que tem porta de 200; 450 Mb/s na nova,
+que tem 600. Para medir sem instalar nada:
+
+```bash
+# duas leituras de 10 s, em Mb/s de saída
+A=$(awk '/eth0/{print $10}' /proc/net/dev); sleep 10
+B=$(awk '/eth0/{print $10}' /proc/net/dev); echo $(( (B-A)*8/10/1000000 ))
+```
+
+Os outros dois, que dizem *qual* peça acabou: qualquer worker do mediasoup acima
+de 70% de um núcleo (`top -p "$(pgrep -d, mediasoup-worker)"`), e
+`RcvbufErrors`/`SndbufErrors` crescendo em `grep ^Udp: /proc/net/snmp` depois do
+sysctl novo.
+
+Na ordem do mais barato:
+
+1. **Limitar a qualidade por sala** — de graça. 720p60 são 5 Mb/s em vez de 10: a
+   mesma banda atende o dobro de gente (34 em vez de 17 nesta máquina, 116 em vez de
+   58 na nova). É o dobro de plateia sem pagar nada, e é a única mudança que age no
+   numerador. É também a defesa contra a política de uso justo do tráfego ilimitado
+   — ver o roteiro, seção 1.3.
+2. **Segunda VPS só para o SFU** — a banda da Contabo é por máquina, então duas
+   máquinas são o dobro de banda, enquanto um plano maior dá vCPU e RAM que não
+   são o gargalo. Custa uma variável: o app pergunta o endereço do SFU em
+   `GET /api/config`, então mudar para onde ele aponta não toca em uma linha de
+   código.
+3. **Subir o plano** — só quando o gatilho for RAM (`MemAvailable` abaixo de 800 MB)
+   ou CPU dos workers, e não banda. Plano maior dá vCPU e RAM; porta maior dá
+   plateia, e é outro campo do painel (roteiro, seção 1.1).
+
+## 5. O que mais roda nesta máquina
 
 Não faz parte do Unkvoid, mas uma VPS nova que substitua esta precisa saber que
 existe:
 
-| O quê | Como roda | Portas |
-|---|---|---|
-| Laravel Reverb | pm2, `php`, em `/var/www/projects/discord/current` | atrás do nginx |
-| TeamSpeak 6 | docker, `teamspeaksystems/teamspeak6-server` | 9987/udp, 30033/tcp |
-| n9router | docker | 127.0.0.1:20128 |
-| Outros sites | nginx: `files`, `ia.unkvoid.com`, `retro` | 443 |
+| O quê | Como roda | Portas | Ainda serve? |
+|---|---|---|---|
+| MySQL do sistema | `mysql.service` (8.0) | 127.0.0.1:3306 | Não — só `discord`, `discord_dev`, `retro_friends` |
+| Reverb do `discord` | pm2, `php`, em `/var/www/projects/discord/current` | 127.0.0.1:8081 | Não — o Laravel daquele caminho já não existe |
+| filebrowser | `filebrowser.service` | 127.0.0.1:8080 | Não — e ocupa a porta do Reverb novo |
+| php8.3-fpm | `php8.3-fpm.service` | socket | Não — nenhum site usa o socket dele |
+| TeamSpeak 6 | docker, `teamspeaksystems/teamspeak6-server` | 9987/udp, 30033/tcp | Decisão do dono |
+| Runner do GitHub | `actions.runner.edsuuu-unkvoid.unkvoid-vps` | — | Sim, é o CI |
+| Outros sites | nginx: `files`, `ia.unkvoid.com`, `retro` | 443, 8443 | Não — os três devolvem 404 ou apontam para um root que não existe |
 
-**O Laravel não está documentado aqui.** Só dá para ver de fora que o Reverb sobe
-pelo pm2 a partir daquele caminho e que há um `php` escutando em 127.0.0.1:8081.
-Como subir o projeto — migrations, `.env`, php-fpm, filas — precisa vir de quem o
-conhece, e inventar os passos seria pior do que não tê-los.
+O ganho de desligar cada um está na tabela da seção 4. O Unkvoid em si é o nginx,
+o php8.4-fpm, o `sfu` e o `reverb` no pm2, e os contêineres `unkvoid-mysql`,
+`unkvoid-minio` e `unkvoid-mail`.
 
-## Quando alguma coisa não responde
+## 6. Quando alguma coisa não responde
 
 Na ordem, porque cada uma explica a seguinte:
 
-1. `curl -s https://discord.unkvoid.com/health` — se não responder, é nginx ou
+1. `curl -s https://unkvoid.com/health` — se não responder, é nginx ou
    pm2, e nada de mídia vai funcionar.
 2. `pm2 list` e `pm2 logs sfu --lines 50`.
-3. `sudo ss -lntup | grep -E '3000|4000[0-3]'` — o processo está escutando?
+3. `sudo ss -lntup | grep -E '3000|4000[0-6]'` — o processo está escutando?
 4. O tcpdump da seção 1 — o pacote chega na máquina? Se não, é o painel da
    Contabo.
-5. `curl -s https://discord.unkvoid.com/downloads/latest.json` — 404 aqui
+5. `curl -s https://unkvoid.com/downloads/latest.json` — 404 aqui
    significa que ninguém se atualiza, mesmo com tudo o resto de pé.

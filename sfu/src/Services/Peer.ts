@@ -1,14 +1,25 @@
 import type { Consumer, PlainTransport, Producer, WebRtcTransport } from 'mediasoup/types';
 import type { WebSocket } from 'ws';
 
-import { NotFoundException } from '../Exceptions/ApiException.js';
+import { PERMISSION_BY_SOURCE, type SourceName } from '../Enums/Source.js';
+import { ForbiddenException, NotFoundException } from '../Exceptions/ApiException.js';
 import type { ProducerDescription } from '../types.js';
+import type { Recorder } from './Recorder.js';
 
 export class Peer {
     public socket: WebSocket;
 
+    /** O anel dos clipes, enquanto esta pessoa compartilha tela num canal. */
+    public recorder: Recorder | null = null;
+
     /** Quando o socket caiu. Nulo enquanto a sinalização está viva. */
     public orphanedAt: number | null = null;
+
+    /**
+     * Silenciado pelo servidor (Laravel). Pausar o producer não bastava: o cliente
+     * chamava `resumeProducer` no clique seguinte e a voz voltava.
+     */
+    public serverMuted = false;
 
     public readonly transports = new Map<string, WebRtcTransport>();
 
@@ -31,8 +42,9 @@ export class Peer {
          * conexão.
          */
         public readonly userId: string,
-        /** Decidido pelo Laravel, contra o banco. O SFU só carrega. */
-        public readonly owner: boolean,
+        /** Decidido pelo Laravel, contra o banco. O SFU só confere na hora de produzir. */
+        public readonly can: readonly string[],
+        public readonly ip: string,
     ) {
         this.socket = socket;
     }
@@ -70,6 +82,18 @@ export class Peer {
         return transport;
     }
 
+    public getProducer(producerId: string): Producer {
+        const producer = this.producers.get(producerId);
+
+        if (!producer) {
+            throw new NotFoundException(
+                `producer ${producerId} does not exist for this participant`,
+            );
+        }
+
+        return producer;
+    }
+
     public getConsumer(consumerId: string): Consumer {
         const consumer = this.consumers.get(consumerId);
 
@@ -80,6 +104,20 @@ export class Peer {
         }
 
         return consumer;
+    }
+
+    public assertCanProduce(source: SourceName): void {
+        if (!this.can.includes(PERMISSION_BY_SOURCE[source])) {
+            throw new ForbiddenException(`this participant cannot produce ${source}`);
+        }
+
+        this.assertNotServerMuted(source);
+    }
+
+    public assertNotServerMuted(source: string): void {
+        if (this.serverMuted && source === 'mic') {
+            throw new ForbiddenException('this participant was muted by the server');
+        }
     }
 
     public addProducer(producer: Producer, source: string): void {
@@ -95,6 +133,10 @@ export class Peer {
         }));
     }
 
+    public sources(): string[] {
+        return [...new Set(this.describeProducers().map((producer) => producer.source))];
+    }
+
     public closeProducers(): void {
         for (const producer of this.producers.values()) {
             producer.close();
@@ -105,13 +147,17 @@ export class Peer {
     }
 
     public closePlainTransports(): void {
-        // Um plain transport existe só para carregar uma transmissão: deixá-lo aberto
-        // seguraria uma porta UDP de uma faixa estreita pelo resto da vida do processo.
+        // Um plain transport de envio existe só para carregar uma transmissão: deixá-lo
+        // aberto seguraria uma porta UDP de uma faixa estreita pelo resto da vida do
+        // processo. O de recepção fica: os consumers de quem ainda fala moram nele.
         for (const transport of this.plainTransports.values()) {
-            transport.close();
-        }
+            if (transport.appData.receive === true) {
+                continue;
+            }
 
-        this.plainTransports.clear();
+            transport.close();
+            this.plainTransports.delete(transport.id);
+        }
     }
 
     public send(event: string, data: unknown): void {

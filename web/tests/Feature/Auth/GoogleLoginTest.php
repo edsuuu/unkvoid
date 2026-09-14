@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Models\User;
+use Database\Seeders\Seeder001Roles;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\User as GoogleUser;
 
@@ -41,17 +42,20 @@ it('vincula o Google a uma conta que já existia pelo e-mail', function (): void
 it('devolve o token para o app pela porta local', function (): void {
     Socialite::shouldReceive('driver->user')->andReturn(googleUser('g-3', 'app@unkvoid.test', 'App'));
 
-    $this->get(route('oauth2.app', ['port' => 43123]))->assertRedirect(route('oauth2.google'));
+    $this->get(route('oauth2.app', ['port' => 43123]))->assertSessionHasErrors('state');
+    $this->get(route('oauth2.app', ['port' => 43123, 'state' => 'zz']))->assertSessionHasErrors('state');
+    $this->get(route('oauth2.app', ['port' => 43123, 'state' => 'c0ffee42']))->assertRedirect(route('oauth2.google'));
 
     $response = $this->get(route('oauth2.google.callback'));
 
     $response->assertRedirect();
-    expect($response->headers->get('Location'))->toStartWith('http://127.0.0.1:43123/?token=');
+
+    expect($response->headers->get('Location'))->toStartWith('http://127.0.0.1:43123/?token=')->toEndWith('&state=c0ffee42');
     $this->assertDatabaseCount('personal_access_tokens', 1);
 });
 
 it('quem entra com o e-mail do dono vira administrador', function (): void {
-    $this->seed(Database\Seeders\Seeder001Roles::class);
+    $this->seed(Seeder001Roles::class);
     Socialite::shouldReceive('driver->user')->andReturn(googleUser('g-4', config('unkvoid.admin_email'), 'Dono'));
 
     $this->get(route('oauth2.google.callback'));

@@ -24,16 +24,19 @@ reordenar quadros — latência que uma chamada não paga.
 
 De quebra: sem barra do Chrome por cima, e o áudio do sistema entra junto.
 
-## As duas peças
+## As três peças
 
 | | O quê | Onde |
 |---|---|---|
 | `native/` | o app: captura, encoder, interface (Rust + Tauri) | na máquina de quem usa |
 | `sfu/` | o relé de mídia (Node + mediasoup) | na VPS |
+| `web/` | o site, as contas, os servidores com canais, o chat e a auditoria (Laravel) | na VPS |
 
-Não há banco de dados, não há conta, não há API HTTP: o app fala com o SFU por um
-WebSocket só. O `/health` existe para o app saber que o servidor está de pé antes de
-deixar alguém entrar numa sala.
+A sala anônima por código continua sem banco e sem conta: o app fala com o SFU por um
+WebSocket só, e o `/health` existe para ele saber que o servidor está de pé antes de
+deixar alguém entrar. O modo com conta (servidores, canais de texto e voz, cargos,
+câmera) é o Laravel quem manda: ele decide quem entra em qual canal e assina o token
+que o SFU confere. O contrato entre as três peças está em [SERVIDORES.md](SERVIDORES.md).
 
 ```
 native/
@@ -42,8 +45,12 @@ native/
   apps/desktop/     Tauri: os comandos e a interface
 sfu/src/
   Http/             rota → Request → Controller → Resource
-  Services/         Room, Peer, RoomRegistry
-infra/nginx.conf    só termina TLS para o WebSocket
+  Services/         Room, Peer, RoomRegistry, Signature, Webhook
+web/
+  app/Models/       Server, Channel, ServerRole, ServerMember, Message, ChannelAccess…
+  app/Services/Sfu/ o cliente assinado que fala com o SFU (token, kick, mute, presença)
+  routes/api.php    a API que o app usa; routes/channels.php, o Reverb
+infra/nginx-unkvoid.conf   TLS, /sfu, /health, o Reverb em /app e /apps
 ```
 
 ## Estado por sistema
@@ -51,7 +58,7 @@ infra/nginx.conf    só termina TLS para o WebSocket
 | | Captura de tela | Áudio do sistema | Encoder | Transmite? |
 |---|---|---|---|---|
 | macOS | ScreenCaptureKit | sim | VideoToolbox | sim |
-| Windows | Graphics Capture (pega os quadros) | falta (WASAPI loopback) | **falta** (Media Foundation) | **não** |
+| Windows | Graphics Capture | sim (WASAPI loopback, por processo) | Media Foundation (NVENC/QuickSync/VCE) | sim |
 | Linux | GStreamer `ximagesrc` (X11) | monitor do PulseAudio/PipeWire | x264 (CPU, no GStreamer) | sim |
 
 **Assistir** usa o WebRTC do webview. No Linux isso não existe: Debian, Ubuntu, Mint e
@@ -157,8 +164,8 @@ pnpm run build
 |---|---|---|
 | 443 | TCP | nginx: TLS para `wss://…/sfu` e `/health` |
 | 3000 | TCP | o SFU, só em 127.0.0.1 (atrás do nginx) |
-| 40000-40003 | UDP | WebRTC de quem assiste — uma porta por worker |
-| 41000-41003 | UDP | RTP puro de quem transmite pelo app |
+| 40000-40006 | UDP | WebRTC de quem assiste — uma porta por worker |
+| 41000-41447 | UDP | RTP puro de quem transmite pelo app (a regra do firewall abre 41000-42000) |
 
 As portas UDP precisam aceitar entrada não solicitada: o mediasoup é ICE Lite, só
 responde e nunca inicia.
@@ -203,6 +210,7 @@ cargo run -p media --example plain -- <ws> <sala>     # o SFU confirmando que re
 | `REDE.md` | o caminho da imagem, os ajustes de rede e o que mora fora do repositório |
 | `SEGURANCA.md` | o que está protegido, o que não está, e o que falta |
 | `AUTO-UPDATE.md` | assinatura, manifesto e os dois canais de atualização |
-| `SERVIDOR.md` | como levantar a VPS do zero: firewall, nginx, SFU e repositório APT |
+| `SERVIDOR.md` | a VPS que existe: medições, firewall, repositório APT, o que desligar |
+| `infra/INSTALAR-VPS.md` | levantar uma VPS do zero, em ordem, e migrar o e-mail sem perder mensagem |
 | `UDP.md` | quantas portas UDP a rede precisa abrir, e o que quebra calado quando aperta |
 | `BUILD-WINDOWS.md`, `BUILD-MACOS.md` | como gerar instalador em cada sistema |

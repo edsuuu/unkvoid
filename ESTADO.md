@@ -41,11 +41,36 @@ encoder` afirma que o keyframe sai com start code, SPS, PPS e IDR.
 - **Windows** — compila para o alvo, mas **nada foi executado lá**. As correções
   do encoder e o áudio WASAPI foram escritos e type-checados, não testados. É o
   primeiro trabalho de quem pegar a máquina Windows.
+  Tela inteira com "Sem o áudio do Discord" (13/09): um laço de inclusão por processo que
+  toca som, somados no Rust. Provado com o `spike` numa máquina com Discord e Sonar da
+  SteelSeries: Discord, Sonar e `audiodg.exe` ficam de fora, o som do Minecraft entra.
 - **Linux** — transmite (X11, via `gst-launch-1.0` + x264 na CPU, desde a 0.0.15) e
   assiste (0.0.16) pelo receptor nativo: RTP puro do servidor, SRTP aberto no Rust
   (`crates/media/src/receiver.rs`), GStreamer decodifica e entrega ao cartão do app como MJPEG
   (`src-tauri/src/watch.rs`). O WebKitGTK das distros segue sem WebRTC (ver README).
   Instala por `apt install unkvoid`.
+
+### Sem encoder na placa, a transmissão cai para o processador (13/09)
+
+Antes recusava transmitir. Agora: encoder da placa em uso → processador, com teto de 720p30
+(`EncoderConfig::for_cpu`) e aviso único na interface (`broadcast_stats` ganhou
+`encoder: "gpu" | "cpu"`). `UNKVOID_ENCODER=cpu` força o degrau do processador para testar.
+
+- **Windows** — tenta cada MFT de hardware da lista, não só o primeiro (notebook híbrido);
+  sem nenhum, o MFT de H.264 por software do Windows, com a textura NV12 lida da GPU já
+  convertida e escalada. Provado numa RTX 4060 Ti com `diagnose --step pipeline --quality
+  1080` (3 s, captura real): placa 176 quadros 1920x1080 a 59 fps, 3 310 µs por quadro
+  capturado; `UNKVOID_ENCODER=cpu` 91 quadros 1280x720 a 30 fps, 4 154 µs por quadro capturado
+  (~6,8 ms por quadro codificado), sem fila nem quadros B. Os dois H.264 (`UNKVOID_DUMP`)
+  decodificaram inteiros no `avdec_h264`. O caso "MFT que não é o primeiro da lista"
+  (integrada atrás da dedicada) **não** foi provado: não há máquina híbrida aqui.
+- **macOS** — saiu o `RequireHardwareAcceleratedVideoEncoder`; lê
+  `UsingHardwareAcceleratedVideoEncoder` e, em software, reabre a sessão em 720p30. **Só
+  escrito**: não há Mac para compilar.
+- **Linux** — sonda `nvh264enc` → `vah264enc` → `vaapih264enc` com um quadro de teste e cai
+  no `x264enc`; tela e câmera usam o mesmo trecho, com `h264parse` garantindo AUD e SPS/PPS
+  por IDR (provado com x264 num contêiner Ubuntu 24.04). Os encoders de placa **não** rodaram
+  em hardware Linux.
 
 ### O que NÃO existe: servidores com salas
 
@@ -91,7 +116,7 @@ token curto. O SFU só confere a assinatura com um segredo compartilhado, sem
 chamada de rede no caminho do join.
 
 ```php
-$claims = ['room' => $channel->id, 'name' => $user->name, 'owner' => $isOwner, 'exp' => time() + 60];
+$claims = ['room' => $channel->id, 'sub' => 'user:'.$user->id, 'name' => $user->name, 'exp' => time() + 60, 'can' => ['speak', 'stream', 'video']];
 $body = rtrim(strtr(base64_encode(json_encode($claims)), '+/', '-_'), '=');
 
 return $body . '.' . hash_hmac('sha256', $body, config('services.sfu.secret'));
@@ -215,6 +240,10 @@ A `main` **não** foi mexida. Para juntar: `git checkout main && git merge limpe
 ## O que mudou nesta sessão
 
 ### 1. O Laravel morreu, e com ele o token
+
+> Histórico de 09/09/2026. Em 11/09 o Laravel voltou, com outro papel: contas,
+> servidores, canais, chat e auditoria (ver [SERVIDORES.md](SERVIDORES.md)). A sala
+> anônima continua exatamente como descrito abaixo.
 
 O app pedia ao Laravel um token para entrar na sala: 112 arquivos e ~7.900 linhas de PHP,
 mais MySQL, Reverb e PHP-FPM, para servir dois endpoints. **Não existe mais endpoint
