@@ -227,13 +227,14 @@ impl Broadcast {
                 let started = std::time::Instant::now();
 
                 // Antes de codificar, e uma vez por quadro: é o único momento em que
-                // dá para atender o pedido, e ler o socket aqui custa uma syscall que
-                // volta vazia na esmagadora maioria dos quadros.
+                // dá para atender o pedido de quadro-chave, e o reenvio do que se perdeu
+                // sai junto. Ler o socket aqui custa uma syscall que volta vazia na
+                // esmagadora maioria dos quadros.
                 let asked = shared
                     .sfu
                     .lock()
                     .ok()
-                    .and_then(|mut target| target.as_mut().map(|sender| sender.keyframe_requested()))
+                    .and_then(|mut target| target.as_mut().map(|sender| sender.read_feedback()))
                     .unwrap_or(false);
 
                 let encoded = {

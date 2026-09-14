@@ -14,6 +14,7 @@
 //!
 //! O SRTP não é opcional: sem ele a tela atravessa a internet aberta.
 
+use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 
@@ -51,6 +52,11 @@ const MTU: usize = 1200;
 const KEY_LEN: usize = 16;
 const SALT_LEN: usize = 14;
 
+/// Quantos pacotes de vídeo ficam guardados para reenvio. É a janela anti-repetição que o
+/// mediasoup dá ao SRTP: pacote mais velho que isso ele recusaria de qualquer jeito. Em
+/// 1080p60 cobre perto de meio segundo, e o pedido chega numa ida e volta (~140 ms).
+const HISTORY: usize = 1024;
+
 pub struct PlainSender {
     socket: UdpSocket,
     server: SocketAddr,
@@ -74,6 +80,10 @@ pub struct PlainSender {
     /// Bytes que saíram de verdade, já protegidos. É daqui que a barra tira os Mb/s:
     /// contar pacotes não diz nada quando um quadro parado custa 1 KB e um keyframe 300.
     sent_bytes: u64,
+
+    /// Os últimos pacotes de vídeo já cifrados, com o número de sequência, para reenviar
+    /// o que o servidor disser que não chegou.
+    history: VecDeque<(u16, Bytes)>,
 }
 
 impl PlainSender {
@@ -170,6 +180,7 @@ impl PlainSender {
             last_video_ns: None,
             dropped: 0,
             sent_bytes: 0,
+            history: VecDeque::with_capacity(HISTORY),
         })
     }
 
@@ -249,7 +260,7 @@ impl PlainSender {
 
         // Campos emprestados separadamente para o empacotador e o contexto SRTP poderem
         // ser mutáveis ao mesmo tempo — são campos distintos da mesma struct.
-        Self::send(
+        let sent = Self::send(
             &self.socket,
             &mut self.srtp,
             self.video.as_mut(),
@@ -257,20 +268,32 @@ impl PlainSender {
             0,
             &mut self.dropped,
             &mut self.sent_bytes,
-        )
+        )?;
+
+        for packet in sent {
+            if self.history.len() == HISTORY {
+                self.history.pop_front();
+            }
+
+            self.history.push_back(packet);
+        }
+
+        Ok(())
     }
 
-
-    /// Lê o que o servidor devolveu e diz se ele pediu um quadro-chave.
+    /// Lê o que o servidor devolveu: reenvia na hora os pacotes de vídeo que ele diz não
+    /// ter recebido, e diz se ele pediu um quadro-chave.
     ///
-    /// O servidor manda esse pedido assim que percebe um buraco na sequência. Sem
-    /// atender, a imagem de quem assiste só se recompõe no quadro-chave periódico — até
-    /// um segundo depois, e é isso que se sente como travada. Atendendo, o congelamento
-    /// dura uma ida e volta.
+    /// O caminho até o servidor é a internet aberta, do Brasil aos EUA, e 1% de perda ali
+    /// congelava quem assiste por segundos: o servidor pedia o pacote de volta (o `nack`
+    /// de `rtp_parameters`), ninguém respondia, e cada buraco esperava um quadro-chave —
+    /// que em algumas placas nem sai na hora. Reenviando, o buraco fecha numa ida e volta
+    /// e o decodificador de quem assiste nem percebe. Os bytes são os mesmos já cifrados:
+    /// mesmo índice e mesmo texto não reusam keystream.
     ///
     /// Não bloqueia: o socket é não-bloqueante e quem chama é a thread da captura, que
     /// não pode esperar por nada. Lê o que já chegou e volta.
-    pub fn keyframe_requested(&mut self) -> bool {
+    pub fn read_feedback(&mut self) -> bool {
         let Some(incoming) = self.incoming.as_mut() else {
             return false;
         };
@@ -282,8 +305,20 @@ impl PlainSender {
             // Falha ao abrir é pacote de outra pessoa ou lixo da rede. Ignorar é o certo:
             // é justamente a autenticação do SRTCP que impede um estranho de nos fazer
             // gastar quadro-chave a cada pacote forjado.
-            if let Ok(plain) = incoming.decrypt_rtcp(&buffer[..size]) {
-                asked |= wants_keyframe(&plain);
+            let Ok(plain) = incoming.decrypt_rtcp(&buffer[..size]) else {
+                continue;
+            };
+
+            asked |= wants_keyframe(&plain);
+
+            // ponytail: busca linear no histórico a cada pacote perdido, até 1024 passos.
+            // Índice por número de sequência se isto aparecer no custo por quadro.
+            for sequence in lost_video_packets(&plain) {
+                if let Some((_, packet)) = self.history.iter().find(|(stored, _)| *stored == sequence)
+                    && let Ok(written) = self.socket.send(packet)
+                {
+                    self.sent_bytes += written as u64;
+                }
             }
         }
 
@@ -313,8 +348,11 @@ impl PlainSender {
             &mut self.dropped,
             &mut self.sent_bytes,
         )
+        .map(|_| ())
     }
 
+    /// Devolve cada pacote que saiu, já cifrado e com o número de sequência — inclusive o
+    /// que o buffer cheio largou, que é justamente o que o servidor vai pedir de volta.
     fn send(
         socket: &UdpSocket,
         srtp: &mut SrtpContext,
@@ -323,10 +361,12 @@ impl PlainSender {
         samples: u32,
         dropped: &mut u64,
         sent_bytes: &mut u64,
-    ) -> Result<()> {
+    ) -> Result<Vec<(u16, Bytes)>> {
         let packets = packetizer
             .packetize(&payload, samples)
             .map_err(|error| anyhow!("could not packetize: {error}"))?;
+
+        let mut sent = Vec::with_capacity(packets.len());
 
         for packet in packets {
             let plain = packet
@@ -347,9 +387,11 @@ impl PlainSender {
                 Err(error) if error.kind() == ErrorKind::WouldBlock => *dropped += 1,
                 Err(error) => return Err(error).context("could not send RTP to the SFU"),
             }
+
+            sent.push((packet.header.sequence_number, protected.freeze()));
         }
 
-        Ok(())
+        Ok(sent)
     }
 }
 
@@ -417,8 +459,126 @@ fn wants_keyframe(rtcp: &[u8]) -> bool {
     false
 }
 
+/// Os números de sequência que um NACK genérico diz terem faltado no vídeo.
+///
+/// Cada entrada é o primeiro perdido e uma máscara de 16 bits com os seguintes: o bit `i`
+/// ligado quer dizer que `primeiro + i + 1` também não chegou.
+fn lost_video_packets(rtcp: &[u8]) -> Vec<u16> {
+    /// Transport-layer feedback, onde mora o NACK.
+    const RTPFB: u8 = 205;
+    const GENERIC_NACK: u8 = 1;
+
+    let mut lost = Vec::new();
+    let mut rest = rtcp;
+
+    while rest.len() >= 4 {
+        let size = (usize::from(u16::from_be_bytes([rest[2], rest[3]])) + 1) * 4;
+
+        if size > rest.len() {
+            break;
+        }
+
+        let packet = &rest[..size];
+
+        if packet[1] == RTPFB
+            && packet[0] & 0x1F == GENERIC_NACK
+            && size >= 16
+            && u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]) == SSRC_VIDEO
+        {
+            for entry in packet[12..].as_chunks::<4>().0 {
+                let first = u16::from_be_bytes([entry[0], entry[1]]);
+                let mask = u16::from_be_bytes([entry[2], entry[3]]);
+
+                lost.push(first);
+                lost.extend(
+                    (0..16_u16)
+                        .filter(|bit| mask & (1 << bit) != 0)
+                        .map(|bit| first.wrapping_add(bit + 1)),
+                );
+            }
+        }
+
+        rest = &rest[size..];
+    }
+
+    lost
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// Um NACK atrás de um relatório de recepção, com máscara: é assim que o mediasoup
+    /// pede. Errar a conta da máscara reenviaria o pacote errado e o buraco continuaria.
+    #[test]
+    fn a_nack_lists_the_lost_video_packets() {
+        // RR vazio, e o NACK: FMT 1, PT 205, comprimento 3 (16 bytes no total).
+        let mut packet = vec![0x80, 201, 0x00, 0x01, 0, 0, 0, 1];
+        packet.extend_from_slice(&[0x81, 205, 0x00, 0x03, 0, 0, 0, 1]);
+        packet.extend_from_slice(&SSRC_VIDEO.to_be_bytes());
+        // Primeiro perdido 100, bits 0 e 2 ligados: faltaram também 101 e 103.
+        packet.extend_from_slice(&[0, 100, 0, 0b101]);
+
+        assert_eq!(lost_video_packets(&packet), vec![100, 101, 103]);
+
+        packet[16..20].copy_from_slice(&SSRC_AUDIO.to_be_bytes());
+
+        assert!(lost_video_packets(&packet).is_empty(), "NACK do áudio não é do vídeo");
+    }
+
+    /// O caminho inteiro da perda: o servidor manda o NACK cifrado com a chave dele, e o
+    /// pacote que faltou volta idêntico ao que saiu.
+    #[test]
+    fn a_nacked_packet_is_sent_again() {
+        let (server_socket, address) = listener();
+        let server_key = PlainSender::generate_key();
+        let mut sender = PlainSender::connect(address, &PlainSender::generate_key(), Some(&server_key))
+            .expect("could not connect");
+
+        sender
+            .send_frame(
+                &EncodedFrame {
+                    data: vec![0, 0, 0, 1, 0x65, 0xAB],
+                    keyframe: true,
+                    timestamp_ns: 0,
+                },
+                60.0,
+            )
+            .expect("could not send the frame");
+
+        let mut buffer = [0u8; 2048];
+        let size = server_socket.recv(&mut buffer).expect("the frame did not arrive");
+        let original = buffer[..size].to_vec();
+        let sequence = u16::from_be_bytes([original[2], original[3]]);
+
+        let mut nack = vec![0x81, 205, 0x00, 0x03, 0, 0, 0, 1];
+        nack.extend_from_slice(&SSRC_VIDEO.to_be_bytes());
+        nack.extend_from_slice(&sequence.to_be_bytes());
+        nack.extend_from_slice(&[0, 0]);
+
+        let protected = SrtpContext::new(
+            &server_key[..KEY_LEN],
+            &server_key[KEY_LEN..],
+            ProtectionProfile::Aes128CmHmacSha1_80,
+            None,
+            None,
+        )
+        .expect("could not start the server SRTP")
+        .encrypt_rtcp(&nack)
+        .expect("could not protect the NACK");
+
+        let port = sender.socket.local_addr().expect("sender without an address").port();
+
+        server_socket
+            .send_to(&protected, ("127.0.0.1", port))
+            .expect("could not send the NACK");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        assert!(!sender.read_feedback(), "um NACK não é pedido de quadro-chave");
+
+        let size = server_socket.recv(&mut buffer).expect("the lost packet was not sent again");
+
+        assert_eq!(buffer[..size], original[..]);
+    }
 
     /// Um PLI atrás de um relatório de recepção, que é como ele chega de verdade. Se o
     /// laço não andar pelo comprimento, este caso passa batido e a travada continua.

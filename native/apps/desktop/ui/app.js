@@ -145,6 +145,11 @@ class App {
         this.sfu = null;
         this.broadcast = null;
         this.sharing = false;
+        // Uma página que acabou de carregar não é dona de transmissão nenhuma. Se a janela
+        // recarregou no meio de uma (F5, Ctrl+R), a captura do Rust segue viva, gastando a
+        // placa para uma porta que ninguém lê, e o próximo "compartilhar" dava "a stream is
+        // already in progress" até fechar o app.
+        invoke('stop_broadcast').catch(() => 0);
         this.shareSource = null;
         this.shareSources = null;
         this.previewTimers = new Set();
