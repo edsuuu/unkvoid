@@ -79,6 +79,11 @@ já carregam `source`; nada muda no formato deles. Os eventos ganham
 `producerPaused { peerId, producerId }` e `producerResumed { peerId, producerId }`
 para a sala inteira menos o dono.
 
+Plateia: sempre que um consumer de **vídeo** nasce ou morre, o SFU manda para a sala
+inteira `watchers { producerId, watchers: [{ peerId, name }] }` — quem está recebendo
+aquela transmissão agora, WebRTC e RTP puro no mesmo balde. Só vídeo, porque microfone
+é todo mundo consumindo todo mundo e o evento viraria enxurrada.
+
 `JoinResource` devolve `can: string[]` no lugar de `owner`. O app usa esse `can` (e não só
 os bits do canal) para decidir se liga o mic, a câmera e a tela: mutado pelo servidor
 chega sem `speak`. O SFU também manda `serverMuted { muted }` para a própria pessoa
@@ -129,7 +134,7 @@ Servidores:
 
 | rota | corpo | resposta |
 |---|---|---|
-| `GET /api/servers` | — | `[ { id, name, owner_id, last_accessed_at } ]`, do último acesso à voz mais recente para o mais antigo; nunca acessado vai para o fim, pela data em que entrou no servidor |
+| `GET /api/servers` | — | `[ { id, name, owner_id, icon_url, last_accessed_at } ]`, do último acesso à voz mais recente para o mais antigo; nunca acessado vai para o fim, pela data em que entrou no servidor |
 | `POST /api/servers` | `{ name }` | `ServerResource` (cria `@everyone`, `#geral` texto, `Geral` voz) |
 | `GET /api/servers/{server}` | — | ver "árvore" abaixo |
 | `PATCH /api/servers/{server}` | `{ name }` | `ServerResource` (`MANAGE_SERVER`) |
@@ -137,10 +142,29 @@ Servidores:
 | `POST /api/servers/{server}/invite` | — | `{ invite_code }` (regenera; `CREATE_INVITE`) |
 | `POST /api/invites/{code}` | — | `ServerResource` (entra; banido → 403) |
 | `POST /api/servers/{server}/leave` | — | 204 (dono → 403) |
+| `POST /api/servers/{server}/icon` | `multipart`, campo `icon` (jpeg/png/webp, ≤ 2 MB) | `ServerResource` (`MANAGE_SERVER`); guarda no mesmo bucket privado dos clipes e apaga o arquivo antigo |
+| `DELETE /api/servers/{server}/icon` | — | 204 (`MANAGE_SERVER`); volta ao ícone padrão |
+| `GET /api/servers/{server}/audits` | — | o histórico do servidor, 50 por página (`VIEW_AUDIT_LOG`) |
+
+`icon_url` é pré-assinada e vence em 2 h, como a miniatura do clipe; sem ícone vem `null`.
+
+Auditoria (`GET /api/servers/{server}/audits`), do mais recente para o mais antigo, com o
+`meta`/`links` de paginação do Laravel:
+```json
+{ "id": "a12", "at": "…", "event": "deleted", "type": "Channel",
+  "actor": { "id": 12, "name": "Edsu" }, "summary": "apagou o canal #geral" }
+```
+`id` leva a letra da fonte (`a` = tabela `audits` do pacote, `c` = `channel_audits`, que
+existe porque o id do canal é um ULID e a coluna da `audits` é numérica). `event` é o do
+pacote (`created`, `updated`, `deleted`, `sync`), `type` é o nome curto do modelo
+(`Server`, `ServerRole`, `ServerMember`, `Channel`, `Message`), `actor` vem `null` se a
+conta foi apagada, e `summary` já sai em português montado pelo Laravel. Entram o
+servidor, seus cargos, seus membros, seus canais e as mensagens dos canais dele; cargo e
+membro apagados de vez saem da lista, porque o filtro é por id que ainda existe.
 
 Árvore (`GET /api/servers/{server}`):
 ```json
-{ "id": 1, "name": "Meu servidor", "owner_id": 12, "invite_code": "abcdef1234" (só com CREATE_INVITE, senão null),
+{ "id": 1, "name": "Meu servidor", "owner_id": 12, "icon_url": null, "invite_code": "abcdef1234" (só com CREATE_INVITE, senão null),
   "me": { "user_id": 12, "permissions": 262143, "top_position": 3 },   // dono: top_position = 2147483647
   "roles": [ { "id": 1, "name": "@everyone", "color": null, "position": 0, "permissions": 31552, "is_everyone": true } ],
   "channels": [ { "id": "01j7…", "name": "geral", "type": "text", "topic": null, "position": 0, "user_limit": null,
@@ -185,10 +209,16 @@ Mensagens:
 
 | rota | corpo | resposta |
 |---|---|---|
-| `GET /api/channels/{channel}/messages?before={id}` | — | 50 mais recentes antes de `before`, ordem crescente: `[ { id, channel_id, user: {id,name,avatar_url}, body, edited_at, created_at } ]` |
+| `GET /api/channels/{channel}/messages?before={id}` | — | 50 mais recentes antes de `before`, ordem crescente: `[ { id, channel_id, user: {id,name,avatar_url}, type, body, edited_at, created_at } ]` |
 | `POST /api/channels/{channel}/messages` | `{ body }` (1–2000) | `MessageResource` (`SEND_MESSAGES`) |
 | `PATCH /api/messages/{message}` | `{ body }` | só o autor |
 | `DELETE /api/messages/{message}` | — | autor ou `MANAGE_MESSAGES` |
+
+`type` é `user` (o normal) ou `join`. O aviso de chegada: entrar por convite grava, no
+primeiro canal de texto por `position` que quem chegou enxerga, uma mensagem
+`type: "join"` com `user` = quem entrou e `body` vazio, e dispara o mesmo `MessageSent`.
+Quem já era membro e clicou no convite de novo não avisa de novo. A frase ("fulano chegou
+no servidor") quem monta é o app: o Laravel não manda texto pronto.
 
 Voz:
 
@@ -200,6 +230,30 @@ Voz:
 Webhook (assinado, sem Sanctum): `POST /api/sfu/events` — corpo acima. `joined` fecha
 qualquer acesso aberto do mesmo usuário no mesmo canal e abre um novo (com `sfu_ip`);
 `left` fecha o aberto. Os dois retransmitem `VoiceStateUpdated`.
+
+## Mensagens diretas
+
+Conversa de duas pessoas, sem servidor no meio. Não existe tabela de conversa: o par já
+identifica o fio. **Só entre amigos** — sem `friendship` em `accepted` entre os dois,
+mandar e ler dão 403, e bloquear fecha a conversa dos dois lados. O que já foi dito
+continua no banco; some da tela de quem desfez.
+
+| rota | corpo | resposta |
+|---|---|---|
+| `GET /api/dm` | — | uma linha por conversa, a da mensagem mais recente primeiro: `[ { user: {id,name,avatar_url}, last: { id, body, created_at, mine }, unread } ]` |
+| `GET /api/dm/{user}?before={id}` | — | as 50 mais recentes antes de `before`, ordem crescente: `[DirectMessageResource]`. **Marca como lidas** as que chegaram para quem pediu: é assim que o app zera o `unread` |
+| `POST /api/dm/{user}` | `{ body }` (1–2000) | `DirectMessageResource` (throttle 60/min) |
+| `PATCH /api/dm/{directMessage}` | `{ body }` | só o autor; grava `edited_at` |
+| `DELETE /api/dm/{directMessage}` | — | 204, só o autor (soft delete: some da conversa, fica no banco) |
+
+```json
+{ "id": 12, "body": "oi", "created_at": "…", "edited_at": null, "mine": true,
+  "sender": { "id": 2, "name": "Edsu", "avatar_url": null } }
+```
+
+`mine` só existe na resposta HTTP, onde o dono da resposta é um só. No tempo real o pacote
+é o mesmo para os dois lados, então ele **não leva `mine`** e leva `recipient`: quem recebe
+faz `mine = message.sender.id === euId` e `pessoa = mine ? recipient : message.sender`.
 
 ## Clipes
 
@@ -275,7 +329,7 @@ Auth: `POST /broadcasting/auth` com `Authorization: Bearer <sanctum>`; o app usa
 |---|---|---|
 | `private-channel.{ulid}` | `VIEW_CHANNEL` | texto: `MessageSent { message }`, `MessageUpdated { message }`, `MessageDeleted { id, channel_id }` · voz: `VoiceStateUpdated { channel_id, user_id, name, event: joined\|left }` (no canal privado da própria voz, para canal oculto não vazar quem está nele; o app assina o canal privado de cada voz que enxerga) |
 | `presence-server.{id}` | membro | (presença: `{ id, name, avatar_url }`) · `ServerUpdated { server_id }` (qualquer mudança de estrutura: o app refaz o `GET`) |
-| `private-user.{id}` | o próprio | `MemberRemoved { server_id, reason: kicked\|banned }` · `ClipUpdated { clip }` (`ClipResource`, quando fica `ready` ou `failed`) |
+| `private-user.{id}` | o próprio | `MemberRemoved { server_id, reason: kicked\|banned }` · `ClipUpdated { clip }` (`ClipResource`, quando fica `ready` ou `failed`) · `DirectMessageCreated { message, recipient }`, `DirectMessageUpdated { message, recipient }`, `DirectMessageDeleted { id }` (nos canais dos **dois** lados da conversa; `message` é o `DirectMessageResource` sem o `mine`) |
 
 ### Expulsar e banir cortam a pessoa de tudo
 
