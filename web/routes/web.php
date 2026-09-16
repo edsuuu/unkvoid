@@ -33,4 +33,5 @@ Route::middleware(['auth', 'role:Administrador'])->group(function (): void {
     Route::view('/admin', 'admin.releases.index')->name('admin');
     Route::view('/admin/erros', 'admin.errors.index')->name('admin.errors');
     Route::view('/admin/auditoria', 'admin.audit.index')->name('admin.audit');
+    Route::view('/admin/rede', 'admin.network.index')->name('admin.network');
 });
