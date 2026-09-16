@@ -18,6 +18,10 @@ use App\Http\Controllers\Api\Clips\ShowClipController;
 use App\Http\Controllers\Api\Clips\StoreClipController;
 use App\Http\Controllers\Api\ConfigController;
 use App\Http\Controllers\Api\ErrorReportController;
+use App\Http\Controllers\Api\Friends\DestroyFriendController;
+use App\Http\Controllers\Api\Friends\IndexFriendController;
+use App\Http\Controllers\Api\Friends\StoreFriendController;
+use App\Http\Controllers\Api\Friends\UpdateFriendController;
 use App\Http\Controllers\Api\Invites\JoinInviteController;
 use App\Http\Controllers\Api\MeController;
 use App\Http\Controllers\Api\Members\KickMemberController;
@@ -61,6 +65,11 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::post('/servers/{server}/invite', RegenerateInviteController::class)->name('api.servers.invite');
     Route::post('/servers/{server}/leave', LeaveServerController::class)->name('api.servers.leave');
     Route::post('/invites/{code}', JoinInviteController::class)->middleware('throttle:10,1')->name('api.invites.join');
+
+    Route::get('/friends', IndexFriendController::class)->name('api.friends.index');
+    Route::post('/friends', StoreFriendController::class)->middleware('throttle:20,1')->name('api.friends.store');
+    Route::patch('/friends/{friendship}', UpdateFriendController::class)->name('api.friends.update');
+    Route::delete('/friends/{friendship}', DestroyFriendController::class)->name('api.friends.destroy');
 
     Route::patch('/servers/{server}/members/{user}', UpdateMemberController::class)->name('api.members.update');
     Route::delete('/servers/{server}/members/{user}', KickMemberController::class)->name('api.members.destroy');
