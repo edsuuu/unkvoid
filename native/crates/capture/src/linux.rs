@@ -56,8 +56,10 @@ impl LinuxCapturer {
             region(source).map(|monitor| monitor.area()).unwrap_or_default()
         );
 
-        let output = Command::new("gst-launch-1.0")
-            .arg("-q")
+        // O `timeout` do coreutils: um X que não responde deixava o `ximagesrc` parado para
+        // sempre, e a miniatura nunca voltava.
+        let output = Command::new("timeout")
+            .args(["3", "gst-launch-1.0", "-q"])
             .args(pipeline.split_whitespace())
             .stderr(Stdio::null())
             .output();
@@ -227,9 +229,12 @@ impl LinuxCapturer {
             // (`MUTED_APPS`) não existe aqui.
             match launch(
                 &format!("pulsesrc device=@DEFAULT_MONITOR@ ! {AUDIO_TAIL}"),
-                false,
+                true,
             ) {
                 Ok(mut child) => {
+                    // O stderr vai para o log: sem servidor de som o gst sai na hora, e só a
+                    // linha dele diz por quê.
+                    watch_stderr(&mut child, Arc::clone(&error));
                     read_audio(&mut child, Arc::clone(&audio_chunks), on_event);
 
                     Some(child)

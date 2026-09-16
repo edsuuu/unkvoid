@@ -102,9 +102,11 @@ impl Session {
 
     /// Solta o remetente quando a última origem para: a próxima sessão no servidor pode
     /// cair na mesma porta com outra chave, e um remetente guardado a atravessaria calado.
-    pub fn release_if_idle(&self) {
+    /// A chave vai junto: o remetente novo recomeça a numeração, e a mesma chave com a
+    /// numeração reiniciada repetiria o keystream.
+    pub fn release_if_idle(&mut self) {
         if self.screen.is_none() && self.voice.is_none() && self.camera.is_none() {
-            *target(&self.sender) = None;
+            self.renew_sfu_key();
         }
     }
 
