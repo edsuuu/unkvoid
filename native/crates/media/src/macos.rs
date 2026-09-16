@@ -53,7 +53,7 @@ impl VideoToolboxEncoder {
             session.copy_property(ffi::kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder)
         } {
             // O `kCFBooleanTrue` é um objeto único do processo: comparar o ponteiro basta.
-            Ok(Some(value)) => value.as_ptr() as *const c_void == unsafe { raw::kCFBooleanTrue } as *const c_void,
+            Ok(Some(value)) => std::ptr::eq(value.as_ptr() as *const c_void, unsafe { raw::kCFBooleanTrue } as *const c_void),
             // Sistema que não responde fica com a placa: rebaixar um Mac bom por uma
             // pergunta sem resposta custaria mais do que o risco.
             Ok(None) | Err(_) => {

@@ -20,7 +20,9 @@ capture = { path = "../../../crates/capture" }
 media = { path = "../../../crates/media" }
 # Mesma versão e mesmas features que o plugin do atualizador já compila: o TLS vem da
 # unificação de features do cargo, sem trazer uma segunda pilha de criptografia junto.
-reqwest = { version = "0.13", default-features = false, features = ["json"] }
+# `rustls` traz junto o provedor de criptografia. O plugin do updater liga só a variante
+# sem provedor, e aí o `Client::new()` do relatório de erro panica em vez de enviar.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = ["tray-icon", "image-png"] }

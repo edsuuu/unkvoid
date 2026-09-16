@@ -10,6 +10,7 @@ mod watch;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use broadcast::{ActiveSession, Broadcast};
 use capture::{CaptureConfig, CaptureSource, PlatformCapturer, Quality};
@@ -68,9 +69,11 @@ fn list_cameras() -> Vec<CameraInfo> {
     found.into_iter().map(|(id, name)| CameraInfo { id, name }).collect()
 }
 
-#[tauri::command]
+/// `async` tira da thread da janela: no Linux listar é rodar `xrandr`, e comando síncrono
+/// no Tauri roda na thread do GTK — processo lento ali congela a janela inteira.
+#[tauri::command(async)]
 fn list_displays() -> Result<Vec<DisplayInfo>, String> {
-    PlatformCapturer::displays()
+    tokio::task::block_in_place(PlatformCapturer::displays)
         .map(|displays| {
             displays
                 .into_iter()
@@ -95,11 +98,11 @@ fn machine_cores() -> usize {
 /// Miniatura do que será transmitido, como data URL para a interface mostrar.
 ///
 /// Vazio quando a plataforma ainda não sabe gerar: o seletor abre sem imagem em vez de
-/// não abrir.
-#[tauri::command]
+/// não abrir. `async` pelo mesmo motivo do `list_displays`: no Linux é um `gst-launch`.
+#[tauri::command(async)]
 fn source_preview(source: String) -> Result<String, String> {
-    let bytes =
-        PlatformCapturer::preview(source_from(Some(&source))).map_err(|error| error.to_string())?;
+    let bytes = tokio::task::block_in_place(|| PlatformCapturer::preview(source_from(Some(&source))))
+        .map_err(|error| error.to_string())?;
 
     if bytes.is_empty() {
         return Ok(String::new());
@@ -255,10 +258,13 @@ async fn use_sfu(
     session.use_sfu(&address, key).map_err(|error| error.to_string())
 }
 
+/// Todos os comandos que tocam este cadeado são `async`: o `watch_native` o segura enquanto
+/// abre o `gst-launch`, e um `watch_mute` esperando por ele na thread do GTK congelava a
+/// janela.
 struct NativeWatches(Mutex<watch::Watches>);
 
 /// A chave SRTP deste lado, para o `consumePlain` levar ao servidor.
-#[tauri::command]
+#[tauri::command(async)]
 fn watch_key(state: State<'_, NativeWatches>) -> Result<String, String> {
     use base64::Engine;
 
@@ -271,7 +277,7 @@ fn watch_key(state: State<'_, NativeWatches>) -> Result<String, String> {
 /// para o cartão desenhar (zero para áudio). É o jeito de assistir onde o webview não
 /// tem WebRTC. `ssrc` é o que o `consumePlain` devolveu; sem ele o receptor aprende no
 /// primeiro pacote.
-#[tauri::command]
+#[tauri::command(async)]
 fn watch_native(
     state: State<'_, NativeWatches>,
     producer_id: String,
@@ -297,17 +303,17 @@ fn watch_native(
 }
 
 /// Fecha um producer assistido, ou todos quando `producer_id` vem vazio.
-#[tauri::command]
+#[tauri::command(async)]
 fn stop_watch(state: State<'_, NativeWatches>, producer_id: Option<String>) -> Result<(), String> {
     let mut watches = state.0.lock().map_err(|_| "watch state is poisoned".to_string())?;
 
-    watches.stop(producer_id.as_deref());
+    tokio::task::block_in_place(|| watches.stop(producer_id.as_deref()));
 
     Ok(())
 }
 
 /// Mudo de um producer assistido pelo caminho nativo.
-#[tauri::command]
+#[tauri::command(async)]
 fn watch_mute(state: State<'_, NativeWatches>, producer_id: String, muted: bool) -> Result<(), String> {
     let watches = state.0.lock().map_err(|_| "watch state is poisoned".to_string())?;
 
@@ -316,7 +322,7 @@ fn watch_mute(state: State<'_, NativeWatches>, producer_id: String, muted: bool)
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn watch_stats(state: State<'_, NativeWatches>) -> Result<u64, String> {
     let watches = state.0.lock().map_err(|_| "watch state is poisoned".to_string())?;
 
@@ -889,7 +895,29 @@ pub fn run() {
                     watches.stop(None);
                 }
 
-                app.state::<ActiveSession>().0.blocking_lock().stop_all();
+                // Espera um pouco a operação em curso largar a sessão, nunca para sempre: um
+                // comando que precise da thread principal enquanto a segura travava o fechar.
+                //
+                // Espera na mão, sem tokio: na saída esta thread não tem reator, e o
+                // `timeout` derrubava o app com pânico em vez de fechar.
+                let active = app.state::<ActiveSession>();
+                let deadline = Instant::now() + Duration::from_secs(2);
+
+                loop {
+                    if let Ok(mut session) = active.0.try_lock() {
+                        session.stop_all();
+
+                        break;
+                    }
+
+                    if Instant::now() >= deadline {
+                        tracing::error!("saída: a sessão seguiu ocupada, a captura pode ter ficado aberta");
+
+                        break;
+                    }
+
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             }
         });
 }

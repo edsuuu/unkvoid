@@ -15,6 +15,12 @@ const DEADLINE_SECONDS: u64 = 120;
 
 #[tauri::command]
 pub async fn google_login(server: String) -> Result<String, String> {
+    // A mesma trava do `open_url`: o endereço vira URL no navegador do sistema, e no
+    // Windows um `file://` abriria um arquivo remoto.
+    if ! is_web_url(&server) {
+        return Err("só endereços http e https".into());
+    }
+
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
 
     tokio::task::spawn_blocking(move || login_loopback(&server, generation).map_err(|error| error.to_string()))

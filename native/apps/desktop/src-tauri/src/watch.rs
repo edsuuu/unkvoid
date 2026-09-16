@@ -131,11 +131,6 @@ impl Watches {
             Err(error) => {
                 let _ = player.kill();
 
-                // O socket foi aberto para este producer; sem ele, não fica ninguém.
-                if self.active.is_empty() {
-                    self.receiver = None;
-                }
-
                 return Err(error);
             }
         };
@@ -169,7 +164,9 @@ impl Watches {
             }
         }
 
-        if self.active.is_empty() {
+        // O socket só sai com a sessão inteira (`None`): o SFU manda para o endereço que o
+        // `comedia` aprendeu, e um socket novo numa porta nova não recebe mais nada naquela sala.
+        if producer_id.is_none() {
             self.receiver = None;
         }
     }
@@ -213,6 +210,8 @@ fn serve_mjpeg(mut stdout: impl Read + Send + 'static, stop: Arc<AtomicBool>) ->
 
             let mut request = [0_u8; 1024];
             let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+            // Um WebKit que parou de ler não pode segurar o cadeado do cliente para sempre.
+            let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
             // Quadro pequeno não espera o Nagle juntar com o próximo.
             let _ = stream.set_nodelay(true);
             let _ = stream.read(&mut request);
@@ -221,11 +220,20 @@ fn serve_mjpeg(mut stdout: impl Read + Send + 'static, stop: Arc<AtomicBool>) ->
                 Content-Type: multipart/x-mixed-replace; boundary=unkvoid\r\n\
                 Cache-Control: no-cache\r\nConnection: close\r\n\r\n";
 
-            if stream.write_all(headers.as_bytes()).is_ok()
-                && let Ok(mut current) = client_accept.lock()
+            // Cabeçalho e troca sob o mesmo cadeado: quem já leu o cabeçalho recebe o próximo
+            // quadro e o fim, e o cliente trocado sai com o delimitador final.
+            if let Ok(mut current) = client_accept.lock()
+                && stream.write_all(headers.as_bytes()).is_ok()
+                && let Some(old) = current.replace(stream)
             {
-                *current = Some(stream);
+                close_multipart(old);
             }
+        }
+
+        if let Ok(mut current) = client_accept.lock()
+            && let Some(stream) = current.take()
+        {
+            close_multipart(stream);
         }
     });
 
@@ -254,9 +262,22 @@ fn serve_mjpeg(mut stdout: impl Read + Send + 'static, stop: Arc<AtomicBool>) ->
                 }
             }
         }
+
+        if let Ok(mut current) = client.lock()
+            && let Some(stream) = current.take()
+        {
+            close_multipart(stream);
+        }
     });
 
     Ok(port)
+}
+
+/// Fecha a resposta com o delimitador final antes de soltar o socket. Sem ele o
+/// WebKitGTK entra num laço que come CPU para sempre, um por transmissão encerrada, até
+/// a janela congelar — provado num contêiner com o WebKitGTK 2.50.
+fn close_multipart(mut stream: TcpStream) {
+    let _ = stream.write_all(b"--unkvoid--\r\n");
 }
 
 /// Um JPEG inteiro do começo do buffer, até o marcador de fim (`FF D9`), que dentro dos
@@ -305,5 +326,29 @@ mod tests {
 
         assert!(part.starts_with(head.as_bytes()));
         assert!(part.ends_with(b"\xFF\xD9\r\n"));
+    }
+
+    #[test]
+    fn the_mjpeg_response_ends_with_the_final_boundary_when_the_player_stops() {
+        let (reader, mut writer) = std::io::pipe().expect("um pipe");
+        let port = serve_mjpeg(reader, Arc::new(AtomicBool::new(false))).expect("a porta do MJPEG");
+        let mut client = TcpStream::connect(("127.0.0.1", port)).expect("conecta");
+
+        client.set_read_timeout(Some(Duration::from_secs(5))).expect("prazo de leitura");
+        client.write_all(b"GET / HTTP/1.1\r\n\r\n").expect("o pedido");
+
+        let mut response = Vec::new();
+        let mut byte = [0_u8; 1];
+
+        while ! response.ends_with(b"\r\n\r\n") {
+            client.read_exact(&mut byte).expect("o cabeçalho");
+            response.push(byte[0]);
+        }
+
+        writer.write_all(&[0xFF, 0xD8, 0x01, 0xFF, 0xD9]).expect("um quadro");
+        drop(writer);
+        client.read_to_end(&mut response).expect("o resto até o socket fechar");
+
+        assert!(response.ends_with(b"\xFF\xD9\r\n--unkvoid--\r\n"), "o quadro e o delimitador final");
     }
 }
