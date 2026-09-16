@@ -1079,8 +1079,8 @@ instalar.
 | O quê | Como roda hoje | Por que não vai |
 |---|---|---|
 | MySQL do sistema (`mysql.service`, 3306) | 395 MB de RAM | Só tem `discord`, `discord_dev` e `retro_friends`. O Unkvoid usa o MySQL do docker na 3307. Faça o dump antes de desligar a velha, por segurança |
-| Reverb do projeto `discord` (pm2, 8081) | 61 MB | Serve um Laravel em `/var/www/projects/discord/current` que já não existe |
-| `filebrowser.service` (8080) | 25 MB | Gerenciador de uma pasta de Minecraft; e é ele que ocupa a porta 8080 que o Reverb do Unkvoid precisa |
+| ~~Reverb do projeto `discord` (pm2, 8081)~~ | 61 MB | **Já saiu em 16/09/2026**: o `reverb` do pm2 agora é o do Unkvoid, na 8080 |
+| ~~`filebrowser.service` (8080)~~ | 25 MB | **Já saiu em 16/09/2026**: desligado para liberar a 8080 para o Reverb do Unkvoid |
 | `php8.3-fpm` | 50 MB | Nenhum site aponta para o socket dele. A nova instala só o 8.4 |
 | TeamSpeak 6 (docker, 9987/udp, 30033/tcp) | 28 MB e 2,7% de CPU | Não é o e-mail nem o Unkvoid, e as duas portas saem do firewall |
 | amavis dentro do `unkvoid-mail` | 176 MB | O rspamd já filtra; o amavis é a segunda passada, e a caixa faz 0,1 mensagem por segundo. `ENABLE_AMAVIS: 0` já está no `docker-compose.yml` |
