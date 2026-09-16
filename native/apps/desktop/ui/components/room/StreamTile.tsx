@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { Failure } from '../../core/Failure.ts';
-import type { Tile } from '../../core/Media.ts';
+import { Media, type ImageSettings, type Tile } from '../../core/Media.ts';
 import { Avatar } from '../common/Avatar.tsx';
 import { Icon } from '../common/Icon.tsx';
 import { Popover } from '../common/Popover.tsx';
@@ -23,13 +23,11 @@ type StreamTileProps = {
     muted: boolean | null;
     nativeMuted: boolean;
     watchers: string[];
-    brightness: number;
-    contrast: number;
-    saturation: number;
+    image: ImageSettings;
     idle: boolean;
 };
 
-export const StreamTile = memo(function StreamTile({ tile, focused, thumb, full, hidden, paused, volume, muted, nativeMuted, watchers, brightness, contrast, saturation, idle }: StreamTileProps) {
+export const StreamTile = memo(function StreamTile({ tile, focused, thumb, full, hidden, paused, volume, muted, nativeMuted, watchers, image, idle }: StreamTileProps) {
     const media = useApp().media;
     const stats = useStore(media.stats)[tile.key];
     const video = useRef<HTMLVideoElement | null>(null);
@@ -37,10 +35,10 @@ export const StreamTile = memo(function StreamTile({ tile, focused, thumb, full,
     const [ready, setReady] = useState(false);
     const camera = tile.kind === 'camera';
     const native = tile.native;
-    const tuned = brightness !== 100 || contrast !== 100 || saturation !== 100;
+    const tuned = image.brightness !== 100 || image.contrast !== 100 || image.saturation !== 100 || image.blur !== 0;
     const filter = paused
-        ? `blur(8px) grayscale(1) brightness(${0.6 * brightness / 100})`
-        : tuned ? `brightness(${brightness / 100}) contrast(${contrast / 100}) saturate(${saturation / 100})` : undefined;
+        ? `blur(8px) grayscale(1) brightness(${0.6 * image.brightness / 100})`
+        : tuned ? `brightness(${image.brightness / 100}) contrast(${image.contrast / 100}) saturate(${image.saturation / 100}) blur(${image.blur}px)` : undefined;
 
     const attachVideo = useCallback((element: HTMLVideoElement | null) => {
         if (video.current && video.current !== element) {
@@ -78,7 +76,7 @@ export const StreamTile = memo(function StreamTile({ tile, focused, thumb, full,
     const statsTitle = liveStats
         ? `${liveStats.ping ?? '--'} ms · ${liveStats.rate === null ? '--' : liveStats.rate.toFixed(1)} Mb/s · buffer ${liveStats.buffer.toFixed(1)} s · ${liveStats.totalLost ?? '--'} pacotes perdidos no total · jitter ${liveStats.jitter ?? '--'} ms`
         : '';
-    const imageControls = [['brightness', 'Brilho', brightness], ['contrast', 'Contraste', contrast], ['saturation', 'Saturação', saturation]] as const;
+    const imageControls = [['brightness', 'Brilho'], ['contrast', 'Contraste'], ['saturation', 'Saturação'], ['blur', 'Desfoque']] as const;
 
     const figure = (
         <figure
@@ -164,28 +162,33 @@ export const StreamTile = memo(function StreamTile({ tile, focused, thumb, full,
                             </button>
                         )}
 
-                        {! camera && (
-                            <span className="relative">
-                                <button className={`${TILE_BUTTON} ${panelOpen ? 'border-brand/60 text-ink-strong' : ''}`} type="button" title="Volume e imagem — só do seu lado, não mudam o que os outros veem" onClick={() => setPanelOpen(value => ! value)}>
-                                    <Icon name="sliders" size={13} />
-                                </button>
-                                <Popover open={panelOpen} onClose={() => setPanelOpen(false)} className="right-0 bottom-8 w-60 p-3">
-                                    {! native && volume !== null && (
-                                        <label className="mb-3 flex flex-col gap-1 text-[11.5px] text-ink-soft">
-                                            Volume {muted ? '(mudo)' : `${volume}%`}
-                                            <input className="accent-brand" type="range" min="0" max="100" value={muted ? 0 : volume} onChange={event => media.setVolume(tile.key, Number(event.target.value))} />
-                                        </label>
-                                    )}
-                                    {imageControls.map(([property, label, value]) => (
-                                        <label key={property} className="mb-2.5 flex flex-col gap-1 text-[11.5px] text-ink-soft">
-                                            {label}
-                                            <input className="accent-brand" type="range" min="50" max="250" value={value} onChange={event => media.setImage(property, Number(event.target.value))} />
-                                        </label>
-                                    ))}
-                                    <button className="cursor-pointer text-[11.5px] text-ink-dim hover:text-ink-strong" type="button" onClick={() => media.resetImage()}>Voltar ao padrão</button>
-                                </Popover>
-                            </span>
-                        )}
+                        <span className="relative">
+                            <button className={`${TILE_BUTTON} ${panelOpen ? 'border-brand/60 text-ink-strong' : ''}`} type="button" title="Volume e imagem — só do seu lado, não mudam o que os outros veem" onClick={() => setPanelOpen(value => ! value)}>
+                                <Icon name="sliders" size={13} />
+                            </button>
+                            <Popover open={panelOpen} onClose={() => setPanelOpen(false)} className="right-0 bottom-8 w-60 p-3">
+                                {! camera && ! native && volume !== null && (
+                                    <label className="mb-3 flex flex-col gap-1 text-[11.5px] text-ink-soft">
+                                        Volume {muted ? '(mudo)' : `${volume}%`}
+                                        <input className="accent-brand" type="range" min="0" max="100" value={muted ? 0 : volume} onChange={event => media.setVolume(tile.key, Number(event.target.value))} />
+                                    </label>
+                                )}
+                                {imageControls.map(([property, label]) => (
+                                    <label key={property} className="mb-2.5 flex flex-col gap-1 text-[11.5px] text-ink-soft">
+                                        {label} {property === 'blur' ? `${image.blur} px` : `${image[property]}%`}
+                                        <input
+                                            className="accent-brand"
+                                            type="range"
+                                            min={Media.IMAGE_LIMITS[property][0]}
+                                            max={Media.IMAGE_LIMITS[property][1]}
+                                            value={image[property]}
+                                            onChange={event => media.setImage(tile.kind, property, Number(event.target.value))}
+                                        />
+                                    </label>
+                                ))}
+                                <button className="cursor-pointer text-[11.5px] text-ink-dim hover:text-ink-strong" type="button" onClick={() => media.resetImage(tile.kind)}>Voltar ao padrão</button>
+                            </Popover>
+                        </span>
 
                         {! camera && ! native && (
                             <button className={TILE_BUTTON} type="button" title={paused ? 'Retomar' : 'Pausar: para de receber sem sair da sala'} onClick={() => void media.togglePause(tile.key)}>

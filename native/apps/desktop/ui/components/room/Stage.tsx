@@ -103,9 +103,7 @@ export function Stage({ canShare, hint = null, compact = false }: StageProps) {
                         muted={audio[tile.key]?.muted ?? null}
                         nativeMuted={nativeMuted[tile.key] ?? true}
                         watchers={watchers[tile.key] ?? []}
-                        brightness={image.brightness}
-                        contrast={image.contrast}
-                        saturation={image.saturation}
+                        image={image[tile.kind]}
                         idle={idle}
                     />
                 ))}
