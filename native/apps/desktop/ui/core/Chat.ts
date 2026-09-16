@@ -11,6 +11,8 @@ export type ChatState = {
     loadingOlder: boolean;
     exhausted: boolean;
     failed: boolean;
+    replyTo: Message | null;
+    newFrom: number | null;
 };
 
 export class Chat {
@@ -22,13 +24,13 @@ export class Chat {
 
     constructor(hub: Hub) {
         this.hub = hub;
-        this.store = new Store<ChatState>({ channel: null, messages: [], loading: false, loadingOlder: false, exhausted: false, failed: false });
+        this.store = new Store<ChatState>({ channel: null, messages: [], loading: false, loadingOlder: false, exhausted: false, failed: false, replyTo: null, newFrom: null });
     }
 
     async open(channel: Channel): Promise<void> {
         this.close();
         this.channel = channel;
-        this.store.replace({ channel, messages: [], loading: true, loadingOlder: false, exhausted: false, failed: false });
+        this.store.replace({ channel, messages: [], loading: true, loadingOlder: false, exhausted: false, failed: false, replyTo: null, newFrom: null });
 
         const subscription = this.hub.echo!.private(`channel.${channel.id}`);
 
@@ -67,7 +69,7 @@ export class Chat {
         }
 
         this.channel = null;
-        this.store.replace({ channel: null, messages: [], loading: false, loadingOlder: false, exhausted: false, failed: false });
+        this.store.replace({ channel: null, messages: [], loading: false, loadingOlder: false, exhausted: false, failed: false, replyTo: null, newFrom: null });
     }
 
     async loadOlder(): Promise<boolean> {
@@ -145,6 +147,22 @@ export class Chat {
         return this.isMine(message) || Permissions.has(this.channel?.permissions ?? 0, Permissions.MANAGE_MESSAGES);
     }
 
+    reply(message: Message | null): void {
+        this.store.set({ replyTo: message });
+    }
+
+    markSeen(): void {
+        if (this.store.state.newFrom !== null) {
+            this.store.set({ newFrom: null });
+        }
+    }
+
+    markUnreadFrom(id: number): void {
+        if (this.store.state.newFrom === null) {
+            this.store.set({ newFrom: id });
+        }
+    }
+
     async send(body: string): Promise<boolean> {
         const text = body.trim();
         const channel = this.channel;
@@ -153,11 +171,18 @@ export class Chat {
             return true;
         }
 
+        const replyToId = this.store.state.replyTo?.id ?? null;
+
         const sent = await this.hub.attempt(async () => {
-            this.append(await this.hub.api.post<Message>(`/api/channels/${channel.id}/messages`, { body: text }));
+            this.append(await this.hub.api.post<Message>(`/api/channels/${channel.id}/messages`, { body: text, reply_to_id: replyToId }));
 
             return true;
         });
+
+        if (sent) {
+            this.reply(null);
+            this.markSeen();
+        }
 
         return Boolean(sent);
     }
