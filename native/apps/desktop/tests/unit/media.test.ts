@@ -80,14 +80,24 @@ describe('o palco: o que cada origem vira e o que custa decoder', () => {
         expect(media.store.state.audio.ana).toEqual({ volume: 100, muted: false });
     });
 
-    it('o ajuste de imagem é um só para todas as telas e sobrevive a fechar o app', () => {
-        media.setImage('contrast', 150);
-        expect(media.store.state.image.contrast).toBe(150);
+    it('tela e câmera têm ajustes próprios, e os dois sobrevivem a fechar o app', () => {
+        media.setImage('screen', 'contrast', 150);
+        expect(media.store.state.image.screen.contrast).toBe(150);
         expect(localStorage.getItem('unkvoid.contraste')).toBe('150');
+        expect(media.store.state.image.camera.contrast, 'mexer na tela não mexe na câmera').toBe(100);
 
-        media.resetImage();
-        expect(media.store.state.image.contrast, 'voltar ao padrão').toBe(100);
-        expect(localStorage.getItem('unkvoid.contraste')).toBeNull();
+        media.setImage('camera', 'saturation', 70);
+        media.setImage('camera', 'blur', 6);
+        expect(media.store.state.image.camera.saturation).toBe(70);
+        expect(media.store.state.image.camera.blur, 'o desfoque da câmera').toBe(6);
+        expect(localStorage.getItem('unkvoid.saturacao.camera')).toBe('70');
+        expect(media.store.state.image.screen.saturation, 'e a câmera não mexe na tela').toBe(100);
+
+        media.resetImage('camera');
+        expect(media.store.state.image.camera.saturation, 'voltar ao padrão').toBe(100);
+        expect(media.store.state.image.camera.blur, 'desfoque volta a zero').toBe(0);
+        expect(localStorage.getItem('unkvoid.saturacao.camera')).toBeNull();
+        expect(media.store.state.image.screen.contrast, 'sem levar o ajuste da tela junto').toBe(150);
     });
 
     it('pausar pede ao servidor só o vídeo, e a interface vê a tela pausada', async () => {
