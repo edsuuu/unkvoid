@@ -10,7 +10,7 @@ export function ServerRail() {
 
     return (
         <nav className="glass scroll-thin flex flex-none flex-col gap-2 overflow-y-auto rounded-[18px] p-2 transition-[width] duration-200" style={{ width: railOpen ? 182 : 58 }}>
-            <button className="btn-icon" type="button" title={railOpen ? 'Recolher servidores' : 'Expandir servidores'} onClick={() => hub.toggleRail()}>
+            <button className={`btn-icon size-9 flex-none ${railOpen ? 'self-start' : 'self-center'}`} type="button" title={railOpen ? 'Recolher servidores' : 'Expandir servidores'} onClick={() => hub.toggleRail()}>
                 <Icon name="menu" size={15} />
             </button>
 
