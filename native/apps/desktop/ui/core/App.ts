@@ -108,6 +108,7 @@ export class App {
 
     async start(): Promise<void> {
         this.checkWebRTC();
+        void Tauri.invoke('stop_broadcast').catch(() => null);
         this.sharing.loadPreferences();
 
         window.addEventListener('offline', () => this.paintOffline());

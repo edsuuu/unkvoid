@@ -208,6 +208,8 @@ impl LinuxCapturer {
         } * frame_rate
             / 60;
 
+        // BT.709 fixo antes do x264: sem ele a colorimetria dependia da resolução escolhida,
+        // e o VUI que o x264 escreve saía diferente do que o decodificador supõe.
         // ponytail: sem pedido de keyframe por fora; um a cada segundo é o que quem entra
         // na sala espera no pior caso.
         let (format, encoder) = encoder_tail(Self::video_encoder(), frame_rate, bitrate);

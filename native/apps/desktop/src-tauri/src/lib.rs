@@ -345,6 +345,32 @@ async fn stop_broadcast(state: State<'_, ActiveSession>) -> Result<u64, String> 
     Ok(frames)
 }
 
+/// Troca resolução e fps no meio da transmissão, sem fechar os producers.
+///
+/// A sala não vê a transmissão sumir: o Rust refaz captura e encoder no mesmo destino, e
+/// quem assiste só percebe a imagem mudar de tamanho no quadro-chave seguinte.
+#[tauri::command]
+async fn change_broadcast_quality(
+    state: State<'_, ActiveSession>,
+    quality: String,
+    fps: u32,
+) -> Result<(), String> {
+    let mut session = state.0.lock().await;
+
+    let Some(broadcast) = session.screen.as_mut() else {
+        return Err("no stream in progress".into());
+    };
+
+    tracing::info!(%quality, fps, "broadcast: trocando a qualidade sem parar");
+
+    // Reabrir captura e encoder bloqueia, como no `start_broadcast`.
+    tokio::task::block_in_place(|| broadcast.restart(quality_from(&quality), fps)).map_err(|error| {
+        tracing::error!(error = %error, "broadcast: a troca de qualidade falhou");
+
+        error.to_string()
+    })
+}
+
 #[tauri::command]
 async fn broadcast_stats(state: State<'_, ActiveSession>) -> Result<serde_json::Value, String> {
     let session = state.0.lock().await;
@@ -803,6 +829,7 @@ pub fn run() {
             check_update,
             restart,
             start_broadcast,
+            change_broadcast_quality,
             sfu_offer,
             renew_sfu_key,
             use_sfu,

@@ -115,6 +115,11 @@ pub(crate) fn cpu_forced() -> bool {
 ///
 /// É assim que o encoder por processador fica em 30 fps sem reabrir a captura: o quadro
 /// que sobra volta como `NeedsMoreInput` antes de custar qualquer trabalho.
+///
+/// No Windows 10 vale para qualquer encoder, e não só para o do processador: a captura
+/// não aceita teto de quadros (o intervalo mínimo só veio no 11 24H2) e chega na
+/// frequência do monitor — num de 144 Hz a placa comprimia 144 quadros com o bitrate
+/// pensado para 60, e cada um saía com menos da metade dos bits.
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub(crate) struct FramePacer {
     interval_ns: u64,

@@ -105,6 +105,29 @@ export class Sharing {
         this.store.set({ fps });
     }
 
+    async changeQuality(quality: string, fps: string): Promise<void> {
+        const broadcast = this.app.media.broadcast;
+        const previous = { quality: this.store.state.quality, fps: this.store.state.fps };
+
+        if (! broadcast || ! this.store.state.active) {
+            return;
+        }
+
+        this.setQuality(quality);
+        this.setFps(fps);
+        this.app.log('broadcast.quality', { quality, fps });
+
+        try {
+            await broadcast.changeQuality(quality, Number(fps));
+            this.app.toast(`transmitindo em ${quality === '2160' ? '4K' : `${quality}p`} a ${fps} fps`);
+        } catch (failure) {
+            this.setQuality(previous.quality);
+            this.setFps(previous.fps);
+            this.app.log('broadcast.quality.error', { message: Failure.message(failure) });
+            this.app.fail(`não deu para trocar a qualidade: ${Failure.message(failure)}`);
+        }
+    }
+
     setAudio(audio: boolean): void {
         this.store.set({ audio });
     }

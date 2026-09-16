@@ -150,6 +150,13 @@ pub struct Broadcast {
     /// Quantas vezes o servidor pediu um quadro-chave, ou seja, quantas vezes ele viu um
     /// buraco na sequência. É a medida de perda que existe entre nós e ele.
     keyframes: Arc<AtomicU64>,
+
+    /// A receita desta transmissão, guardada para refazer captura e encoder com outra
+    /// qualidade sem fechar o producer: o destino é o mesmo, e a sala não vê nada sumir.
+    sfu: Target,
+    config: CaptureConfig,
+    video: Option<Source>,
+    audio_source: Option<Source>,
 }
 
 impl Broadcast {
@@ -192,7 +199,8 @@ impl Broadcast {
 
         // Voz não precisa da taxa do som do sistema: é uma pessoa falando, não música.
         let audio = Mutex::new(AudioEncoder::new(if audio_source == Some(Source::Mic) { 48_000 } else { 96_000 })?);
-        let capture_target = sfu;
+        let capture_target = Arc::clone(&sfu);
+        let recipe = config.clone();
         let muted = Arc::new(AtomicBool::new(false));
         let muted_callback = Arc::clone(&muted);
         let captured = Arc::new(AtomicU64::new(0));
@@ -294,7 +302,7 @@ impl Broadcast {
                 // volta vazia na esmagadora maioria dos quadros.
                 let asked = target(&capture_target)
                     .as_mut()
-                    .is_some_and(|sender| sender.keyframe_requested());
+                    .is_some_and(|sender| sender.read_feedback());
 
                 let encoded = {
                     let Ok(mut encoder) = encoder.lock() else {
@@ -368,7 +376,43 @@ impl Broadcast {
             sent_bytes,
             audio_packets,
             audio_errors,
+            sfu,
+            config: recipe,
+            video,
+            audio_source,
         })
+    }
+
+    /// Troca resolução e fps sem fechar o producer: captura e encoder são refeitos no
+    /// mesmo destino, e quem assiste só vê a imagem mudar de tamanho no quadro-chave
+    /// seguinte. Recusada a qualidade nova (placa sem H.264 em 4K, por exemplo), a
+    /// anterior volta e o erro sobe para quem pediu.
+    ///
+    /// ponytail: os contadores recomeçam do zero, então a linha de estatística da
+    /// interface pula uma leitura. Guardá-los fora da transmissão seria o passo seguinte.
+    pub fn restart(&mut self, quality: capture::Quality, frame_rate: u32) -> anyhow::Result<()> {
+        let previous = self.config.clone();
+        let mut wanted = self.config.clone();
+
+        wanted.quality = quality;
+        wanted.frame_rate = frame_rate;
+
+        self.capturer.stop()?;
+
+        match Self::start(Arc::clone(&self.sfu), wanted, self.video, self.audio_source) {
+            Ok(fresh) => {
+                *self = fresh;
+
+                Ok(())
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "broadcast: qualidade nova recusada, voltando à anterior");
+
+                *self = Self::start(Arc::clone(&self.sfu), previous, self.video, self.audio_source)?;
+
+                Err(error)
+            }
+        }
     }
 
     pub fn set_muted(&self, muted: bool) {
