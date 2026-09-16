@@ -72,6 +72,15 @@ export class Room {
             previous.attachSocket(socket);
             this.broadcast('peerReconnected', { peerId: previous.id }, previous.id);
 
+            // Quem voltou nunca parou de receber a mídia — a carência existe para isso.
+            // Sem reanunciar, quem transmite ficaria vendo "ninguém assistindo" pelo resto
+            // da transmissão, porque a queda tirou essa pessoa da plateia.
+            for (const producerId of new Set(
+                [...previous.consumers.values()].map((consumer) => consumer.producerId),
+            )) {
+                this.announceWatchers(producerId);
+            }
+
             return { peer: previous, resumed: true };
         }
 
@@ -368,6 +377,10 @@ export class Room {
      * Plateia é quem está **olhando**, não quem tem o consumer: cartão pausado, escondido
      * ou em segundo plano pausa o consumer, e aí a pessoa sai da lista. Quem caiu e está na
      * carência também sai — o quadro dela já congelou.
+     *
+     * ponytail: varre todos os peers vezes os consumers de cada um, a cada retomada ou
+     * pausa. Numa sala de dezenas é ruído; se um dia existir sala de centenas, o caminho é
+     * um índice `producerId -> peers` mantido no `track()` do ConsumerController.
      */
     public announceWatchers(producerId: string): void {
         const owner = [...this.peers.values()].find((peer) => peer.producers.has(producerId));

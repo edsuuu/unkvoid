@@ -6,7 +6,7 @@ import { useStore } from '../../useStore.ts';
 export function DirectColumn() {
     const hub = useApp().hub;
     const { homeTab } = useStore(hub.store);
-    const { conversations, person } = useStore(hub.direct.store);
+    const { conversations, person, failed } = useStore(hub.direct.store);
     const friends = useStore(hub.friends.store);
     const pending = friends.list.filter(item => item.status === 'pending' && item.addressee.id === hub.user?.id).length;
 
@@ -36,7 +36,14 @@ export function DirectColumn() {
             <div className="glass scroll-thin flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-3">
                 <p className="label-mono mb-1">Mensagens diretas</p>
 
-                {conversations.length === 0 && <p className="py-4 text-center text-[12px] text-ink-dim">Nenhuma conversa ainda.</p>}
+                {failed && (
+                    <div className="flex flex-col items-center gap-2 py-4 text-center">
+                        <p className="text-[12px] text-danger">Não deu para carregar as conversas.</p>
+                        <button className="btn-ghost px-2.5 py-1.5 text-[12px]" type="button" onClick={() => void hub.direct.loadConversations()}>Tentar de novo</button>
+                    </div>
+                )}
+
+                {! failed && conversations.length === 0 && <p className="py-4 text-center text-[12px] text-ink-dim">Nenhuma conversa ainda.</p>}
 
                 {conversations.map(conversation => (
                     <button

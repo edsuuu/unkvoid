@@ -124,9 +124,23 @@
   <label><input type="checkbox"><span>POST /api/servers/{id}/icon com MANAGE_SERVER: jpeg/png/webp até 2 MB entram, pdf e 2,1 MB dão 422, sem a permissão 403; trocar apaga o arquivo antigo do bucket</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>icon_url pré-assinada (2 h) aparece em GET /api/servers, na árvore e na resposta do upload; DELETE volta para null</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>MinIO local: o ícone realmente sobe em servers/{id}/, abre pela URL assinada e some do bucket ao trocar ou apagar; sem assinatura 403</span><i class="tag auto">curl</i></label>
-  <label><input type="checkbox"><span>Entrar por convite grava mensagem type=join (body vazio, user = quem entrou) no primeiro canal de texto por position que a pessoa enxerga, e dispara MessageSent</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>Entrar por convite grava mensagem type=join (body "chegou no servidor!" para o app antigo, user = quem entrou) no primeiro canal de texto por position que a pessoa enxerga, e dispara MessageSent</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>Canal de texto escondido para o @everyone é pulado pelo aviso; clicar no convite de novo não avisa duas vezes; mensagem de gente continua type=user</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>No app, o aviso de chegada aparece no chat como frase ("fulano chegou no servidor") montada pelo app, não como mensagem vazia</span></label>
+
+  <h2>Plateia, membros, voz e a janela do app</h2>
+  <label><input type="checkbox"><span>Duas máquinas na mesma voz, uma transmitindo: o cartão de quem transmite mostra o olho com 1, e o nome de quem assiste no hover</span></label>
+  <label><input type="checkbox"><span>Quem assiste pausa o cartão: o contador de plateia cai para zero na máquina de quem transmite; retomar volta a contar</span><i class="tag auto">check.mjs</i></label>
+  <label><input type="checkbox"><span>Câmera ligada de todo mundo numa sala de 3+: nenhum evento de plateia é disparado (o log do SFU não enche)</span><i class="tag auto">check.mjs</i></label>
+  <label><input type="checkbox"><span>Barra de membros: grupos na ordem dos cargos, @everyone por último entre os online, Offline no fim, coroa no dono</span><i class="tag auto">vitest</i></label>
+  <label><input type="checkbox"><span>Clicar num membro abre a ficha com os cargos dele; mandar mensagem dali abre a conversa na Home, mesmo sem amizade (mesmo servidor basta)</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>Detecção de voz: falar abre o microfone e o silêncio fecha; a barra de sensibilidade move a linha vermelha e o efeito é imediato</span></label>
+  <label><input type="checkbox"><span>Apertar para falar com o app ATRÁS de um jogo em tela cheia: a tecla abre e fecha o microfone</span></label>
+  <label><input type="checkbox"><span>Tecla de mutar e de ensurdecer funcionam com o jogo na frente; escolher uma tecla que outro programa já usa mostra o aviso e não trava o microfone</span></label>
+  <label><input type="checkbox"><span>Escolher "apertar para falar" sem tecla: o microfone continua aberto e a tela avisa em vermelho</span></label>
+  <label><input type="checkbox"><span>Janela do app: botão direito não abre menu do navegador, texto da interface não seleciona por arrasto, F5 não recarrega, Ctrl+roda não dá zoom — mas Ctrl+= ainda aumenta (acessibilidade)</span></label>
+  <label><input type="checkbox"><span>Windows: entrar na voz pede o microfone pelo sistema, sem o balão do WebView2</span></label>
+  <label><input type="checkbox"><span>Linux (contêiner): os seis casos de <code>native/tests/linux/cenarios.sh</code> passam, e o Caso 1 não tem nenhum segundo sem quadro</span><i class="tag auto">docker</i></label>
 </main>
 <script>
   const boxes = [...document.querySelectorAll('input[type=checkbox]')];

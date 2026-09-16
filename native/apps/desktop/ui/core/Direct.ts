@@ -38,9 +38,7 @@ export class Direct {
             return null;
         });
 
-        if (conversations) {
-            this.store.set({ conversations });
-        }
+        this.store.set(conversations ? { conversations, failed: false } : { failed: true });
     }
 
     async open(person: Person): Promise<void> {
@@ -52,7 +50,13 @@ export class Direct {
             return;
         }
 
-        this.store.set(messages ? { messages, loading: false } : { loading: false, failed: true });
+        if (! messages) {
+            this.store.set({ loading: false, failed: true });
+
+            return;
+        }
+
+        this.store.set({ messages, loading: false });
         this.clearUnread(person.id);
     }
 
