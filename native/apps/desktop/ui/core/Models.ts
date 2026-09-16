@@ -92,11 +92,18 @@ export type ServerTree = {
 
 export type MessageType = 'user' | 'join';
 
+export type ReplyTo = {
+    id: number;
+    name: string;
+    body: string;
+};
+
 export type Message = {
     id: number;
     channel_id: string;
     type: MessageType;
     user: { id: number; name: string; avatar_url: string | null };
+    reply_to: ReplyTo | null;
     body: string;
     edited_at: string | null;
     created_at: string;

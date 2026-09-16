@@ -18,6 +18,8 @@ final class StoreMessageController
      */
     public function __invoke(StoreMessageRequest $request, Channel $channel, #[CurrentUser] User $user): MessageResource
     {
-        return new MessageResource($channel->post($user, $request->string('body')->toString()));
+        $replyToId = $request->filled('reply_to_id') ? $request->integer('reply_to_id') : null;
+
+        return new MessageResource($channel->post($user, $request->string('body')->toString(), $replyToId));
     }
 }

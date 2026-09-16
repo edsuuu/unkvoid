@@ -4,6 +4,7 @@ import { Avatar } from '../../common/Avatar.tsx';
 import { Icon } from '../../common/Icon.tsx';
 import { useApp } from '../../useApp.ts';
 import { useStore } from '../../useStore.ts';
+import { DirectRow } from './DirectRow.tsx';
 
 export function DirectPanel() {
     const hub = useApp().hub;
@@ -61,18 +62,7 @@ export function DirectPanel() {
                     <p className="m-auto text-center text-[13px] text-ink-dim">Nenhuma mensagem ainda com {person.name}.</p>
                 )}
 
-                {messages.map(message => (
-                    <div key={message.id} className={`flex gap-2.5 ${message.mine ? 'flex-row-reverse' : ''}`}>
-                        <Avatar name={message.sender.name} url={message.sender.avatar_url} size={28} mine={message.mine} />
-                        <div className={`bubble ${message.mine ? 'bubble-mine' : ''}`}>
-                            <p className="m-0 text-[13px] break-words whitespace-pre-wrap">{message.body}</p>
-                            <span className="mt-1 block font-mono text-[9.5px] text-ink-dim">
-                                {new Date(message.created_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                                {message.edited_at && ' · editado'}
-                            </span>
-                        </div>
-                    </div>
-                ))}
+                {messages.map(message => <DirectRow key={message.id} message={message} />)}
             </div>
 
             <form className="flex items-end gap-2" onSubmit={event => { event.preventDefault(); void send(); }}>
