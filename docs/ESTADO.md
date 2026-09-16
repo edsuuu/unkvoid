@@ -38,6 +38,13 @@ o dono. O histórico das sessões saiu do repositório e continua no git.
   correções 0.0.25 a 0.0.27 — encoder, captura e áudio de Windows, mais o limitador de quadros
   para monitor de 144 Hz — e elas foram integradas num Mac, onde esse código nem entra na
   compilação. Antes de publicar qualquer instalador, compilar e transmitir numa máquina Windows.
+- **O CI não constrói release: a conta do GitHub está bloqueada** (16/09/2026). O `release.yml` é o
+  único fluxo em runner do GitHub (`macos-latest` e `windows-latest`), e o repositório é privado,
+  então esses minutos são cobrados — o disparo morreu com *"recent account payments have failed or
+  your spending limit needs to be increased"*. Os outros três fluxos rodam no runner da própria VPS
+  e por isso continuam funcionando. A 0.0.28 do macOS foi compilada e publicada à mão, de um Mac,
+  com a chave `9a18c9243ef59b08` e conferida pelo `check-signature.mjs`. Enquanto a cobrança não
+  for resolvida, release é trabalho manual em cada sistema.
 - **Áudio do Discord vazando no Windows** (relato do dono, 16/09/2026): a exclusão é por nome de
   executável (`Discord.exe` e companhia) e não há queda para o laço clássico, então as duas
   hipóteses são a caixa "Sem o áudio do Discord" desmarcada ou o Discord entrando na chamada
