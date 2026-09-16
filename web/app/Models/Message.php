@@ -25,13 +25,15 @@ use Throwable;
  * @property string $channel_id
  * @property int $user_id
  * @property MessageTypeEnum $type
+ * @property ?int $reply_to_id
  * @property string $body
  * @property ?CarbonImmutable $edited_at
  * @property CarbonImmutable $created_at
  * @property-read Channel $channel
  * @property-read User $user
+ * @property-read ?Message $replyTo
  */
-#[Fillable(['channel_id', 'user_id', 'type', 'body', 'edited_at'])]
+#[Fillable(['channel_id', 'user_id', 'type', 'reply_to_id', 'body', 'edited_at'])]
 final class Message extends Model implements Auditable
 {
     use AuditableTrait;
@@ -51,6 +53,14 @@ final class Message extends Model implements Auditable
     public function channel(): BelongsTo
     {
         return $this->belongsTo(Channel::class);
+    }
+
+    /**
+     * @return BelongsTo<self, $this>
+     */
+    public function replyTo(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'reply_to_id');
     }
 
     /**
