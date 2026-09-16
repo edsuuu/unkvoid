@@ -38,6 +38,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 # Já vem pelo reqwest; aqui só para ler o `?token=` que o navegador devolve no login.
 url = "2"
+tauri-plugin-global-shortcut = "2.3.2"
 
 # O WebKitGTK entrega WebRTC desligado. Sem mexer nesta configuração, a janela do app no
 # Linux não tem `RTCPeerConnection` e o mediasoup morre antes de entrar na sala.

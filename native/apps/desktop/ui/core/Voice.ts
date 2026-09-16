@@ -2,16 +2,28 @@ import type { App } from './App.ts';
 import { Failure } from './Failure.ts';
 import type { Hub } from './Hub.ts';
 import { Media } from './Media.ts';
+import { Mic } from './Mic.ts';
 import type { Channel, Clip } from './Models.ts';
 import { Platform } from './Platform.ts';
 import { SfuClient, type JoinResponse, type PlainProducerResponse, type RoomIdentity, type SourceName } from './SfuClient.ts';
 import { Store } from './Store.ts';
 import { Tauri } from './Tauri.ts';
 
+export type InputMode = 'voice' | 'ptt' | 'open';
+
+export type Keybinds = {
+    mute: string;
+    deafen: string;
+    talk: string;
+};
+
 export type VoicePreferences = {
     microphone: string;
     noiseSuppression: boolean;
     muteOnJoin: boolean;
+    inputMode: InputMode;
+    sensitivity: number;
+    keybinds: Keybinds;
 };
 
 export type Streamer = { userId: number; name: string };
@@ -25,6 +37,7 @@ export type VoiceState = {
     can: string[];
     cameraOn: boolean;
     clipOpen: boolean;
+    speaking: boolean;
     preferences: VoicePreferences;
 };
 
@@ -34,7 +47,15 @@ export class Voice {
     static readonly MIC_OPTIONS = { codecOptions: { opusDtx: true, opusFec: true } };
     static readonly CAMERA_OPTIONS = { encodings: [{ maxBitrate: 1_200_000 }], codecOptions: { videoGoogleStartBitrate: 800 } };
     static readonly PREFERENCES_KEY = 'unkvoid:voice';
-    static readonly DEFAULT_PREFERENCES: VoicePreferences = { microphone: '', noiseSuppression: true, muteOnJoin: true };
+    static readonly DEFAULT_KEYBINDS: Keybinds = { mute: 'CmdOrCtrl+Shift+KeyM', deafen: 'CmdOrCtrl+Shift+KeyD', talk: '' };
+    static readonly DEFAULT_PREFERENCES: VoicePreferences = {
+        microphone: '',
+        noiseSuppression: true,
+        muteOnJoin: true,
+        inputMode: 'voice',
+        sensitivity: 35,
+        keybinds: Voice.DEFAULT_KEYBINDS,
+    };
 
     readonly app: App;
     readonly hub: Hub;
@@ -48,6 +69,10 @@ export class Voice {
     cameraTrack: MediaStreamTrack | null = null;
     can: string[] = [];
     joinTicket = 0;
+    gateOpen = true;
+    listening = false;
+    registeredShortcuts = new Set<string>();
+    readonly mic = new Mic();
     readonly store: Store<VoiceState>;
 
     constructor(app: App, hub: Hub) {
@@ -71,7 +96,8 @@ export class Voice {
             can: [],
             cameraOn: false,
             clipOpen: false,
-            preferences,
+            speaking: false,
+            preferences: { ...preferences, keybinds: { ...Voice.DEFAULT_KEYBINDS, ...preferences.keybinds } },
         });
     }
 
@@ -89,6 +115,66 @@ export class Voice {
 
     native(): boolean {
         return Platform.isLinux();
+    }
+
+    listenShortcuts(): void {
+        if (this.listening || ! Tauri.available()) {
+            return;
+        }
+
+        this.listening = true;
+
+        void Tauri.listen<{ action: string; pressed: boolean }>('shortcut', ({ payload }) => this.onShortcut(payload.action, payload.pressed));
+    }
+
+    async applyShortcuts(): Promise<void> {
+        if (! Tauri.available()) {
+            return;
+        }
+
+        const { keybinds } = this.store.state.preferences;
+        const bindings = [
+            { action: 'mute', accelerator: keybinds.mute },
+            { action: 'deafen', accelerator: keybinds.deafen },
+            { action: 'talk', accelerator: keybinds.talk },
+        ].filter(binding => binding.accelerator.trim() !== '');
+
+        try {
+            const result = await Tauri.invoke<{ registered: string[]; failed: string[] }>('set_shortcuts', { bindings });
+
+            this.registeredShortcuts = new Set(result.registered);
+
+            if (result.failed.length > 0) {
+                this.app.log('voice.shortcuts.refused', { failed: result.failed });
+                this.app.toast(`o sistema recusou ${result.failed.length === 1 ? 'uma tecla' : 'algumas teclas'}: outro programa já a usa. Escolha outra.`, true);
+            }
+        } catch (failure) {
+            this.registeredShortcuts = new Set();
+            this.app.log('voice.shortcuts.error', { message: Failure.message(failure) });
+            this.app.toast(`não deu para registrar os atalhos: ${Failure.message(failure)}`, true);
+        }
+    }
+
+    onShortcut(action: string, pressed: boolean): void {
+        if (action === 'talk') {
+            if (this.pushToTalk()) {
+                this.setGate(pressed);
+            }
+
+            return;
+        }
+
+        if (! pressed) {
+            return;
+        }
+
+        if (action === 'mute') {
+            void this.hub.attempt(() => this.toggleMute());
+        }
+
+        if (action === 'deafen') {
+            void this.hub.attempt(() => this.toggleDeafen());
+        }
     }
 
     allowed(grant: string): boolean {
@@ -295,6 +381,8 @@ export class Voice {
             this.micProducerId = (await this.app.media.sfu!.produce(this.micTrack, 'mic', Voice.MIC_OPTIONS)).id;
         }
 
+        this.startGate();
+
         if (this.muted || this.serverMuted) {
             await this.applyMute();
         }
@@ -308,12 +396,70 @@ export class Voice {
             this.micProducerId = null;
         }
 
+        this.mic.stop();
         this.micTrack?.stop();
         this.micTrack = null;
+        this.gateOpen = true;
+        this.store.set({ speaking: false });
 
         if (this.native()) {
             await Tauri.invoke('stop_voice').catch((failure: unknown) => this.app.log('voice.stop.error', { message: Failure.message(failure) }));
         }
+    }
+
+    pushToTalk(): boolean {
+        return this.store.state.preferences.inputMode === 'ptt' && this.registeredShortcuts.has('talk');
+    }
+
+    startGate(): void {
+        const { inputMode, sensitivity } = this.store.state.preferences;
+
+        this.mic.stop();
+        this.gateOpen = ! this.pushToTalk() && (inputMode !== 'voice' || ! this.micTrack);
+
+        if (this.micTrack) {
+            try {
+                this.mic.watch(this.micTrack, sensitivity, speaking => {
+                    if (this.store.state.preferences.inputMode === 'voice') {
+                        this.setGate(speaking);
+                    }
+                });
+            } catch (failure) {
+                this.app.log('voice.detection.error', { message: Failure.message(failure) });
+                this.gateOpen = true;
+            }
+        }
+
+        this.applyGate();
+    }
+
+    setGate(open: boolean): void {
+        if (this.gateOpen === open) {
+            return;
+        }
+
+        this.gateOpen = open;
+        this.applyGate();
+    }
+
+    applyGate(): void {
+        const live = ! this.muted && ! this.serverMuted && this.gateOpen;
+
+        if (this.micTrack) {
+            this.micTrack.enabled = live;
+        }
+
+        if (this.native() && this.micProducerId) {
+            void Tauri.invoke('set_voice_muted', { muted: ! live }).catch((failure: unknown) => {
+                this.app.log('voice.gate.error', { message: Failure.message(failure) });
+
+                if (! live) {
+                    this.app.toast('o microfone não fechou: o áudio pode estar saindo mesmo com o botão mutado', true);
+                }
+            });
+        }
+
+        this.store.set({ speaking: live });
     }
 
     async toggleMute(): Promise<void> {
@@ -331,9 +477,7 @@ export class Voice {
     async applyMute(): Promise<void> {
         const muted = this.muted || this.serverMuted;
 
-        if (this.micTrack) {
-            this.micTrack.enabled = ! muted;
-        }
+        this.applyGate();
 
         if (this.micProducerId) {
             if (this.serverMuted) {
@@ -341,10 +485,6 @@ export class Voice {
             } else {
                 await this.app.media.sfu![muted ? 'pauseProducer' : 'resumeProducer'](this.micProducerId);
             }
-        }
-
-        if (this.native()) {
-            await Tauri.invoke('set_voice_muted', { muted });
         }
     }
 
@@ -482,6 +622,29 @@ export class Voice {
 
         localStorage.setItem(Voice.PREFERENCES_KEY, JSON.stringify(preferences));
         this.store.set({ preferences });
+
+        if (key === 'keybinds') {
+            await this.applyShortcuts();
+            this.startGate();
+
+            return;
+        }
+
+        if (key === 'inputMode' && preferences.inputMode === 'ptt') {
+            await this.applyShortcuts();
+        }
+
+        if (key === 'sensitivity') {
+            this.mic.setThreshold(preferences.sensitivity);
+
+            return;
+        }
+
+        if (key === 'inputMode') {
+            this.startGate();
+
+            return;
+        }
 
         if (key === 'muteOnJoin' || ! this.micTrack || ! this.channel || this.native()) {
             return;
