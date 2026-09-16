@@ -45,6 +45,28 @@ final class User extends Authenticatable implements Auditable
         return (int) mb_substr($subject, 5);
     }
 
+    /**
+     * Um apelido livre a partir de um texto qualquer — o nome que o Google manda, por
+     * exemplo. Tira acento e espaço, corta no tamanho e acrescenta número enquanto o
+     * apelido já for de alguém.
+     */
+    public static function freeNickname(string $seed): string
+    {
+        $base = Str::of($seed)->ascii()->lower()->replaceMatches('/[^a-z0-9._]+/', '')->limit(28, '')->toString();
+
+        if (mb_strlen($base) < 3) {
+            $base = 'pessoa';
+        }
+
+        $nickname = $base;
+
+        for ($suffix = 2; self::query()->where('name', $nickname)->exists(); $suffix++) {
+            $nickname = $base.$suffix;
+        }
+
+        return $nickname;
+    }
+
     public function initials(): string
     {
         return Str::of($this->name)
