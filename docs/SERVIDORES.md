@@ -216,14 +216,20 @@ Mensagens:
 
 | rota | corpo | resposta |
 |---|---|---|
-| `GET /api/channels/{channel}/messages?before={id}` | — | 50 mais recentes antes de `before`, ordem crescente: `[ { id, channel_id, user: {id,name,avatar_url}, type, body, edited_at, created_at } ]` |
-| `POST /api/channels/{channel}/messages` | `{ body }` (1–2000) | `MessageResource` (`SEND_MESSAGES`) |
+| `GET /api/channels/{channel}/messages?before={id}` | — | 50 mais recentes antes de `before`, ordem crescente: `[ { id, channel_id, user: {id,name,avatar_url}, type, body, reply_to, edited_at, created_at } ]` |
+| `POST /api/channels/{channel}/messages` | `{ body }` (1–2000), `reply_to_id` opcional | `MessageResource` (`SEND_MESSAGES`). O `reply_to_id` tem de ser de mensagem **do mesmo canal**, senão 422: aceitar id de fora vazaria texto de canal que a pessoa talvez nem enxergue |
 | `PATCH /api/messages/{message}` | `{ body }` | só o autor |
 | `DELETE /api/messages/{message}` | — | autor ou `MANAGE_MESSAGES` |
 
+`reply_to` é `null` ou `{ id, name, body }` com o corpo cortado em 120 caracteres — é só o
+que o cartão da resposta mostra. Apagar a mensagem original é soft delete: a resposta
+continua no ar e o `reply_to` dela passa a vir `null`, ou seja, a citação some da tela.
+
 `type` é `user` (o normal) ou `join`. O aviso de chegada: entrar por convite grava, no
 primeiro canal de texto por `position` que quem chegou enxerga, uma mensagem
-`type: "join"` com `user` = quem entrou e `body` vazio, e dispara o mesmo `MessageSent`.
+`type: "join"` com `user` = quem entrou e `body` "chegou no servidor!" (que existe só para
+o app antigo, que não conhece `type`, não mostrar balão vazio), e dispara o mesmo
+`MessageSent`.
 Quem já era membro e clicou no convite de novo não avisa de novo. A frase ("fulano chegou
 no servidor") quem monta é o app: o Laravel não manda texto pronto.
 

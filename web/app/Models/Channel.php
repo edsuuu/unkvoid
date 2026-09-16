@@ -178,7 +178,7 @@ final class Channel extends Model
     {
         $this->memberOrFail($viewer)->authorize(PermissionEnum::ViewChannel, $this);
 
-        $query = $this->messages()->with('user')->orderByDesc('id')->limit(self::PAGE);
+        $query = $this->messages()->with(['user', 'replyTo.user'])->orderByDesc('id')->limit(self::PAGE);
 
         if (! is_null($before)) {
             $query->where('id', '<', $before);
@@ -190,14 +190,26 @@ final class Channel extends Model
     /**
      * @throws Throwable
      */
-    public function post(User $author, string $body): Message
+    public function post(User $author, string $body, ?int $replyToId = null): Message
     {
         $member = $this->memberOrFail($author);
         $member->authorize(PermissionEnum::ViewChannel, $this);
         $member->authorize(PermissionEnum::SendMessages, $this);
 
-        $message = self::write('falha ao gravar a mensagem', fn (): Message => $this->messages()->create(['user_id' => $author->id, 'body' => $body]), ['channel_id' => $this->id]);
+        // Responder só vale dentro do mesmo canal: aceitar um id de fora vazaria o texto
+        // de um canal que a pessoa talvez nem enxergue.
+        $replyTo = is_null($replyToId) ? null : $this->messages()->with('user')->find($replyToId);
+
+        throw_if(! is_null($replyToId) && is_null($replyTo), ValidationException::withMessages(['reply_to_id' => 'A mensagem respondida não é deste canal.']));
+
+        $message = self::write('falha ao gravar a mensagem', fn (): Message => $this->messages()->create([
+            'user_id' => $author->id,
+            'reply_to_id' => $replyTo?->id,
+            'body' => $body,
+        ]), ['channel_id' => $this->id]);
+
         $message->setRelation('user', $author);
+        $message->setRelation('replyTo', $replyTo);
 
         self::broadcast(new MessageSent($message));
 

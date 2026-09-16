@@ -84,7 +84,7 @@
     textarea,
     code,
     [contenteditable="true"],
-    .bubble,
+    .message-text,
     .code-chip {
         -webkit-user-select: text;
         user-select: text;
@@ -335,24 +335,12 @@
         font-weight: 600;
     }
 
-    /* A bolha diz de quem é a mensagem pelo canto reto e pela cor, sem precisar de rótulo. */
-    .bubble {
-        background: rgba(255, 255, 255, 0.05);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 12px;
-        border-top-left-radius: 4px;
+    /* O corpo da mensagem é a única coisa da lista que se copia, e por isso se seleciona. */
+    .message-text {
         color: var(--color-ink-body);
         font-size: 13px;
-        padding: 8px 11px;
-        text-align: left;
-    }
-
-    .bubble-mine {
-        background: linear-gradient(180deg, var(--color-brand), var(--color-brand-dark));
-        border-color: transparent;
-        border-top-left-radius: 12px;
-        border-top-right-radius: 4px;
-        color: var(--color-ink-strong);
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
     }
 
     .live-badge {

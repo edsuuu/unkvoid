@@ -14,7 +14,7 @@ export function ChatPanel({ onClose = null }: { onClose?: (() => void) | null })
     const hub = useApp().hub;
     const chat = hub.chat;
     const { channel, tree } = useStore(hub.store);
-    const { messages, loading, loadingOlder, failed } = useStore(chat.store);
+    const { messages, loading, loadingOlder, failed, replyTo, newFrom } = useStore(chat.store);
     const [draft, setDraft] = useState('');
     const [draftChannelId, setDraftChannelId] = useState(channel?.id);
     const list = useRef<HTMLDivElement>(null);
@@ -43,8 +43,14 @@ export function ChatPanel({ onClose = null }: { onClose?: (() => void) | null })
 
         if (stick.current) {
             element.scrollTop = element.scrollHeight;
+
+            return;
         }
-    }, [messages]);
+
+        if (messages.length > 0) {
+            chat.markUnreadFrom(messages[messages.length - 1].id);
+        }
+    }, [messages, chat]);
 
     useLayoutEffect(() => {
         stick.current = true;
@@ -156,9 +162,21 @@ export function ChatPanel({ onClose = null }: { onClose?: (() => void) | null })
                 )}
 
                 {messages.map(message => (
-                    <MessageRow key={message.id} message={message} mine={chat.isMine(message)} canDelete={chat.canDelete(message)} />
+                    <MessageRow key={message.id} message={message} mine={chat.isMine(message)} canDelete={chat.canDelete(message)} unreadMark={message.id === newFrom} />
                 ))}
             </div>
+
+            {replyTo && (
+                <div className="flex items-center gap-2 rounded-[10px] border border-line-strong bg-row px-3 py-1.5 text-[12px]">
+                    <Icon name="arrowLeft" size={12} className="rotate-90 text-ink-dim" />
+                    <span className="text-ink-dim">Respondendo</span>
+                    <span className="flex-none font-medium">{replyTo.user.name}</span>
+                    <span className="min-w-0 flex-1 truncate text-ink-dim">{replyTo.body}</span>
+                    <button className="cursor-pointer p-0.5 text-ink-dim hover:text-ink-strong" type="button" title="Cancelar a resposta" onClick={() => chat.reply(null)}>
+                        <Icon name="close" size={13} />
+                    </button>
+                </div>
+            )}
 
             <form className="flex items-end gap-2" onSubmit={event => { event.preventDefault(); void send(); }}>
                 <textarea
@@ -168,9 +186,14 @@ export function ChatPanel({ onClose = null }: { onClose?: (() => void) | null })
                     maxLength={2000}
                     value={draft}
                     disabled={! canSend}
-                    placeholder={canSend ? `Escreva em #${channel.name}` : 'Você não pode enviar mensagens neste canal'}
+                    placeholder={! canSend ? 'Você não pode enviar mensagens neste canal' : replyTo ? `Respondendo ${replyTo.user.name}` : `Escreva em #${channel.name}`}
                     onChange={event => { setDraft(event.target.value); grow(); }}
                     onKeyDown={event => {
+                        if (event.key === 'Escape' && replyTo) {
+                            event.preventDefault();
+                            chat.reply(null);
+                        }
+
                         if (event.key === 'Enter' && ! event.shiftKey) {
                             event.preventDefault();
                             void send();
