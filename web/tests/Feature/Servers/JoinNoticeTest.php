@@ -29,7 +29,8 @@ it('entrar por convite avisa no primeiro canal de texto, uma vez só', function 
 
     expect($notice->type)->toBe(MessageTypeEnum::Join)
         ->and($notice->user_id)->toBe($guest->id)
-        ->and($notice->body)->toBe('');
+        // O corpo é para o app antigo, que não conhece `type`: sem ele, balão vazio.
+        ->and($notice->body)->toBe('chegou no servidor!');
 
     Event::assertDispatched(MessageSent::class, fn (MessageSent $event): bool => $event->message->id === $notice->id && $event->broadcastOn()->name === "private-channel.{$channel->id}");
 

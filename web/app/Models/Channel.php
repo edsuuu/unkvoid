@@ -212,10 +212,12 @@ final class Channel extends Model
      */
     public function announceJoin(User $user): void
     {
+        // O corpo existe para o app antigo, que não conhece `type` e mostraria um balão
+        // vazio. O app novo lê o `type` e escreve a frase dele, ignorando isto.
         $message = self::write('falha ao avisar da chegada', fn (): Message => $this->messages()->create([
             'user_id' => $user->id,
             'type' => MessageTypeEnum::Join,
-            'body' => '',
+            'body' => 'chegou no servidor!',
         ]), ['channel_id' => $this->id, 'user_id' => $user->id]);
 
         $message->setRelation('user', $user);
