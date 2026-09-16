@@ -13,11 +13,20 @@ use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
+use Symfony\Component\HttpFoundation\RedirectResponse as SocialiteRedirect;
 use Throwable;
 
-final class GoogleCallbackController
+/**
+ * Entrar pelo Google: a ida e a volta.
+ */
+final class GoogleController
 {
-    public function __invoke(Request $request): RedirectResponse|Response
+    public function redirect(): SocialiteRedirect
+    {
+        return Socialite::driver('google')->redirect();
+    }
+
+    public function callback(Request $request): RedirectResponse|Response
     {
         try {
             $googleUser = Socialite::driver('google')->user();

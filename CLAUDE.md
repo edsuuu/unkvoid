@@ -103,9 +103,11 @@ Vale a skill `style-edsu` inteira, e o resumo que mais pega:
 - **Nada de abreviar variável**: `$exception`, não `$e`.
 - PHP: `declare(strict_types=1)`, classes `final`, imports no topo, early return, `is_null()`,
   `in_array(..., true)`, escrita em `DB::transaction` + try/catch + `Log::channel(...)` com
-  mensagem fixa prefixada por `[ERRO]` e contexto em array. Rota → FormRequest → controller de
-  ação única → Resource; status de erro mora na exceção. Tela é `Route::view` → blade com
-  `<x-app-layout>` → `<livewire:…>`.
+  mensagem fixa prefixada por `[ERRO]` e contexto em array. Rota → FormRequest → controller →
+  Resource; status de erro mora na exceção. **Um controller por recurso**, com os métodos dele
+  (`index`, `show`, `store`, `update`, `destroy` e o que mais o recurso tiver) — controller de
+  ação única só quando o recurso tem uma ação só de verdade, e aí com `__invoke`. Tela é
+  `Route::view` → blade com `<x-app-layout>` → `<livewire:…>`.
 - TypeScript e JavaScript: uma classe por arquivo, imports no topo, sem comentário decorativo.
 - Front do app (`native/apps/desktop/ui`, React + TypeScript estrito): **nenhum comentário**, o nome
   explica — decisão do dono, e o `tests/static/check-ui.py` falha com comentário lá. Os testes do

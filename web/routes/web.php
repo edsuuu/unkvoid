@@ -3,19 +3,17 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\Auth\AppLoginController;
-use App\Http\Controllers\Auth\GoogleCallbackController;
-use App\Http\Controllers\Auth\GoogleRedirectController;
+use App\Http\Controllers\Auth\GoogleController;
 use App\Http\Controllers\Auth\LogoutController;
 use App\Http\Controllers\DownloadController;
-use App\Http\Controllers\ManifestController;
 use Illuminate\Support\Facades\Route;
 
 Route::view('/', 'home.index')->name('home');
 Route::view('/privacidade', 'legal.privacy')->name('privacy');
 Route::view('/termos', 'legal.terms')->name('terms');
 
-Route::get('/downloads/latest.json', ManifestController::class)->name('downloads.manifest');
-Route::get('/downloads/{slug}', DownloadController::class)->where('slug', '[a-z-]+')->name('downloads.platform');
+Route::get('/downloads/latest.json', [DownloadController::class, 'manifest'])->name('downloads.manifest');
+Route::get('/downloads/{slug}', [DownloadController::class, 'platform'])->where('slug', '[a-z-]+')->name('downloads.platform');
 
 Route::middleware('guest')->group(function (): void {
     Route::view('/login', 'auth.login')->name('login');
@@ -24,8 +22,8 @@ Route::middleware('guest')->group(function (): void {
     Route::view('/redefinir-senha/{token}', 'auth.reset-password')->name('password.reset');
 });
 
-Route::get('/oauth2/google', GoogleRedirectController::class)->name('oauth2.google');
-Route::get('/oauth2/google/callback', GoogleCallbackController::class)->name('oauth2.google.callback');
+Route::get('/oauth2/google', [GoogleController::class, 'redirect'])->name('oauth2.google');
+Route::get('/oauth2/google/callback', [GoogleController::class, 'callback'])->name('oauth2.google.callback');
 Route::get('/oauth2/app', AppLoginController::class)->name('oauth2.app');
 Route::post('/logout', LogoutController::class)->middleware('auth')->name('logout');
 
