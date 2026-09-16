@@ -1,0 +1,166 @@
+<!doctype html>
+<!--
+  O checklist da interface do app, para marcar à mão o que já foi validado.
+  Abra direto no navegador (file://). As marcas ficam no localStorage desta página.
+-->
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unkvoid — checklist da interface</title>
+<style>
+    :root { color-scheme: dark; }
+    body { margin: 0; padding: 32px; background: #06050a; color: #ece9f3; font: 14px/1.5 Archivo, Helvetica, Arial, sans-serif; }
+    main { max-width: 920px; margin: 0 auto; }
+    h1 { margin: 0 0 6px; font-size: 22px; }
+    p.lead { margin: 0 0 24px; color: #a89fc0; }
+    section { margin-bottom: 22px; border: 1px solid rgba(255,255,255,.09); border-radius: 16px; background: rgba(255,255,255,.035); padding: 14px 18px; }
+    h2 { margin: 0 0 8px; font: 600 11px/1 "IBM Plex Mono", monospace; letter-spacing: .12em; text-transform: uppercase; color: #8a80a6; }
+    label { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; border-top: 1px solid rgba(255,255,255,.05); cursor: pointer; }
+    label:first-of-type { border-top: 0; }
+    input { margin-top: 3px; accent-color: #8a7cf5; }
+    .tag { flex: none; margin-left: auto; font: 11px "IBM Plex Mono", monospace; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+    .browser { background: rgba(52,211,153,.14); color: #34d399; }
+    .check { background: rgba(138,124,245,.18); color: #aeb0ff; }
+    .pending { background: rgba(226,68,92,.14); color: #e2445c; }
+    .legend { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+</style>
+</head>
+<body>
+<main>
+    <h1>Checklist da interface do app</h1>
+    <p class="lead">Interface em React e TypeScript (14/09/2026). O rótulo diz como cada ponto foi validado nesta sessão; a caixa é sua.</p>
+    <div class="legend">
+        <span class="tag browser">clicado no navegador</span>
+        <span class="tag check">coberto por teste (Vitest)</span>
+        <span class="tag pending">falta validar</span>
+    </div>
+    <div id="list"></div>
+</main>
+<script>
+const sections = [
+    ['Interface em TypeScript', [
+        ['npm run check: checks estáticos, tsc estrito, ESLint (React e hooks) e Vitest passam', 'check'],
+        ['npm run test:integration contra Laravel, Reverb e SFU locais', 'check'],
+        ['npm run dev carrega só .tsx; configurações da conta e do servidor abrem sem erro no log', 'browser'],
+        ['Build do mac apontando para o site local: abre, entra com e-mail e senha, voz e tela', 'pending'],
+    ]],
+    ['Abertura', [
+        ['Procura atualização e abre a entrada', 'browser'],
+        ['Servidor fora do ar: "Servidor sem resposta" com tentativas', 'browser'],
+        ['Sessão guardada abre direto os servidores', 'browser'],
+        ['Erro de renderização mostra a tela de erro com "Ver logs"', 'browser'],
+        ['Configuração do servidor ou Reverb falhando: tela de reconexão, e não modo servidor pela metade', 'check'],
+    ]],
+    ['Entrada e sala por código', [
+        ['Sem nome: "Escolha um nome primeiro."', 'browser'],
+        ['Código inválido: mensagem de formato', 'browser'],
+        ['Criar sala com código escolhido: carregando → sala', 'browser'],
+        ['Outra pessoa entra: aviso "entrou", 2 pessoas, "começou a transmitir"', 'browser'],
+        ['Copiar o código: aviso (erro quando a área de transferência é bloqueada)', 'browser'],
+        ['Sair da sala: volta para a entrada com o código lembrado', 'browser'],
+        ['Sala abandonada que falha depois não derruba a sessão seguinte', 'check'],
+        ['Entrar ou sair da conta com a sala aberta não esconde a sala', 'check'],
+        ['Cartão ao vivo recebendo vídeo de verdade pelo WebRTC (30 fps, 1280×720, mídia do bot)', 'browser'],
+        ['Dois cartões ao vivo com captura real do app', 'pending'],
+    ]],
+    ['Conta', [
+        ['Entrar com e-mail e senha; senha errada vira texto no cartão', 'check'],
+        ['Google: falha libera o botão e pede para tentar de novo, sem campo de colar token', 'check'],
+        ['Criar conta (troca de cartão)', 'browser'],
+        ['Sair da conta: token e Reverb limpos, volta para a entrada', 'browser'],
+    ]],
+    ['Servidores', [
+        ['Home: criar sala abre o servidor com o convite na faixa', 'browser'],
+        ['Trilho: recolher e expandir, lembrar a escolha', 'browser'],
+        ['Entrar por convite (outra conta)', 'browser'],
+        ['Chat: histórico, enviar (Enter e botão), receber ao vivo, editar no lugar, apagar com confirmação', 'browser'],
+        ['Chat: carregar antigas rolando para cima, sem empurrar o que se lia', 'browser'],
+        ['Home, chat e clipes que não carregam: mensagem com "Tentar de novo"', 'pending'],
+        ['Canal: criar, editar (Ocultar canal), apagar com confirmação', 'browser'],
+        ['Confirmação abre com o foco no Cancelar; Esc desiste sem apagar', 'browser'],
+        ['Configurações: renomear (trilho atualiza), convite regenerar', 'browser'],
+        ['Cargos: criar, editar, apagar; @everyone sem ▲', 'browser'],
+        ['Membro: mutar e desmutar (chega no SFU), banir com motivo, perdoar', 'browser'],
+        ['Membro: expulsar, desconectar da voz, apelido, cargos', 'check'],
+        ['Menu do membro pelo ⋯ na lista da voz e na sala focada: desconectar, expulsar e banir do servidor', 'browser'],
+        ['Expulso ou banido com token antigo é derrubado da voz na hora (webhook joined)', 'check'],
+        ['Bucket criado sozinho ao clipar e ao publicar, ou à mão com php artisan storage:bucket', 'check'],
+        ['Design: modais, compartilhar, configurações, trilho e avatares com os valores do design', 'browser'],
+        ['Servidor apagado por outra pessoa volta para a Home, sem prender o carregamento', 'check'],
+    ]],
+    ['Voz', [
+        ['Entrar: "Conectando…", mic mutado, relógio, quem está no canal', 'browser'],
+        ['Mic, ensurdecer, câmera (quadro sintético no navegador)', 'browser'],
+        ['AO VIVO na lista e transmissão aparecendo ao lado, mesmo com o aviso do Laravel chegando atrasado', 'browser'],
+        ['Cartão com carregamento até o primeiro quadro', 'browser'],
+        ['Esc de um menu aberto em tela cheia fecha só o menu (menu no navegador, app no check)', 'check'],
+        ['Painel da voz: câmera, tela e Clipar dividindo a largura; tela transmitindo abre as opções', 'browser'],
+        ['Trocar de canal de voz mantém as transmissões da voz nova abertas', 'check'],
+        ['Sair da voz com o pedido do microfone aberto não deixa o mic capturando', 'check'],
+        ['Token de voz recusado e "Assistir" recusado viram aviso', 'check'],
+        ['Expulso não recebe "a conexão caiu" por cima; quem nunca foi visto não vira "alguém saiu"', 'check'],
+        ['Sala focada: canais, pessoas, relógio, chat ao lado, sair da voz', 'browser'],
+        ['Sala focada: canal de texto pelo menu # abre o chat ao lado sem sair da sala', 'browser'],
+        ['Compartilhar tela: telas e aplicativos, qualidade, transmitir, linha de números, parar', 'browser'],
+        ['Cartão: volume e imagem, pausar e retomar, tela cheia e Esc, fechar e Assistir', 'browser'],
+        ['Clipar: lista de quem transmite, erro do servidor vira aviso', 'browser'],
+        ['Clipe gerado de verdade: anel, render, upload no MinIO, ClipUpdated, miniatura e hls.js', 'browser'],
+        ['Recompartilhar a tela na hora não derruba o SFU, e o clipe seguinte fica pronto', 'browser'],
+        ['Mutado pelo servidor, reconexão do SFU, expulso com a sala focada aberta', 'pending'],
+    ]],
+    ['Conta e clipes', [
+        ['Configurações da conta: microfone, medidor, supressão de ruído, silenciar ao entrar', 'browser'],
+        ['Aba Clipes: sem conta mostra o cartão de entrar; com conta, estado vazio', 'browser'],
+        ['Clipes: três estados, player HLS, baixar, apagar, ClipUpdated', 'check'],
+    ]],
+    ['No app de verdade (Tauri)', [
+        ['Windows: janela, captura, encoder e assistir', 'pending'],
+        ['macOS: janela, captura e assistir', 'pending'],
+        ['Linux: cartões nativos (MJPEG), mic e câmera pelo Rust (a tela fora de vista nasce calada: check)', 'pending'],
+    ]],
+];
+
+const storageKey = 'unkvoid:checklist';
+let marks = {};
+
+try {
+    marks = JSON.parse(localStorage.getItem(storageKey) ?? '{}');
+} catch {
+    marks = {};
+}
+
+const labels = { browser: 'clicado no navegador', check: 'teste Vitest', pending: 'falta validar' };
+const list = document.getElementById('list');
+
+for (const [title, items] of sections) {
+    const section = document.createElement('section');
+    const heading = document.createElement('h2');
+
+    heading.textContent = title;
+    section.appendChild(heading);
+
+    for (const [text, how] of items) {
+        const label = document.createElement('label');
+        const box = document.createElement('input');
+        const span = document.createElement('span');
+        const tag = document.createElement('span');
+
+        box.type = 'checkbox';
+        box.checked = Boolean(marks[text]);
+        box.onchange = () => {
+            marks[text] = box.checked;
+            localStorage.setItem(storageKey, JSON.stringify(marks));
+        };
+        span.textContent = text;
+        tag.className = `tag ${how}`;
+        tag.textContent = labels[how];
+        label.append(box, span, tag);
+        section.appendChild(label);
+    }
+
+    list.appendChild(section);
+}
+</script>
+</body>
+</html>
