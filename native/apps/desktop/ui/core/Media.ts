@@ -211,7 +211,10 @@ export class Media {
 
             void this.consumePeers([{ peerId: detail.peerId, producers: [detail] }]);
         });
-        sfu.on('peersChanged', () => this.refreshPeople());
+        sfu.on('peersChanged', () => {
+            this.refreshPeople();
+            this.app.hub.syncVoiceSources();
+        });
         sfu.on('peerKicked', detail => {
             this.kickedPeers.add(detail.peerId);
             this.app.toast(`${detail.name} foi removido`);

@@ -553,16 +553,14 @@ export class Hub {
                     return;
                 }
 
-                if (this.voice.channel?.id === id && this.app.media.sfu) {
-                    this.syncVoiceSources();
-
-                    return;
-                }
-
                 const people = (tree.voice?.[id] ?? []).filter(person => person.user_id !== userId);
 
                 this.tree = { ...tree, voice: { ...tree.voice, [id]: event === 'joined' ? [...people, { user_id: userId, name, sources: [] }] : people } };
                 this.publish();
+
+                if (this.voice.channel?.id === id && this.app.media.sfu) {
+                    this.syncVoiceSources();
+                }
             });
         }
     }
