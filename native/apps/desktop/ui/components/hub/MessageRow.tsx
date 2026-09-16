@@ -2,6 +2,8 @@ import { memo, useState } from 'react';
 
 import type { Message } from '../../core/Models.ts';
 import { Avatar } from '../common/Avatar.tsx';
+import { Icon } from '../common/Icon.tsx';
+import { Popover } from '../common/Popover.tsx';
 import { useApp } from '../useApp.ts';
 
 const TIME_FORMAT: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' };
@@ -15,6 +17,7 @@ type MessageRowProps = {
 export const MessageRow = memo(function MessageRow({ message, mine, canDelete }: MessageRowProps) {
     const chat = useApp().hub.chat;
     const [editing, setEditing] = useState(false);
+    const [menuOpen, setMenuOpen] = useState(false);
     const [draft, setDraft] = useState(message.body);
     const when = new Date(message.created_at).toLocaleString('pt-BR', TIME_FORMAT);
 
@@ -55,9 +58,38 @@ export const MessageRow = memo(function MessageRow({ message, mine, canDelete }:
             </div>
 
             {! editing && (mine || canDelete) && (
-                <span className="flex flex-none gap-1 self-center opacity-0 group-hover:opacity-100 focus-within:opacity-100">
-                    {mine && <button className="cursor-pointer rounded-md px-2 py-1 text-[11px] text-ink-dim hover:bg-row hover:text-ink-strong" type="button" onClick={() => { setDraft(message.body); setEditing(true); }}>Editar</button>}
-                    {canDelete && <button className="cursor-pointer rounded-md px-2 py-1 text-[11px] text-ink-dim hover:bg-row hover:text-danger" type="button" onClick={() => void chat.destroy(message)}>Apagar</button>}
+                <span className="relative flex-none self-center">
+                    <button
+                        className={`btn-icon size-7 rounded-lg transition ${menuOpen ? 'btn-icon-on' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`}
+                        type="button"
+                        title="Opções da mensagem"
+                        onClick={() => setMenuOpen(open => ! open)}
+                    >
+                        <Icon name="dots" size={15} />
+                    </button>
+
+                    <Popover open={menuOpen} onClose={() => setMenuOpen(false)} className={`top-9 w-40 ${mine ? 'left-0' : 'right-0'}`}>
+                        {mine && (
+                            <button
+                                className="flex w-full cursor-pointer items-center gap-2 rounded-[9px] px-2.5 py-2 text-left text-[12.5px] text-ink-icon hover:bg-row hover:text-ink-strong"
+                                type="button"
+                                onClick={() => { setMenuOpen(false); setDraft(message.body); setEditing(true); }}
+                            >
+                                <Icon name="edit" size={14} />
+                                Editar
+                            </button>
+                        )}
+                        {canDelete && (
+                            <button
+                                className="flex w-full cursor-pointer items-center gap-2 rounded-[9px] px-2.5 py-2 text-left text-[12.5px] text-ink-icon hover:bg-row hover:text-danger"
+                                type="button"
+                                onClick={() => { setMenuOpen(false); void chat.destroy(message); }}
+                            >
+                                <Icon name="trash" size={14} />
+                                Apagar
+                            </button>
+                        )}
+                    </Popover>
                 </span>
             )}
         </div>

@@ -32,6 +32,7 @@ type Camera = { id: string };
 
 export class Voice {
     static readonly MIC_OPTIONS = { codecOptions: { opusDtx: true, opusFec: true } };
+    static readonly CAMERA_OPTIONS = { encodings: [{ maxBitrate: 1_200_000 }], codecOptions: { videoGoogleStartBitrate: 800 } };
     static readonly PREFERENCES_KEY = 'unkvoid:voice';
     static readonly DEFAULT_PREFERENCES: VoicePreferences = { microphone: '', noiseSuppression: true, muteOnJoin: true };
 
@@ -401,13 +402,13 @@ export class Voice {
         this.cameraTrack?.stop();
 
         const cameraTrack = (await navigator.mediaDevices.getUserMedia({
-            video: { width: 640, height: 360, frameRate: 30 },
+            video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
         })).getVideoTracks()[0];
 
         this.cameraTrack = cameraTrack;
 
         try {
-            this.cameraProducerId = (await this.app.media.sfu!.produce(cameraTrack, 'camera')).id;
+            this.cameraProducerId = (await this.app.media.sfu!.produce(cameraTrack, 'camera', Voice.CAMERA_OPTIONS)).id;
         } catch (failure) {
             await this.stopCamera();
 

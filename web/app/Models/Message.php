@@ -13,6 +13,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Override;
 use OwenIt\Auditing\Auditable as AuditableTrait;
 use OwenIt\Auditing\Contracts\Auditable;
@@ -33,6 +34,7 @@ final class Message extends Model implements Auditable
 {
     use AuditableTrait;
     use LogsFailedWrites;
+    use SoftDeletes;
 
     /**
      * @return BelongsTo<Channel, $this>
