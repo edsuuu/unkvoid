@@ -102,7 +102,7 @@ type VoiceStateEvent = { channel_id: string; user_id: number; name: string; even
 export class Hub {
     static readonly REFRESH_DEBOUNCE_MS = 250;
     static readonly RAIL_KEY = 'unkvoid:rail';
-    static readonly MEMBERS_KEY = 'unkvoid:membros';
+    static readonly MEMBERS_KEY = 'unkvoid:members';
 
     readonly app: App;
     readonly server: string;
@@ -296,6 +296,7 @@ export class Hub {
         this.publish({ serversLoading: this.servers.length === 0 });
 
         this.clips.refresh();
+        this.voice.watchMicErrors();
         this.voice.listenShortcuts();
         await this.voice.applyShortcuts();
 

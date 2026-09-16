@@ -30,6 +30,13 @@ export function KeybindField({ value, bare = false, onChange }: KeybindFieldProp
         event.preventDefault();
 
         if (event.key === 'Escape') {
+            setRefused('');
+            setCapturing(false);
+
+            return;
+        }
+
+        if (event.key === 'Delete' || event.key === 'Backspace') {
             onChange('');
             setRefused('');
             setCapturing(false);
@@ -49,8 +56,12 @@ export function KeybindField({ value, bare = false, onChange }: KeybindFieldProp
 
         const parts: string[] = [];
 
-        if (event.metaKey || event.ctrlKey) {
-            parts.push('CmdOrCtrl');
+        if (event.metaKey) {
+            parts.push('Super');
+        }
+
+        if (event.ctrlKey) {
+            parts.push('Control');
         }
 
         if (event.altKey) {
