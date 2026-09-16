@@ -112,6 +112,38 @@ export class Direct {
         return [updated, ...conversations.filter(item => item.user.id !== person.id)];
     }
 
+    async edit(message: DirectMessage, body: string): Promise<boolean> {
+        const text = body.trim();
+
+        if (text === '' || text === message.body) {
+            return true;
+        }
+
+        const updated = await this.hub.attempt(() => this.hub.api.patch<DirectMessage>(`/api/dm/${message.id}`, { body: text }));
+
+        if (updated) {
+            this.updateMessage(updated);
+        }
+
+        return Boolean(updated);
+    }
+
+    async destroy(message: DirectMessage): Promise<void> {
+        if (! await this.app.confirm('Apagar esta mensagem?', 'Apagar')) {
+            return;
+        }
+
+        const removed = await this.hub.attempt(async () => {
+            await this.hub.api.delete(`/api/dm/${message.id}`);
+
+            return true;
+        });
+
+        if (removed) {
+            this.removeMessage(message.id);
+        }
+    }
+
     updateMessage(message: DirectMessage): void {
         this.store.set(state => ({
             messages: state.messages.map(item => (item.id === message.id ? message : item)),
