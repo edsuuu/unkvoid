@@ -7,12 +7,22 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Qual sistema publicar'
+        type: choice
+        default: macos
+        options: [macos, windows, ambos]
 
 permissions:
   contents: read
 
 jobs:
   windows:
+    # Tag publica os dois; disparo à mão publica só o sistema escolhido. Publicar um
+    # instalador que ninguém compilou naquele sistema é o tipo de coisa que só aparece
+    # na máquina de quem instalou.
+    if: github.event_name == 'push' || inputs.platform != 'macos'
     runs-on: windows-latest
     defaults:
       run:
@@ -42,7 +52,7 @@ jobs:
           RELEASE_SECRET: ${{ secrets.RELEASE_SECRET }}
 
   macos:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.platform != 'windows'
     runs-on: macos-latest
     defaults:
       run:
