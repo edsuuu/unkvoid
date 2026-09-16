@@ -52,7 +52,10 @@ it('manda, edita e apaga mensagem com as regras do Discord', function (): void {
 
     Event::assertDispatched(MessageDeleted::class, fn (MessageDeleted $event): bool => $event->id === $messageId && $event->channelId === $channel->id);
 
-    $this->assertDatabaseCount('messages', 0);
+    // Apagar virou soft delete: a mensagem sai da conversa e continua no banco, que é de
+    // onde a auditoria lê o que foi dito.
+    $this->assertSoftDeleted('messages', ['id' => $messageId]);
+    expect(Message::query()->count())->toBe(0);
 });
 
 it('quem tem MANAGE_MESSAGES apaga a mensagem dos outros, quem não tem SEND_MESSAGES não escreve', function (): void {

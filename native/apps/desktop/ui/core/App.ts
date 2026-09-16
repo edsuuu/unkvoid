@@ -5,6 +5,7 @@ import { Platform } from './Platform.ts';
 import { RoomCode } from './RoomCode.ts';
 import { SfuClient } from './SfuClient.ts';
 import { Sharing } from './Sharing.ts';
+import { Sounds } from './Sounds.ts';
 import { Store } from './Store.ts';
 import { Tauri } from './Tauri.ts';
 
@@ -55,6 +56,7 @@ export class App {
     toastCounter = 0;
     name = '';
     readonly store: Store<AppState>;
+    readonly sounds: Sounds;
     readonly media: Media;
     readonly sharing: Sharing;
     readonly hub: Hub;
@@ -97,6 +99,7 @@ export class App {
             hasWebRTC: typeof RTCPeerConnection !== 'undefined',
         });
 
+        this.sounds = new Sounds();
         this.media = new Media(this);
         this.sharing = new Sharing(this);
         this.hub = new Hub(this, App.SERVER);

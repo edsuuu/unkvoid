@@ -1,4 +1,8 @@
+import type { Consumer } from 'mediasoup/types';
+
 import { ValidationException } from '../../Exceptions/ApiException.js';
+import type { Peer } from '../../Services/Peer.js';
+import type { ProducerOwner, Room } from '../../Services/Room.js';
 import type { ConsumePlainRequest } from '../Requests/ConsumePlainRequest.js';
 import type { ConsumeRequest } from '../Requests/ConsumeRequest.js';
 import type { ConsumerRequest } from '../Requests/ConsumerRequest.js';
@@ -31,20 +35,8 @@ export class ConsumerController {
         });
 
         peer.consumers.set(consumer.id, consumer);
-        consumer.on('transportclose', () => peer.consumers.delete(consumer.id));
-        consumer.on('producerclose', () => {
-            peer.consumers.delete(consumer.id);
-            peer.send('consumerClosed', {
-                consumerId: consumer.id,
-                producerId: consumer.producerId,
-                kind: consumer.kind,
-                // De quem era a tela, não de quem estava assistindo. Mandar o próprio id
-                // fazia o cliente apagar o quadro errado — invisível enquanto ninguém
-                // tinha quadro com o próprio id, e visível no instante em que passou a ter.
-                peerId: owner.peer.id,
-                source: String(owner.producer.appData.source),
-            });
-        });
+
+        this.track(room, peer, consumer, owner);
 
         return new ConsumerResource(consumer, owner);
     }
@@ -69,19 +61,36 @@ export class ConsumerController {
         });
 
         peer.consumers.set(consumer.id, consumer);
-        consumer.on('transportclose', () => peer.consumers.delete(consumer.id));
+
+        this.track(room, peer, consumer, owner);
+
+        return new PlainConsumerResource(consumer, transport, owner);
+    }
+
+    /**
+     * Guarda o que fazer quando o consumer morre: tirar do mapa, refazer a plateia e
+     * dizer a quem assistia de quem era a tela. Os dois caminhos — WebRTC e RTP puro —
+     * precisam exatamente disto, e o formato do aviso tem de mudar num lugar só.
+     */
+    private track(room: Room, peer: Peer, consumer: Consumer, owner: ProducerOwner): void {
+        consumer.on('transportclose', () => {
+            peer.consumers.delete(consumer.id);
+            room.announceWatchers(consumer.producerId);
+        });
+
         consumer.on('producerclose', () => {
             peer.consumers.delete(consumer.id);
             peer.send('consumerClosed', {
                 consumerId: consumer.id,
                 producerId: consumer.producerId,
                 kind: consumer.kind,
+                // De quem era a tela, não de quem estava assistindo. Mandar o próprio id
+                // fazia o cliente apagar o quadro errado — invisível enquanto ninguém
+                // tinha quadro com o próprio id, e visível no instante em que passou a ter.
                 peerId: owner.peer.id,
                 source: String(owner.producer.appData.source),
             });
         });
-
-        return new PlainConsumerResource(consumer, transport, owner);
     }
 
     public async resume(request: ConsumerRequest): Promise<StatusResource> {
@@ -95,20 +104,31 @@ export class ConsumerController {
             await consumer.requestKeyFrame();
         }
 
+        request.room().announceWatchers(consumer.producerId);
+
         return new StatusResource('resumed');
     }
 
     public async pause(request: ConsumerRequest): Promise<StatusResource> {
-        await request.peer().getConsumer(request.consumerId()).pause();
+        const consumer = request.peer().getConsumer(request.consumerId());
+
+        await consumer.pause();
+        request.room().announceWatchers(consumer.producerId);
 
         return new StatusResource('paused');
     }
 
     public destroy(request: ConsumerRequest): StatusResource {
         const peer = request.peer();
+        const consumer = peer.getConsumer(request.consumerId());
+        const { producerId, kind } = consumer;
 
-        peer.getConsumer(request.consumerId()).close();
+        consumer.close();
         peer.consumers.delete(request.consumerId());
+
+        if (kind === 'video') {
+            request.room().announceWatchers(producerId);
+        }
 
         return new StatusResource('closed');
     }

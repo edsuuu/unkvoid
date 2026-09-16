@@ -1,3 +1,4 @@
+import { Icon } from '../common/Icon.tsx';
 import { AuthCard } from '../entry/AuthCard.tsx';
 import { useApp } from '../useApp.ts';
 import { useStore } from '../useStore.ts';
@@ -5,7 +6,8 @@ import { ClipCard } from './ClipCard.tsx';
 import { ClipPlayer } from './ClipPlayer.tsx';
 
 export function ClipsView() {
-    const hub = useApp().hub;
+    const app = useApp();
+    const hub = app.hub;
     const { user } = useStore(hub.store);
     const { clips, loading, failed, playing } = useStore(hub.clips.store);
 
@@ -20,9 +22,14 @@ export function ClipsView() {
 
     return (
         <div className="scroll-thin flex h-full flex-col gap-4 overflow-y-auto p-5">
-            <div className="animate-rise">
+            <div className="animate-rise flex items-start gap-3">
+                <button className="btn-icon mt-0.5 size-8 flex-none rounded-[10px]" type="button" title="Voltar para a transmissão" onClick={() => app.setTab('broadcast')}>
+                    <Icon name="arrowLeft" size={16} />
+                </button>
+                <div className="min-w-0">
                 <p className="text-[19px] font-semibold tracking-tight">Seus clipes</p>
                 <p className="mt-1 text-[13px] text-ink-soft">Os últimos 5 minutos de quem compartilhava a tela na voz. Só você vê os seus, e cada um some em 7 dias.</p>
+                </div>
             </div>
 
             {playing && <ClipPlayer key={playing.id} clip={playing} />}

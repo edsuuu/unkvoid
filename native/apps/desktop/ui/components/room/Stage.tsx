@@ -15,7 +15,7 @@ type StageProps = {
 export function Stage({ canShare, hint = null, compact = false }: StageProps) {
     const app = useApp();
     const media = app.media;
-    const { tiles, focused, fullscreen, pending, connecting, reconnecting, paused, audio, nativeMuted, image, idle } = useStore(media.store);
+    const { tiles, focused, fullscreen, pending, connecting, reconnecting, paused, audio, nativeMuted, image, idle, watchers } = useStore(media.store);
     const { active } = useStore(app.sharing.store);
     const focusedTile = tiles.find(tile => tile.key === focused) ?? null;
     const others = tiles.filter(tile => tile !== focusedTile);
@@ -102,6 +102,7 @@ export function Stage({ canShare, hint = null, compact = false }: StageProps) {
                         volume={audio[tile.key]?.volume ?? null}
                         muted={audio[tile.key]?.muted ?? null}
                         nativeMuted={nativeMuted[tile.key] ?? true}
+                        watchers={watchers[tile.key] ?? []}
                         brightness={image.brightness}
                         contrast={image.contrast}
                         saturation={image.saturation}

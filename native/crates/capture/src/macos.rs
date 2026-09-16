@@ -351,7 +351,7 @@ impl MacCapturer {
             .with_captures_audio(config.capture_audio)
             // O som do nosso processo fica de fora: é o que impede devolver a voz de
             // quem está na chamada.
-            .with_excludes_current_process_audio(CaptureConfig::EXCLUI_AUDIO_DO_APP)
+            .with_excludes_current_process_audio(CaptureConfig::EXCLUDE_OWN_AUDIO)
             .with_sample_rate(48_000)
             .with_channel_count(2);
 

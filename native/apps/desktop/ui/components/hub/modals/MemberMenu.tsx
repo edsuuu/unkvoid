@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
+import { Members } from '../../../core/Members.ts';
 import { Avatar } from '../../common/Avatar.tsx';
 import { useApp } from '../../useApp.ts';
 import { useStore } from '../../useStore.ts';
@@ -13,6 +14,7 @@ export function MemberMenu() {
     const { memberMenu, tree } = useStore(hub.store);
     const member = tree?.members.find(item => item.user_id === memberMenu?.userId);
     const [nickname, setNickname] = useState(member?.nickname ?? '');
+    const [note, setNote] = useState('');
     const [banning, setBanning] = useState(false);
     const [reason, setReason] = useState('');
     const box = useRef<HTMLDivElement>(null);
@@ -47,18 +49,61 @@ export function MemberMenu() {
     const actions = hub.memberActions(member);
     const roles = actions.roles ? hub.assignableRoles() : [];
     const nothing = ! Object.values(actions).some(Boolean);
+    const self = member.user_id === hub.user?.id;
+    const person = { id: member.user_id, name: member.name, avatar_url: member.avatar_url };
+    const badges = (tree?.roles ?? []).filter(role => ! role.is_everyone && member.role_ids.includes(role.id));
+
+    const message = async () => {
+        if (note.trim() === '') {
+            return;
+        }
+
+        if (await hub.direct.sendTo(person, note)) {
+            setNote('');
+            await hub.openDirect(person);
+        }
+    };
 
     return (
         <div ref={box} className="popover fixed z-[80] w-64 animate-rise p-2" style={{ left: memberMenu.x, top: memberMenu.y }}>
             <div className="flex items-center gap-2.5 px-2 pt-1 pb-2">
-                <Avatar name={member.nickname ?? member.name} size={30} mine={member.user_id === hub.user?.id} />
+                <Avatar name={Members.displayName(member)} url={member.avatar_url} size={38} mine={self} />
                 <span className="min-w-0">
-                    <span className="block truncate text-[13px] font-semibold">{member.nickname ?? member.name}</span>
+                    <span className="block truncate text-[13.5px] font-semibold">{Members.displayName(member)}</span>
                     {member.nickname && <span className="block truncate text-[11px] text-ink-dim">{member.name}</span>}
+                    {member.is_owner && <span className="label-mono mt-0.5 block text-[9.5px]">dono do servidor</span>}
                 </span>
             </div>
 
-            {nothing && <p className="px-2.5 pb-2 text-[12px] text-ink-dim">Nada que você possa mudar nesta pessoa.</p>}
+            {badges.length > 0 && (
+                <div className="flex flex-wrap gap-1 px-2 pb-2">
+                    {badges.map(role => (
+                        <span
+                            key={role.id}
+                            className="rounded-full border border-line-strong px-2 py-0.5 text-[10.5px]"
+                            style={role.color ? { color: role.color, borderColor: role.color } : undefined}
+                        >
+                            {role.name}
+                        </span>
+                    ))}
+                </div>
+            )}
+
+            {! self && (
+                <form className="flex gap-1.5 border-t border-line px-1 py-2" onSubmit={event => { event.preventDefault(); void message(); }}>
+                    <input
+                        className="field min-w-0 flex-1 px-2.5 py-1.5 text-[12.5px]"
+                        type="text"
+                        maxLength={2000}
+                        value={note}
+                        onChange={event => setNote(event.target.value)}
+                        placeholder={`Mensagem para ${member.name}`}
+                    />
+                    <button className="btn-primary px-2.5 py-1.5 text-[12px]" type="submit" disabled={note.trim() === ''}>Enviar</button>
+                </form>
+            )}
+
+            {nothing && ! self && <p className="px-2.5 pb-2 text-[12px] text-ink-dim">Nada que você possa mudar nesta pessoa.</p>}
 
             {actions.nickname && (
                 <form className="flex gap-1.5 px-1 pb-2" onSubmit={event => { event.preventDefault(); void hub.updateMember(member, { nickname: nickname.trim() || null }); }}>

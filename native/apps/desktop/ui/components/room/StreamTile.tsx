@@ -22,13 +22,14 @@ type StreamTileProps = {
     volume: number | null;
     muted: boolean | null;
     nativeMuted: boolean;
+    watchers: string[];
     brightness: number;
     contrast: number;
     saturation: number;
     idle: boolean;
 };
 
-export const StreamTile = memo(function StreamTile({ tile, focused, thumb, full, hidden, paused, volume, muted, nativeMuted, brightness, contrast, saturation, idle }: StreamTileProps) {
+export const StreamTile = memo(function StreamTile({ tile, focused, thumb, full, hidden, paused, volume, muted, nativeMuted, watchers, brightness, contrast, saturation, idle }: StreamTileProps) {
     const media = useApp().media;
     const stats = useStore(media.stats)[tile.key];
     const video = useRef<HTMLVideoElement | null>(null);
@@ -115,6 +116,16 @@ export const StreamTile = memo(function StreamTile({ tile, focused, thumb, full,
                     <span className="size-1 rounded-full bg-white" />
                     {camera ? 'CÂMERA' : 'AO VIVO'}
                 </span>
+
+                {watchers.length > 0 && (
+                    <span
+                        className={`absolute top-2 right-2 flex items-center gap-1 rounded-full bg-[rgba(16,13,26,0.78)] px-2 py-0.5 text-[10.5px] font-medium text-white transition-opacity duration-200 ${full && idle ? 'opacity-0' : ''}`}
+                        title={`Assistindo agora: ${watchers.join(', ')}`}
+                    >
+                        <Icon name="eye" size={11} />
+                        {watchers.length}
+                    </span>
+                )}
 
                 {thumb && <span className="absolute right-2 bottom-1.5 left-2 truncate text-[11px] text-white drop-shadow">{tile.name}</span>}
             </div>

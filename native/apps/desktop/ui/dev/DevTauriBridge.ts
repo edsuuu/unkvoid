@@ -1,6 +1,6 @@
 import type { TauriBridge } from '../core/Tauri.ts';
 
-type BridgeArgs = { source?: string; url?: string };
+type BridgeArgs = { source?: string; url?: string; bindings?: { action: string }[] };
 
 type Answer = (args: BridgeArgs) => unknown;
 
@@ -25,6 +25,7 @@ export class DevTauriBridge {
 
         const answers: Record<string, Answer> = {
             check_update: () => null,
+            set_shortcuts: ({ bindings = [] }) => ({ registered: bindings.map(binding => binding.action), failed: [] }),
             restart: () => null,
             expand_window: () => null,
             log_line: () => null,

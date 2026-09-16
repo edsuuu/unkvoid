@@ -149,7 +149,7 @@ impl CaptureConfig {
     /// chamada e a devolveria para ela — a realimentação clássica. Quem resolve é o
     /// sistema operacional, filtrando por processo, o que é mais confiável do que
     /// tentar adivinhar aqui de onde veio cada som.
-    pub const EXCLUI_AUDIO_DO_APP: bool = true;
+    pub const EXCLUDE_OWN_AUDIO: bool = true;
 
     /// Aplicativos cujo som nunca sobe junto com a tela, identificados pelo bundle.
     ///

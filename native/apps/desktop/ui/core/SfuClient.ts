@@ -69,6 +69,7 @@ export type SfuEventData = {
     source: SourceName;
     muted: boolean;
     reason?: string;
+    watchers?: { peerId: string; name: string }[];
 };
 
 export type Diagnostic = { event: string; data?: unknown };
