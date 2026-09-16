@@ -5,14 +5,19 @@ import { ApiClient } from './ApiClient.ts';
 import type { App } from './App.ts';
 import { Chat } from './Chat.ts';
 import { Clips } from './Clips.ts';
+import { Direct } from './Direct.ts';
 import { Failure } from './Failure.ts';
+import { Friends } from './Friends.ts';
 import type {
     AuthToken,
     Channel,
     ChannelType,
     Clip,
     Config,
+    DirectMessage,
+    Friendship,
     Member,
+    Person,
     Role,
     ServerSummary,
     ServerTree,
@@ -20,7 +25,6 @@ import type {
     VoicePerson,
 } from './Models.ts';
 import { Permissions } from './Permissions.ts';
-import { Platform } from './Platform.ts';
 import { ServerSettings } from './ServerSettings.ts';
 import { Store } from './Store.ts';
 import { Tauri } from './Tauri.ts';
@@ -44,6 +48,8 @@ export type MemberMenuPosition = { userId: number; x: number; y: number };
 
 export type LoginMode = 'login' | 'register';
 
+export type HomeTab = 'servers' | 'friends';
+
 export type HubState = {
     user: User | null;
     servers: ServerSummary[];
@@ -58,6 +64,8 @@ export type HubState = {
     stageOpen: boolean;
     focusedRoom: boolean;
     railOpen: boolean;
+    membersOpen: boolean;
+    homeTab: HomeTab;
     inviteBanner: boolean;
     modal: HubModal | null;
     roleEditor: RoleEditor | null;
@@ -85,6 +93,8 @@ export type MemberPatch = {
     server_deaf?: boolean;
 };
 
+type BroadcastDirectMessage = { message: Omit<DirectMessage, 'mine'>; recipient: Person };
+
 type OnlineUser = { id: number };
 
 type VoiceStateEvent = { channel_id: string; user_id: number; name: string; event: 'joined' | 'left' };
@@ -92,6 +102,7 @@ type VoiceStateEvent = { channel_id: string; user_id: number; name: string; even
 export class Hub {
     static readonly REFRESH_DEBOUNCE_MS = 250;
     static readonly RAIL_KEY = 'unkvoid:rail';
+    static readonly MEMBERS_KEY = 'unkvoid:membros';
 
     readonly app: App;
     readonly server: string;
@@ -112,6 +123,8 @@ export class Hub {
     readonly voice: Voice;
     readonly settings: ServerSettings;
     readonly clips: Clips;
+    readonly friends: Friends;
+    readonly direct: Direct;
 
     constructor(app: App, server: string) {
         this.app = app;
@@ -131,6 +144,8 @@ export class Hub {
             stageOpen: false,
             focusedRoom: false,
             railOpen: localStorage.getItem(Hub.RAIL_KEY) === 'open',
+            membersOpen: localStorage.getItem(Hub.MEMBERS_KEY) !== 'closed',
+            homeTab: 'servers',
             inviteBanner: false,
             modal: null,
             roleEditor: null,
@@ -145,6 +160,8 @@ export class Hub {
         this.voice = new Voice(app, this);
         this.settings = new ServerSettings(this);
         this.clips = new Clips(app, this);
+        this.friends = new Friends(app, this);
+        this.direct = new Direct(app, this);
     }
 
     publish(extra: Partial<HubState> = {}): void {
@@ -278,9 +295,9 @@ export class Hub {
 
         this.publish({ serversLoading: this.servers.length === 0 });
 
-        if (Platform.isWindows()) {
-            this.clips.refresh();
-        }
+        this.clips.refresh();
+        this.voice.listenShortcuts();
+        await this.voice.applyShortcuts();
 
         this.config ??= await this.attempt(() => this.api.get<Config>('/api/config')) ?? null;
 
@@ -304,6 +321,8 @@ export class Hub {
         }
 
         await this.attempt(() => this.loadServers());
+
+        await Promise.all([this.friends.load(), this.direct.loadConversations()]);
     }
 
     connectEcho(): void {
@@ -330,6 +349,32 @@ export class Hub {
         const own = this.echo.private(`user.${this.user!.id}`);
 
         this.listen<{ clip: Clip }>(own, 'ClipUpdated', ({ clip }) => this.clips.update(clip));
+        this.listen<{ friendship: Friendship; removed: boolean }>(own, 'FriendshipUpdated', ({ friendship, removed }) => {
+            if (removed) {
+                this.friends.store.set(state => ({ list: state.list.filter(item => item.id !== friendship.id) }));
+
+                return;
+            }
+
+            const known = this.friends.store.state.list.some(item => item.id === friendship.id);
+
+            this.friends.update(friendship);
+
+            if (! known && friendship.status === 'pending' && friendship.addressee.id === this.user?.id) {
+                this.app.toast(`${friendship.requester.name} quer ser seu amigo`);
+            }
+        });
+        this.listen<BroadcastDirectMessage>(own, 'DirectMessageCreated', payload => {
+            const { message, person, mine } = this.readDirectMessage(payload);
+
+            this.direct.receive(message, person);
+
+            if (! mine && this.direct.store.state.person?.id !== person.id) {
+                this.app.toast(`${message.sender.name}: ${message.body.slice(0, 60)}`);
+            }
+        });
+        this.listen<BroadcastDirectMessage>(own, 'DirectMessageUpdated', payload => this.direct.updateMessage(this.readDirectMessage(payload).message));
+        this.listen<{ id: number }>(own, 'DirectMessageDeleted', ({ id }) => this.direct.removeMessage(id));
         this.listen<{ server_id: number; reason: string }>(own, 'MemberRemoved', ({ server_id: serverId, reason }) => {
             this.app.toast(reason === 'banned' ? 'você foi banido deste servidor' : 'você foi expulso deste servidor', true);
 
@@ -347,6 +392,8 @@ export class Hub {
         this.echo?.disconnect();
         this.echo = null;
         this.clips.forget();
+        this.friends.forget();
+        this.direct.forget();
         this.api.setToken(null);
         this.user = null;
         this.servers = [];
@@ -405,6 +452,12 @@ export class Hub {
         await this.loadServers(joined.id);
 
         return true;
+    }
+
+    async openDirect(person: Person): Promise<void> {
+        this.publish({ home: true, memberMenu: null });
+
+        await this.direct.open(person);
     }
 
     showHome(): void {
@@ -645,6 +698,18 @@ export class Hub {
         this.publish({ focusedRoom, stageOpen: true, memberMenu: null });
     }
 
+    showHomeTab(homeTab: HomeTab): void {
+        this.direct.close();
+        this.store.set({ homeTab });
+    }
+
+    toggleMembers(): void {
+        const membersOpen = ! this.store.state.membersOpen;
+
+        localStorage.setItem(Hub.MEMBERS_KEY, membersOpen ? 'open' : 'closed');
+        this.store.set({ membersOpen });
+    }
+
     toggleRail(): void {
         const railOpen = ! this.store.state.railOpen;
 
@@ -690,6 +755,12 @@ export class Hub {
         }
 
         return false;
+    }
+
+    readDirectMessage({ message, recipient }: BroadcastDirectMessage): { message: DirectMessage; person: Person; mine: boolean } {
+        const mine = message.sender.id === this.user?.id;
+
+        return { message: { ...message, mine }, person: mine ? recipient : message.sender, mine };
     }
 
     openMemberMenu(member: Member, x: number, y: number): void {
