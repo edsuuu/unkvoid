@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Models;
 
 use App\Enums\ReleasePlatformEnum;
+use App\Services\Storage\BucketService;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
@@ -36,10 +37,13 @@ final class Release extends Model
      *
      * @throws Throwable
      */
-    public static function publish(string $version, ReleasePlatformEnum $platform, UploadedFile $file, ?string $signature, ?string $notes): self
+    public static function publish(string $version, ReleasePlatformEnum $platform, UploadedFile $file, ?string $signature, ?string $notes, BucketService $bucket): self
     {
         $fileName = $file->getClientOriginalName();
         $directory = "releases/{$version}";
+
+        // A primeira versão publicada numa máquina nova não pode falhar por falta do bucket.
+        $bucket->ensure();
 
         try {
             return DB::transaction(function () use ($version, $platform, $file, $signature, $notes, $fileName, $directory): self {

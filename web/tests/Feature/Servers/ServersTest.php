@@ -482,3 +482,41 @@ it('user_limit só existe em canal de voz', function (): void {
     $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$text->id}", ['user_limit' => 5])->assertUnprocessable();
     $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$voice->id}", ['user_limit' => 5])->assertOk()->assertJsonPath('data.user_limit', 5);
 });
+
+it('sobrescrita que já tem bits que eu não tenho não pode ser zerada nem apagada por mim', function (): void {
+    $owner = User::factory()->create();
+    $manager = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $manager);
+    giveRole($server, $manager, PermissionEnum::ManageRoles->value, 3);
+    $text = $server->channels()->where('type', 'text')->firstOrFail();
+    $everyone = $server->everyoneRole()->id;
+
+    // O dono esconde o canal: quem não tem VIEW_CHANNEL nele não pode desfazer.
+    $this->actingAs($owner, 'sanctum')->putJson("/api/channels/{$text->id}/overwrites/role/{$everyone}", ['allow' => 0, 'deny' => PermissionEnum::ViewChannel->value])->assertSuccessful();
+    $this->actingAs($manager, 'sanctum')->putJson("/api/channels/{$text->id}/overwrites/role/{$everyone}", ['allow' => 0, 'deny' => 0])->assertForbidden();
+    $this->actingAs($manager, 'sanctum')->deleteJson("/api/channels/{$text->id}/overwrites/role/{$everyone}")->assertForbidden();
+
+    // Um `deny` que o gerente não tem, posto na sobrescrita dele, também fica.
+    $this->actingAs($owner, 'sanctum')->deleteJson("/api/channels/{$text->id}/overwrites/role/{$everyone}")->assertNoContent();
+    $this->actingAs($owner, 'sanctum')->putJson("/api/channels/{$text->id}/overwrites/member/{$manager->id}", ['allow' => 0, 'deny' => PermissionEnum::KickMembers->value])->assertSuccessful();
+    $this->actingAs($manager, 'sanctum')->deleteJson("/api/channels/{$text->id}/overwrites/member/{$manager->id}")->assertForbidden();
+
+    expect($text->overwrites()->count())->toBe(1);
+});
+
+it('posição fora do alcance da coluna é recusada, e apagar o servidor avisa quem está nele', function (): void {
+    $owner = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    $role = $server->roles()->create(['name' => 'Cargo', 'position' => 1, 'permissions' => 0]);
+    $text = $server->channels()->where('type', 'text')->firstOrFail();
+
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/roles/{$role->id}", ['position' => 5000000000])->assertUnprocessable();
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$text->id}", ['position' => 5000000000])->assertUnprocessable();
+
+    Event::fake([ServerUpdated::class]);
+
+    $this->actingAs($owner, 'sanctum')->deleteJson("/api/servers/{$server->id}")->assertSuccessful();
+
+    Event::assertDispatched(ServerUpdated::class);
+});

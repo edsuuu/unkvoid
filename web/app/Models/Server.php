@@ -189,6 +189,9 @@ final class Server extends Model implements Auditable
         throw_if($this->owner_id !== $actor->id, ForbiddenException::class, 'Só o dono apaga o servidor.');
 
         self::write('falha ao apagar o servidor', fn () => $this->delete(), ['server_id' => $this->id]);
+
+        // Quem está com ele aberto recarrega a árvore, recebe 404 e volta para a Home.
+        self::broadcast(new ServerUpdated($this->id));
     }
 
     /**
@@ -409,7 +412,8 @@ final class Server extends Model implements Auditable
                 continue;
             }
 
-            foreach ($sfu->peers($channel) as $peer) {
+            // Fresca: com a presença de 3 s em cache, quem acabou de entrar escapava do kick e do ban.
+            foreach ($sfu->peers($channel, fresh: true) as $peer) {
                 if ($peer['sub'] === $user->subject()) {
                     return $channel;
                 }
