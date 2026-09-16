@@ -54,10 +54,6 @@ export function VoiceChannelItem({ channel, people }: { channel: Channel; people
                         <span className="font-mono text-[9.5px] text-ink-dim"><Elapsed since={connectedAt} /></span>
                     </>
                 )}
-
-                {! here && (
-                    <span className={`font-mono text-[9.5px] ${people.length ? 'text-ink-dim' : 'text-ink-faint'}`}>{people.length ? `${people.length}` : 'vazio'}</span>
-                )}
             </div>
 
             {people.length > 0 && (
