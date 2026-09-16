@@ -22,6 +22,7 @@ final class MessageResource extends JsonResource
             'id' => $this->id,
             'channel_id' => $this->channel_id,
             'user' => ['id' => $this->user->id, 'name' => $this->user->name, 'avatar_url' => $this->user->avatar_url],
+            'type' => $this->type->value,
             'body' => $this->body,
             'edited_at' => $this->edited_at?->toIso8601String(),
             'created_at' => $this->created_at->toIso8601String(),

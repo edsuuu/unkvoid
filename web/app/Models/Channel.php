@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Models;
 
 use App\Enums\ChannelTypeEnum;
+use App\Enums\MessageTypeEnum;
 use App\Enums\OverwriteTargetEnum;
 use App\Enums\PermissionEnum;
 use App\Events\MessageSent;
@@ -201,6 +202,25 @@ final class Channel extends Model
         self::broadcast(new MessageSent($message));
 
         return $message;
+    }
+
+    /**
+     * O aviso de chegada: sem corpo e sem permissão a conferir, porque quem escreve é o
+     * servidor. A frase quem monta é o app, a partir de quem entrou.
+     *
+     * @throws Throwable
+     */
+    public function announceJoin(User $user): void
+    {
+        $message = self::write('falha ao avisar da chegada', fn (): Message => $this->messages()->create([
+            'user_id' => $user->id,
+            'type' => MessageTypeEnum::Join,
+            'body' => '',
+        ]), ['channel_id' => $this->id, 'user_id' => $user->id]);
+
+        $message->setRelation('user', $user);
+
+        self::broadcast(new MessageSent($message));
     }
 
     /**

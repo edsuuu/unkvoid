@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Enums\MessageTypeEnum;
 use App\Enums\PermissionEnum;
 use App\Events\MessageDeleted;
 use App\Events\MessageUpdated;
@@ -23,18 +24,26 @@ use Throwable;
  * @property int $id
  * @property string $channel_id
  * @property int $user_id
+ * @property MessageTypeEnum $type
  * @property string $body
  * @property ?CarbonImmutable $edited_at
  * @property CarbonImmutable $created_at
  * @property-read Channel $channel
  * @property-read User $user
  */
-#[Fillable(['channel_id', 'user_id', 'body', 'edited_at'])]
+#[Fillable(['channel_id', 'user_id', 'type', 'body', 'edited_at'])]
 final class Message extends Model implements Auditable
 {
     use AuditableTrait;
     use LogsFailedWrites;
     use SoftDeletes;
+
+    /**
+     * Mensagem de gente é o normal: quem não diz o tipo, diz `user`.
+     *
+     * @var array<string, string>
+     */
+    protected $attributes = ['type' => MessageTypeEnum::User->value];
 
     /**
      * @return BelongsTo<Channel, $this>
@@ -89,6 +98,7 @@ final class Message extends Model implements Auditable
     protected function casts(): array
     {
         return [
+            'type' => MessageTypeEnum::class,
             'edited_at' => 'datetime',
         ];
     }
