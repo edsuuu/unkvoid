@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "desktop-ui",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd native/apps/desktop && VITE_SERVER=http://localhost:1420 npm run dev"],
+      "port": 1420
+    }
+  ]
+}
