@@ -83,14 +83,14 @@ describe('integração: os clientes do app contra o Laravel, o Reverb e o SFU no
     });
 
     it('cria duas contas, o token abre o /api/me, e senha errada é 401', async () => {
-        ana.setToken((await ana.post('/api/auth/register', { name: 'Ana Integração', email: `ana.${STAMP}@local.test`, password: PASSWORD, device: 'app' })).token);
-        bia.setToken((await bia.post('/api/auth/register', { name: 'Bia Integração', email: `bia.${STAMP}@local.test`, password: PASSWORD, device: 'app' })).token);
+        ana.setToken((await ana.post('/api/auth/register', { name: `ana.${STAMP}`, email: `ana.${STAMP}@local.test`, password: PASSWORD, device: 'app' })).token);
+        bia.setToken((await bia.post('/api/auth/register', { name: `bia.${STAMP}`, email: `bia.${STAMP}@local.test`, password: PASSWORD, device: 'app' })).token);
 
         const anaUser = await ana.get('/api/me');
 
         biaUser = await bia.get('/api/me');
 
-        expect(anaUser.name).toBe('Ana Integração');
+        expect(anaUser.name).toBe(`ana.${STAMP}`);
         await rejectsWith(() => new ApiClient(SERVER).post('/api/auth/login', { email: `ana.${STAMP}@local.test`, password: 'errada', device: 'app' }), [401], 'senha errada é 401 (InvalidCredentialsException)');
     });
 
@@ -159,8 +159,8 @@ describe('integração: os clientes do app contra o Laravel, o Reverb e o SFU no
 
         const biaJoined = await biaSfu.connect(config.sfu, tokenFor(bia));
 
-        expect(biaJoined.peers.some(peer => peer.name === 'Ana Integração'), 'quem chega vê quem já estava').toBe(true);
-        await waitFor('peerJoined para quem já estava', () => peerJoined.find(peer => peer.name === 'Bia Integração'));
+        expect(biaJoined.peers.some(peer => peer.name === `ana.${STAMP}`), 'quem chega vê quem já estava').toBe(true);
+        await waitFor('peerJoined para quem já estava', () => peerJoined.find(peer => peer.name === `bia.${STAMP}`));
         await waitFor('VoiceStateUpdated (SFU → webhook → Laravel → Reverb)', () => voiceStates.find(item => item.event === 'joined' && item.user_id === biaUser.id));
         await waitFor('a árvore mostra quem está na voz', async () => (await ana.get(`/api/servers/${created.id}`)).voice?.[voice.id]?.some(person => person.user_id === biaUser.id), 15_000);
     });

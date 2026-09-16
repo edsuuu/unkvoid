@@ -405,9 +405,10 @@ export class App {
 
     async leave(): Promise<void> {
         this.log('room.leave');
-        await this.media.tearDown();
         this.store.set({ room: null, roomError: null });
         this.showEntry();
+
+        await this.media.tearDown().catch((failure: unknown) => this.log('room.leave.error', { message: Failure.message(failure) }));
     }
 
     fail(message: string): void {

@@ -47,8 +47,24 @@ export function AuthCard() {
                 <form onSubmit={submit}>
                     {registering && (
                         <label className="mb-3.5 block">
-                            <span className="label-mono mb-2 block">Seu nome</span>
-                            <input className="field w-full" type="text" maxLength={40} value={name} onChange={event => setName(event.target.value)} placeholder="Como aparece na sala" autoComplete="name" required />
+                            <span className="label-mono mb-2 block">Apelido</span>
+                            <input
+                                className="field w-full"
+                                type="text"
+                                minLength={3}
+                                maxLength={32}
+                                pattern="[A-Za-z0-9._]+"
+                                value={name}
+                                onChange={event => setName(event.target.value.replace(/\s+/g, ''))}
+                                placeholder="edsu"
+                                title="Letras, números, ponto e _ — sem espaço"
+                                autoComplete="username"
+                                autoCapitalize="off"
+                                autoCorrect="off"
+                                spellCheck={false}
+                                required
+                            />
+                            <span className="mt-1 block text-[11px] text-ink-dim">É como as pessoas te acham. Sem espaço, e ninguém mais pode usar o mesmo.</span>
                         </label>
                     )}
                     <label className="block">

@@ -32,7 +32,7 @@ export type Tile = {
 
 export type PeerView = SfuPeer & { latency: number | null; missing: boolean };
 
-export type ImageProperty = 'brightness' | 'contrast' | 'saturation';
+export type ImageProperty = 'brightness' | 'contrast' | 'saturation' | 'blur';
 
 export type ImageSettings = Record<ImageProperty, number>;
 
@@ -66,7 +66,7 @@ export type MediaState = {
     paused: string[];
     audio: Record<string, AudioState>;
     nativeMuted: Record<string, boolean>;
-    image: ImageSettings;
+    image: Record<TileKind, ImageSettings>;
     selfView: boolean;
     watchers: Record<string, string[]>;
 };
@@ -80,7 +80,14 @@ export class Media {
 
     static readonly MAX_SCREENS = (navigator.hardwareConcurrency ?? 4) <= 4 ? 2 : 4;
 
-    static readonly IMAGE_KEYS: Record<ImageProperty, string> = { brightness: 'unkvoid.brilho', contrast: 'unkvoid.contraste', saturation: 'unkvoid.saturacao' };
+    static readonly IMAGE_KEYS: Record<ImageProperty, string> = { brightness: 'unkvoid.brilho', contrast: 'unkvoid.contraste', saturation: 'unkvoid.saturacao', blur: 'unkvoid.desfoque' };
+
+    static readonly IMAGE_LIMITS: Record<ImageProperty, [number, number, number]> = {
+        brightness: [50, 250, 100],
+        contrast: [50, 250, 100],
+        saturation: [50, 250, 100],
+        blur: [0, 20, 0],
+    };
 
     readonly app: App;
     sfu: SfuClient | null = null;
@@ -107,13 +114,18 @@ export class Media {
         return `${peerId}/camera`;
     }
 
-    static loadImage(): ImageSettings {
-        const image: ImageSettings = { brightness: 100, contrast: 100, saturation: 100 };
+    static imageKey(kind: TileKind, property: ImageProperty): string {
+        return kind === 'camera' ? `${Media.IMAGE_KEYS[property]}.camera` : Media.IMAGE_KEYS[property];
+    }
 
-        for (const [property, key] of Object.entries(Media.IMAGE_KEYS) as [ImageProperty, string][]) {
-            const saved = Number(localStorage.getItem(key));
+    static loadImage(kind: TileKind): ImageSettings {
+        const image = {} as ImageSettings;
 
-            image[property] = saved >= 50 && saved <= 250 ? saved : 100;
+        for (const property of Object.keys(Media.IMAGE_KEYS) as ImageProperty[]) {
+            const [least, most, fallback] = Media.IMAGE_LIMITS[property];
+            const saved = Number(localStorage.getItem(Media.imageKey(kind, property)));
+
+            image[property] = saved >= least && saved <= most ? saved : fallback;
         }
 
         return image;
@@ -141,7 +153,7 @@ export class Media {
             paused: [],
             audio: {},
             nativeMuted: {},
-            image: Media.loadImage(),
+            image: { screen: Media.loadImage('screen'), camera: Media.loadImage('camera') },
             selfView: false,
         };
     }
@@ -421,7 +433,7 @@ export class Media {
                 return;
             }
 
-            await this.consume({ producerId, peerId });
+            await this.consume({ producerId, peerId, kind: 'video', source: 'screen' });
             this.store.set({ selfView: true });
         } catch (failure) {
             this.app.log('media.self.error', { message: Failure.message(failure) });
@@ -661,10 +673,10 @@ export class Media {
             return;
         }
 
-        const tileKey = source === 'camera' ? Media.cameraKey(peerId) : source === 'mic' ? `${peerId}/mic` : peerId;
-
-        this.nativeWatching.set(producerId, tileKey);
+        this.nativeWatching.set(producerId, peerId);
         this.app.log('media.native.start', { producerId, peerId, source });
+
+        let consumerId: string | null = null;
 
         try {
             const keyBase64 = await Tauri.invoke<string>('watch_key');
@@ -673,9 +685,17 @@ export class Media {
                 srtpParameters: { cryptoSuite: 'AES_CM_128_HMAC_SHA1_80', keyBase64 },
             });
 
+            consumerId = consumer.consumerId;
+
+            const origin = consumer.source ?? source;
+            const media = consumer.kind ?? kind ?? 'video';
+            const tileKey = origin === 'camera' ? Media.cameraKey(peerId) : origin === 'mic' ? `${peerId}/mic` : peerId;
+
+            this.nativeWatching.set(producerId, tileKey);
+
             const port = await Tauri.invoke<number>('watch_native', {
                 producerId,
-                kind,
+                kind: media,
                 address: `${consumer.ip}:${consumer.port}`,
                 serverKey: consumer.srtpParameters.keyBase64,
                 payloadType: consumer.payloadType,
@@ -684,16 +704,22 @@ export class Media {
 
             await this.sfu!.request('resumeConsumer', { consumerId: consumer.consumerId });
 
-            if (kind === 'video') {
-                this.showNativeTile(tileKey, peerId, producerId, consumer.name, port, source);
+            if (media === 'video') {
+                this.showNativeTile(tileKey, peerId, producerId, consumer.name, port, origin);
             } else {
-                await Tauri.invoke('watch_mute', { producerId, muted: source === 'screenAudio' || this.deafened });
+                await Tauri.invoke('watch_mute', { producerId, muted: origin === 'screenAudio' || this.deafened });
             }
 
-            this.app.log('media.native.ready', { producerId, peerId, source });
+            this.app.log('media.native.ready', { producerId, peerId, source: origin });
         } catch (failure) {
             this.nativeWatching.delete(producerId);
-            this.app.log('media.native.error', { producerId, peerId, message: Failure.message(failure) });
+            this.app.log('media.native.error', { producerId, peerId, consumerId, message: Failure.message(failure) });
+
+            if (consumerId) {
+                await this.sfu?.closeConsumer(consumerId).catch((problem: unknown) => this.app.log('media.native.cleanup.error', { producerId, message: Failure.message(problem) }));
+            }
+
+            await Tauri.invoke('stop_watch', { producerId }).catch((problem: unknown) => this.app.log('media.native.stop.error', { producerId, message: Failure.message(problem) }));
             this.app.fail(`não deu para assistir: ${Failure.message(failure)}`);
         }
     }
@@ -872,17 +898,17 @@ export class Media {
         }
     }
 
-    setImage(property: ImageProperty, value: number): void {
-        localStorage.setItem(Media.IMAGE_KEYS[property], String(value));
-        this.store.set(state => ({ image: { ...state.image, [property]: value } }));
+    setImage(kind: TileKind, property: ImageProperty, value: number): void {
+        localStorage.setItem(Media.imageKey(kind, property), String(value));
+        this.store.set(state => ({ image: { ...state.image, [kind]: { ...state.image[kind], [property]: value } } }));
     }
 
-    resetImage(): void {
-        for (const key of Object.values(Media.IMAGE_KEYS)) {
-            localStorage.removeItem(key);
+    resetImage(kind: TileKind): void {
+        for (const property of Object.keys(Media.IMAGE_KEYS) as ImageProperty[]) {
+            localStorage.removeItem(Media.imageKey(kind, property));
         }
 
-        this.store.set({ image: Media.loadImage() });
+        this.store.set(state => ({ image: { ...state.image, [kind]: Media.loadImage(kind) } }));
     }
 
     async inboundReport(peerId: string): Promise<StatsReport | null> {
@@ -1027,9 +1053,9 @@ export class Media {
     }
 
     async tearDown(): Promise<void> {
-        await this.app.sharing.stop();
-        await this.sfu?.leaveRoom();
+        this.sfu?.leaveRoom();
         this.sfu?.disconnect();
+        await this.app.sharing.stop();
         clearInterval(this.peopleStatsTimer ?? undefined);
         this.peopleStatsTimer = null;
 

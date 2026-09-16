@@ -45,7 +45,7 @@ final class GoogleCallbackController
 
             if (is_null($user)) {
                 $user = User::query()->create([
-                    'name' => mb_trim((string) $googleUser->getName()) ?: $email,
+                    'name' => User::freeNickname(mb_trim((string) $googleUser->getName()) ?: $email),
                     'email' => $email,
                     'google_id' => (string) $googleUser->getId(),
                     'avatar_url' => $googleUser->getAvatar(),

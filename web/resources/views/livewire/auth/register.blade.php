@@ -10,8 +10,8 @@
     <div class="lp-mock-or"><i></i><span>OU</span><i></i></div>
 
     <form wire:submit="register">
-        <label class="lp-label" for="name">SEU NOME</label>
-        <input wire:model="name" id="name" type="text" autocomplete="name" maxlength="40" placeholder="Como aparece na sala" required autofocus @class(['lp-input', 'is-invalid' => $errors->has('name')])>
+        <label class="lp-label" for="name">APELIDO</label>
+        <input wire:model="name" id="name" type="text" autocomplete="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9._]+" placeholder="edsu" title="Letras, números, ponto e _ — sem espaço" autocapitalize="off" autocorrect="off" spellcheck="false" required autofocus @class(['lp-input', 'is-invalid' => $errors->has('name')])>
         @error('name') <p class="lp-error">{{ $message }}</p> @enderror
 
         <label class="lp-label" for="email">E-MAIL</label>
