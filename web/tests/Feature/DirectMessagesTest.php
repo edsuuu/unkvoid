@@ -172,3 +172,35 @@ it('gente do mesmo servidor conversa sem ser amiga, e bloquear fecha mesmo assim
     $this->actingAs($owner, 'sanctum')->postJson("/api/dm/{$member->id}", ['body' => 'de novo'])
         ->assertForbidden();
 });
+
+it('quem foi bloqueado nao desfaz o proprio bloqueio', function (): void {
+    $alice = User::factory()->create();
+    $bob = User::factory()->create();
+
+    $friendship = befriend($alice, $bob);
+    $friendship->block($alice);
+
+    // As duas portas dos fundos: "aceitar" o próprio bloqueio e "recusar" a linha dele.
+    $this->actingAs($bob, 'sanctum')->patchJson("/api/friends/{$friendship->id}", ['action' => 'accept'])->assertForbidden();
+    $this->actingAs($bob, 'sanctum')->deleteJson("/api/friends/{$friendship->id}")->assertForbidden();
+
+    expect($friendship->refresh()->status)->toBe(FriendshipStatusEnum::Blocked);
+
+    $this->actingAs($bob, 'sanctum')->postJson("/api/dm/{$alice->id}", ['body' => 'voltei'])->assertForbidden();
+
+    $this->actingAs($alice, 'sanctum')->deleteJson("/api/friends/{$friendship->id}")->assertNoContent();
+});
+
+it('marcar a conversa como lida zera o contador do outro lado', function (): void {
+    $alice = User::factory()->create();
+    $bob = User::factory()->create();
+
+    befriend($alice, $bob);
+    DirectMessage::send($bob, $alice, 'oi');
+
+    expect($this->actingAs($alice, 'sanctum')->getJson('/api/dm')->assertOk()->json('data.0.unread'))->toBe(1);
+
+    $this->actingAs($alice, 'sanctum')->postJson("/api/dm/{$bob->id}/read")->assertNoContent();
+
+    expect($this->actingAs($alice, 'sanctum')->getJson('/api/dm')->assertOk()->json('data.0.unread'))->toBe(0);
+});

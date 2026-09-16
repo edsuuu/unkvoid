@@ -103,6 +103,24 @@ final class Friendship extends Model implements Auditable
     }
 
     /**
+     * Pede amizade pelo e-mail. Quem não existe e quem existe recebem a mesma resposta de
+     * "não achei", para a busca não virar um jeito de descobrir quem tem conta aqui.
+     *
+     * @throws Throwable
+     * @throws ValidationException
+     */
+    public static function requestByEmail(User $actor, string $email): self
+    {
+        $target = User::query()->where('email', mb_strtolower(mb_trim($email)))->first();
+
+        if (is_null($target)) {
+            throw ValidationException::withMessages(['email' => 'Ninguém com esse e-mail.']);
+        }
+
+        return self::request($actor, $target)->load(['requester', 'addressee']);
+    }
+
+    /**
      * @return BelongsTo<User, $this>
      */
     public function requester(): BelongsTo
@@ -125,6 +143,10 @@ final class Friendship extends Model implements Auditable
     {
         throw_if($this->addressee_id !== $actor->id, ForbiddenException::class, 'Só quem recebeu o pedido pode aceitar.');
 
+        // Quem foi bloqueado é sempre o `addressee` da linha: sem esta guarda, ele
+        // "aceitaria" o próprio bloqueio e voltaria a mandar mensagem.
+        throw_if($this->status === FriendshipStatusEnum::Blocked, ForbiddenException::class, 'Esta conversa está bloqueada.');
+
         self::write('falha ao aceitar a amizade', fn () => $this->update([
             'status' => FriendshipStatusEnum::Accepted,
             'responded_at' => now(),
@@ -142,9 +164,17 @@ final class Friendship extends Model implements Auditable
     {
         $this->authorize($actor);
 
-        self::broadcast(new FriendshipUpdated($this->load(['requester', 'addressee']), removed: true));
+        // Desbloquear é apagar a linha, e só quem bloqueou pode: senão o bloqueado
+        // desfazia o próprio bloqueio pela rota de recusar.
+        throw_if(
+            $this->status === FriendshipStatusEnum::Blocked && $this->requester_id !== $actor->id,
+            ForbiddenException::class,
+            'Só quem bloqueou pode desfazer.'
+        );
 
         self::write('falha ao desfazer a amizade', fn () => $this->delete(), ['friendship_id' => $this->id]);
+
+        self::broadcast(new FriendshipUpdated($this->load(['requester', 'addressee']), removed: true));
     }
 
     /**

@@ -44,7 +44,8 @@ final class DirectMessage extends Model
     /**
      * Uma linha por conversa: a última mensagem de cada par, com quantas dela ainda não
      * li. A lista não exige amizade — desfazer a amizade tira a conversa do ar, não o
-     * que já foi dito.
+     * que já foi dito. Bloqueio é diferente e some da lista: a prévia é leitura viva do
+     * nome e do avatar de quem a pessoa não quer mais ver.
      *
      * @return Collection<int, self>
      */
@@ -65,13 +66,20 @@ final class DirectMessage extends Model
             ->groupBy('sender_id')
             ->pluck('total', 'sender_id');
 
+        $blocked = Friendship::query()
+            ->where('status', FriendshipStatusEnum::Blocked)
+            ->where(fn (Builder $query) => $query->where('requester_id', $user->id)->orWhere('addressee_id', $user->id))
+            ->get()
+            ->map(fn (Friendship $friendship): int => $friendship->requester_id === $user->id ? $friendship->addressee_id : $friendship->requester_id)
+            ->all();
+
         $messages = self::query()->with(['sender', 'recipient'])->whereIn('id', $latest)->orderByDesc('id')->get();
 
         foreach ($messages as $message) {
             $message->setAttribute('unread', $unread[$message->other($user)->id] ?? 0);
         }
 
-        return $messages;
+        return $messages->reject(fn (self $message): bool => in_array($message->other($user)->id, $blocked, true))->values();
     }
 
     /**
@@ -94,7 +102,7 @@ final class DirectMessage extends Model
 
         $messages = $query->get();
 
-        self::markRead($viewer, $other);
+        self::flagAsRead($viewer, $other);
 
         return $messages->reverse()->values();
     }
@@ -111,12 +119,7 @@ final class DirectMessage extends Model
     public static function markRead(User $viewer, User $other): void
     {
         self::friendsOrFail($viewer, $other);
-
-        self::write('falha ao marcar a conversa como lida', fn () => self::query()
-            ->where('sender_id', $other->id)
-            ->where('recipient_id', $viewer->id)
-            ->whereNull('read_at')
-            ->update(['read_at' => now()]), ['user_id' => $viewer->id, 'other_id' => $other->id]);
+        self::flagAsRead($viewer, $other);
     }
 
     /**
@@ -220,6 +223,18 @@ final class DirectMessage extends Model
      *
      * @throws ForbiddenException
      */
+    /**
+     * @throws Throwable
+     */
+    private static function flagAsRead(User $viewer, User $other): void
+    {
+        self::write('falha ao marcar a conversa como lida', fn () => self::query()
+            ->where('sender_id', $other->id)
+            ->where('recipient_id', $viewer->id)
+            ->whereNull('read_at')
+            ->update(['read_at' => now()]), ['user_id' => $viewer->id, 'other_id' => $other->id]);
+    }
+
     private static function friendsOrFail(User $one, User $other): void
     {
         $friendship = Friendship::between($one, $other);
