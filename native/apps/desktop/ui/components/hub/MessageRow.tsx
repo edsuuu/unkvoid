@@ -26,7 +26,8 @@ export const MessageRow = memo(function MessageRow({ message, mine, canDelete }:
             <Avatar name={message.user.name} size={28} mine={mine} />
             <div className={`flex min-w-0 max-w-[75%] flex-col ${mine ? 'items-end' : 'items-start'}`}>
                 <p className="text-[11px] text-ink-dim">
-                    {message.user.name} · {when}{message.edited_at ? ' (editada)' : ''}
+                    {message.user.name} · {when}
+                    {message.edited_at && <span className="ml-1.5 rounded-full bg-row px-1.5 py-0.5 text-[10px] text-ink-icon">editado</span>}
                 </p>
 
                 {editing

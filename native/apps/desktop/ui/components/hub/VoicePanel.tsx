@@ -1,10 +1,16 @@
+import { useState } from 'react';
+
+import { Platform } from '../../core/Platform.ts';
 import { Avatar } from '../common/Avatar.tsx';
 import { Icon } from '../common/Icon.tsx';
+import { Popover } from '../common/Popover.tsx';
 import { Spinner } from '../common/Spinner.tsx';
 import { ShareButton } from '../room/ShareButton.tsx';
 import { useApp } from '../useApp.ts';
 import { useStore } from '../useStore.ts';
 import { ClipButton } from './ClipButton.tsx';
+
+const MENU_ITEM = 'flex w-full cursor-pointer items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[12.5px] text-ink-icon hover:bg-row hover:text-ink-strong';
 
 export function VoicePanel() {
     const app = useApp();
@@ -13,6 +19,11 @@ export function VoicePanel() {
     const { user } = useStore(hub.store);
     const voiceState = useStore(voice.store);
     const { reconnecting } = useStore(app.media.store);
+    const [menuOpen, setMenuOpen] = useState(false);
+    const choose = (work: () => unknown) => {
+        setMenuOpen(false);
+        void work();
+    };
     const voiceChannel = voiceState.channel;
     const speakless = ! voiceState.can.includes('speak');
     const micOff = voiceState.muted || voiceState.serverMuted || speakless;
@@ -65,9 +76,27 @@ export function VoicePanel() {
                 <button className={`flex size-[26px] cursor-pointer items-center justify-center rounded-lg transition hover:bg-row disabled:cursor-not-allowed disabled:opacity-40 ${voiceState.deafened ? 'text-danger' : 'text-ink-icon'}`} type="button" title={voiceState.deafened ? 'Voltar a ouvir' : 'Ensurdecer: não ouvir ninguém'} disabled={! voiceChannel} onClick={() => void voice.toggleDeafen()}>
                     <Icon name={voiceState.deafened ? 'headphonesOff' : 'headphones'} size={15} />
                 </button>
-                <button className="flex size-[26px] cursor-pointer items-center justify-center rounded-lg text-ink-icon transition hover:bg-row" type="button" title="Configurações" onClick={() => hub.openModal({ type: 'user' })}>
-                    <Icon name="gear" size={15} />
-                </button>
+                <span className="relative">
+                    <button
+                        className={`flex size-[26px] cursor-pointer items-center justify-center rounded-lg transition hover:bg-row ${menuOpen ? 'bg-row text-ink-strong' : 'text-ink-icon'}`}
+                        type="button"
+                        title="Menu"
+                        onClick={() => setMenuOpen(open => ! open)}
+                    >
+                        <Icon name="gear" size={15} />
+                    </button>
+
+                    <Popover open={menuOpen} onClose={() => setMenuOpen(false)} className="bottom-9 right-0 w-56">
+                        <div className="mb-1 border-b border-line px-2.5 pt-1 pb-2">
+                            <p className="truncate text-[13px] font-semibold">{user?.name ?? 'Sem conta'}</p>
+                            <p className="label-mono mt-0.5">{user ? 'conta conectada' : 'usando sem login'}</p>
+                        </div>
+                        {user && <button className={MENU_ITEM} type="button" onClick={() => choose(() => hub.openModal({ type: 'user' }))}><Icon name="gear" size={15} />Configurações da conta</button>}
+                        {Platform.isWindows() && <button className={MENU_ITEM} type="button" onClick={() => choose(() => app.setTab('clips'))}><Icon name="scissors" size={15} />Clipes</button>}
+                        <button className={MENU_ITEM} type="button" onClick={() => choose(() => app.openLogs())}><Icon name="logs" size={15} />Logs</button>
+                        {user && <button className={`${MENU_ITEM} text-periwinkle`} type="button" onClick={() => choose(() => hub.logout())}><Icon name="logout" size={15} />Sair da conta</button>}
+                    </Popover>
+                </span>
             </div>
         </div>
     );
