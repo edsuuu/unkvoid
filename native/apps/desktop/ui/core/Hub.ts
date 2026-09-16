@@ -259,8 +259,6 @@ export class Hub {
         this.store.set({ googleWaiting: true });
 
         return this.signIn(async () => {
-            this.store.set({ loginError: 'Termine o login no navegador que abriu…' });
-
             try {
                 return { token: await Tauri.invoke<string>('google_login', { server: this.server }) };
             } catch (failure) {
