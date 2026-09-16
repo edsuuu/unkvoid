@@ -86,11 +86,17 @@ export class Clip {
 
         Clip.pending.add(order.clipId);
 
-        void Clip.process(order, directory, snapshot).finally(() => {
-            Clip.pending.delete(order.clipId);
+        void Clip.process(order, directory, snapshot)
+            .finally(() => {
+                Clip.pending.delete(order.clipId);
 
-            return rm(directory, { recursive: true, force: true });
-        });
+                return rm(directory, { recursive: true, force: true });
+            })
+            .catch((failure) =>
+                console.error(
+                    `[ERROR] clip ${order.clipId} could not clean up: ${String(failure)}`,
+                ),
+            );
     }
 
     private static async process(

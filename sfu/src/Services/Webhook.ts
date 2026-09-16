@@ -24,27 +24,43 @@ export class Webhook {
             return;
         }
 
-        const at = Math.floor(Date.now() / 1000);
-        const body = JSON.stringify({ event, ...data, at });
+        // O fim de um clipe tenta de novo: sem isso, uma queda de segundos do site deixava o
+        // clipe "processando" por 7 dias. Entrar e sair não: o evento seguinte corrige.
+        const delays = event.startsWith('clip.') ? [0, 5_000, 30_000, 120_000] : [0];
 
         void (async () => {
-            try {
-                const response = await fetch(`${config.laravelUrl}${PATH}`, {
-                    method: 'POST',
-                    body,
-                    headers: {
-                        'content-type': 'application/json',
-                        'x-unkvoid-timestamp': String(at),
-                        'x-unkvoid-signature': Signature.header(String(at), 'POST', PATH, body),
-                    },
-                    signal: AbortSignal.timeout(3000),
-                });
+            for (const delay of delays) {
+                await new Promise((resolve) => setTimeout(resolve, delay));
 
-                if (!response.ok) {
+                // Carimbo e assinatura novos a cada tentativa: o Laravel recusa assinatura repetida.
+                const at = Math.floor(Date.now() / 1000);
+                const body = JSON.stringify({ event, ...data, at });
+
+                try {
+                    const response = await fetch(`${config.laravelUrl}${PATH}`, {
+                        method: 'POST',
+                        body,
+                        headers: {
+                            'content-type': 'application/json',
+                            'x-unkvoid-timestamp': String(at),
+                            'x-unkvoid-signature': Signature.header(String(at), 'POST', PATH, body),
+                        },
+                        signal: AbortSignal.timeout(3000),
+                    });
+
+                    if (response.ok) {
+                        return;
+                    }
+
                     console.warn(`[WARN] webhook ${event} answered ${response.status}`);
+
+                    // 4xx é recusa, e não queda: repetir não muda a resposta.
+                    if (response.status < 500) {
+                        return;
+                    }
+                } catch (failure) {
+                    console.warn(`[WARN] webhook ${event} failed: ${String(failure)}`);
                 }
-            } catch (failure) {
-                console.warn(`[WARN] webhook ${event} failed: ${String(failure)}`);
             }
         })();
     }

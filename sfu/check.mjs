@@ -946,9 +946,27 @@ test('o clipe grava a tela de quem transmite num canal, mistura o áudio e sobe 
         assert.equal(clipEvents().length, 1, 'o pedido repetido não gerou um segundo clipe');
         assert.deepEqual(readdirSync(join(recordings, `unkvoid-sfu-${port}`, 'clips')), [], 'o clipe não deixa temporário');
 
+        // Recompartilhar na hora: o anel novo não pode cair na pasta do anterior, que ainda
+        // está sendo apagada. Isso derrubava o processo inteiro com EEXIST.
         await streamer.call('closeProducer', { producerId: screen.data.producerId });
+        const again = await streamer.call('producePlain', videoPuro('screen', 0x5000));
+        assert.equal(again.ok, true, `recompartilhar na hora é aceito: ${JSON.stringify(again)}`);
+        await espera(2500);
+        assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200, 'e o SFU segue de pé');
+        assert.equal(readdirSync(rings).length, 1, 'só o anel da transmissão atual sobra');
+
+        await streamer.call('closeProducer', { producerId: again.data.producerId });
         await espera(1500);
         assert.deepEqual(readdirSync(rings), [], 'parar a tela apaga o anel');
+
+        // A última pessoa sai transmitindo: a sala fecha o router, e o anel tem de ir junto.
+        await streamer.call('producePlain', videoPuro('screen', 0x5000));
+        await espera(2500);
+        assert.equal(readdirSync(rings).length, 1, 'transmitindo de novo, o anel volta');
+        await clipper.call('leave');
+        await streamer.call('leave');
+        await espera(1500);
+        assert.deepEqual(readdirSync(rings), [], 'sair transmitindo, com a sala esvaziando, apaga o anel');
     } finally {
         sender?.kill('SIGKILL');
         relay.close();

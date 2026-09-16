@@ -1,5 +1,6 @@
 import type { Consumer, PlainTransport, Producer, Router } from 'mediasoup/types';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import {
     existsSync,
     linkSync,
@@ -80,7 +81,9 @@ export class Recorder {
         private readonly router: Router,
         private readonly peer: Peer,
     ) {
-        this.directory = join(Recorder.root, 'rings', peer.id);
+        // Uma pasta por gravação, e não por peer: recompartilhar logo em seguida caía na pasta
+        // da gravação anterior, ainda sendo apagada, e o EEXIST derrubava o processo inteiro.
+        this.directory = join(Recorder.root, 'rings', `${peer.id}-${randomUUID()}`);
         mkdirSync(this.directory, { recursive: true });
         this.pruner = setInterval(() => this.prune(), PRUNE_MS).unref();
     }
@@ -99,7 +102,9 @@ export class Recorder {
         Recorder.available = probe.status === 0;
 
         if (!Recorder.available) {
-            console.warn(`[WARN] ${config.ffmpeg} is not executable — clips are disabled`);
+            console.warn(
+                `[WARN] setpriv or ${config.ffmpeg} is not executable — clips are disabled`,
+            );
         }
     }
 
@@ -121,30 +126,35 @@ export class Recorder {
             return;
         }
 
-        const source = String(producer.appData.source);
+        // A gravação nunca derruba a transmissão: disco cheio aqui vira log, e a tela segue.
+        try {
+            const source = String(producer.appData.source);
 
-        if (source === Source.Screen && !peer.recorder) {
-            // O vídeo vai copiado para MPEG-TS, e VP8 não cabe lá. A tela do app é H.264.
-            if (producer.rtpParameters.codecs[0]?.mimeType.toLowerCase() !== 'video/h264') {
+            if (source === Source.Screen && !peer.recorder) {
+                // O vídeo vai copiado para MPEG-TS, e VP8 não cabe lá. A tela do app é H.264.
+                if (producer.rtpParameters.codecs[0]?.mimeType.toLowerCase() !== 'video/h264') {
+                    return;
+                }
+
+                const recorder = new Recorder(router, peer);
+
+                peer.recorder = recorder;
+                void recorder.add(producer);
+
+                for (const other of peer.producers.values()) {
+                    if (other !== producer && isRecordedAudio(other)) {
+                        void recorder.add(other);
+                    }
+                }
+
                 return;
             }
 
-            const recorder = new Recorder(router, peer);
-
-            peer.recorder = recorder;
-            void recorder.add(producer);
-
-            for (const other of peer.producers.values()) {
-                if (other !== producer && isRecordedAudio(other)) {
-                    void recorder.add(other);
-                }
+            if (isRecordedAudio(producer)) {
+                void peer.recorder?.add(producer);
             }
-
-            return;
-        }
-
-        if (isRecordedAudio(producer)) {
-            void peer.recorder?.add(producer);
+        } catch (failure) {
+            console.error(`[ERROR] recorder could not start for ${peer.id}: ${String(failure)}`);
         }
     }
 
@@ -214,9 +224,11 @@ export class Recorder {
         }
 
         // Só depois de todo ffmpeg morrer: um que ainda fechasse segmento recriaria o arquivo.
-        void Promise.all(this.tracks.map((track) => track.exited)).then(() =>
-            rm(this.directory, { recursive: true, force: true }),
-        );
+        void Promise.all(this.tracks.map((track) => track.exited))
+            .then(() => rm(this.directory, { recursive: true, force: true }))
+            .catch((failure) =>
+                console.error(`[ERROR] recorder could not remove its ring: ${String(failure)}`),
+            );
     }
 
     private async add(producer: Producer): Promise<void> {
@@ -232,9 +244,10 @@ export class Recorder {
 
         this.trackCount += 1;
         this.tracks.push(track);
-        mkdirSync(track.directory);
 
         try {
+            mkdirSync(track.directory);
+
             const port = await this.openTransport(track);
             const consumer = await track.transport!.consume({
                 producerId: producer.id,
@@ -252,11 +265,26 @@ export class Recorder {
             }
 
             await track.transport!.connect({ ip: '127.0.0.1', port: port + 1 });
+
+            // Parou enquanto conectava: um ffmpeg subindo agora ficaria preso numa porta que já
+            // foi devolvida.
+            if (track.finished) {
+                consumer.close();
+
+                return;
+            }
+
             this.spawn(track, consumer, port + 1);
 
             // O ffmpeg leva um instante para abrir a porta, e o que chega antes disso se
             // perde. O keyframe pedido depois é o que faz o primeiro segmento começar num.
-            setTimeout(() => void this.start(consumer, isVideo), 1000).unref();
+            setTimeout(
+                () =>
+                    void this.start(consumer, isVideo).catch((failure) =>
+                        console.error(`[ERROR] recorder could not resume: ${String(failure)}`),
+                    ),
+                1000,
+            ).unref();
         } catch (failure) {
             console.error(
                 `[ERROR] recorder could not follow ${String(producer.appData.source)}: ${String(failure)}`,
@@ -308,6 +336,14 @@ export class Recorder {
                 return port;
             } catch (failure) {
                 lastFailure = failure;
+
+                // Só porta tomada por outro processo fica marcada: um router fechado falharia
+                // em todos os slots e queimaria os 500 de uma vez.
+                if (!/address already in use/i.test(String(failure))) {
+                    Recorder.usedSlots.delete(slot);
+
+                    throw failure;
+                }
             }
         }
 
@@ -403,25 +439,26 @@ export class Recorder {
 
     /** Fecha uma faixa. O mic que para fica no anel até sair da janela de 5 minutos. */
     private finish(track: Track, graceful = true): void {
-        if (track.finished) {
-            return;
+        if (!track.finished) {
+            track.finished = true;
+
+            if (graceful) {
+                // Parado num UDP sem pacote, o ffmpeg só larga a leitura no segundo sinal. Dois
+                // sinais diferentes porque dois iguais seguidos o kernel entrega como um.
+                track.process?.kill('SIGTERM');
+                track.process?.kill('SIGINT');
+            } else {
+                track.process?.kill('SIGKILL');
+            }
         }
 
-        track.finished = true;
-
-        if (graceful) {
-            // Parado num UDP sem pacote, o ffmpeg só larga a leitura no segundo sinal. Dois
-            // sinais diferentes porque dois iguais seguidos o kernel entrega como um.
-            track.process?.kill('SIGTERM');
-            track.process?.kill('SIGINT');
-        } else {
-            track.process?.kill('SIGKILL');
-        }
-
+        // Sempre, e não só da primeira vez: parado durante o `openTransport`, o transporte e o
+        // slot chegam depois, e ficariam presos até o processo reiniciar.
         track.transport?.close();
 
         if (track.slot !== null) {
             Recorder.usedSlots.delete(track.slot);
+            track.slot = null;
         }
     }
 

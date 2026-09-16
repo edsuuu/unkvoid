@@ -169,6 +169,10 @@ export class Peer {
     }
 
     public close(): void {
+        // A sala esvaziando fecha o router, e o consumer da gravação só recebe o
+        // `transportclose`, nunca o `producerclose`: sem isto o ffmpeg do anel ficava de pé.
+        this.recorder?.stop();
+
         for (const transport of [...this.transports.values(), ...this.plainTransports.values()]) {
             transport.close();
         }
