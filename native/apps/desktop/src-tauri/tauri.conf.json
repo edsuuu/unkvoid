@@ -17,7 +17,8 @@
         "height": 260,
         "resizable": true,
         "label": "main",
-        "center": true
+        "center": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --use-fake-ui-for-media-stream"
       }
     ],
     "withGlobalTauri": true,
@@ -79,7 +80,9 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["unkvoid"]
+        "schemes": [
+          "unkvoid"
+        ]
       }
     },
     "updater": {

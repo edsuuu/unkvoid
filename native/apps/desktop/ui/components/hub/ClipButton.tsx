@@ -1,4 +1,3 @@
-import { Platform } from '../../core/Platform.ts';
 import { Icon } from '../common/Icon.tsx';
 import { Popover } from '../common/Popover.tsx';
 import { useApp } from '../useApp.ts';
@@ -14,7 +13,7 @@ export function ClipButton({ wide = false }: { wide?: boolean }) {
 
     const streamers = voice.streamers();
 
-    if (! Platform.isWindows() || streamers.length === 0) {
+    if (streamers.length === 0) {
         return null;
     }
 

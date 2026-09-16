@@ -64,6 +64,33 @@
     }
 }
 
+/*
+ * Isto é um app, não uma página: texto de interface não se seleciona por arrasto, nada
+ * "puxa" para rolar além do fim, e a barra de rolagem não é a do sistema. Campo de texto,
+ * mensagem e código continuam selecionáveis, que é onde copiar faz sentido.
+ */
+@layer base {
+    :root {
+        overscroll-behavior: none;
+    }
+
+    body {
+        -webkit-user-select: none;
+        user-select: none;
+        cursor: default;
+    }
+
+    input,
+    textarea,
+    code,
+    [contenteditable="true"],
+    .bubble,
+    .code-chip {
+        -webkit-user-select: text;
+        user-select: text;
+    }
+}
+
 /* Foco de teclado com a cor da marca: o anel azul do sistema some no vidro escuro. */
 @layer base {
     :where(button, a, [role="button"], [tabindex="0"]):focus-visible {
