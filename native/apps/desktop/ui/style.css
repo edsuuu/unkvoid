@@ -268,26 +268,7 @@
         font-weight: 500;
     }
 
-    .tab-pill {
-        background: rgba(255, 255, 255, 0.04);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 999px;
-        color: var(--color-ink-dim);
-        cursor: pointer;
-        font-family: var(--font-mono);
-        font-size: 11px;
-        letter-spacing: 0.08em;
-        padding: 6px 13px;
-        text-transform: uppercase;
-        transition: all 180ms ease;
-    }
 
-    .tab-pill-on {
-        background: linear-gradient(180deg, var(--color-brand), var(--color-brand-dark));
-        border-color: transparent;
-        color: var(--color-ink-strong);
-        font-weight: 600;
-    }
 
     .row-item {
         align-items: center;

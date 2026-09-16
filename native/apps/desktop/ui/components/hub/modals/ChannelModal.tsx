@@ -60,7 +60,7 @@ export function ChannelModal({ channel, channelType }: { channel: Channel | null
         >
             <form id="channel-form" className="flex flex-col gap-2.5" onSubmit={event => { event.preventDefault(); void settings.saveChannel(channel, { name, type, topic, limit: String(limit) }); }}>
                 <div className="flex gap-2">
-                    <input className="field min-w-0 flex-1" type="text" maxLength={40} value={name} onChange={event => setName(event.target.value)} placeholder="Nome" autoFocus required />
+                    <input className="field min-w-0 flex-1" type="text" maxLength={40} value={name} onChange={event => setName(event.target.value)} placeholder="Nome" autoCapitalize="off" autoCorrect="off" spellCheck={false} autoFocus required />
                     <select className="field cursor-pointer text-[13px]" value={type} disabled={Boolean(channel)} onChange={event => setType(event.target.value as ChannelType)}>
                         <option value="text">Texto</option>
                         <option value="voice">Voz</option>
