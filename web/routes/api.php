@@ -2,132 +2,136 @@
 
 declare(strict_types=1);
 
-use App\Http\Controllers\Api\Audits\IndexAuditController;
-use App\Http\Controllers\Api\Auth\LoginController;
-use App\Http\Controllers\Api\Auth\LogoutController;
-use App\Http\Controllers\Api\Auth\RegisterController;
-use App\Http\Controllers\Api\Bans\DestroyBanController;
-use App\Http\Controllers\Api\Bans\IndexBanController;
-use App\Http\Controllers\Api\Bans\StoreBanController;
-use App\Http\Controllers\Api\Channels\DestroyChannelController;
-use App\Http\Controllers\Api\Channels\StoreChannelController;
-use App\Http\Controllers\Api\Channels\UpdateChannelController;
-use App\Http\Controllers\Api\Clips\DestroyClipController;
-use App\Http\Controllers\Api\Clips\IndexClipController;
-use App\Http\Controllers\Api\Clips\PlaylistClipController;
-use App\Http\Controllers\Api\Clips\ShowClipController;
-use App\Http\Controllers\Api\Clips\StoreClipController;
+use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\BanController;
+use App\Http\Controllers\Api\ChannelController;
+use App\Http\Controllers\Api\ClipController;
 use App\Http\Controllers\Api\ConfigController;
-use App\Http\Controllers\Api\Direct\DestroyDirectMessageController;
-use App\Http\Controllers\Api\Direct\IndexConversationController;
-use App\Http\Controllers\Api\Direct\MarkReadConversationController;
-use App\Http\Controllers\Api\Direct\ShowConversationController;
-use App\Http\Controllers\Api\Direct\StoreDirectMessageController;
-use App\Http\Controllers\Api\Direct\UpdateDirectMessageController;
+use App\Http\Controllers\Api\DirectMessageController;
 use App\Http\Controllers\Api\ErrorReportController;
-use App\Http\Controllers\Api\Friends\DestroyFriendController;
-use App\Http\Controllers\Api\Friends\IndexFriendController;
-use App\Http\Controllers\Api\Friends\StoreFriendController;
-use App\Http\Controllers\Api\Friends\UpdateFriendController;
-use App\Http\Controllers\Api\Invites\JoinInviteController;
+use App\Http\Controllers\Api\FriendController;
 use App\Http\Controllers\Api\MeController;
-use App\Http\Controllers\Api\Members\KickMemberController;
-use App\Http\Controllers\Api\Members\UpdateMemberController;
-use App\Http\Controllers\Api\Messages\DestroyMessageController;
-use App\Http\Controllers\Api\Messages\IndexMessageController;
-use App\Http\Controllers\Api\Messages\StoreMessageController;
-use App\Http\Controllers\Api\Messages\UpdateMessageController;
-use App\Http\Controllers\Api\Overwrites\DestroyOverwriteController;
-use App\Http\Controllers\Api\Overwrites\PutOverwriteController;
+use App\Http\Controllers\Api\MemberController;
+use App\Http\Controllers\Api\MessageController;
+use App\Http\Controllers\Api\OverwriteController;
 use App\Http\Controllers\Api\ReleaseController;
-use App\Http\Controllers\Api\Roles\DestroyRoleController;
-use App\Http\Controllers\Api\Roles\StoreRoleController;
-use App\Http\Controllers\Api\Roles\UpdateRoleController;
-use App\Http\Controllers\Api\Servers\DestroyServerController;
-use App\Http\Controllers\Api\Servers\DestroyServerIconController;
-use App\Http\Controllers\Api\Servers\IndexServerController;
-use App\Http\Controllers\Api\Servers\LeaveServerController;
-use App\Http\Controllers\Api\Servers\RegenerateInviteController;
-use App\Http\Controllers\Api\Servers\ShowServerController;
-use App\Http\Controllers\Api\Servers\StoreServerController;
-use App\Http\Controllers\Api\Servers\StoreServerIconController;
-use App\Http\Controllers\Api\Servers\UpdateServerController;
+use App\Http\Controllers\Api\RoleController;
+use App\Http\Controllers\Api\ServerController;
 use App\Http\Controllers\Api\Sfu\SfuEventController;
-use App\Http\Controllers\Api\Voice\DisconnectVoiceController;
-use App\Http\Controllers\Api\Voice\VoiceTokenController;
+use App\Http\Controllers\Api\VoiceController;
 use Illuminate\Support\Facades\Route;
 
-Route::post('/auth/login', LoginController::class)->middleware('throttle:login')->name('api.auth.login');
-Route::post('/auth/register', RegisterController::class)->middleware('throttle:6,1')->name('api.auth.register');
+Route::name('api.')->group(function (): void {
+    Route::prefix('auth')->name('auth.')->group(function (): void {
+        Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login')->name('login');
+        Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:6,1')->name('register');
+        Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth:sanctum')->name('logout');
+    });
 
-Route::get('/config', ConfigController::class)->name('api.config');
+    Route::get('/config', ConfigController::class)->name('config');
 
-Route::middleware('auth:sanctum')->group(function (): void {
-    Route::post('/auth/logout', LogoutController::class)->name('api.auth.logout');
-    Route::get('/me', MeController::class)->name('api.me');
+    // A playlist é pedida pelo tocador de vídeo, que não manda o token do app: quem
+    // autoriza aqui é a URL assinada, e por isso ela fica fora do `auth:sanctum`.
+    Route::get('/clips/{clip}/playlist.m3u8', [ClipController::class, 'playlist'])->middleware('signed')->name('clips.playlist');
 
-    Route::get('/servers', IndexServerController::class)->name('api.servers.index');
-    Route::post('/servers', StoreServerController::class)->name('api.servers.store');
-    Route::get('/servers/{server}', ShowServerController::class)->name('api.servers.show');
-    Route::patch('/servers/{server}', UpdateServerController::class)->name('api.servers.update');
-    Route::delete('/servers/{server}', DestroyServerController::class)->name('api.servers.destroy');
-    Route::post('/servers/{server}/invite', RegenerateInviteController::class)->name('api.servers.invite');
-    Route::post('/servers/{server}/leave', LeaveServerController::class)->name('api.servers.leave');
-    Route::get('/servers/{server}/audits', IndexAuditController::class)->name('api.audits.index');
-    Route::post('/servers/{server}/icon', StoreServerIconController::class)->name('api.servers.icon.store');
-    Route::delete('/servers/{server}/icon', DestroyServerIconController::class)->name('api.servers.icon.destroy');
-    Route::post('/invites/{code}', JoinInviteController::class)->middleware('throttle:10,1')->name('api.invites.join');
+    Route::post('/sfu/events', SfuEventController::class)->middleware('signed.sfu')->name('sfu.events');
+    Route::post('/releases', ReleaseController::class)->middleware('signed.release')->name('releases.store');
 
-    Route::get('/friends', IndexFriendController::class)->name('api.friends.index');
-    Route::post('/friends', StoreFriendController::class)->middleware('throttle:20,1')->name('api.friends.store');
-    Route::patch('/friends/{friendship}', UpdateFriendController::class)->name('api.friends.update');
-    Route::delete('/friends/{friendship}', DestroyFriendController::class)->name('api.friends.destroy');
+    // Sem assinatura, de propósito: quem chama é o app instalado na máquina de qualquer
+    // pessoa, e um segredo dentro do instalador não é segredo. O que protege aqui é o teto
+    // por IP, o tamanho máximo do log e o fato de a tabela agrupar por erro — encher de lixo
+    // custa trabalho e não derruba nada.
+    Route::post('/errors', ErrorReportController::class)->middleware('throttle:30,1')->name('errors.store');
 
-    Route::get('/dm', IndexConversationController::class)->name('api.dm.index');
-    Route::get('/dm/{user}', ShowConversationController::class)->name('api.dm.show');
-    Route::post('/dm/{user}/read', MarkReadConversationController::class)->name('api.dm.read');
-    Route::post('/dm/{user}', StoreDirectMessageController::class)->middleware('throttle:60,1')->name('api.dm.store');
-    Route::patch('/dm/{directMessage}', UpdateDirectMessageController::class)->name('api.dm.update');
-    Route::delete('/dm/{directMessage}', DestroyDirectMessageController::class)->name('api.dm.destroy');
+    Route::middleware('auth:sanctum')->group(function (): void {
+        Route::get('/me', MeController::class)->name('me');
 
-    Route::patch('/servers/{server}/members/{user}', UpdateMemberController::class)->name('api.members.update');
-    Route::delete('/servers/{server}/members/{user}', KickMemberController::class)->name('api.members.destroy');
-    Route::get('/servers/{server}/bans', IndexBanController::class)->name('api.bans.index');
-    Route::post('/servers/{server}/bans/{user}', StoreBanController::class)->name('api.bans.store');
-    Route::delete('/servers/{server}/bans/{user}', DestroyBanController::class)->name('api.bans.destroy');
+        Route::prefix('servers')->group(function (): void {
+            Route::get('/', [ServerController::class, 'index'])->name('servers.index');
+            Route::post('/', [ServerController::class, 'store'])->name('servers.store');
 
-    Route::post('/servers/{server}/roles', StoreRoleController::class)->name('api.roles.store');
-    Route::patch('/roles/{role}', UpdateRoleController::class)->name('api.roles.update');
-    Route::delete('/roles/{role}', DestroyRoleController::class)->name('api.roles.destroy');
+            Route::prefix('{server}')->group(function (): void {
+                Route::get('/', [ServerController::class, 'show'])->name('servers.show');
+                Route::patch('/', [ServerController::class, 'update'])->name('servers.update');
+                Route::delete('/', [ServerController::class, 'destroy'])->name('servers.destroy');
+                Route::post('/invite', [ServerController::class, 'regenerateInvite'])->name('servers.invite');
+                Route::post('/leave', [ServerController::class, 'leave'])->name('servers.leave');
+                Route::post('/icon', [ServerController::class, 'storeIcon'])->name('servers.icon.store');
+                Route::delete('/icon', [ServerController::class, 'destroyIcon'])->name('servers.icon.destroy');
 
-    Route::post('/servers/{server}/channels', StoreChannelController::class)->name('api.channels.store');
-    Route::patch('/channels/{channel}', UpdateChannelController::class)->name('api.channels.update');
-    Route::delete('/channels/{channel}', DestroyChannelController::class)->name('api.channels.destroy');
-    Route::put('/channels/{channel}/overwrites/{type}/{id}', PutOverwriteController::class)->whereNumber('id')->name('api.overwrites.put');
-    Route::delete('/channels/{channel}/overwrites/{type}/{id}', DestroyOverwriteController::class)->whereNumber('id')->name('api.overwrites.destroy');
+                // Auditoria, cargos, canais, membros e banidos pendem do servidor no
+                // caminho, mas são recursos próprios: o nome da rota é o deles.
+                Route::get('/audits', [ServerController::class, 'audits'])->name('audits.index');
+                Route::post('/roles', [RoleController::class, 'store'])->name('roles.store');
+                Route::post('/channels', [ChannelController::class, 'store'])->name('channels.store');
 
-    Route::get('/channels/{channel}/messages', IndexMessageController::class)->name('api.messages.index');
-    Route::post('/channels/{channel}/messages', StoreMessageController::class)->middleware('throttle:60,1')->name('api.messages.store');
-    Route::patch('/messages/{message}', UpdateMessageController::class)->name('api.messages.update');
-    Route::delete('/messages/{message}', DestroyMessageController::class)->name('api.messages.destroy');
+                Route::prefix('members')->name('members.')->group(function (): void {
+                    Route::patch('/{user}', [MemberController::class, 'update'])->name('update');
+                    Route::delete('/{user}', [MemberController::class, 'destroy'])->name('destroy');
+                });
 
-    Route::post('/channels/{channel}/voice/token', VoiceTokenController::class)->name('api.voice.token');
-    Route::delete('/channels/{channel}/voice/members/{user}', DisconnectVoiceController::class)->name('api.voice.disconnect');
+                Route::prefix('bans')->name('bans.')->group(function (): void {
+                    Route::get('/', [BanController::class, 'index'])->name('index');
+                    Route::post('/{user}', [BanController::class, 'store'])->name('store');
+                    Route::delete('/{user}', [BanController::class, 'destroy'])->name('destroy');
+                });
+            });
+        });
 
-    Route::post('/channels/{channel}/clips', StoreClipController::class)->name('api.clips.store');
-    Route::get('/clips', IndexClipController::class)->name('api.clips.index');
-    Route::get('/clips/{clip}', ShowClipController::class)->name('api.clips.show');
-    Route::delete('/clips/{clip}', DestroyClipController::class)->name('api.clips.destroy');
+        Route::post('/invites/{code}', [ServerController::class, 'join'])->middleware('throttle:10,1')->name('invites.join');
+
+        Route::prefix('roles/{role}')->name('roles.')->group(function (): void {
+            Route::patch('/', [RoleController::class, 'update'])->name('update');
+            Route::delete('/', [RoleController::class, 'destroy'])->name('destroy');
+        });
+
+        Route::prefix('channels/{channel}')->group(function (): void {
+            Route::patch('/', [ChannelController::class, 'update'])->name('channels.update');
+            Route::delete('/', [ChannelController::class, 'destroy'])->name('channels.destroy');
+
+            Route::prefix('overwrites/{type}/{id}')->name('overwrites.')->group(function (): void {
+                Route::put('/', [OverwriteController::class, 'put'])->whereNumber('id')->name('put');
+                Route::delete('/', [OverwriteController::class, 'destroy'])->whereNumber('id')->name('destroy');
+            });
+
+            Route::prefix('messages')->name('messages.')->group(function (): void {
+                Route::get('/', [MessageController::class, 'index'])->name('index');
+                Route::post('/', [MessageController::class, 'store'])->middleware('throttle:60,1')->name('store');
+            });
+
+            Route::prefix('voice')->name('voice.')->group(function (): void {
+                Route::post('/token', [VoiceController::class, 'token'])->name('token');
+                Route::delete('/members/{user}', [VoiceController::class, 'disconnect'])->name('disconnect');
+            });
+
+            Route::post('/clips', [ClipController::class, 'store'])->name('clips.store');
+        });
+
+        Route::prefix('messages/{message}')->name('messages.')->group(function (): void {
+            Route::patch('/', [MessageController::class, 'update'])->name('update');
+            Route::delete('/', [MessageController::class, 'destroy'])->name('destroy');
+        });
+
+        Route::prefix('friends')->name('friends.')->group(function (): void {
+            Route::get('/', [FriendController::class, 'index'])->name('index');
+            Route::post('/', [FriendController::class, 'store'])->middleware('throttle:20,1')->name('store');
+            Route::patch('/{friendship}', [FriendController::class, 'update'])->name('update');
+            Route::delete('/{friendship}', [FriendController::class, 'destroy'])->name('destroy');
+        });
+
+        Route::prefix('dm')->name('dm.')->group(function (): void {
+            Route::get('/', [DirectMessageController::class, 'index'])->name('index');
+            Route::get('/{user}', [DirectMessageController::class, 'show'])->name('show');
+            Route::post('/{user}/read', [DirectMessageController::class, 'read'])->name('read');
+            Route::post('/{user}', [DirectMessageController::class, 'store'])->middleware('throttle:60,1')->name('store');
+            Route::patch('/{directMessage}', [DirectMessageController::class, 'update'])->name('update');
+            Route::delete('/{directMessage}', [DirectMessageController::class, 'destroy'])->name('destroy');
+        });
+
+        Route::prefix('clips')->name('clips.')->group(function (): void {
+            Route::get('/', [ClipController::class, 'index'])->name('index');
+            Route::get('/{clip}', [ClipController::class, 'show'])->name('show');
+            Route::delete('/{clip}', [ClipController::class, 'destroy'])->name('destroy');
+        });
+    });
 });
-
-Route::get('/clips/{clip}/playlist.m3u8', PlaylistClipController::class)->middleware('signed')->name('api.clips.playlist');
-
-Route::post('/sfu/events', SfuEventController::class)->middleware('signed.sfu')->name('api.sfu.events');
-
-Route::post('/releases', ReleaseController::class)->middleware('signed.release')->name('api.releases.store');
-
-// Sem assinatura, de propósito: quem chama é o app instalado na máquina de qualquer
-// pessoa, e um segredo dentro do instalador não é segredo. O que protege aqui é o teto
-// por IP, o tamanho máximo do log e o fato de a tabela agrupar por erro — encher de lixo
-// custa trabalho e não derruba nada.
-Route::post('/errors', ErrorReportController::class)->middleware('throttle:30,1')->name('api.errors.store');
