@@ -10,12 +10,23 @@ use Illuminate\Validation\Rules\Password;
 final class RegisterRequest extends FormRequest
 {
     /**
+     * @return array<string, string>
+     */
+    public function messages(): array
+    {
+        return [
+            'name.regex' => 'O apelido aceita letras, números, ponto e _ — sem espaço.',
+            'name.unique' => 'Esse apelido já é de outra pessoa.',
+        ];
+    }
+
+    /**
      * @return array<string, array<int, mixed>>
      */
     public function rules(): array
     {
         return [
-            'name' => ['required', 'string', 'max:40'],
+            'name' => ['required', 'string', 'min:3', 'max:32', 'regex:/^[A-Za-z0-9._]+$/', 'unique:users,name'],
             'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
             'password' => ['required', 'string', Password::min(8)],
             'device' => ['required', 'string', 'max:60'],
