@@ -293,3 +293,26 @@ it('clip.failed marca a falha e avisa; webhook de clipe apagado limpa o prefixo;
 
     $this->withHeaders(sfuHeaders($invalid))->postJson('/api/sfu/events', $invalid)->assertUnprocessable();
 });
+
+it('criar o clipe cria o bucket que falta, e o comando cria o bucket à mão', function (): void {
+    $owner = User::factory()->create();
+    $streamer = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $streamer);
+    $voice = voiceOf($server);
+    Http::fake(['*/rooms/*/clips' => Http::response(['accepted' => true], 202)]);
+
+    $commands = fakeS3Client(bucketExists: false);
+
+    $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$voice->id}/clips", ['user_id' => $streamer->id])->assertStatus(202);
+
+    expect($commands->getArrayCopy())->toBe(['HeadBucket', 'CreateBucket']);
+
+    $this->artisan('storage:bucket')->expectsOutput('Bucket criado.')->assertSuccessful();
+
+    $commands = fakeS3Client(bucketExists: true);
+
+    $this->artisan('storage:bucket')->expectsOutput('O bucket já existia.')->assertSuccessful();
+
+    expect($commands->getArrayCopy())->toBe(['HeadBucket']);
+});

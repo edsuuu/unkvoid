@@ -56,7 +56,8 @@ final class ChannelAccess extends Model
                 'user_id' => $user->id,
                 'ip' => $ip ?? $previous->ip ?? '',
                 'sfu_ip' => $sfuIp,
-                'user_agent' => $userAgent ?? $previous->user_agent ?? null,
+                // A coluna tem 1023: o MySQL estrito recusa o resto, e o token de voz virava 500.
+                'user_agent' => mb_substr((string) ($userAgent ?? $previous->user_agent ?? ''), 0, 1023) ?: null,
                 'joined_at' => $at,
             ]);
         }, ['channel_id' => $channel->id, 'user_id' => $user->id]);

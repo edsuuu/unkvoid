@@ -6,6 +6,7 @@ namespace App\Livewire\Admin\Releases;
 
 use App\Enums\ReleasePlatformEnum;
 use App\Models\Release;
+use App\Services\Storage\BucketService;
 use Flux\Flux;
 use Illuminate\Validation\Rule;
 use Illuminate\View\View;
@@ -33,7 +34,7 @@ final class Index extends Component
     /**
      * @throws Throwable
      */
-    public function publish(): void
+    public function publish(BucketService $bucket): void
     {
         $this->validate([
             'version' => ['required', 'string', 'regex:/^\d+\.\d+\.\d+$/'],
@@ -55,6 +56,7 @@ final class Index extends Component
             $this->file,
             $signature === '' ? null : $signature,
             mb_trim($this->notes) === '' ? null : mb_trim($this->notes),
+            $bucket,
         );
 
         $this->reset('platform', 'file', 'signatureFile', 'notes');

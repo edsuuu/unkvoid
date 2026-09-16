@@ -6,12 +6,24 @@ use App\Models\Server;
 use App\Models\ServerMember;
 use App\Models\ServerRole;
 use App\Models\User;
+use Aws\CommandInterface;
+use Aws\Result;
+use Aws\S3\Exception\S3Exception;
+use GuzzleHttp\Promise\Create;
+use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 pest()->extend(TestCase::class)
     ->use(RefreshDatabase::class)
+    ->beforeEach(function (): void {
+        // Nenhum teste fala com o MinIO: todo comando do S3 é respondido aqui.
+        fakeS3Client();
+    })
     ->in('Feature');
 
 function joinServer(Server $server, User $user): ServerMember
@@ -54,4 +66,29 @@ function sfuHeaders(array $body, string $path = '/api/sfu/events', ?string $secr
         'X-Unkvoid-Timestamp' => $timestamp,
         'X-Unkvoid-Signature' => hash_hmac('sha256', "{$timestamp}\nPOST\n{$path}\n{$json}", $secret ?? config('services.sfu.secret')),
     ];
+}
+
+/**
+ * O cliente S3 dos testes: nenhum comando sai para a rede. `$bucketExists` responde o
+ * `HeadBucket`, e a lista devolvida guarda o nome de cada comando pedido.
+ *
+ * @return ArrayObject<int, string>
+ */
+function fakeS3Client(bool $bucketExists = true): ArrayObject
+{
+    /** @var ArrayObject<int, string> $commands */
+    $commands = new ArrayObject();
+
+    Config::set('filesystems.disks.s3.handler', function (CommandInterface $command) use ($bucketExists, $commands): PromiseInterface {
+        $commands->append($command->getName());
+
+        if ($command->getName() === 'HeadBucket' && ! $bucketExists) {
+            return Create::rejectionFor(new S3Exception('Not Found', $command, ['response' => new Response(404)]));
+        }
+
+        return Create::promiseFor(new Result([]));
+    });
+    Storage::forgetDisk('s3');
+
+    return $commands;
 }

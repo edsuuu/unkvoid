@@ -165,7 +165,8 @@ final readonly class SfuClient
                 'method' => $method,
                 'path' => $path,
                 'headers' => [...$headers, 'X-Unkvoid-Signature' => '***'],
-                'body' => $body,
+                // O pedido de clipe leva a política de upload assinada, que vale 30 min no bucket.
+                'body' => isset($data['upload']) ? 'omitido: leva a política de upload assinada' : $body,
                 'status' => $response->status(),
                 'response' => $response->body(),
             ]);
@@ -185,7 +186,8 @@ final readonly class SfuClient
                 'message' => $exception->getMessage(),
                 'method' => $method,
                 'path' => $path,
-                'body' => $body,
+                // O pedido de clipe leva a política de upload assinada, que vale 30 min no bucket.
+                'body' => isset($data['upload']) ? 'omitido: leva a política de upload assinada' : $body,
             ]);
 
             return null;

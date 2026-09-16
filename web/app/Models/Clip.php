@@ -12,6 +12,7 @@ use App\Exceptions\ForbiddenException;
 use App\Exceptions\SfuUnavailableException;
 use App\Models\Concerns\LogsFailedWrites;
 use App\Services\Sfu\SfuClient;
+use App\Services\Storage\BucketService;
 use Aws\S3\PostObjectV4;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
@@ -65,7 +66,7 @@ final class Clip extends Model
      *
      * @throws Throwable
      */
-    public static function start(User $clipper, Channel $channel, User $streamer, SfuClient $sfu): self
+    public static function start(User $clipper, Channel $channel, User $streamer, SfuClient $sfu, BucketService $bucket): self
     {
         $member = $channel->memberOrFail($clipper);
         $member->authorize(PermissionEnum::ViewChannel, $channel);
@@ -80,6 +81,10 @@ final class Clip extends Model
         // `schedule:run`; sem clipe novo, o vencido some da API mas fica no bucket. Com o
         // agendador no ar, `model:prune` diário faz o mesmo sem mexer aqui.
         new self()->pruneAll();
+
+        // Numa máquina nova o bucket pode não existir: criado aqui, o clipe não falha só no
+        // upload do SFU, minutos depois, com um `NoSuchBucket` que ninguém vê.
+        $bucket->ensure();
 
         $id = new self()->newUniqueId();
         $upload = self::uploadPolicy($id);

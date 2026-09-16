@@ -11,6 +11,7 @@ use App\Models\ChannelAccess;
 use App\Models\Clip;
 use App\Models\Concerns\LogsFailedWrites;
 use App\Models\User;
+use App\Services\Sfu\SfuClient;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Response;
 use Throwable;
@@ -25,7 +26,7 @@ final class SfuEventController
      *
      * @throws Throwable
      */
-    public function __invoke(SfuEventRequest $request): Response
+    public function __invoke(SfuEventRequest $request, SfuClient $sfu): Response
     {
         $event = $request->string('event')->toString();
 
@@ -44,6 +45,14 @@ final class SfuEventController
         $channel = Channel::query()->findOrFail($request->string('room')->toString());
         $user = User::query()->findOrFail(User::fromSubject($request->string('sub')->toString()));
         $at = CarbonImmutable::createFromTimestamp($request->integer('at'));
+
+        // Expulso ou banido depois de pedir o token (ele vale 60 s): o SFU deixou entrar, e a
+        // voz derruba na hora, sem abrir acesso nem avisar o canal.
+        if ($event === 'joined' && is_null($channel->server->memberOf($user))) {
+            $sfu->kick($channel, $user->subject());
+
+            return response()->noContent();
+        }
 
         if ($event === 'joined') {
             ChannelAccess::open($channel, $user, null, null, $request->string('ip')->toString(), $at);

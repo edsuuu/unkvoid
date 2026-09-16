@@ -83,6 +83,22 @@ it('canal com limite cheio recusa o token', function (): void {
     $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$voice->id}/voice/token")->assertOk();
 });
 
+it('quem reconecta num canal cheio volta, e o navegador longo demais é cortado', function (): void {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+    $voice = $server->channels()->where('type', 'voice')->firstOrFail();
+    $voice->update(['user_limit' => 1]);
+    fakeSfu($voice->id, $member);
+
+    // O membro ainda consta na presença (a carência do SFU): pedir o token de novo não conta contra o limite.
+    $this->actingAs($member, 'sanctum')->withHeader('User-Agent', str_repeat('a', 2000))->postJson("/api/channels/{$voice->id}/voice/token")->assertOk();
+    $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$voice->id}/voice/token")->assertForbidden();
+
+    expect(mb_strlen((string) ChannelAccess::query()->firstOrFail()->user_agent))->toBe(1023);
+});
+
 it('desconectar da voz exige MOVE_MEMBERS e hierarquia, e chama o kick do SFU', function (): void {
     $owner = User::factory()->create();
     $member = User::factory()->create();
@@ -129,6 +145,26 @@ it('o webhook do SFU abre e fecha o acesso e retransmite o estado da voz', funct
     expect(ChannelAccess::query()->whereNull('left_at')->count())->toBe(0);
 
     Event::assertDispatched(VoiceStateUpdated::class, fn (VoiceStateUpdated $event): bool => $event->event === 'left');
+});
+
+it('quem foi expulso ou banido e entra com um token antigo é derrubado da voz na hora', function (): void {
+    Event::fake([VoiceStateUpdated::class]);
+
+    $owner = User::factory()->create();
+    $gone = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    $voice = $server->channels()->where('type', 'voice')->firstOrFail();
+    fakeSfu($voice->id);
+
+    $joined = ['event' => 'joined', 'room' => $voice->id, 'sub' => "user:{$gone->id}", 'name' => $gone->name, 'ip' => '203.0.113.9', 'at' => time()];
+
+    $this->withHeaders(sfuHeaders($joined))->postJson('/api/sfu/events', $joined)->assertNoContent();
+
+    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), "/rooms/{$voice->id}/kick") && $request['userId'] === "user:{$gone->id}");
+
+    expect(ChannelAccess::query()->count())->toBe(0);
+
+    Event::assertNotDispatched(VoiceStateUpdated::class);
 });
 
 it('a mesma assinatura do SFU não entra duas vezes', function (): void {

@@ -129,7 +129,11 @@ final class Channel extends Model
         $me = $this->memberOrFail($actor);
         $me->authorize(PermissionEnum::ManageRoles);
 
-        throw_if((($allow | $deny) & ~$me->permissions($this)) !== 0, ForbiddenException::class, 'Você não pode sobrescrever permissões que não tem neste canal.');
+        // Os bits que a sobrescrita já tinha contam também: sem isto, zerar um `deny` que eu
+        // não tenho (o VIEW_CHANNEL que esconde o canal) abria o canal para o servidor inteiro.
+        $current = $this->overwrites()->where('target_type', $type)->where('target_id', $targetId)->first();
+
+        throw_if((($allow | $deny | ($current->allow ?? 0) | ($current->deny ?? 0)) & ~$me->permissions($this)) !== 0, ForbiddenException::class, 'Você não pode sobrescrever permissões que não tem neste canal.');
 
         $this->authorizeOverwriteTarget($me, $type, $targetId);
 
@@ -152,6 +156,10 @@ final class Channel extends Model
         $me->authorize(PermissionEnum::ManageRoles);
 
         $this->authorizeOverwriteTarget($me, $type, $targetId);
+
+        $current = $this->overwrites()->where('target_type', $type)->where('target_id', $targetId)->first();
+
+        throw_if(((($current->allow ?? 0) | ($current->deny ?? 0)) & ~$me->permissions($this)) !== 0, ForbiddenException::class, 'Você não pode apagar permissões que não tem neste canal.');
 
         self::write('falha ao apagar a sobrescrita', fn () => $this->overwrites()->where('target_type', $type)->where('target_id', $targetId)->delete(), ['channel_id' => $this->id]);
 
@@ -208,7 +216,9 @@ final class Channel extends Model
         $member->authorize(PermissionEnum::ViewChannel, $this);
         $member->authorize(PermissionEnum::Connect, $this);
 
-        throw_if(! is_null($this->user_limit) && count($sfu->peers($this, fresh: true)) >= $this->user_limit, ForbiddenException::class, 'O canal está cheio.');
+        // Quem pede o token para reconectar ainda consta na presença (a carência do SFU), e não
+        // conta contra o limite: sem isto, cair da rede num canal cheio impedia de voltar.
+        throw_if(! is_null($this->user_limit) && count(array_filter($sfu->peers($this, fresh: true), fn (array $peer): bool => $peer['sub'] !== $user->subject())) >= $this->user_limit, ForbiddenException::class, 'O canal está cheio.');
 
         $can = [];
 
