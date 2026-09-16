@@ -1,6 +1,5 @@
 import { useState } from 'react';
 
-import { Platform } from '../../core/Platform.ts';
 import { Avatar } from '../common/Avatar.tsx';
 import { Icon } from '../common/Icon.tsx';
 import { Popover } from '../common/Popover.tsx';
@@ -95,7 +94,7 @@ export function VoicePanel() {
                             <p className="label-mono mt-0.5">{user ? 'conta conectada' : 'usando sem login'}</p>
                         </div>
                         {user && <button className={MENU_ITEM} type="button" onClick={() => choose(() => hub.openModal({ type: 'user' }))}><Icon name="gear" size={15} />Configurações da conta</button>}
-                        {Platform.isWindows() && <button className={MENU_ITEM} type="button" onClick={() => choose(() => app.setTab('clips'))}><Icon name="scissors" size={15} />Clipes</button>}
+                        <button className={MENU_ITEM} type="button" onClick={() => choose(() => app.setTab('clips'))}><Icon name="scissors" size={15} />Clipes</button>
                         <button className={MENU_ITEM} type="button" onClick={() => choose(() => app.openLogs())}><Icon name="logs" size={15} />Logs</button>
                         {user && <button className={`${MENU_ITEM} text-periwinkle`} type="button" onClick={() => choose(() => hub.logout())}><Icon name="logout" size={15} />Sair da conta</button>}
                     </Popover>
