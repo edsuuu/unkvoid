@@ -1,17 +1,33 @@
-//! Entrar com o Google: o navegador do sistema faz o login e volta com o token do
-//! Sanctum para uma porta local que só existe durante a espera.
+//! Entrar com o Google: o navegador do sistema faz o login e devolve o token pelo
+//! esquema `unkvoid://`, que o sistema operacional entrega a esta janela.
+//!
+//! O token viaja dentro do endereço, então o `state` sorteado aqui tem de voltar igual:
+//! é o que impede uma página qualquer de mandar um token e logar a pessoa numa conta
+//! alheia.
+//!
+//! ponytail: quem registrar o mesmo esquema na máquina pode interceptar o retorno. A
+//! porta local de antes não tinha esse risco, mas exigia um servidor HTTP dentro do app
+//! e uma tela de navegador feia no fim. Se a interceptação passar a importar, o caminho
+//! é PKCE, com o segredo nascendo aqui dentro e o token sendo trocado por ele.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::sync::mpsc::{Sender, channel};
+use std::time::Duration;
 
-/// Qual pedido de login é o atual. Um clique novo (ou o diálogo fechado e reaberto)
-/// avança o contador, e a espera antiga percebe e sai — sem isto ficavam dois
-/// servidores locais abertos, e o token do navegador podia cair no que ninguém mais
-/// ouvia.
-static GENERATION: AtomicU64 = AtomicU64::new(0);
+use url::Url;
 
 /// Quanto o navegador tem para voltar. Dois minutos dá para digitar a senha e o segundo
-/// fator; depois disso a pessoa já desistiu e a porta não precisa continuar aberta.
+/// fator; depois disso a pessoa já desistiu e a espera não precisa continuar.
 const DEADLINE_SECONDS: u64 = 120;
+
+/// Quem está esperando o retorno: o `state` sorteado e por onde entregar o token. Um
+/// pedido novo toma o lugar do anterior, e o anterior morre na espera — sem isto dois
+/// cliques deixariam dois esperando, e o token cairia no que ninguém mais ouve.
+static PENDING: Mutex<Option<(String, Sender<String>)>> = Mutex::new(None);
+
+fn pending() -> std::sync::MutexGuard<'static, Option<(String, Sender<String>)>> {
+    PENDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 #[tauri::command]
 pub async fn google_login(server: String) -> Result<String, String> {
@@ -21,76 +37,51 @@ pub async fn google_login(server: String) -> Result<String, String> {
         return Err("só endereços http e https".into());
     }
 
-    let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    let state: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+    let (sender, receiver) = channel();
 
-    tokio::task::spawn_blocking(move || login_loopback(&server, generation).map_err(|error| error.to_string()))
-        .await
-        .map_err(|error| error.to_string())?
+    *pending() = Some((state.clone(), sender));
+
+    open_in_browser(&format!("{}/oauth2/app?state={state}", server.trim_end_matches('/')))
+        .map_err(|error| error.to_string())?;
+
+    tokio::task::spawn_blocking(move || {
+        receiver
+            .recv_timeout(Duration::from_secs(DEADLINE_SECONDS))
+            .map_err(|_| "o navegador não voltou com o token em dois minutos".to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
-/// Espera o navegador chamar `http://127.0.0.1:<porta>/?token=…&state=…`.
-///
-/// O `state` é sorteado aqui e tem de voltar igual: sem ele qualquer página aberta na
-/// máquina poderia mandar um token para esta porta e logar a pessoa numa conta alheia.
-fn login_loopback(server: &str, generation: u64) -> anyhow::Result<String> {
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::time::{Duration, Instant};
+/// O sistema entregou um `unkvoid://…` ao app. Só o retorno do login interessa, e só
+/// quando o `state` é o que este processo sorteou.
+pub fn handle_deep_link(url: &Url) {
+    let mut slot = pending();
 
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let deadline = Instant::now() + Duration::from_secs(DEADLINE_SECONDS);
-    let state: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+    let Some(state) = slot.as_ref().map(|(state, _)| state.clone()) else {
+        return;
+    };
 
-    listener.set_nonblocking(true)?;
-    open_in_browser(&format!("{}/oauth2/app?port={port}&state={state}", server.trim_end_matches('/')))?;
+    let Some(token) = token_from_url(url, Some(&state)) else {
+        return;
+    };
 
-    while Instant::now() < deadline {
-        if GENERATION.load(Ordering::Relaxed) != generation {
-            anyhow::bail!("login cancelado por um pedido mais novo");
-        }
+    if let Some((_, sender)) = slot.take() {
+        let _ = sender.send(token);
+    }
+}
 
-        let Ok((mut stream, _)) = listener.accept() else {
-            std::thread::sleep(Duration::from_millis(100));
-            continue;
-        };
-
-        let mut request = [0_u8; 4096];
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-        let read = stream.read(&mut request).unwrap_or(0);
-
-        let Some(token) = token_from_request(&String::from_utf8_lossy(&request[..read]), &state) else {
-            let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
-            continue;
-        };
-
-        let body = "<!doctype html><meta charset=\"utf-8\"><title>Unkvoid</title>\
-            <body style=\"font-family:sans-serif;text-align:center;padding:4rem\">\
-            <h1>Pronto</h1><p>Pode voltar para o Unkvoid.</p></body>";
-
-        let _ = stream.write_all(
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            )
-            .as_bytes(),
-        );
-
-        return Ok(token);
+/// O token de `unkvoid://login?token=…&state=…`, já sem a codificação de URL, e só se o
+/// `state` bater. `None` para qualquer outro endereço.
+fn token_from_url(url: &Url, expected_state: Option<&str>) -> Option<String> {
+    if url.scheme() != "unkvoid" || url.host_str() != Some("login") {
+        return None;
     }
 
-    Err(anyhow::anyhow!("o navegador não voltou com o token em dois minutos"))
-}
-
-/// O token de `GET /?token=…&state=… HTTP/1.1`: a segunda palavra da primeira linha, já
-/// sem a codificação de URL, e só se o `state` for o esperado. `None` para qualquer
-/// outro pedido (o `favicon.ico`, por exemplo).
-fn token_from_request(head: &str, expected_state: &str) -> Option<String> {
-    let path = head.lines().next()?.split_whitespace().nth(1)?;
-    let url = url::Url::parse(&format!("http://127.0.0.1{path}")).ok()?;
     let value = |name: &str| url.query_pairs().find(|(key, _)| key == name).map(|(_, value)| value.into_owned());
 
-    if value("state")? != expected_state {
+    if value("state")? != expected_state? {
         return None;
     }
 
@@ -146,16 +137,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_token_comes_out_of_the_first_line_decoded_only_with_the_right_state() {
-        assert_eq!(
-            token_from_request("GET /?token=12%7Cab%2Bcd&state=abc HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", "abc").as_deref(),
-            Some("12|ab+cd")
-        );
-        assert_eq!(token_from_request("GET /?token=12&state=xyz HTTP/1.1\r\n", "abc"), None);
-        assert_eq!(token_from_request("GET /?token=12 HTTP/1.1\r\n", "abc"), None);
-        assert_eq!(token_from_request("GET /favicon.ico HTTP/1.1\r\n", "abc"), None);
-        assert_eq!(token_from_request("GET /?token=&state=abc HTTP/1.1\r\n", "abc"), None);
-        assert_eq!(token_from_request("", "abc"), None);
+    fn the_token_comes_out_of_the_link_only_with_the_right_state() {
+        let link = |texto: &str| Url::parse(texto).expect("endereço inválido");
+
+        assert_eq!(token_from_url(&link("unkvoid://login?token=12%7Cab%2Bcd&state=abc"), Some("abc")).as_deref(), Some("12|ab+cd"));
+        assert_eq!(token_from_url(&link("unkvoid://login?token=12&state=xyz"), Some("abc")), None);
+        assert_eq!(token_from_url(&link("unkvoid://login?token=12"), Some("abc")), None);
+        assert_eq!(token_from_url(&link("unkvoid://login?token=&state=abc"), Some("abc")), None);
+        assert_eq!(token_from_url(&link("unkvoid://outro?token=12&state=abc"), Some("abc")), None, "só o retorno do login");
+        assert_eq!(token_from_url(&link("https://unkvoid.com/login?token=12&state=abc"), Some("abc")), None, "endereço da web não é retorno");
+        assert_eq!(token_from_url(&link("unkvoid://login?token=12&state=abc"), None), None, "ninguém esperando, nada entra");
     }
 
     #[test]

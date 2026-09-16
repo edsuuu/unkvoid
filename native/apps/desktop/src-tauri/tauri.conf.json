@@ -77,6 +77,11 @@
     "createUpdaterArtifacts": true
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["unkvoid"]
+      }
+    },
     "updater": {
       "active": true,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg5QkY1M0UyNEM5MTg5QQpSV1NhR01ra1B2V2JDSzhaSUJRR3Ezak1nYlNBWEh0NWZkWXRBTlJqdUQyaVNoVXh0b2RBeTVwOAo=",
