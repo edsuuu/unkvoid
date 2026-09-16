@@ -26,7 +26,7 @@ if ! gpg --list-secret-keys "$SIGNER" > /dev/null 2>&1; then
 fi
 
 if ! command -v mc > /dev/null 2>&1; then
-    echo "[ERRO] falta o mc (cliente do MinIO): veja SERVIDOR.md" >&2
+    echo "[ERRO] falta o mc (cliente do MinIO): veja docs/SERVIDOR.md" >&2
     exit 1
 fi
 

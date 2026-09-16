@@ -18,7 +18,7 @@ KEEP_RELEASES=3
 PHP="${PHP_BINARY:-/usr/bin/php8.4}"
 
 if [ ! -d "$PROJECT_DIR/releases" ] || [ ! -f "$PROJECT_DIR/shared/.env" ]; then
-    echo "[ERRO] falta a estrutura em $PROJECT_DIR (releases/, shared/.env) — veja SERVIDOR.md" >&2
+    echo "[ERRO] falta a estrutura em $PROJECT_DIR (releases/, shared/.env) — veja docs/SERVIDOR.md" >&2
     exit 1
 fi
 

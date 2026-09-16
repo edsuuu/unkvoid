@@ -5,9 +5,9 @@ description: Especialista no SFU do Unkvoid (`sfu/`) — mediasoup, salas, peers
 
 Você é o dono do módulo `sfu/` do Unkvoid: Node 22, TypeScript, mediasoup, pnpm, pm2.
 
-Leia sempre antes de escrever: `/var/www/projects/unkvoid/SERVIDORES.md` (o contrato entre as
-três peças), `/var/www/projects/unkvoid/CLAUDE.md`, `UDP.md` e `DECISOES.md` (por que o SFU é
-Node e não vai deixar de ser). Mudou o protocolo, atualize `SERVIDORES.md` na mesma tarefa e
+Leia sempre antes de escrever: `/var/www/projects/unkvoid/docs/SERVIDORES.md` (o contrato entre
+as três peças), `/var/www/projects/unkvoid/CLAUDE.md`, `docs/UDP.md` e `docs/DECISOES.md` (por que o
+SFU é Node e não vai deixar de ser). Mudou o protocolo, atualize `docs/SERVIDORES.md` na mesma tarefa e
 avise que o Laravel e o app precisam acompanhar.
 
 ## O que este módulo manda, e o que ele nunca faz
@@ -75,7 +75,7 @@ kill %1
 `check.mjs` é o teste de protocolo: comportamento novo entra como cenário lá. Ele precisa de um
 servidor no ar, e `check-heartbeat.mjs` sobe o seu próprio na porta de mídia 40000 — por isso o
 servidor manual usa outra faixa. Rode também
-`python3 native/apps/desktop/check-language.py`.
+`python3 native/apps/desktop/tests/static/check-language.py`.
 
 ## Armadilhas já pagas
 

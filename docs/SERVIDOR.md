@@ -1,7 +1,7 @@
 # O servidor
 
 **Para levantar uma máquina do zero, em ordem de execução, o roteiro é
-[infra/INSTALAR-VPS.md](infra/INSTALAR-VPS.md).** Aquele arquivo tem o comando de cada
+[infra/INSTALAR-VPS.md](INSTALAR-VPS.md).** Aquele arquivo tem o comando de cada
 passo; este tem o porquê — as medições da máquina que existe, o que cada número
 resolveu, e o que desligar.
 
@@ -17,9 +17,9 @@ o que não deu para verificar está marcado.
 
 | Assunto | Onde |
 |---|---|
-| Instalar do zero, na ordem, com comando copiável | [infra/INSTALAR-VPS.md](infra/INSTALAR-VPS.md) |
-| Teto de espectadores por banda, e a região | [infra/INSTALAR-VPS.md](infra/INSTALAR-VPS.md), seções 1.2 a 1.4 |
-| Migrar o e-mail sem derrubar a caixa | [infra/INSTALAR-VPS.md](infra/INSTALAR-VPS.md), seção 11 |
+| Instalar do zero, na ordem, com comando copiável | [infra/INSTALAR-VPS.md](INSTALAR-VPS.md) |
+| Teto de espectadores por banda, e a região | [infra/INSTALAR-VPS.md](INSTALAR-VPS.md), seções 1.2 a 1.4 |
+| Migrar o e-mail sem derrubar a caixa | [infra/INSTALAR-VPS.md](INSTALAR-VPS.md), seção 11 |
 | Quais portas abrir, e por que a faixa é larga | [UDP.md](UDP.md) e o roteiro, seção 2 |
 | O caminho da imagem e os buffers de socket | [REDE.md](REDE.md) |
 | Publicar uma versão no repositório APT | aqui embaixo, seção 2 |
@@ -301,3 +301,23 @@ Na ordem, porque cada uma explica a seguinte:
    Contabo.
 5. `curl -s https://unkvoid.com/downloads/latest.json` — 404 aqui
    significa que ninguém se atualiza, mesmo com tudo o resto de pé.
+
+## 7. Entrar na VPS e na caixa de e-mail
+
+**SSH:** a chave é `~/.ssh/vps`, com o alias `vps` no `~/.ssh/config` do WSL. Ela veio
+de `/mnt/c/Users/edsu/.ssh/`, e é **diferente** da chave de mesmo nome que já estava no
+WSL: só a do Windows autentica.
+
+**E-mail:** o servidor é o docker-mailserver, sem webmail. Qualquer cliente serve
+(Thunderbird, Gmail no celular com "outra conta", Mail do iPhone):
+
+| | |
+|---|---|
+| Usuário | o endereço inteiro, `contato@unkvoid.com` |
+| Senha | a definida em `docker exec unkvoid-mail setup email add contato@unkvoid.com` |
+| Receber | IMAP, `mail.unkvoid.com`, porta 993, SSL/TLS |
+| Enviar | SMTP, `mail.unkvoid.com`, porta 587, STARTTLS |
+
+O `no-reply@unkvoid.com` é a conta com que o Laravel envia (`MAIL_USERNAME` e
+`MAIL_PASSWORD` no `.env` da VPS) e não precisa ser lida. Os registros de DNS do
+e-mail (MX, SPF, DKIM, DMARC e PTR) estão no [INSTALAR-VPS.md](INSTALAR-VPS.md).

@@ -43,4 +43,4 @@ cd native/apps/desktop && npx tauri build --bundles app dmg
 ```
 
 O contexto de por que existe uma cópia em `C:\Users\edsu\unkvoid-build` está no
-[ESTADO.md](../ESTADO.md).
+[BUILD-WINDOWS.md](../docs/BUILD-WINDOWS.md).

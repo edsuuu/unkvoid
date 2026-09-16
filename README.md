@@ -36,7 +36,7 @@ A sala anônima por código continua sem banco e sem conta: o app fala com o SFU
 WebSocket só, e o `/health` existe para ele saber que o servidor está de pé antes de
 deixar alguém entrar. O modo com conta (servidores, canais de texto e voz, cargos,
 câmera) é o Laravel quem manda: ele decide quem entra em qual canal e assina o token
-que o SFU confere. O contrato entre as três peças está em [SERVIDORES.md](SERVIDORES.md).
+que o SFU confere. O contrato entre as três peças está em [docs/SERVIDORES.md](docs/SERVIDORES.md).
 
 ```
 native/
@@ -181,7 +181,7 @@ cd sfu && pnpm run build
 SFU_CONNECTIONS_PER_MINUTE=200 node dist/server.js &   # o check abre uma dúzia de sockets
 pnpm run check                                        # o contrato inteiro, num servidor de verdade
 
-cd native/apps/desktop && npm run check               # ids da interface e a ordem da transmissão
+cd native/apps/desktop && npm run check               # tsc, ESLint, Vitest (tests/unit) e os checks de tests/static
 cd native && cargo test --workspace                   # Opus em blocos de 20 ms, pacotização, SRTP
 cargo run -p media --example plain -- <ws> <sala>     # o SFU confirmando que recebe o RTP
 ```
@@ -195,22 +195,30 @@ cargo run -p media --example plain -- <ws> <sala>     # o SFU confirmando que re
   erro de JS vira tela preta sem pista. O harness roda o mesmo bundle no navegador.
 - **`use_sfu` só depois de declarar vídeo E áudio.** Ao contrário, o Rust manda RTP de um
   SSRC que o servidor ainda não conhece e ele descarta calado: a transmissão "funciona" e
-  ninguém vê nada. O `check-broadcast.mjs` guarda essa ordem.
+  ninguém vê nada. O `tests/unit/broadcast.test.ts` guarda essa ordem.
 - **`hidden` do Tailwind é classe, não atributo.** Alternar o atributo num elemento que
   tem a classe não faz nada.
 - **`build.rs` tem `cargo:rerun-if-changed=../dist`.** Sem isso o cargo não recompila
   quando só o frontend muda, e o app sai com a interface antiga. Não remova.
+- **O crate `capture` tem um módulo chamado `windows`.** Dentro dele, `windows::Win32::…`
+  acha o módulo local em vez da crate da Microsoft. Precisa de `::windows::`.
+- **Ponteiro COM não é `Send`.** O encoder atravessa uma vez para a thread da captura, e há
+  um `unsafe impl Send` com a justificativa escrita: os objetos do D3D11 (com proteção
+  multithread ligada) e o MFT assíncrono são livres de apartamento.
 
 ## Documentos
 
+Tudo em [`docs/`](docs/):
+
 | Arquivo | O que tem |
 |---|---|
-| `ROADMAP.md` | site, login, salas no Laravel e a VPS: o que foi decidido e as fases |
-| `DECISOES.md` | decisões de arquitetura e o porquê de cada uma |
-| `REDE.md` | o caminho da imagem, os ajustes de rede e o que mora fora do repositório |
-| `SEGURANCA.md` | o que está protegido, o que não está, e o que falta |
-| `AUTO-UPDATE.md` | assinatura, manifesto e os dois canais de atualização |
-| `SERVIDOR.md` | a VPS que existe: medições, firewall, repositório APT, o que desligar |
-| `infra/INSTALAR-VPS.md` | levantar uma VPS do zero, em ordem, e migrar o e-mail sem perder mensagem |
-| `UDP.md` | quantas portas UDP a rede precisa abrir, e o que quebra calado quando aperta |
-| `BUILD-WINDOWS.md`, `BUILD-MACOS.md` | como gerar instalador em cada sistema |
+| `docs/SERVIDORES.md` | o contrato entre as três peças: API, token, eventos, comandos do Tauri |
+| `docs/ESTADO.md` | o que só foi escrito sem rodar em hardware, o que falta e as perguntas abertas |
+| `docs/DECISOES.md` | decisões de arquitetura e o porquê de cada uma |
+| `docs/REDE.md` | o caminho da imagem, os ajustes de rede e o que mora fora do repositório |
+| `docs/SEGURANCA.md` | o que está protegido, o que não está, e o que falta |
+| `docs/AUTO-UPDATE.md` | assinatura, manifesto e os dois canais de atualização |
+| `docs/SERVIDOR.md` | a VPS que existe: medições, firewall, repositório APT, o que desligar |
+| `docs/INSTALAR-VPS.md` | levantar uma VPS do zero, em ordem, e migrar o e-mail sem perder mensagem |
+| `docs/UDP.md` | quantas portas UDP a rede precisa abrir, e o que quebra calado quando aperta |
+| `docs/BUILD-WINDOWS.md`, `docs/BUILD-MACOS.md` | como gerar instalador em cada sistema |
