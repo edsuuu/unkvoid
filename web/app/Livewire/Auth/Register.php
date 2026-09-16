@@ -32,9 +32,12 @@ final class Register extends Component
     {
         /** @var array{name: string, email: string, password: string} $validated */
         $validated = $this->validate([
-            'name' => ['required', 'string', 'max:40'],
+            'name' => ['required', 'string', 'min:3', 'max:32', 'regex:/^[A-Za-z0-9._]+$/', 'unique:users,name'],
             'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
             'password' => ['required', 'string', 'confirmed', Password::min(8)],
+        ], [
+            'name.regex' => 'O apelido aceita letras, números, ponto e _ — sem espaço.',
+            'name.unique' => 'Esse apelido já é de outra pessoa.',
         ]);
 
         try {

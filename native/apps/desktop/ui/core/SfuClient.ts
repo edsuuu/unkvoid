@@ -679,8 +679,12 @@ export class SfuClient extends EventTarget {
         }
     }
 
-    async leaveRoom(): Promise<void> {
-        await this.tolerate('leave');
+    leaveRoom(): void {
+        try {
+            this.socket?.send(JSON.stringify({ id: this.nextRequestId++, action: 'leave', data: {} }));
+        } catch (failure) {
+            this.emit('diagnostic', { event: 'sfu.leave.error', data: { message: Failure.message(failure) } });
+        }
     }
 
     disconnect(): void {
