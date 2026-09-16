@@ -125,3 +125,40 @@ it('lista as 50 mais recentes antes de um id, em ordem crescente', function (): 
 
     $this->actingAs(User::factory()->create(), 'sanctum')->getJson("/api/channels/{$channel->id}/messages")->assertForbidden();
 });
+
+it('responder guarda a mensagem original, e so aceita mensagem do mesmo canal', function (): void {
+    Event::fake([MessageSent::class]);
+
+    $owner = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    $channel = $server->channels()->where('type', 'text')->firstOrFail();
+    $other = Channel::query()->create(['server_id' => $server->id, 'name' => 'outro', 'type' => 'text', 'position' => 9]);
+
+    $original = $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$channel->id}/messages", ['body' => 'quem vem hoje?'])
+        ->assertCreated()
+        ->json('data.id');
+
+    $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$channel->id}/messages", ['body' => 'eu vou', 'reply_to_id' => $original])
+        ->assertCreated()
+        ->assertJsonPath('data.reply_to.id', $original)
+        ->assertJsonPath('data.reply_to.name', $owner->name)
+        ->assertJsonPath('data.reply_to.body', 'quem vem hoje?');
+
+    // Responder mensagem de outro canal vazaria o texto de um canal que a pessoa pode nem ver.
+    $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$other->id}/messages", ['body' => 'de outro canal', 'reply_to_id' => $original])
+        ->assertStatus(422);
+
+    $history = $this->actingAs($owner, 'sanctum')->getJson("/api/channels/{$channel->id}/messages")->assertOk()->json('data');
+
+    expect(collect($history)->firstWhere('body', 'eu vou')['reply_to']['body'])->toBe('quem vem hoje?');
+
+    // Apagar a original não leva a resposta junto: o fio continua de pé, só a citação some.
+    // Apagar aqui é soft delete, então a coluna segue apontando e é a relação que não resolve.
+    $this->actingAs($owner, 'sanctum')->deleteJson("/api/messages/{$original}")->assertNoContent();
+
+    $depois = $this->actingAs($owner, 'sanctum')->getJson("/api/channels/{$channel->id}/messages")->assertOk()->json('data');
+    $resposta = collect($depois)->firstWhere('body', 'eu vou');
+
+    expect($resposta)->not->toBeNull()
+        ->and($resposta['reply_to'])->toBeNull();
+});

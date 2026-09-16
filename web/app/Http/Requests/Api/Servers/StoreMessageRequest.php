@@ -15,6 +15,7 @@ final class StoreMessageRequest extends FormRequest
     {
         return [
             'body' => ['required', 'string', 'min:1', 'max:2000'],
+            'reply_to_id' => ['nullable', 'integer'],
         ];
     }
 }
