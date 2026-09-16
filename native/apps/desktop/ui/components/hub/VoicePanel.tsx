@@ -26,7 +26,7 @@ export function VoicePanel() {
     const voiceChannel = voiceState.channel;
     const speakless = ! voiceState.can.includes('speak');
     const micOff = voiceState.muted || voiceState.serverMuted || speakless;
-    const status = ! voiceChannel ? 'Online' : voiceState.deafened ? 'Surdo' : voiceState.serverMuted ? 'Mutado pelo servidor' : micOff ? 'Mudo' : voiceState.speaking ? 'Falando' : 'Microfone aberto';
+    const status = ! voiceChannel ? 'Online' : voiceState.micProblem !== '' ? 'Sem microfone' : voiceState.deafened ? 'Surdo' : voiceState.serverMuted ? 'Mutado pelo servidor' : micOff ? 'Mudo' : voiceState.speaking ? 'Falando' : 'Microfone aberto';
 
     return (
         <div className="glass flex flex-none flex-col gap-2.5 p-3">
@@ -69,7 +69,7 @@ export function VoicePanel() {
                 <button
                     className={`flex size-[26px] cursor-pointer items-center justify-center rounded-lg transition hover:bg-row disabled:cursor-not-allowed disabled:opacity-40 ${voiceChannel && micOff ? 'text-danger' : voiceState.speaking ? 'text-online ring-1 ring-online/60' : 'text-ink-icon'}`}
                     type="button"
-                    title={voiceState.serverMuted ? 'Um moderador mutou você neste servidor' : speakless && voiceChannel ? 'Você não tem permissão para falar neste canal' : micOff ? 'Ativar o microfone' : 'Mutar o microfone'}
+                    title={voiceState.micProblem !== '' ? voiceState.micProblem : voiceState.serverMuted ? 'Um moderador mutou você neste servidor' : speakless && voiceChannel ? 'Você não tem permissão para falar neste canal' : micOff ? 'Ativar o microfone' : 'Mutar o microfone'}
                     disabled={! voiceChannel || voiceState.serverMuted || speakless}
                     onClick={() => void voice.toggleMute()}
                 >

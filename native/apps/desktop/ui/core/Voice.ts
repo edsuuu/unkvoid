@@ -39,6 +39,7 @@ export type VoiceState = {
     clipOpen: boolean;
     speaking: boolean;
     talkKeyRefused: boolean;
+    micProblem: string;
     preferences: VoicePreferences;
 };
 
@@ -99,6 +100,7 @@ export class Voice {
             clipOpen: false,
             speaking: false,
             talkKeyRefused: false,
+            micProblem: '',
             preferences: { ...preferences, keybinds: { ...Voice.DEFAULT_KEYBINDS, ...preferences.keybinds } },
         });
     }
@@ -385,7 +387,11 @@ export class Voice {
                 channelCount: 1,
             };
 
-            const track = this.micTrack ?? (await navigator.mediaDevices.getUserMedia({ audio })).getAudioTracks()[0];
+            const track = this.micTrack ?? await this.openMicrophone(audio);
+
+            if (! track) {
+                return;
+            }
 
             if (ticket !== this.joinTicket) {
                 track.stop();
@@ -407,6 +413,39 @@ export class Voice {
         this.app.log('voice.mic.started', { producerId: this.micProducerId, native: this.native() });
     }
 
+    async openMicrophone(audio: MediaTrackConstraints): Promise<MediaStreamTrack | null> {
+        try {
+            const track = (await navigator.mediaDevices.getUserMedia({ audio })).getAudioTracks()[0];
+
+            this.store.set({ micProblem: '' });
+
+            return track ?? null;
+        } catch (failure) {
+            const problem = Voice.micProblem(failure);
+
+            this.app.log('voice.mic.unavailable', { name: (failure as DOMException | null)?.name ?? null, message: Failure.message(failure) });
+            this.store.set({ micProblem: problem });
+            this.app.toast(problem, true);
+
+            return null;
+        }
+    }
+
+    static micProblem(failure: unknown): string {
+        switch ((failure as DOMException | null)?.name) {
+            case 'NotAllowedError':
+            case 'SecurityError':
+                return 'o sistema não liberou o microfone: autorize nas configurações de privacidade e entre de novo';
+            case 'NotReadableError':
+            case 'AbortError':
+                return 'outro programa está segurando o microfone: feche ele e entre de novo';
+            case 'OverconstrainedError':
+                return 'o microfone escolhido não existe mais: escolha outro nas configurações';
+            default:
+                return 'nenhum microfone encontrado: você entrou só para ouvir';
+        }
+    }
+
     async stopMic(): Promise<void> {
         if (this.micProducerId) {
             await this.app.media.sfu?.closeProducer(this.micProducerId);
@@ -417,7 +456,7 @@ export class Voice {
         this.micTrack?.stop();
         this.micTrack = null;
         this.gateOpen = true;
-        this.store.set({ speaking: false });
+        this.store.set({ speaking: false, micProblem: '' });
 
         if (this.native()) {
             await Tauri.invoke('stop_voice').catch((failure: unknown) => this.app.log('voice.stop.error', { message: Failure.message(failure) }));
