@@ -4,10 +4,11 @@ import { useApp } from '../useApp.ts';
 import { useStore } from '../useStore.ts';
 import { ChannelColumn } from './ChannelColumn.tsx';
 import { ChatPanel } from './ChatPanel.tsx';
+import { MemberList } from './MemberList.tsx';
 
 export function ServerView() {
     const hub = useApp().hub;
-    const { tree, stageOpen, inviteBanner } = useStore(hub.store);
+    const { tree, stageOpen, inviteBanner, membersOpen } = useStore(hub.store);
     const voiceState = useStore(hub.voice.store);
     const stageChannel = stageOpen ? voiceState.channel : null;
 
@@ -49,6 +50,8 @@ export function ServerView() {
                     )
                     : <ChatPanel />}
             </div>
+
+            {membersOpen && ! stageChannel && <MemberList />}
         </div>
     );
 }

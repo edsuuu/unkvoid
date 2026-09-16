@@ -6,6 +6,7 @@
 mod broadcast;
 mod logbook;
 mod login;
+mod shortcuts;
 mod watch;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -816,6 +817,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(ActiveSession::default())
         .manage(SelfCheck(checking))
         .invoke_handler(tauri::generate_handler![
@@ -840,6 +843,7 @@ pub fn run() {
             broadcast::set_voice_muted,
             broadcast::start_camera,
             broadcast::stop_camera,
+            shortcuts::set_shortcuts,
             login::google_login,
             login::open_url,
             watch_key,
@@ -876,6 +880,28 @@ pub fn run() {
             // resposta já estar em cache quando alguém ligar a voz.
             #[cfg(target_os = "linux")]
             std::thread::spawn(PlatformCapturer::warm_up);
+
+            // O retorno do login chega pelo `unkvoid://`: o sistema entrega o endereço
+            // aqui, e a janela vem para a frente junto — quem clicou está olhando para o
+            // navegador e espera o app aparecer.
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+
+                // No Windows e no Linux o esquema só vale depois de registrado em tempo de
+                // execução; no macOS quem registra é o Info.plist do bundle.
+                #[cfg(any(target_os = "windows", target_os = "linux"))]
+                let _ = app.deep_link().register_all();
+
+                let handle = app.handle().clone();
+
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        login::handle_deep_link(&url);
+                    }
+
+                    show_main_window(&handle);
+                });
+            }
 
             // O que sobrou do erro da vez passada sobe agora. Um pânico ou uma morte suja
             // dentro de uma chamada do sistema leva o processo junto, e não sobra ninguém

@@ -15,6 +15,7 @@ export type ServerSummary = {
     id: number;
     name: string;
     owner_id: number;
+    icon_url: string | null;
     last_accessed_at: string | null;
 };
 
@@ -80,6 +81,7 @@ export type ServerTree = {
     name: string;
     owner_id: number;
     invite_code: string | null;
+    icon_url: string | null;
     me: { user_id: number; permissions: number; top_position: number };
     roles: Role[];
     channels: Channel[];
@@ -88,9 +90,12 @@ export type ServerTree = {
     bans: Ban[];
 };
 
+export type MessageType = 'user' | 'join';
+
 export type Message = {
     id: number;
     channel_id: string;
+    type: MessageType;
     user: { id: number; name: string; avatar_url: string | null };
     body: string;
     edited_at: string | null;
@@ -117,4 +122,45 @@ export type Clip = {
 export type Config = {
     sfu: string;
     reverb: { host: string; port: number; key: string; scheme: string };
+};
+
+export type Person = {
+    id: number;
+    name: string;
+    avatar_url: string | null;
+};
+
+export type FriendshipStatus = 'pending' | 'accepted' | 'blocked';
+
+export type Friendship = {
+    id: number;
+    status: FriendshipStatus;
+    requester: Person;
+    addressee: Person;
+    responded_at: string | null;
+    created_at: string | null;
+};
+
+export type DirectMessage = {
+    id: number;
+    body: string;
+    created_at: string;
+    edited_at: string | null;
+    mine: boolean;
+    sender: Person;
+};
+
+export type DirectConversation = {
+    user: Person;
+    last: { id: number; body: string; created_at: string; mine: boolean } | null;
+    unread: number;
+};
+
+export type Audit = {
+    id: string;
+    at: string;
+    event: string;
+    type: string;
+    actor: Person | null;
+    summary: string;
 };

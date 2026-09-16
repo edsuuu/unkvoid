@@ -6,7 +6,6 @@ import { ConfirmDialog } from './layout/ConfirmDialog.tsx';
 import { LogsModal } from './layout/LogsModal.tsx';
 import { OfflineScreen } from './layout/OfflineScreen.tsx';
 import { Toasts } from './layout/Toasts.tsx';
-import { TopBar } from './layout/TopBar.tsx';
 import { UpdateScreen } from './layout/UpdateScreen.tsx';
 import { RoomScreen } from './room/RoomScreen.tsx';
 import { ShareModal } from './room/ShareModal.tsx';
@@ -24,7 +23,6 @@ export function AppShell() {
 
             {['entry', 'room', 'hub'].includes(screen) && (
                 <>
-                    <TopBar />
                     <main className="relative min-h-0 flex-1">
                         <div className="h-full" hidden={tab !== 'broadcast'}>
                             {screen === 'entry' && <EntryScreen />}

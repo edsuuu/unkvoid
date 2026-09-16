@@ -26,6 +26,9 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# O `unkvoid://` do retorno do login: registrar esquema exige suporte de cada sistema,
+# e o plugin é quem escreve isso no bundle do macOS e no instalador do Windows.
+tauri-plugin-deep-link = "2.4.10"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-single-instance = "2.4.4"
 tauri-plugin-updater = "2.11.0"
@@ -35,6 +38,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 # Já vem pelo reqwest; aqui só para ler o `?token=` que o navegador devolve no login.
 url = "2"
+tauri-plugin-global-shortcut = "2.3.2"
 
 # O WebKitGTK entrega WebRTC desligado. Sem mexer nesta configuração, a janela do app no
 # Linux não tem `RTCPeerConnection` e o mediasoup morre antes de entrar na sala.

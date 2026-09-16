@@ -24,6 +24,7 @@ PORTUGUES = {
     'anterior', 'apresentacao', 'argumento', 'argumentos', 'arquivo', 'arquivos',
     'assinatura', 'atributos', 'ativa', 'atualizar', 'aviso', 'avanco', 'bandeiras',
     'bloco', 'bombear', 'botao', 'botoes', 'caminho', 'campos', 'carimbos', 'chamadas',
+    'exclui', 'excluir',
     'chave', 'cliente', 'codigo', 'colunas', 'comando', 'comprimento', 'contador',
     'contar', 'dados', 'decorrido', 'descricao', 'destino', 'detalhe', 'dono', 'duracao',
     'entrada', 'entregue', 'erro', 'erros', 'escala', 'escolhido', 'escondido', 'espera',

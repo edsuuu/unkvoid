@@ -1,6 +1,13 @@
 import type { Hub } from './Hub.ts';
-import type { Ban, Channel, ChannelType, Overwrite, OverwriteTargetType, Role, ServerTree } from './Models.ts';
+import type { Audit, Ban, Channel, ChannelType, Overwrite, OverwriteTargetType, Role, ServerSummary, ServerTree } from './Models.ts';
 import { Permissions, type PermissionName } from './Permissions.ts';
+import { Store } from './Store.ts';
+
+export type AuditState = {
+    entries: Audit[];
+    loading: boolean;
+    failed: boolean;
+};
 
 export type RoleRow = { role: Role; editable: boolean; up: number | null; down: number | null };
 
@@ -15,10 +22,14 @@ export type ChannelDraft = { name: string; type: ChannelType; topic: string; lim
 export class ServerSettings {
     static readonly OVERWRITE_LABELS: Partial<Record<PermissionName, string>> = { VIEW_CHANNEL: 'ver', SEND_MESSAGES: 'falar', CONNECT: 'entrar', SPEAK: 'voz', STREAM: 'tela', VIDEO: 'cam' };
 
+    static readonly ICON_MAX_BYTES = 2 * 1024 * 1024;
+
     readonly hub: Hub;
+    readonly audits: Store<AuditState>;
 
     constructor(hub: Hub) {
         this.hub = hub;
+        this.audits = new Store<AuditState>({ entries: [], loading: false, failed: false });
     }
 
     private get tree(): ServerTree {
@@ -29,6 +40,49 @@ export class ServerSettings {
         const tree = this.tree;
 
         return this.hub.attempt(() => this.hub.api.patch(`/api/servers/${tree.id}`, { name: name.trim() }));
+    }
+
+    async loadAudits(): Promise<void> {
+        this.audits.set({ entries: [], loading: true, failed: false });
+
+        const page = await this.hub.attempt(() => this.hub.api.get<{ data: Audit[] } | Audit[]>(`/api/servers/${this.tree.id}/audits`));
+        const entries = Array.isArray(page) ? page : page?.data;
+
+        this.audits.set(entries ? { entries, loading: false } : { loading: false, failed: true });
+    }
+
+    async uploadIcon(file: File): Promise<void> {
+        if (file.size > ServerSettings.ICON_MAX_BYTES) {
+            this.hub.app.toast('o ícone precisa ter menos de 2 MB', true);
+
+            return;
+        }
+
+        const updated = await this.hub.attempt(() => this.hub.api.upload<ServerSummary>(`/api/servers/${this.tree.id}/icon`, 'icon', file));
+
+        if (! updated) {
+            return;
+        }
+
+        this.hub.tree = { ...this.tree, icon_url: updated.icon_url };
+        this.hub.publish();
+        await this.hub.loadServers();
+    }
+
+    async removeIcon(): Promise<void> {
+        const removed = await this.hub.attempt(async () => {
+            await this.hub.api.delete(`/api/servers/${this.tree.id}/icon`);
+
+            return true;
+        });
+
+        if (! removed) {
+            return;
+        }
+
+        this.hub.tree = { ...this.tree, icon_url: null };
+        this.hub.publish();
+        await this.hub.loadServers();
     }
 
     regenerateInvite(): Promise<void> {

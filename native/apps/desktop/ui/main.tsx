@@ -4,6 +4,7 @@ import { AppContext } from './components/AppContext.ts';
 import { AppShell } from './components/AppShell.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { App } from './core/App.ts';
+import { Desktop } from './core/Desktop.ts';
 import { Failure } from './core/Failure.ts';
 import { Tauri } from './core/Tauri.ts';
 import { DevTauriBridge } from './dev/DevTauriBridge.ts';
@@ -17,6 +18,8 @@ declare global {
 DevTauriBridge.install();
 
 if (Tauri.available()) {
+    Desktop.harden();
+
     const app = new App();
 
     window.unkvoid = app;

@@ -130,5 +130,5 @@ Vale a skill `style-edsu` inteira, e o resumo que mais pega:
 | [docs/SERVIDOR.md](docs/SERVIDOR.md) | a VPS que existe: medições, o que cada número resolveu, o que desligar |
 | [docs/INSTALAR-VPS.md](docs/INSTALAR-VPS.md) | levantar uma VPS do zero, em ordem de execução, e migrar o e-mail |
 | [docs/SEGURANCA.md](docs/SEGURANCA.md) | modelo de ameaça e o que protege o quê |
-| [docs/AUTO-UPDATE.md](docs/AUTO-UPDATE.md), [docs/BUILD-WINDOWS.md](docs/BUILD-WINDOWS.md), [docs/BUILD-MACOS.md](docs/BUILD-MACOS.md) | publicar e buildar por sistema |
+| [docs/AUTO-UPDATE.md](docs/AUTO-UPDATE.md), [docs/BUILD-WINDOWS.md](docs/BUILD-WINDOWS.md), [docs/BUILD-MACOS.md](docs/BUILD-MACOS.md), [docs/BUILD-LINUX.md](docs/BUILD-LINUX.md) | publicar e buildar por sistema |
 | `web/tests/checklist.html` | o que já foi validado à mão |
