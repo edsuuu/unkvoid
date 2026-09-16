@@ -16,7 +16,7 @@ import type { PeerDescription } from '../types.js';
 import { Peer } from './Peer.js';
 import { Webhook } from './Webhook.js';
 
-type ProducerOwner = { peer: Peer; producer: Producer };
+export type ProducerOwner = { peer: Peer; producer: Producer };
 
 export type JoinOutcome = { peer: Peer; resumed: boolean };
 
@@ -179,6 +179,14 @@ export class Room {
         // Avisa a sala na hora: sem isto, quem assistia ficava com o último quadro
         // congelado, sem saber que a conexão de quem transmitia tinha caído.
         this.broadcast('peerConnectionLost', { peerId: peer.id }, peer.id);
+
+        // Quem caiu sai da plateia agora, e não daqui a trinta segundos quando a carência
+        // estourar: o quadro dela congelou no instante em que a conexão foi embora.
+        for (const producerId of new Set(
+            [...peer.consumers.values()].map((consumer) => consumer.producerId),
+        )) {
+            this.announceWatchers(producerId);
+        }
 
         this.evictions.set(
             peer.id,
@@ -347,6 +355,38 @@ export class Room {
         peer.addPlainTransport(transport);
 
         return transport;
+    }
+
+    /**
+     * Quem está recebendo esta transmissão agora, para a sala inteira: quem compartilha
+     * quer ver a plateia, e quem assiste quer saber que não está sozinho.
+     *
+     * **Só tela.** Microfone é todo mundo consumindo todo mundo, e câmera também: numa
+     * sala de oito com a câmera ligada, anunciar por consumer daria centenas de mensagens
+     * a cada pessoa que entra. Tela é a única em que existe plateia de verdade.
+     *
+     * Plateia é quem está **olhando**, não quem tem o consumer: cartão pausado, escondido
+     * ou em segundo plano pausa o consumer, e aí a pessoa sai da lista. Quem caiu e está na
+     * carência também sai — o quadro dela já congelou.
+     */
+    public announceWatchers(producerId: string): void {
+        const owner = [...this.peers.values()].find((peer) => peer.producers.has(producerId));
+
+        if (String(owner?.producers.get(producerId)?.appData.source) !== 'screen') {
+            return;
+        }
+
+        const watchers = [...this.peers.values()]
+            .filter(
+                (peer) =>
+                    !peer.isOrphaned() &&
+                    [...peer.consumers.values()].some(
+                        (consumer) => consumer.producerId === producerId && !consumer.paused,
+                    ),
+            )
+            .map((peer) => ({ peerId: peer.id, name: peer.name }));
+
+        this.broadcast('watchers', { producerId, watchers });
     }
 
     public findProducerOwner(producerId: string): ProducerOwner {

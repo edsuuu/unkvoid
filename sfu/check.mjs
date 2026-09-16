@@ -413,6 +413,60 @@ test('outra pessoa na sala consome a transmissão pura como qualquer outra', asy
     assert.equal(consumo.ok, true, `um producer puro precisa ser consumível: ${JSON.stringify(consumo)}`);
 });
 
+test('quem transmite descobre quem está assistindo, e sai da lista quem pausou', async () => {
+    // Plateia é quem está OLHANDO. O consumer nasce pausado, então nascer não basta:
+    // quem conta é o `resume`, e pausar o cartão tira a pessoa da lista.
+    await espera(200);
+
+    assert.equal(
+        nativo.events.filter(evento => evento.event === 'watchers').length,
+        0,
+        'consumer pausado não é plateia: ninguém está vendo nada ainda',
+    );
+
+    await assistindo.call('resumeConsumer', { consumerId: consumo.data.consumerId });
+    await espera(200);
+
+    const plateia = nativo.events.filter(evento => evento.event === 'watchers').at(-1);
+
+    assert.ok(plateia, 'retomar o consumer avisa a sala de quem está assistindo');
+    assert.equal(plateia.data.producerId, plain.data.producerId, 'o aviso diz de qual transmissão é a plateia');
+    assert.deepEqual(plateia.data.watchers.map(pessoa => pessoa.name), ['Assiste'], 'e quem está assistindo');
+
+    await assistindo.call('pauseConsumer', { consumerId: consumo.data.consumerId });
+    await espera(200);
+
+    const vazia = nativo.events.filter(evento => evento.event === 'watchers').at(-1);
+
+    assert.deepEqual(vazia.data.watchers, [], 'pausar o cartão tira a pessoa da plateia');
+
+    // Câmera não tem plateia: seria todo mundo consumindo todo mundo, e o evento viraria
+    // enxurrada numa sala cheia.
+    const antes = nativo.events.filter(evento => evento.event === 'watchers').length;
+    const camera = await nativo.call('producePlain', videoPuro('camera', 0x2234567b));
+
+    assert.equal(camera.ok, true, `a câmera precisa ser aceita: ${JSON.stringify(camera)}`);
+
+    const transporteCamera = await assistindo.call('createTransport');
+    const consumoCamera = await assistindo.call('consume', {
+        transportId: transporteCamera.data.transportId,
+        producerId: camera.data.producerId,
+        rtpCapabilities: CAPACIDADES,
+    });
+
+    assert.equal(consumoCamera.ok, true, `a câmera precisa ser consumível: ${JSON.stringify(consumoCamera)}`);
+    await assistindo.call('resumeConsumer', { consumerId: consumoCamera.data.consumerId });
+    await espera(200);
+
+    assert.equal(
+        nativo.events.filter(evento => evento.event === 'watchers').length,
+        antes,
+        'assistir câmera não anuncia plateia nenhuma',
+    );
+
+    await assistindo.call('resumeConsumer', { consumerId: consumo.data.consumerId });
+});
+
 test('o áudio da mesma transmissão divide a porta com o vídeo', async () => {
     // Áudio da mesma transmissão: mesmo transport, mesma porta. Um transport por mídia
     // gastava o dobro de portas UDP, e cada porta a mais é uma regra de firewall a mais.

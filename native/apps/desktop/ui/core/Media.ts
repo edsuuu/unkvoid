@@ -68,6 +68,7 @@ export type MediaState = {
     nativeMuted: Record<string, boolean>;
     image: ImageSettings;
     selfView: boolean;
+    watchers: Record<string, string[]>;
 };
 
 type PublishedPeer = { peerId: string; producers?: ProducerInfo[] };
@@ -130,6 +131,7 @@ export class Media {
             connectedAt: null,
             reconnecting: false,
             tiles: [],
+            watchers: {},
             focused: null,
             fullscreen: null,
             idle: false,
@@ -211,6 +213,7 @@ export class Media {
 
             void this.consumePeers([{ peerId: detail.peerId, producers: [detail] }]);
         });
+        sfu.on('watchers', detail => this.rememberWatchers(detail.producerId, detail.watchers ?? []));
         sfu.on('peersChanged', () => {
             this.refreshPeople();
             this.app.hub.syncVoiceSources();
@@ -345,6 +348,34 @@ export class Media {
 
         await this.consumePeers(peers);
         this.refreshPeople();
+    }
+
+    rememberWatchers(producerId: string, watchers: { peerId: string; name: string }[]): void {
+        const key = this.tileKeyOf(producerId);
+
+        if (! key) {
+            return;
+        }
+
+        const others = watchers.filter(watcher => watcher.peerId !== this.sfu?.peerId).map(watcher => watcher.name);
+
+        this.store.set(state => ({ watchers: { ...state.watchers, [key]: others } }));
+    }
+
+    tileKeyOf(producerId: string): string | null {
+        if (this.broadcast?.videoProducerId === producerId) {
+            return this.sfu?.peerId ?? null;
+        }
+
+        for (const peer of this.sfu?.peers?.values() ?? []) {
+            const producer = peer.producers.find(item => item.producerId === producerId);
+
+            if (producer) {
+                return producer.source === 'camera' ? Media.cameraKey(peer.peerId) : peer.peerId;
+            }
+        }
+
+        return null;
     }
 
     async removeStoppedPeer(peerId: string): Promise<void> {
@@ -784,11 +815,14 @@ export class Media {
 
         this.store.set(state => {
             const nativeMuted = { ...state.nativeMuted };
+            const watchers = { ...state.watchers };
 
             delete nativeMuted[key];
+            delete watchers[key];
 
             return {
                 tiles: state.tiles.filter(item => item.key !== key),
+                watchers,
                 focused: state.focused === key ? null : state.focused,
                 nativeMuted,
             };
