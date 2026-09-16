@@ -22,6 +22,7 @@ final class ServerResource extends JsonResource
             'id' => $this->id,
             'name' => $this->name,
             'owner_id' => $this->owner_id,
+            'icon_url' => $this->iconUrl(),
             'last_accessed_at' => $this->last_accessed_at?->toIso8601String(),
         ];
     }
