@@ -48,6 +48,7 @@ export class ProducerController {
         const producer = await transport.produce({
             kind: request.kind(),
             rtpParameters: request.rtpParameters(),
+            appData: { plain: true },
         });
 
         this.announce(peer, room, producer, request.source());
@@ -161,8 +162,10 @@ export class ProducerController {
             peer.id,
         );
 
-        // Só o transport de RTP puro: o de WebRTC é do cliente, que produz de novo nele.
-        if (peer.producers.size === 0) {
+        // Só o transport de RTP puro, e quando sai o último producer que passa por ele. O mic
+        // por WebRTC do Windows e do macOS não conta: com ele o transport ficava vivo, preso ao
+        // socket antigo do app, que abre outro na transmissão seguinte e some no `comedia`.
+        if (![...peer.producers.values()].some((other) => other.appData.plain === true)) {
             peer.closePlainTransports();
         }
     }

@@ -28,6 +28,11 @@ if ! command -v "${SFU_FFMPEG:-ffmpeg}" > /dev/null; then
     echo "[WARN] ffmpeg não encontrado: o SFU sobe sem clipes (apt install ffmpeg)"
 fi
 
+# O anel roda o ffmpeg por `setpriv --pdeathsig`: sem ele os clipes também ficam desligados.
+if ! command -v setpriv > /dev/null; then
+    echo "[WARN] setpriv não encontrado: o SFU sobe sem clipes (apt install util-linux)"
+fi
+
 # Reiniciar derruba toda sala que estiver no ar: os workers do mediasoup morrem junto
 # com o processo. O app se recupera sozinho (reconecta, republica), mas custa alguns
 # segundos de tela preta para todo mundo. Então espera esvaziar primeiro, e só passa por
