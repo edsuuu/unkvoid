@@ -24,7 +24,7 @@ export function UserSettingsModal() {
     const hub = app.hub;
     const voice = hub.voice;
     const { user } = useStore(hub.store);
-    const { preferences } = useStore(voice.store);
+    const { preferences, talkKeyRefused } = useStore(voice.store);
     const live = useStore(voice.mic.store);
     const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
     const [level, setLevel] = useState(0);
@@ -200,6 +200,10 @@ export function UserSettingsModal() {
 
             {preferences.inputMode === 'ptt' && preferences.keybinds.talk.trim() === '' && (
                 <p className="mt-2 text-[12px] text-danger">Escolha a tecla de apertar para falar aqui embaixo — sem ela o microfone fica sempre aberto.</p>
+            )}
+
+            {preferences.inputMode === 'ptt' && preferences.keybinds.talk.trim() !== '' && talkKeyRefused && (
+                <p className="mt-2 text-[12px] text-danger">O sistema recusou essa tecla (outro programa já usa): o microfone fica sempre aberto até você escolher outra.</p>
             )}
 
             {native && preferences.inputMode === 'voice' && (

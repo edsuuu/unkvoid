@@ -38,6 +38,7 @@ export type VoiceState = {
     cameraOn: boolean;
     clipOpen: boolean;
     speaking: boolean;
+    talkKeyRefused: boolean;
     preferences: VoicePreferences;
 };
 
@@ -97,6 +98,7 @@ export class Voice {
             cameraOn: false,
             clipOpen: false,
             speaking: false,
+            talkKeyRefused: false,
             preferences: { ...preferences, keybinds: { ...Voice.DEFAULT_KEYBINDS, ...preferences.keybinds } },
         });
     }
@@ -117,6 +119,10 @@ export class Voice {
         return Platform.isLinux();
     }
 
+    watchMicErrors(): void {
+        this.mic.onError((stage, failure) => this.app.log('voice.detection.error', { stage, message: Failure.message(failure) }));
+    }
+
     listenShortcuts(): void {
         if (this.listening || ! Tauri.available()) {
             return;
@@ -132,26 +138,37 @@ export class Voice {
             return;
         }
 
-        const { keybinds } = this.store.state.preferences;
+        const { keybinds, inputMode } = this.store.state.preferences;
         const bindings = [
             { action: 'mute', accelerator: keybinds.mute },
             { action: 'deafen', accelerator: keybinds.deafen },
-            { action: 'talk', accelerator: keybinds.talk },
+            { action: 'talk', accelerator: inputMode === 'ptt' ? keybinds.talk : '' },
         ].filter(binding => binding.accelerator.trim() !== '');
 
         try {
             const result = await Tauri.invoke<{ registered: string[]; failed: string[] }>('set_shortcuts', { bindings });
 
             this.registeredShortcuts = new Set(result.registered);
+            this.store.set({ talkKeyRefused: result.failed.includes('talk') });
 
             if (result.failed.length > 0) {
                 this.app.log('voice.shortcuts.refused', { failed: result.failed });
-                this.app.toast(`o sistema recusou ${result.failed.length === 1 ? 'uma tecla' : 'algumas teclas'}: outro programa já a usa. Escolha outra.`, true);
+                this.app.toast(
+                    result.failed.includes('talk')
+                        ? 'outro programa já usa a tecla de falar: o seu microfone fica aberto até você escolher outra'
+                        : `o sistema recusou ${result.failed.length === 1 ? 'uma tecla' : 'algumas teclas'}: outro programa já a usa. Escolha outra.`,
+                    true,
+                );
             }
         } catch (failure) {
             this.registeredShortcuts = new Set();
+            this.store.set({ talkKeyRefused: this.store.state.preferences.inputMode === 'ptt' });
             this.app.log('voice.shortcuts.error', { message: Failure.message(failure) });
             this.app.toast(`não deu para registrar os atalhos: ${Failure.message(failure)}`, true);
+        }
+
+        if (this.pushToTalk()) {
+            this.setGate(false);
         }
     }
 
@@ -419,13 +436,24 @@ export class Voice {
 
         if (this.micTrack) {
             try {
-                this.mic.watch(this.micTrack, sensitivity, speaking => {
-                    if (this.store.state.preferences.inputMode === 'voice') {
-                        this.setGate(speaking);
-                    }
-                });
+                this.mic.watch(
+                    this.micTrack,
+                    sensitivity,
+                    speaking => {
+                        if (this.store.state.preferences.inputMode === 'voice') {
+                            this.setGate(speaking);
+                        }
+                    },
+                    () => {
+                        if (this.store.state.preferences.inputMode === 'voice' && ! this.muted && ! this.serverMuted) {
+                            this.app.log('voice.detection.silent', { microphone: this.store.state.preferences.microphone });
+                            this.app.toast('seu microfone não captou nada até agora: confira o botão do fone e a entrada nas configurações', true);
+                        }
+                    },
+                );
             } catch (failure) {
                 this.app.log('voice.detection.error', { message: Failure.message(failure) });
+                this.app.toast('a detecção de voz não abriu neste sistema: o microfone fica sempre aberto', true);
                 this.gateOpen = true;
             }
         }
@@ -451,11 +479,13 @@ export class Voice {
 
         if (this.native() && this.micProducerId) {
             void Tauri.invoke('set_voice_muted', { muted: ! live }).catch((failure: unknown) => {
-                this.app.log('voice.gate.error', { message: Failure.message(failure) });
-
-                if (! live) {
-                    this.app.toast('o microfone não fechou: o áudio pode estar saindo mesmo com o botão mutado', true);
-                }
+                this.app.log('voice.gate.error', { message: Failure.message(failure), live });
+                this.app.toast(
+                    live
+                        ? 'o microfone não abriu: ninguém está te ouvindo. Saia e entre na voz de novo.'
+                        : 'o microfone não fechou: o áudio pode estar saindo mesmo com o botão mutado',
+                    true,
+                );
             });
         }
 
@@ -481,7 +511,13 @@ export class Voice {
 
         if (this.micProducerId) {
             if (this.serverMuted) {
-                this.app.media.sfu!.producers.get(this.micProducerId)?.pause();
+                const producer = this.app.media.sfu!.producers.get(this.micProducerId);
+
+                if (producer) {
+                    producer.pause();
+                } else {
+                    this.app.log('voice.servermute.missing', { producerId: this.micProducerId });
+                }
             } else {
                 await this.app.media.sfu![muted ? 'pauseProducer' : 'resumeProducer'](this.micProducerId);
             }
@@ -630,7 +666,7 @@ export class Voice {
             return;
         }
 
-        if (key === 'inputMode' && preferences.inputMode === 'ptt') {
+        if (key === 'inputMode') {
             await this.applyShortcuts();
         }
 
