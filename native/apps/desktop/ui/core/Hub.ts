@@ -130,7 +130,7 @@ export class Hub {
             home: true,
             stageOpen: false,
             focusedRoom: false,
-            railOpen: localStorage.getItem(Hub.RAIL_KEY) !== 'closed',
+            railOpen: localStorage.getItem(Hub.RAIL_KEY) === 'open',
             inviteBanner: false,
             modal: null,
             roleEditor: null,

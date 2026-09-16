@@ -21,6 +21,7 @@ export function ServerSettingsModal() {
 
     const owner = tree.owner_id === user.id;
     const roles = [...tree.roles].filter(role => ! role.is_everyone).sort((left, right) => right.position - left.position);
+    const everyone = tree.roles.find(role => role.is_everyone) ?? null;
     const members = [...tree.members].sort((left, right) => (left.nickname ?? left.name).localeCompare(right.nickname ?? right.name));
 
     return (
@@ -76,8 +77,8 @@ export function ServerSettingsModal() {
                             </span>
                             {member.server_mute && <span className="text-danger" title="Mutado no servidor"><Icon name="micOff" size={13} /></span>}
                             {member.server_deaf && <span className="text-danger" title="Ensurdecido no servidor"><Icon name="headphonesOff" size={13} /></span>}
-                            {topRole && <span className="size-[7px] rounded-full" style={{ background: topRole.color ?? 'var(--color-ink-dim)' }} />}
-                            <span className={`font-mono text-[9.5px] ${member.is_owner ? 'text-lilac-2' : 'text-ink-dim'}`}>{member.is_owner ? 'dono' : topRole?.name ?? 'membro'}</span>
+                            <span className="size-[7px] rounded-full" style={{ background: (topRole ?? everyone)?.color ?? 'var(--color-ink-dim)' }} />
+                            <span className={`font-mono text-[9.5px] ${member.is_owner ? 'text-lilac-2' : 'text-ink-dim'}`}>{member.is_owner ? 'dono' : topRole?.name ?? everyone?.name ?? '@everyone'}</span>
                             <Icon name="dots" size={13} className="text-ink-dim" />
                         </button>
                     );

@@ -139,6 +139,7 @@ export class Voice {
             });
 
             if (ticket === this.joinTicket) {
+                this.app.sounds.joined();
                 this.publish({ joining: false });
                 this.hub.syncVoiceSources();
             }
@@ -181,6 +182,7 @@ export class Voice {
 
         this.channel = null;
         this.joinTicket += 1;
+        this.app.sounds.left();
         this.app.log('voice.leave', { channel: channel.id });
         await this.stopCamera().catch((failure: unknown) => this.app.log('voice.camera.stop.error', { message: Failure.message(failure) }));
         await this.stopMic().catch((failure: unknown) => this.app.log('voice.mic.stop.error', { message: Failure.message(failure) }));
@@ -320,6 +322,7 @@ export class Voice {
         }
 
         this.muted = ! this.muted;
+        this.app.sounds[this.muted ? 'muted' : 'unmuted']();
         this.publish();
 
         await this.hub.attempt(() => (this.micProducerId ? this.applyMute() : this.startMic()));
@@ -363,6 +366,7 @@ export class Voice {
 
     async toggleDeafen(): Promise<void> {
         this.deafened = ! this.deafened;
+        this.app.sounds[this.deafened ? 'deafened' : 'undeafened']();
         this.publish();
         await this.app.media.setDeafened(this.deafened);
     }
