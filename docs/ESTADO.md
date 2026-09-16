@@ -34,6 +34,13 @@ o dono. O histórico das sessões saiu do repositório e continua no git.
 
 ## O que falta fazer
 
+- **A 0.0.29 saiu sem Windows** (16/09/2026). O macOS foi compilado e publicado à mão daqui
+  (`darwin-aarch64` + `darwin-aarch64-dmg`, assinados com `9a18c9243ef59b08` e conferidos pelo
+  `check-signature.mjs`), e o `.deb` amd64 saiu da VPS pelo fluxo `build-linux`. O Windows
+  **não**: enquanto ninguém compilar numa máquina Windows, o `latest.json` da 0.0.29 não tem as
+  chaves `windows-*`, e quem está no Windows continua na 0.0.28 — que segue funcionando, porque
+  tudo que subiu na API é acréscimo. Quem compilar lá precisa publicar `windows-x86_64-nsis` e
+  `windows-x86_64-msi` com o `publish-release.sh`.
 - **O código de Windows nunca foi compilado nesta integração** (16/09/2026): a `main` trouxe as
   correções 0.0.25 a 0.0.27 — encoder, captura e áudio de Windows, mais o limitador de quadros
   para monitor de 144 Hz — e elas foram integradas num Mac, onde esse código nem entra na
@@ -50,9 +57,9 @@ o dono. O histórico das sessões saiu do repositório e continua no git.
   hipóteses são a caixa "Sem o áudio do Discord" desmarcada ou o Discord entrando na chamada
   depois do início da transmissão — a lista de processos é refeita a cada 2 s. Falta a linha
   `broadcast.start` do log da máquina, que diz qual das duas é.
-- **Produção atrás da branch:** o `unkvoid.com` roda o site do `main`. O app desta branch exige
-  o `state` na volta do login do Google (sem ele, 404) e usa `/api/config` e `/api/servers`, que
-  ainda não existem lá. Sobem o site e o SFU; o app não sobe.
+- ~~**Produção atrás da branch**~~ — resolvido em 16/09/2026: a branch foi para a `main`
+  (PR #8), os três fluxos da VPS rodaram (`deploy-web` com as migrations, `deploy-sfu` e
+  `build-linux`), e a produção responde `/api/dm`, `/api/friends` e `/api/servers/{id}/audits`.
 - **Linux:** Wayland (`pipewiresrc` pelo portal), lista de janelas e VA-API na captura; RTCP de
   volta (NACK/PLI) e fMP4 por MSE para aliviar a CPU do MJPEG.
 - **SFU, ingest puro atrás de NAT:** o `comedia` aprende o endereço no primeiro pacote e não
