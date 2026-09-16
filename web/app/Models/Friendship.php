@@ -75,9 +75,7 @@ final class Friendship extends Model implements Auditable
 
         $existing = self::between($actor, $target);
 
-        if ($existing?->status === FriendshipStatusEnum::Blocked) {
-            throw new ForbiddenException('Esta pessoa não está aceitando pedidos.');
-        }
+        throw_if($existing?->status === FriendshipStatusEnum::Blocked, ForbiddenException::class, 'Esta pessoa não está aceitando pedidos.');
 
         if ($existing?->status === FriendshipStatusEnum::Accepted) {
             return $existing;
@@ -89,7 +87,7 @@ final class Friendship extends Model implements Auditable
             return $existing;
         }
 
-        if ($existing) {
+        if ($existing instanceof self) {
             return $existing;
         }
 
@@ -125,9 +123,7 @@ final class Friendship extends Model implements Auditable
      */
     public function accept(User $actor): void
     {
-        if ($this->addressee_id !== $actor->id) {
-            throw new ForbiddenException('Só quem recebeu o pedido pode aceitar.');
-        }
+        throw_if($this->addressee_id !== $actor->id, ForbiddenException::class, 'Só quem recebeu o pedido pode aceitar.');
 
         self::write('falha ao aceitar a amizade', fn () => $this->update([
             'status' => FriendshipStatusEnum::Accepted,
@@ -187,8 +183,6 @@ final class Friendship extends Model implements Auditable
 
     private function authorize(User $actor): void
     {
-        if ($this->requester_id !== $actor->id && $this->addressee_id !== $actor->id) {
-            throw new ForbiddenException('Esta amizade não é sua.');
-        }
+        throw_if($this->requester_id !== $actor->id && $this->addressee_id !== $actor->id, ForbiddenException::class, 'Esta amizade não é sua.');
     }
 }

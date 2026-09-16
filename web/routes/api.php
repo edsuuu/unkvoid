@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Http\Controllers\Api\Audits\IndexAuditController;
 use App\Http\Controllers\Api\Auth\LoginController;
 use App\Http\Controllers\Api\Auth\LogoutController;
 use App\Http\Controllers\Api\Auth\RegisterController;
@@ -17,6 +18,12 @@ use App\Http\Controllers\Api\Clips\PlaylistClipController;
 use App\Http\Controllers\Api\Clips\ShowClipController;
 use App\Http\Controllers\Api\Clips\StoreClipController;
 use App\Http\Controllers\Api\ConfigController;
+use App\Http\Controllers\Api\Direct\DestroyDirectMessageController;
+use App\Http\Controllers\Api\Direct\IndexConversationController;
+use App\Http\Controllers\Api\Direct\MarkReadConversationController;
+use App\Http\Controllers\Api\Direct\ShowConversationController;
+use App\Http\Controllers\Api\Direct\StoreDirectMessageController;
+use App\Http\Controllers\Api\Direct\UpdateDirectMessageController;
 use App\Http\Controllers\Api\ErrorReportController;
 use App\Http\Controllers\Api\Friends\DestroyFriendController;
 use App\Http\Controllers\Api\Friends\IndexFriendController;
@@ -37,11 +44,13 @@ use App\Http\Controllers\Api\Roles\DestroyRoleController;
 use App\Http\Controllers\Api\Roles\StoreRoleController;
 use App\Http\Controllers\Api\Roles\UpdateRoleController;
 use App\Http\Controllers\Api\Servers\DestroyServerController;
+use App\Http\Controllers\Api\Servers\DestroyServerIconController;
 use App\Http\Controllers\Api\Servers\IndexServerController;
 use App\Http\Controllers\Api\Servers\LeaveServerController;
 use App\Http\Controllers\Api\Servers\RegenerateInviteController;
 use App\Http\Controllers\Api\Servers\ShowServerController;
 use App\Http\Controllers\Api\Servers\StoreServerController;
+use App\Http\Controllers\Api\Servers\StoreServerIconController;
 use App\Http\Controllers\Api\Servers\UpdateServerController;
 use App\Http\Controllers\Api\Sfu\SfuEventController;
 use App\Http\Controllers\Api\Voice\DisconnectVoiceController;
@@ -64,12 +73,22 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::delete('/servers/{server}', DestroyServerController::class)->name('api.servers.destroy');
     Route::post('/servers/{server}/invite', RegenerateInviteController::class)->name('api.servers.invite');
     Route::post('/servers/{server}/leave', LeaveServerController::class)->name('api.servers.leave');
+    Route::get('/servers/{server}/audits', IndexAuditController::class)->name('api.audits.index');
+    Route::post('/servers/{server}/icon', StoreServerIconController::class)->name('api.servers.icon.store');
+    Route::delete('/servers/{server}/icon', DestroyServerIconController::class)->name('api.servers.icon.destroy');
     Route::post('/invites/{code}', JoinInviteController::class)->middleware('throttle:10,1')->name('api.invites.join');
 
     Route::get('/friends', IndexFriendController::class)->name('api.friends.index');
     Route::post('/friends', StoreFriendController::class)->middleware('throttle:20,1')->name('api.friends.store');
     Route::patch('/friends/{friendship}', UpdateFriendController::class)->name('api.friends.update');
     Route::delete('/friends/{friendship}', DestroyFriendController::class)->name('api.friends.destroy');
+
+    Route::get('/dm', IndexConversationController::class)->name('api.dm.index');
+    Route::get('/dm/{user}', ShowConversationController::class)->name('api.dm.show');
+    Route::post('/dm/{user}/read', MarkReadConversationController::class)->name('api.dm.read');
+    Route::post('/dm/{user}', StoreDirectMessageController::class)->middleware('throttle:60,1')->name('api.dm.store');
+    Route::patch('/dm/{directMessage}', UpdateDirectMessageController::class)->name('api.dm.update');
+    Route::delete('/dm/{directMessage}', DestroyDirectMessageController::class)->name('api.dm.destroy');
 
     Route::patch('/servers/{server}/members/{user}', UpdateMemberController::class)->name('api.members.update');
     Route::delete('/servers/{server}/members/{user}', KickMemberController::class)->name('api.members.destroy');
