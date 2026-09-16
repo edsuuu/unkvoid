@@ -64,8 +64,49 @@ o dono. O histórico das sessões saiu do repositório e continua no git.
   não foi executada; exige force-push e re-clone.
 - **Documentação velha:** `BUILD-MACOS.md` e `AUTO-UPDATE.md` ainda citam `discord.unkvoid.com` e
   a publicação pelo GitHub Releases.
-- **Fase 2 do app** (precisa de tabela nova): mensagens diretas, amigos, foto e ícone, imagem no
-  chat, API da auditoria, não lidas, chat dentro da voz e indicador de fala.
+- **Fase 2 do app** — entregue em 16/09/2026, menos: imagem no chat, chat dentro da voz e foto de
+  perfil da pessoa (o `avatar_url` já aparece onde existe, mas não há upload). Mensagens diretas,
+  amigos, ícone do servidor, API da auditoria e não lidas estão de pé.
+
+### Achados da noite de 16/09/2026
+
+- **O Ubuntu 24.04 não distribui o `webrtcdsp`.** É o elemento que o `microphone_pipeline()` usa
+  para cancelar eco, tratar ruído e ganho no Linux; sem ele o microfone vai **cru**. Provado nos
+  dois lados: `dpkg -L gstreamer1.0-plugins-bad | grep webrtcdsp` não devolve nada em arm64 nem em
+  amd64, e `gst-inspect-1.0 webrtcdsp` responde *No such element*. O Caso 4 de
+  `native/tests/linux` avisa disso em qualquer máquina.
+  Caminho de saída, na ordem: o próprio PulseAudio tem `module-echo-cancel aec_method=webrtc`, que
+  **carrega** no contêiner e cria a fonte tratada — mas não consegui provar que ela entrega áudio
+  sem um microfone de verdade, e carregar módulo no servidor de som da pessoa sem prova é risco
+  maior que o buraco. Precisa de uma máquina Linux com microfone real: carregar o módulo, ler
+  `pulsesrc device=unkvoid_mic`, e só então ligar no `microphone_pipeline()` com descarga no
+  `stop`. O PipeWire tem o equivalente (`libpipewire-module-echo-cancel`).
+- **Microfone nativo no macOS e no Windows continua sendo o do webview**, de propósito: ali quem
+  captura é o libwebrtc compilado dentro do WebKit/WebView2, que **já traz** cancelamento de eco,
+  supressão de ruído e ganho automático. Trocar por uma captura em Rust sem ligar uma APM de
+  verdade pioraria o áudio. `start_voice`/`stop_voice` (o caminho em Rust) segue só no Linux.
+- **A detecção de voz não mede nível no caminho nativo do Linux**: o áudio não passa pela janela,
+  então o `AnalyserNode` não vê nada. Lá valem *apertar para falar* e *sempre aberto*; a interface
+  diz isso em texto. Medir no Linux exige um elemento `level` na pipeline e um evento novo até a
+  interface.
+- **Permissão de microfone no Windows** deixou de mostrar o balão de navegador por configuração
+  (`additionalBrowserArgs` com `--use-fake-ui-for-media-stream`), e não por código: quem decide
+  passa a ser a privacidade do Windows. **Não foi compilado no Windows** — conferir no primeiro
+  build lá.
+- **Criptografia ponta a ponta: não agora** (decisão do dono, 16/09/2026). O desenho proposto,
+  para quando for a hora: E2E só em mensagem direta, chave por par (X25519 no cadastro, pública no
+  `users`, privada guardada na máquina), corpo cifrado no `direct_messages.body` e o servidor
+  guardando opaco. Não vale para canal de servidor (a auditoria e a moderação precisam ler) nem
+  para mídia (o SFU precisa ver RTP para rotear; isso seria SFrame, outro projeto).
+
+## O laboratório de Linux
+
+`native/tests/linux` (16/09/2026) é um Ubuntu 24.04 em contêiner com os mesmos pacotes que o
+`.deb` exige. Seis casos de uso, um comando: `docker run --rm -v "$PWD/native:/unkvoid/native"
+unkvoid-linux /unkvoid/native/tests/linux/cenarios.sh`. O Caso 1 é a resposta ao relato "aos 30
+segundos a transmissão cai": 45 s de captura, quadro em **todos** os segundos, 15 deles depois do
+minuto crítico. O que ele **não** prova: a janela do app (WebKitGTK), o receptor de MJPEG e o
+caminho até o SFU.
 
 ## Perguntas abertas para o dono
 
