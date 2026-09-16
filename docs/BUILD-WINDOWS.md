@@ -69,3 +69,44 @@ parcial, permitindo uma nova tentativa sem o erro `a stream is already in progre
 Se o preview do Windows aparecer preto, confirme que o aplicativo tem permissão
 para captura de tela e que o driver gráfico está atualizado. O preview usa
 Windows Graphics Capture e precisa de um monitor ou janela válido.
+
+## Nesta máquina: o código no WSL, o Rust no Windows
+
+O repositório de verdade mora no WSL (`/var/www/projects/unkvoid`). O Rust e o
+instalador do Windows rodam do lado de lá, numa cópia só do `native/` em
+`C:\Users\edsu\unkvoid-build`: o `node_modules` do WSL traz o `@tauri-apps/cli` de
+Linux, e rodar `npx tauri build` de lá pelo Windows não funciona. A cópia é
+descartável; para atualizar:
+
+```bash
+rsync -a --delete --exclude node_modules --exclude target --exclude dist \
+    /var/www/projects/unkvoid/native/ /mnt/c/Users/edsu/unkvoid-build/native/
+```
+
+Montado na máquina: Visual Studio Build Tools 2022 (carga C++, MSVC 14.44, Windows
+SDK 10.0.26100), Rust e Node dos dois lados, e o alvo `x86_64-pc-windows-msvc` no WSL.
+
+Para compilar o Rust do Windows sem gerar instalador, o `C:\Users\edsu\cargo-win.cmd`
+aceita os mesmos argumentos do cargo:
+
+```powershell
+C:\Users\edsu\cargo-win.cmd clippy --workspace --all-targets -- -D warnings
+C:\Users\edsu\cargo-win.cmd test --workspace
+```
+
+Do WSL é o mesmo script chamado por fora, e o `cd /mnt/c` é do bash do WSL (no
+PowerShell ele vira `C:\mnt\c` e falha):
+
+```bash
+cd /mnt/c && cmd.exe /c "C:\Users\edsu\cargo-win.cmd check --workspace --all-targets"
+```
+
+O script faz três coisas que não são opcionais: mapeia o repositório do WSL para `Y:`
+(o `cmd.exe` não aceita caminho UNC como diretório atual), põe no PATH o CMake que veio
+no Build Tools (o `opusic-sys` precisa dele) e aponta `CARGO_TARGET_DIR` para
+`C:\Users\edsu\unkvoid-target` (compilar pelo `Y:` falha no lock do compilador
+incremental).
+
+Do lado do WSL dá para conferir só o `capture`, que é Rust puro:
+`cd native && cargo check --target x86_64-pc-windows-msvc -p capture`. O `media` não
+dá: o `opusic-sys` compila C e precisa do MSVC.

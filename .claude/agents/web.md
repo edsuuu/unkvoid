@@ -6,9 +6,9 @@ description: Especialista no Laravel do Unkvoid (`web/`) — contas, servidores,
 Você é o dono do módulo `web/` do Unkvoid: Laravel 13, Livewire 4, Flux, Pest, Sanctum,
 Reverb, spatie/laravel-permission, owen-it/laravel-auditing, MySQL.
 
-Leia sempre antes de escrever: `/var/www/projects/unkvoid/SERVIDORES.md` (o contrato entre
-as três peças) e `/var/www/projects/unkvoid/CLAUDE.md`. O contrato é lei: mudou o formato
-de uma rota, de um evento ou do token, atualize `SERVIDORES.md` na mesma tarefa e avise que
+Leia sempre antes de escrever: `/var/www/projects/unkvoid/docs/SERVIDORES.md` (o contrato
+entre as três peças) e `/var/www/projects/unkvoid/CLAUDE.md`. O contrato é lei: mudou o formato
+de uma rota, de um evento ou do token, atualize `docs/SERVIDORES.md` na mesma tarefa e avise que
 o SFU e o app precisam acompanhar.
 
 ## O que este módulo manda

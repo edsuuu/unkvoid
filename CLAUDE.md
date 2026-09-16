@@ -14,14 +14,14 @@ vez** e sobe **uma vez**. Mudança que quebre uma dessas três coisas está desf
 
 | Pasta | O quê | Onde roda | Agente |
 |---|---|---|---|
-| `native/` | o app: captura, encoder, interface (Rust + Tauri + ES puro) | máquina de quem usa | `app` |
+| `native/` | o app: captura, encoder, interface (Rust + Tauri + React em TypeScript) | máquina de quem usa | `app` |
 | `sfu/` | o relé de mídia (Node 22 + mediasoup) | VPS | `sfu` |
 | `web/` | site, contas, servidores, canais, chat, auditoria (Laravel 13 + Livewire 4 + Flux) | VPS | `web` |
 
 Há um agente especialista por módulo em `.claude/agents/`. Tarefa que toca um módulo só vai
 para o agente dele; tarefa que atravessa os três começa pelo contrato.
 
-**O contrato é [SERVIDORES.md](SERVIDORES.md)**: rotas da API, formato do token de voz, ações e
+**O contrato é [docs/SERVIDORES.md](docs/SERVIDORES.md)**: rotas da API, formato do token de voz, ações e
 eventos do SFU, webhook, canais do Reverb, comandos do Tauri. Mudou o que atravessa a rede,
 atualize esse arquivo na mesma tarefa — as três peças o leem como lei.
 
@@ -45,7 +45,7 @@ Quem manda em quê:
 | App | interface, captura, encoder, mídia local | decidir permissão |
 
 As regras de negócio completas (cálculo de permissão efetiva na ordem do Discord, hierarquia de
-cargos, canal oculto, voz, auditoria) estão em `SERVIDORES.md` e no agente de cada módulo.
+cargos, canal oculto, voz, auditoria) estão em `docs/SERVIDORES.md` e no agente de cada módulo.
 
 ## Rodar tudo local
 
@@ -58,8 +58,15 @@ cd web && php artisan reverb:start     # :8080
 cd sfu && pnpm run build
 cd sfu && SFU_SECRET=<o do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node dist/server.js
 
+# O bucket do MinIO (AWS_BUCKET): o primeiro clipe e a primeira versão publicada o criam
+# sozinhos; para criar antes, à mão
+cd web && php artisan storage:bucket
+
 # App apontando para o Laravel local (SFU e Reverb vêm do GET /api/config)
 cd native/apps/desktop && VITE_SERVER=http://127.0.0.1:8000 npm run dev:app
+
+# Só a interface, num navegador comum: o Vite faz o papel do nginx e a ponte do Tauri é fingida
+cd native/apps/desktop && VITE_SERVER=http://localhost:1420 npm run dev
 ```
 
 Duas máquinas na mesma rede: troque `127.0.0.1` pelo IP em `APP_URL`, `SFU_PUBLIC_URL` e
@@ -72,8 +79,9 @@ Laravel com `--host=0.0.0.0`. No WSL2 a rede só alcança o UDP do SFU com
 ```bash
 cd web && composer check                 # phpstan max + pint + rector + pest em SQLite (rode 2x: rector estável)
 cd web && composer test:mysql            # a mesma suíte no MySQL: pega tipo de coluna e chave que o SQLite perdoa
-cd sfu && pnpm run check                 # eslint + check.mjs + check-heartbeat.mjs (precisa de um servidor no ar)
-cd native/apps/desktop && npm run check && npm run build
+cd sfu && pnpm run check                 # eslint + check.mjs + check-heartbeat.mjs (precisa de um servidor no ar com o mesmo SFU_SECRET; o cenário de clipe só roda no Linux, porque o anel chama o ffmpeg por `setpriv`)
+cd native/apps/desktop && npm run check && npm run build   # tests/static + tsc + eslint + Vitest (tests/unit)
+cd native/apps/desktop && npm run test:integration    # Vitest: os clientes do app contra a pilha local no ar
 cd native && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
 
@@ -88,8 +96,8 @@ em `native/target/release/bundle/nsis/`.
 Vale a skill `style-edsu` inteira, e o resumo que mais pega:
 
 - **Código 100% em inglês** — pastas, classes, métodos, variáveis, colunas, env. Português só em
-  caminho de rota, texto de interface e comentário. Há um check no repo (`check-language.py`) que
-  varre tudo e falha.
+  caminho de rota, texto de interface e comentário. Há um check no repo
+  (`native/apps/desktop/tests/static/check-language.py`) que varre tudo e falha.
 - **Comentário explica o porquê**, nunca o quê, e só onde o nome não dá conta. Nunca acima de
   variável.
 - **Nada de abreviar variável**: `$exception`, não `$e`.
@@ -99,6 +107,9 @@ Vale a skill `style-edsu` inteira, e o resumo que mais pega:
   ação única → Resource; status de erro mora na exceção. Tela é `Route::view` → blade com
   `<x-app-layout>` → `<livewire:…>`.
 - TypeScript e JavaScript: uma classe por arquivo, imports no topo, sem comentário decorativo.
+- Front do app (`native/apps/desktop/ui`, React + TypeScript estrito): **nenhum comentário**, o nome
+  explica — decisão do dono, e o `tests/static/check-ui.py` falha com comentário lá. Os testes do
+  app moram em `native/apps/desktop/tests/` (Vitest).
 - Rust: clippy sem aviso, `cfg(target_os)` correto nas três plataformas, nada de trabalho por
   quadro na thread da captura.
 - Atalho deliberado ganha comentário `ponytail:` com o teto e o caminho de saída.
@@ -112,13 +123,12 @@ Vale a skill `style-edsu` inteira, e o resumo que mais pega:
 
 | Arquivo | Para quê |
 |---|---|
-| [SERVIDORES.md](SERVIDORES.md) | o contrato entre as três peças, e como rodar local |
-| [ESTADO.md](ESTADO.md) | onde o trabalho parou, o que está provado em hardware, o que só compila |
-| [ROADMAP.md](ROADMAP.md) | a ordem em que uma coisa depende da outra |
-| [DECISOES.md](DECISOES.md) | o que foi decidido e **por quê** (ex.: por que o SFU é Node) |
-| [REDE.md](REDE.md), [UDP.md](UDP.md) | portas, firewall, o que vai por UDP e por quê |
-| [SERVIDOR.md](SERVIDOR.md) | a VPS que existe: medições, o que cada número resolveu, o que desligar |
-| [infra/INSTALAR-VPS.md](infra/INSTALAR-VPS.md) | levantar uma VPS do zero, em ordem de execução, e migrar o e-mail |
-| [SEGURANCA.md](SEGURANCA.md) | modelo de ameaça e o que protege o quê |
-| [AUTO-UPDATE.md](AUTO-UPDATE.md), [BUILD-WINDOWS.md](BUILD-WINDOWS.md), [BUILD-MACOS.md](BUILD-MACOS.md), [MAC.md](MAC.md) | publicar e buildar por sistema |
+| [docs/SERVIDORES.md](docs/SERVIDORES.md) | o contrato entre as três peças, e como rodar local |
+| [docs/ESTADO.md](docs/ESTADO.md) | o que só foi escrito sem rodar em hardware, o que falta e as perguntas abertas |
+| [docs/DECISOES.md](docs/DECISOES.md) | o que foi decidido e **por quê** (ex.: por que o SFU é Node) |
+| [docs/REDE.md](docs/REDE.md), [docs/UDP.md](docs/UDP.md) | portas, firewall, o que vai por UDP e por quê |
+| [docs/SERVIDOR.md](docs/SERVIDOR.md) | a VPS que existe: medições, o que cada número resolveu, o que desligar |
+| [docs/INSTALAR-VPS.md](docs/INSTALAR-VPS.md) | levantar uma VPS do zero, em ordem de execução, e migrar o e-mail |
+| [docs/SEGURANCA.md](docs/SEGURANCA.md) | modelo de ameaça e o que protege o quê |
+| [docs/AUTO-UPDATE.md](docs/AUTO-UPDATE.md), [docs/BUILD-WINDOWS.md](docs/BUILD-WINDOWS.md), [docs/BUILD-MACOS.md](docs/BUILD-MACOS.md) | publicar e buildar por sistema |
 | `web/tests/checklist.html` | o que já foi validado à mão |

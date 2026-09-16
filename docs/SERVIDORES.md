@@ -277,6 +277,19 @@ Auth: `POST /broadcasting/auth` com `Authorization: Bearer <sanctum>`; o app usa
 | `presence-server.{id}` | membro | (presença: `{ id, name, avatar_url }`) · `ServerUpdated { server_id }` (qualquer mudança de estrutura: o app refaz o `GET`) |
 | `private-user.{id}` | o próprio | `MemberRemoved { server_id, reason: kicked\|banned }` · `ClipUpdated { clip }` (`ClipResource`, quando fica `ready` ou `failed`) |
 
+### Expulsar e banir cortam a pessoa de tudo
+
+Vale a partir do momento em que acontece; quem já tinha saído antes não é reprocessado.
+
+- **Voz:** o Laravel chama o `kick` do SFU procurando a pessoa na presença fresca (sem o cache
+  de 3 s). O token de voz de antes do kick vale 60 s: o webhook `joined` de quem já não é
+  membro chama o `kick` na hora, sem abrir acesso nem emitir `VoiceStateUpdated`.
+- **Tempo real:** `MemberRemoved` no `private-user.{id}` faz o app sair dos canais do servidor,
+  e assinar de novo é recusado pela autorização do canal. **Limite:** o Reverb 1.11 não derruba
+  a assinatura de quem já estava inscrito (não tem `pusher:signin`, então o
+  `terminate_connections` não acha a conexão). Um cliente modificado que ignore o
+  `MemberRemoved` continua recebendo os eventos dos canais que já assinava até reconectar.
+
 ## App — o que aparece
 
 - Duas abas no topo: **Transmissão** (tudo o que está abaixo) e **Clipes**.
@@ -300,6 +313,40 @@ Auth: `POST /broadcasting/auth` com `Authorization: Bearer <sanctum>`; o app usa
   quem transmitia, servidor e canal, data, duração); `processing` com indicador, `failed`
   com aviso; **Assistir** abre um mini player na própria aba (hls.js; HLS nativo onde
   existir); **Baixar** usa o `download_url`; **Apagar** pede confirmação.
+
+## App — comandos do Tauri
+
+A interface chama com `invoke`, com os argumentos em camelCase (`serverKey`, `producerId`); o
+Tauri converte para o snake_case do Rust. Mudou um comando, mude aqui e em `ui/core`.
+
+| Comando | Argumentos | Devolve | Para quê |
+|---|---|---|---|
+| `app_version` | — | `string` | versão instalada |
+| `check_update` | — | versão nova ou `null` | procura, baixa e instala; emite `update:progress` com `[baixado, total]` |
+| `restart` | — | — | reinicia depois de atualizar |
+| `expand_window` | — | — | a janela nasce do tamanho de um diálogo e cresce quando o app está pronto |
+| `log_line` / `log_path` | `line` / — | — / caminho | log em disco: a janela não tem console |
+| `report_check` | `webrtc, receiver[], sender[], userAgent` | — | o diagnóstico do `--check`, chamado pela página que o próprio Rust abre |
+| `list_displays` | — | `[{id, width, height}]` | as telas do seletor |
+| `list_windows` | — | `[{id, title, application}]` | os aplicativos do seletor |
+| `source_preview` | `source` (`display:<id>` ou `window:<id>`) | data URL JPEG, ou `""` | a miniatura do seletor |
+| `list_cameras` | — | `[{id, …}]` | as câmeras, no Linux |
+| `machine_cores` | — | número de núcleos | registrado; a interface não chama hoje |
+| `start_broadcast` | `quality, fps, source, audio, muteCalls` | — | captura e encoder da tela |
+| `stop_broadcast` | — | quadros enviados | para a tela; sem nenhuma origem subindo, solta o remetente e sorteia chave SRTP nova |
+| `broadcast_stats` | — | `{active, …, encoder: "gpu" \| "cpu"}` | a linha de números da transmissão |
+| `sfu_offer` | `source` (`screen`, `screenAudio`, `mic`, `camera`) | `{rtpParameters, srtpParameters}` | o corpo do `producePlain` |
+| `use_sfu` | `address, serverKey` | — | aponta o remetente para a porta do `producePlain`; repetir o mesmo endereço não faz nada |
+| `renew_sfu_key` | — | — | chave SRTP nova para republicar depois de o SFU reiniciar |
+| `start_voice` / `stop_voice` / `set_voice_muted` | — / — / `muted` | — | o mic pelo Rust (Linux) |
+| `start_camera` / `stop_camera` | `device` / — | — | a câmera pelo Rust (Linux) |
+| `watch_key` | — | chave SRTP em base64 | a chave de recepção do `consumePlain` |
+| `watch_native` | `producerId, kind, address, serverKey, payloadType, ssrc` | porta do MJPEG em 127.0.0.1 (0 no áudio) | assistir por RTP puro onde a janela não tem WebRTC (Linux) |
+| `stop_watch` | `producerId`, ou `null` para tudo | — | só o `null` fecha o socket de recepção: o `comedia` do SFU aprendeu aquele endereço |
+| `watch_mute` | `producerId, muted` | — | o Rust para de repassar o áudio da tela |
+| `watch_stats` | — | pacotes recebidos | registrado; a interface não chama hoje |
+| `google_login` | `server` (só http/https) | token do Sanctum | login pelo navegador do sistema, de volta por uma porta local |
+| `open_url` | `url` (só http/https) | — | baixar o clipe pelo navegador do sistema |
 
 ## Rodar tudo local (para testar antes de subir)
 

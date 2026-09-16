@@ -7,8 +7,8 @@ Tudo o que existe na máquina de hoje e não está nessa lista **não migra** �
 tabela da seção 13 diz o que fica para trás e por quê.
 
 Cada passo tem o comando copiável e uma linha dizendo por que ele existe. Quem
-quer entender o desenho em vez de executar, leia o [SERVIDOR.md](../SERVIDOR.md);
-quem quer as portas e o motivo de cada faixa, o [UDP.md](../UDP.md).
+quer entender o desenho em vez de executar, leia o [SERVIDOR.md](SERVIDOR.md);
+quem quer as portas e o motivo de cada faixa, o [UDP.md](UDP.md).
 
 | | |
 |---|---|
@@ -60,7 +60,7 @@ engano devolve o teto de espectadores à máquina velha com 8 vCPU parados.
 
 ### 1.2 Teto de espectadores simultâneos, por porta e por qualidade
 
-As taxas são as do [REDE.md](../REDE.md): 720p60 = 5 Mb/s, 1080p60 = 10 Mb/s,
+As taxas são as do [REDE.md](REDE.md): 720p60 = 5 Mb/s, 1080p60 = 10 Mb/s,
 1440p60 = 20 Mb/s. A banda útil é a porta **menos ~20 Mb/s**, que são o site, o
 download do instalador, o `/apt/` e o e-mail dividindo o mesmo uplink.
 
@@ -73,7 +73,7 @@ download do instalador, o `/apt/` e o e-mail dividindo o mesmo uplink.
 
 O número é o total da máquina, não por sala: quinze pessoas em duas salas pesam o
 mesmo que quinze numa só. A linha de 200 Mb/s dá 18 onde o
-[SERVIDOR.md](../SERVIDOR.md) registra 17 — é a diferença entre descontar 20 Mb/s
+[SERVIDOR.md](SERVIDOR.md) registra 17 — é a diferença entre descontar 20 Mb/s
 fixos e descontar 15% da porta, e não vale discutir num número que é estimativa de
 pico.
 
@@ -103,7 +103,7 @@ prática:
 - **A defesa é o numerador, não o denominador.** Limitar a qualidade por sala é de
   graça: 720p60 gasta metade do que 1080p60 e atende o dobro de gente. É a única
   mudança que reduz o tráfego sem reduzir a plateia.
-- **O gatilho de acompanhar é o mesmo do [SERVIDOR.md](../SERVIDOR.md)**, com o
+- **O gatilho de acompanhar é o mesmo do [SERVIDOR.md](SERVIDOR.md)**, com o
   número novo: eth0 acima de **450 Mb/s** de saída sustentados por cinco minutos
   (75% dos 600). Se isso virar rotina, a resposta é uma segunda VPS só para o SFU
   — a banda da Contabo é por máquina, então duas máquinas são o dobro de banda, e
@@ -181,7 +181,7 @@ porta por worker a partir de `SFU_MEDIA_PORT` (40000), ou seja 40000 a 40006. TC
 na mesma faixa é o caminho reserva de quem está numa rede que bloqueia UDP —
 fechado, o ICE tenta, não conecta, e a pessoa olha para uma sala sem imagem.
 
-**41000-42000 e não 41000-41447**: a conta do [UDP.md](../UDP.md) é
+**41000-42000 e não 41000-41447**: a conta do [UDP.md](UDP.md) é
 `SFU_PLAIN_PORT + (SFU_WORKERS × SFU_PLAIN_PORTS) - 1`, que com 7 workers e 64
 portas dá `41000 + 448 - 1 = 41447` — 448 portas, dentro da regra 41000-42000 que
 já existe. A faixa do firewall é mais larga porque o mediasoup **sorteia** dentro
@@ -587,7 +587,7 @@ ssh vps 'gpg --list-secret-keys repo@unkvoid.com'
 ```
 
 A chave do APT **não é** a chave que assina as atualizações do app. Confundir as
-duas é o erro mais caro do processo — ver [AUTO-UPDATE.md](../AUTO-UPDATE.md). A do
+duas é o erro mais caro do processo — ver [AUTO-UPDATE.md](AUTO-UPDATE.md). A do
 auto-update nunca vem para cá: esta máquina é exposta à internet, e quem a tiver
 publica atualização para todo mundo que instalou o app.
 
@@ -1092,7 +1092,7 @@ instalar.
 | `/etc/sysctl.d/99-unkvoid-udp.conf` e `99-livekit.conf` | — | O primeiro virou o `infra/sysctl-unkvoid.conf`; o segundo sobrou de um teste de LiveKit e é quem prendia `rmem_max` em 5 MB |
 | O cache do Rust (`native/target`, `target-deb12`) | 9,4 GB de disco | É cache: se refaz. Custa um build de ~40 minutos, uma vez |
 | `mail-state` e `mail-logs` do e-mail | — | Cache do rspamd, estado do fail2ban e log. O contêiner refaz, e trazer é herdar decisão tomada em outra máquina |
-| A chave que assina as atualizações do app | — | Nunca esteve nesta máquina e não vem: quem a tiver publica atualização para todo mundo que instalou o app. Ver [AUTO-UPDATE.md](../AUTO-UPDATE.md) |
+| A chave que assina as atualizações do app | — | Nunca esteve nesta máquina e não vem: quem a tiver publica atualização para todo mundo que instalou o app. Ver [AUTO-UPDATE.md](AUTO-UPDATE.md) |
 
 O que **precisa** vir da velha está na seção 8.1 (banco, buckets, chave do APT),
 na seção 9 (os segredos) e na seção 11 (as caixas, as contas e a chave DKIM). Fora

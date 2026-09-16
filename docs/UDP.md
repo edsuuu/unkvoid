@@ -56,7 +56,7 @@ simultâneos (cada pessoa na voz pelo Linux usa dois: envio e recepção) e a fa
 registro manda cada sala nova para o worker com menos salas, e ela fica lá. Então
 o limite prático é `SFU_PLAIN_PORTS` transmissões **por sala**: hoje, 64 pessoas
 compartilhando a tela ao mesmo tempo na mesma sala — muito além do teto de banda,
-que é o que se sente primeiro (ver [infra/INSTALAR-VPS.md](infra/INSTALAR-VPS.md)).
+que é o que se sente primeiro (ver [infra/INSTALAR-VPS.md](INSTALAR-VPS.md)).
 
 Foi por isso que o valor já foi 1, e duas pessoas nunca conseguiram compartilhar
 juntas: o segundo a clicar recebia `no more available ports`.
@@ -145,6 +145,6 @@ testar cedo demais dá um falso negativo que manda você caçar no lugar errado.
 Subir `SFU_WORKERS` também aumenta o teto total, mas não o de uma sala: a sala
 continua num worker só.
 
-Ver também [infra/INSTALAR-VPS.md](infra/INSTALAR-VPS.md) para a tabela de portas do
+Ver também [infra/INSTALAR-VPS.md](INSTALAR-VPS.md) para a tabela de portas do
 firewall do painel, [SERVIDOR.md](SERVIDOR.md) para por que ele é o primeiro suspeito, e
 [REDE.md](REDE.md) para o caminho da imagem.
