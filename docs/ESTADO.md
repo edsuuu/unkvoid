@@ -34,6 +34,15 @@ o dono. O histórico das sessões saiu do repositório e continua no git.
 
 ## O que falta fazer
 
+- **O código de Windows nunca foi compilado nesta integração** (16/09/2026): a `main` trouxe as
+  correções 0.0.25 a 0.0.27 — encoder, captura e áudio de Windows, mais o limitador de quadros
+  para monitor de 144 Hz — e elas foram integradas num Mac, onde esse código nem entra na
+  compilação. Antes de publicar qualquer instalador, compilar e transmitir numa máquina Windows.
+- **Áudio do Discord vazando no Windows** (relato do dono, 16/09/2026): a exclusão é por nome de
+  executável (`Discord.exe` e companhia) e não há queda para o laço clássico, então as duas
+  hipóteses são a caixa "Sem o áudio do Discord" desmarcada ou o Discord entrando na chamada
+  depois do início da transmissão — a lista de processos é refeita a cada 2 s. Falta a linha
+  `broadcast.start` do log da máquina, que diz qual das duas é.
 - **Produção atrás da branch:** o `unkvoid.com` roda o site do `main`. O app desta branch exige
   o `state` na volta do login do Google (sem ele, 404) e usa `/api/config` e `/api/servers`, que
   ainda não existem lá. Sobem o site e o SFU; o app não sobe.
