@@ -38,7 +38,7 @@ it('o histórico do servidor junta as duas tabelas e conta em português o que h
     $messageId = $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$channel->id}/messages", ['body' => 'oi'])->assertCreated()->json('data.id');
     $this->actingAs($member, 'sanctum')->deleteJson("/api/messages/{$messageId}")->assertNoContent();
 
-    $response = $this->actingAs($owner, 'sanctum')->getJson("/api/servers/{$server->id}/audits")->assertOk()->assertJsonPath('meta.per_page', 50);
+    $response = $this->actingAs($owner, 'sanctum')->getJson("/api/servers/{$server->id}/audits")->assertOk();
     $rows = $response->json('data');
     $summaries = array_column($rows, 'summary');
 

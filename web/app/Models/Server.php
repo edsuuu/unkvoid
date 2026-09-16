@@ -14,14 +14,15 @@ use App\Models\Concerns\LogsFailedWrites;
 use App\Services\Sfu\SfuClient;
 use App\Services\Storage\BucketService;
 use Carbon\CarbonImmutable;
-use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Collection as SupportCollection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -92,9 +93,20 @@ final class Server extends Model implements Auditable
 
         $member = self::write('falha ao entrar no servidor', fn (): ServerMember => $server->members()->firstOrCreate(['user_id' => $user->id], ['joined_at' => now()]), ['server_id' => $server->id, 'user_id' => $user->id]);
 
-        // Quem já era membro e clicou no convite de novo não chega duas vezes.
+        // Quem já era membro e clicou no convite de novo não chega duas vezes. E o aviso
+        // não derruba a entrada: a adesão já está gravada, e quem entrou não tem culpa de
+        // o chat ter falhado.
         if ($member->wasRecentlyCreated) {
-            $server->announceJoin($member, $user);
+            try {
+                $server->announceJoin($member, $user);
+            } catch (Throwable $exception) {
+                Log::channel('daily')->error('[ERRO] falha ao avisar da chegada no chat', [
+                    'server_id' => $server->id,
+                    'user_id' => $user->id,
+                    'exception' => $exception,
+                    'message' => $exception->getMessage(),
+                ]);
+            }
         }
 
         self::broadcast(new ServerUpdated($server->id));
@@ -195,11 +207,11 @@ final class Server extends Model implements Auditable
      * id que ainda existe. Para guardá-los, `generateTags()` nos modelos e um filtro por
      * `tags` no lugar dos `whereIn`.
      *
-     * @return LengthAwarePaginator<int, stdClass>
+     * @return SupportCollection<int, stdClass>
      *
      * @throws ForbiddenException
      */
-    public function history(User $actor): LengthAwarePaginator
+    public function history(User $actor): SupportCollection
     {
         $this->memberOrFail($actor)->authorize(PermissionEnum::ViewAuditLog);
 
@@ -215,11 +227,12 @@ final class Server extends Model implements Auditable
                 ->where(fn (Builder $server) => $server->where('auditable_type', self::class)->where('auditable_id', $this->id))
                 ->orWhere(fn (Builder $roles) => $roles->where('auditable_type', ServerRole::class)->whereIn('auditable_id', DB::table('server_roles')->select('id')->where('server_id', $this->id)))
                 ->orWhere(fn (Builder $members) => $members->where('auditable_type', ServerMember::class)->whereIn('auditable_id', DB::table('server_members')->select('id')->where('server_id', $this->id)))
-                ->orWhere(fn (Builder $messages) => $messages->where('auditable_type', Message::class)->whereIn('auditable_id', DB::table('messages')->select('id')->whereIn('channel_id', DB::table('channels')->select('id')->where('server_id', $this->id)))))
+                ->orWhere(fn (Builder $messages) => $messages->where('auditable_type', Message::class)->whereNot('event', 'created')->whereIn('auditable_id', DB::table('messages')->select('id')->whereIn('channel_id', DB::table('channels')->select('id')->where('server_id', $this->id)))))
             ->union($channels)
             ->latest()
             ->orderByDesc('id')
-            ->paginate(self::AUDIT_PAGE);
+            ->limit(self::AUDIT_PAGE)
+            ->get();
     }
 
     /**
@@ -576,7 +589,16 @@ final class Server extends Model implements Auditable
             return;
         }
 
-        Storage::disk('s3')->delete($path);
+        try {
+            Storage::disk('s3')->delete($path);
+        } catch (Throwable $exception) {
+            Log::channel('daily')->error('[ERRO] falha ao apagar o icone antigo do servidor', [
+                'server_id' => $this->id,
+                'path' => $path,
+                'exception' => $exception,
+                'message' => $exception->getMessage(),
+            ]);
+        }
     }
 
     private function removeMemberOverwrites(User $user): void
