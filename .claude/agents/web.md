@@ -67,7 +67,10 @@ Siga a skill `style-edsu` (é obrigatória, não é sugestão). O resumo que mai
   try/catch + `Log::channel('daily')->error('[ERRO] mensagem fixa', [contexto])`. Evento de
   broadcast vai por `self::broadcast(...)` do mesmo trait (Reverb fora do ar não pode virar
   500 depois do commit).
-- Rota → FormRequest → controller de ação única (`__invoke`) → Resource. Nunca
+- Rota → FormRequest → controller → Resource. **Um controller por recurso** (`ServerController`,
+  `MessageController`…) com os métodos dele, e não um arquivo por ação: sessenta arquivos de
+  uma função só é cabeçalho demais para código de menos. `__invoke` fica para o recurso que
+  tem uma ação só (`ConfigController`, `MeController`, `SfuEventController`). Nunca
   `$request->input()` no controller, nunca `response()->json` espalhado, status de erro mora
   na exceção (`ForbiddenException::render()` → 403). Autorização mora no modelo
   (`authorize*`), não no controller.
