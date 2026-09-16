@@ -18,7 +18,7 @@ export function VoicePanel() {
     const voice = hub.voice;
     const { user } = useStore(hub.store);
     const voiceState = useStore(voice.store);
-    const { reconnecting } = useStore(app.media.store);
+    const { reconnecting, ping } = useStore(app.media.store);
     const [menuOpen, setMenuOpen] = useState(false);
     const choose = (work: () => unknown) => {
         setMenuOpen(false);
@@ -34,7 +34,10 @@ export function VoicePanel() {
             {voiceChannel && (
                 <div className="animate-rise">
                     <div className="flex items-center gap-2.5">
-                        <span className={voiceState.joining || reconnecting ? 'text-ink-dim' : 'text-online'}>
+                        <span
+                            className={voiceState.joining || reconnecting ? 'text-ink-dim' : ping !== null && ping > 150 ? 'text-periwinkle' : 'text-online'}
+                            title={voiceState.joining ? 'Conectando…' : reconnecting ? 'Reconectando…' : ping === null ? 'Medindo a ida e volta até o servidor de mídia' : `${ping} ms até o servidor de mídia`}
+                        >
                             {voiceState.joining || reconnecting ? <Spinner size={14} /> : <Icon name="signal" size={15} />}
                         </span>
                         <span className="min-w-0 flex-1">
