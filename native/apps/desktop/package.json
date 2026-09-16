@@ -11,20 +11,38 @@
     "build:windows": "tauri build --bundles nsis,msi",
     "build:mac": "tauri build --bundles app,dmg",
     "build:linux": "tauri build --bundles deb,appimage",
-    "check": "python3 check-language.py && python3 check-ui.py && node check-room-code.mjs && node check-broadcast.mjs && node check-consume.mjs && node check-webrtc-absent.mjs && node check-hub.mjs && node check-clips.mjs",
+    "check": "python3 tests/static/check-language.py && python3 tests/static/check-ui.py && tsc -p . && eslint ui tests && vitest run --project unit",
+    "typecheck": "tsc -p .",
+    "lint": "eslint ui tests",
+    "test": "vitest run --project unit",
+    "test:watch": "vitest --project unit",
+    "test:integration": "vitest run --project integration",
     "tauri": "tauri"
   },
   "dependencies": {
     "hls.js": "^1.7.3",
     "laravel-echo": "^2.5.0",
     "mediasoup-client": "^3.15.4",
-    "pusher-js": "^8.6.0"
+    "pusher-js": "^8.6.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.12.0",
     "jsdom": "^30.0.1",
     "tailwindcss": "^4.3.3",
-    "vite": "^8"
+    "typescript": "~5.9",
+    "typescript-eslint": "^8.70.0",
+    "vite": "^8",
+    "vitest": "^5.0.0"
   }
 }

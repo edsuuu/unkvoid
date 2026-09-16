@@ -1,105 +1,121 @@
-/*
- * A ordem das camadas é a ordem em que os nomes aparecem, e para declarações
- * `!important` quem vence é a camada declarada PRIMEIRO — o contrário do normal. Por
- * isso `unkvoid` é anunciada antes do Tailwind: é assim que o `display` das transições
- * ganha do `[hidden] { display: none !important }` que vem no reset dele.
- *
- * O vocabulário do desenho, por isso mesmo, NÃO pode morar em `unkvoid`: o reset do
- * Tailwind zera borda e espaçamento de tudo (`* { border: 0; padding: 0 }`) numa camada
- * posterior, e apagaria cada `padding` e cada `border` daqui. Ele vai em `components`,
- * que o próprio Tailwind declara entre o reset e os utilitários — depois do reset, para
- * valer, e antes dos utilitários, para um `px-2` no elemento continuar ajustando o caso.
- */
-@layer unkvoid;
-
 @import "tailwindcss";
 
 /*
- * A paleta é a identidade do produto e é a MESMA do app web — divergir aqui faz o
- * desktop parecer outro programa. Os nomes vêm do papel de cada cor, não do tom: trocar
- * o valor de `--color-content` muda o fundo em todo lugar sem caçar hexadecimal.
+ * A paleta é a do design (Claude Design, "Unkvoid App") e a mesma do site: divergir aqui faz
+ * o desktop parecer outro programa. Os nomes vêm do papel de cada cor, não do tom.
  */
 @theme {
     --color-back: #06050a;
-    --color-rail: #0a0812;
-    --color-column: rgba(255, 255, 255, 0.035);
-    --color-content: rgba(255, 255, 255, 0.02);
-    --color-panel: rgba(16, 13, 26, 0.92);
-    --color-row: rgba(255, 255, 255, 0.05);
+    --color-glass: rgba(255, 255, 255, 0.04);
+    --color-row: rgba(255, 255, 255, 0.06);
     --color-line: rgba(255, 255, 255, 0.09);
+    --color-line-strong: rgba(255, 255, 255, 0.12);
 
     --color-ink: #ece9f3;
     --color-ink-strong: #ffffff;
+    --color-ink-body: #e6e1f2;
+    --color-ink-icon: #cfc9de;
     --color-ink-soft: #a89fc0;
     --color-ink-dim: #8a80a6;
     --color-ink-faint: #6f6889;
+    --color-ink-ghost: #3a3350;
 
     --color-brand: #8a7cf5;
     --color-brand-dark: #5a3fd6;
     --color-lilac: #9a9cff;
     --color-lilac-2: #aeb0ff;
+    --color-periwinkle: #9aa0e0;
     --color-online: #34d399;
-    --color-danger: #fb7185;
-    --color-danger-dark: #9f1239;
+    --color-offline: #4a4265;
+    --color-danger: #e2445c;
 
     --font-sans: Archivo, Helvetica, Arial, sans-serif;
     --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+    --animate-sweep: sweep 6s linear infinite;
+    --animate-ping-soft: ping-soft 2.4s ease-out infinite;
+    --animate-fade-in: fade-in 180ms ease-out;
+    --animate-rise: rise 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    --animate-shimmer: shimmer 1.3s linear infinite;
+
+    @keyframes sweep {
+        0% { transform: translateX(-120%); }
+        100% { transform: translateX(320%); }
+    }
+
+    @keyframes ping-soft {
+        0% { transform: scale(1); opacity: 0.7; }
+        80%, 100% { transform: scale(2.4); opacity: 0; }
+    }
+
+    @keyframes fade-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+    }
+
+    @keyframes rise {
+        from { opacity: 0; transform: translateY(6px) scale(0.985); }
+        to { opacity: 1; transform: none; }
+    }
+
+    @keyframes shimmer {
+        from { background-position: 200% 0; }
+        to { background-position: -200% 0; }
+    }
+}
+
+/* Foco de teclado com a cor da marca: o anel azul do sistema some no vidro escuro. */
+@layer base {
+    :where(button, a, [role="button"], [tabindex="0"]):focus-visible {
+        outline: 2px solid rgba(138, 124, 245, 0.7);
+        outline-offset: 2px;
+    }
 }
 
 @layer components {
     /*
-     * O vocabulário do desenho: cada classe daqui existe porque substitui uma cadeia de
-     * utilitários que se repetia no markup. A camada está explicada no topo do arquivo.
+     * O vocabulário do desenho: cada classe existe porque substitui uma cadeia de utilitários
+     * que se repetia em vários componentes. `check-ui.py` falha se uma delas ficar sem uso.
      */
-    .card,
-    .card-sm {
-        background: var(--color-column);
+    .glass {
+        background: var(--color-glass);
         backdrop-filter: blur(20px);
         border: 1px solid var(--color-line);
         border-radius: 20px;
     }
 
-    .card {
+    .glass-panel {
+        background: rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(22px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 22px;
-        box-shadow: 0 30px 80px -40px rgba(0, 0, 0, 0.9);
+        box-shadow: 0 40px 90px -40px rgba(0, 0, 0, 0.95);
     }
 
-    .panel {
-        background: var(--color-panel);
+    .popover {
+        background: rgba(16, 13, 26, 0.96);
         backdrop-filter: blur(22px);
-        border: 1px solid rgba(255, 255, 255, 0.12);
+        border: 1px solid var(--color-line-strong);
         border-radius: 14px;
         box-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.95);
     }
 
-    /* O fundo dos seis modais, que antes repetiam a mesma cadeia de sete utilitários. */
-    .overlay {
-        position: fixed;
-        inset: 0;
-        z-index: 50;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 24px;
-        background: rgba(6, 5, 10, 0.72);
-        backdrop-filter: blur(6px);
-    }
-
     .label-mono {
+        color: var(--color-ink-dim);
         font-family: var(--font-mono);
-        font-size: 10.5px;
+        font-size: 10px;
         letter-spacing: 0.12em;
         text-transform: uppercase;
-        color: var(--color-ink-dim);
     }
 
     .field {
-        border: 1px solid var(--color-line);
         background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 12px;
-        padding: 12px 14px;
-        font-size: 14px;
         color: var(--color-ink-strong);
+        font-size: 14px;
+        padding: 11px 13px;
+        transition: border-color 160ms ease;
     }
 
     .field:focus {
@@ -111,26 +127,34 @@
         color: var(--color-ink-faint);
     }
 
+    .field:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+    }
+
     .btn-primary {
         background: linear-gradient(180deg, var(--color-brand), var(--color-brand-dark));
         border-radius: 12px;
-        box-shadow: 0 14px 34px -16px rgba(90, 63, 214, 0.9);
         color: var(--color-ink-strong);
         cursor: pointer;
         font-weight: 600;
-        padding: 13px;
-    }
-
-    .btn-ghost {
-        background: rgba(255, 255, 255, 0.03);
-        border: 1px solid var(--color-line);
-        border-radius: 12px;
-        color: var(--color-ink);
-        cursor: pointer;
+        padding: 12px 16px;
+        transition: filter 160ms ease, transform 120ms ease;
     }
 
     .btn-primary:hover {
         filter: brightness(1.1);
+    }
+
+    .btn-ghost {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--color-line-strong);
+        border-radius: 10px;
+        color: var(--color-ink-icon);
+        cursor: pointer;
+        font-size: 12.5px;
+        padding: 8px 12px;
+        transition: border-color 160ms ease, color 160ms ease;
     }
 
     .btn-ghost:hover {
@@ -138,42 +162,130 @@
         color: var(--color-ink-strong);
     }
 
+    .btn-danger {
+        background: rgba(226, 68, 92, 0.12);
+        border: 1px solid rgba(226, 68, 92, 0.35);
+        border-radius: 10px;
+        color: var(--color-danger);
+        cursor: pointer;
+        font-size: 12.5px;
+        padding: 8px 12px;
+        transition: background 160ms ease;
+    }
+
+    .btn-danger:hover {
+        background: rgba(226, 68, 92, 0.2);
+    }
+
+    .btn-primary:active,
+    .btn-ghost:active,
+    .btn-danger:active,
+    .btn-icon:active {
+        transform: scale(0.97);
+    }
+
     .btn-primary:disabled,
-    .btn-ghost:disabled {
-        box-shadow: none;
+    .btn-ghost:disabled,
+    .btn-danger:disabled,
+    .btn-icon:disabled {
         cursor: not-allowed;
         filter: none;
         opacity: 0.45;
+        transform: none;
     }
 
-    .pill {
-        border: 1px solid var(--color-line);
+    .btn-icon {
+        align-items: center;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--color-line-strong);
+        border-radius: 11px;
+        color: var(--color-ink-icon);
+        cursor: pointer;
+        display: inline-flex;
+        flex: none;
+        height: 34px;
+        justify-content: center;
+        transition: all 180ms ease;
+        width: 34px;
+    }
+
+    .btn-icon:hover {
+        border-color: rgba(138, 124, 245, 0.5);
+        color: var(--color-ink-strong);
+    }
+
+    .btn-icon-on,
+    .btn-icon-on:hover {
+        background: linear-gradient(180deg, var(--color-brand), var(--color-brand-dark));
+        border-color: rgba(138, 124, 245, 0.6);
+        color: var(--color-ink-strong);
+    }
+
+    .btn-icon-off,
+    .btn-icon-off:hover {
+        background: rgba(226, 68, 92, 0.12);
+        border-color: rgba(226, 68, 92, 0.35);
+        color: var(--color-danger);
+    }
+
+    /* Ação secundária que pesa (excluir, sair): contorno quieto, sem o vermelho do perigo imediato. */
+    .btn-quiet {
+        background: none;
+        border: 1px solid rgba(154, 160, 224, 0.28);
+        border-radius: 10px;
+        color: var(--color-periwinkle);
+        cursor: pointer;
+        font-size: 12.5px;
+        padding: 9px 13px;
+        transition: color 150ms, border-color 150ms;
+    }
+
+    .btn-quiet:hover {
+        border-color: rgba(154, 160, 224, 0.55);
+        color: var(--color-ink-strong);
+    }
+
+    .tab-soft {
+        background: transparent;
+        border: 1px solid rgba(255, 255, 255, 0.08);
         border-radius: 999px;
         color: var(--color-ink-dim);
+        cursor: pointer;
         font-size: 13px;
         padding: 7px 14px;
+        transition: color 150ms, background 150ms, border-color 150ms;
     }
 
-    .pill-on {
+    .tab-soft:hover {
+        color: var(--color-ink-icon);
+    }
+
+    .tab-soft-on,
+    .tab-soft-on:hover {
         background: rgba(138, 124, 245, 0.18);
         border-color: rgba(138, 124, 245, 0.35);
         color: var(--color-ink);
+        font-weight: 500;
     }
 
-    .avatar {
-        align-items: center;
+    .tab-pill {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 999px;
+        color: var(--color-ink-dim);
+        cursor: pointer;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        padding: 6px 13px;
+        text-transform: uppercase;
+        transition: all 180ms ease;
+    }
+
+    .tab-pill-on {
         background: linear-gradient(180deg, var(--color-brand), var(--color-brand-dark));
-        border-radius: 50%;
+        border-color: transparent;
         color: var(--color-ink-strong);
-        display: inline-flex;
-        font-weight: 700;
-        justify-content: center;
-    }
-
-    /* Quem não é você não ganha o violeta: ele marca o que é seu na tela. */
-    .avatar-flat {
-        background: rgba(255, 255, 255, 0.08);
-        color: var(--color-ink);
         font-weight: 600;
     }
 
@@ -184,6 +296,7 @@
         display: flex;
         gap: 10px;
         padding: 9px 11px;
+        transition: background 160ms ease, border-color 160ms ease;
     }
 
     .row-item:hover {
@@ -194,6 +307,66 @@
     .row-item-on:hover {
         background: rgba(138, 124, 245, 0.12);
         border-color: rgba(138, 124, 245, 0.32);
+    }
+
+    .avatar {
+        align-items: center;
+        background: linear-gradient(180deg, var(--color-brand), var(--color-brand-dark));
+        border-radius: 50%;
+        color: var(--color-ink-strong);
+        display: inline-flex;
+        flex: none;
+        font-weight: 700;
+        justify-content: center;
+    }
+
+    /* Quem não é você não ganha o violeta: ele marca o que é seu na tela. */
+    .avatar-flat {
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--color-ink-icon);
+        font-weight: 600;
+    }
+
+    /* A bolha diz de quem é a mensagem pelo canto reto e pela cor, sem precisar de rótulo. */
+    .bubble {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        border-top-left-radius: 4px;
+        color: var(--color-ink-body);
+        font-size: 13px;
+        padding: 8px 11px;
+        text-align: left;
+    }
+
+    .bubble-mine {
+        background: linear-gradient(180deg, var(--color-brand), var(--color-brand-dark));
+        border-color: transparent;
+        border-top-left-radius: 12px;
+        border-top-right-radius: 4px;
+        color: var(--color-ink-strong);
+    }
+
+    .live-badge {
+        align-items: center;
+        background: var(--color-danger);
+        border-radius: 5px;
+        color: var(--color-ink-strong);
+        display: inline-flex;
+        font-family: var(--font-mono);
+        font-size: 8.5px;
+        font-weight: 600;
+        gap: 5px;
+        letter-spacing: 0.1em;
+        padding: 3px 6px;
+    }
+
+    .code-chip {
+        background: rgba(138, 124, 245, 0.16);
+        border-radius: 7px;
+        color: var(--color-lilac-2);
+        font-family: var(--font-mono);
+        padding: 3px 8px;
     }
 
     .divider-or {
@@ -210,142 +383,23 @@
         height: 1px;
     }
 
-    /* A bolha diz de quem é a mensagem pelo canto reto e pela cor, sem precisar de rótulo. */
-    .bubble {
-        background: var(--color-row);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 12px;
-        border-top-left-radius: 4px;
-        padding: 8px 11px;
-        text-align: left;
+    .skeleton {
+        animation: var(--animate-shimmer);
+        background: linear-gradient(90deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
+        background-size: 200% 100%;
+        border-radius: 8px;
     }
 
-    .bubble-mine {
-        background: linear-gradient(180deg, var(--color-brand), var(--color-brand-dark));
-        border-color: transparent;
-        border-top-left-radius: 12px;
-        border-top-right-radius: 4px;
-        color: var(--color-ink-strong);
+    .scroll-thin {
+        scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+        scrollbar-width: thin;
     }
 
-    .code-chip {
-        background: rgba(138, 124, 245, 0.16);
-        border-radius: 7px;
-        color: var(--color-lilac-2);
-        font-family: var(--font-mono);
-        padding: 3px 8px;
+    .boot-error {
+        color: var(--color-danger);
+        font-size: 14px;
+        margin: 40px;
     }
-
-    /*
-     * Sem conta, os itens que só existem com conta não aparecem — e vice-versa. É um
-     * atributo no `body` em vez de um `hidden` por elemento porque a resposta é a mesma
-     * para todos eles e muda nos dois lugares (entrar e sair) de uma vez.
-     */
-    body:not([data-account]) [data-account-only],
-    body[data-account] [data-anon-only] {
-        display: none;
-    }
-
-}
-
-@layer unkvoid {
-    /*
-     * Modais e painéis aparecem e somem com transição, em vez de piscar.
-     *
-     * O atributo `hidden` do HTML vira `display: none` no reset, e `display` não
-     * interpola. O `allow-discrete` deixa a troca acontecer no fim da transição, então o
-     * elemento continua na tela enquanto o fade roda.
-     */
-    #share-modal,
-    #logs-modal,
-    #server-modal,
-    #settings-modal,
-    #role-modal,
-    #channel-modal,
-    #people-list,
-    #update-screen,
-    #offline-screen {
-        transition:
-            opacity 160ms ease,
-            display 160ms allow-discrete;
-    }
-
-    #share-modal[hidden],
-    #logs-modal[hidden],
-    #server-modal[hidden],
-    #settings-modal[hidden],
-    #role-modal[hidden],
-    #channel-modal[hidden],
-    #update-screen[hidden],
-    #offline-screen[hidden] {
-        display: flex !important;
-        opacity: 0;
-        pointer-events: none;
-    }
-
-    /* O painel de pessoas é bloco, não flex: manter `flex` aqui o desmontaria. */
-    #people-list[hidden] {
-        display: block !important;
-        opacity: 0;
-        pointer-events: none;
-    }
-
-    /* O cartão cresce um triz junto com o fundo. Sem isto o modal só pisca de opacidade. */
-    #share-modal > div,
-    #logs-modal > div {
-        transition: transform 160ms ease;
-    }
-
-    #share-modal[hidden] > div,
-    #logs-modal[hidden] > div {
-        transform: scale(0.97);
-    }
-
-    /* O painel desce de cima, que é de onde o botão dele está. */
-    #people-list {
-        transition:
-            opacity 160ms ease,
-            transform 160ms ease,
-            display 160ms allow-discrete;
-    }
-
-    #people-list[hidden] {
-        transform: translateY(-6px);
-    }
-
-    /*
-     * Pausado precisa PARECER pausado.
-     *
-     * Quadro congelado e quadro travado são a mesma imagem na tela: sem o borrão e o
-     * cinza, quem olha não sabe se pausou ou se a rede caiu. É filtro de CSS no
-     * `<video>` — canvas não desenharia nada que isto não desenhe.
-     *
-     * Brilho e saturação entram como variáveis porque moram na MESMA propriedade
-     * `filter`: escrevê-los direto em `style.filter` fazia a pausa apagar os dois e os
-     * dois apagarem a pausa.
-     *
-     * A saturação precisa estar aqui, e não só na variável: o controle gravava
-     * `--saturation` e este filtro nunca a lia, então arrastar a barra não mudava um
-     * pixel. Na pausa ela não aparece porque o `grayscale` já zera a cor.
-     *
-     * Só com `data-tuned` (algum controle fora de 100): um `filter` qualquer, mesmo
-     * neutro, tira o vídeo do caminho direto do compositor e custa uma cópia por quadro.
-     */
-    #stage video[data-tuned],
-    #stage img[data-tuned] {
-        filter: brightness(var(--brightness, 1)) contrast(var(--contrast, 1)) saturate(var(--saturation, 1));
-    }
-
-    [data-paused] video {
-        filter: blur(8px) grayscale(1) brightness(calc(var(--brightness, 1) * 0.6));
-    }
-
-    /*
-     * Nada de `@starting-style` aqui. O compilador do Tailwind o desmonta e deixa o
-     * `opacity: 0` valendo para sempre — o modal abria invisível. E ele não faz falta:
-     * como o estado escondido continua renderizado, tirar o `hidden` já transiciona de
-     * 0 para 1 sozinho.
-     */
 }
 
 @layer base {
@@ -355,13 +409,17 @@
 
     body {
         /* O app não rola: cada coluna cuida do próprio overflow. */
-        @apply m-0 flex h-screen gap-2 overflow-hidden p-2 text-[15px]/[1.55] text-ink;
+        @apply m-0 h-screen overflow-hidden text-[14px]/[1.5] text-ink;
 
-        /* O mesmo halo violeta da landing, e é ele que faz o vidro dos cartões aparecer. */
+        /* O halo violeta do design, e é ele que faz o vidro dos cartões aparecer. */
         background:
             radial-gradient(90% 60% at 50% 0%, rgba(86, 63, 214, 0.16), rgba(6, 5, 10, 0) 62%),
             var(--color-back);
         font-family: var(--font-sans);
         -webkit-font-smoothing: antialiased;
+    }
+
+    button {
+        font-family: inherit;
     }
 }
