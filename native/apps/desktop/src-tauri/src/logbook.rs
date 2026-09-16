@@ -207,7 +207,18 @@ pub fn report(version: &str) {
     });
 
     tauri::async_runtime::spawn(async move {
-        let sent = reqwest::Client::new()
+        // `Client::new()` PANICA quando a pilha de TLS não sobe, e quem relata erro não
+        // pode ser mais uma fonte de erro: o construtor que devolve `Result` falha quieto.
+        let client = match reqwest::Client::builder().build() {
+            Ok(client) => client,
+            Err(failure) => {
+                tracing::warn!(failure = %failure, "o relatório de erro não saiu: o cliente HTTP não subiu");
+
+                return;
+            }
+        };
+
+        let sent = client
             .post(REPORT_URL)
             .timeout(std::time::Duration::from_secs(15))
             .json(&body)
