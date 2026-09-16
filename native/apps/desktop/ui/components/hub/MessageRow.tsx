@@ -21,9 +21,19 @@ export const MessageRow = memo(function MessageRow({ message, mine, canDelete }:
     const [draft, setDraft] = useState(message.body);
     const when = new Date(message.created_at).toLocaleString('pt-BR', TIME_FORMAT);
 
+    if (message.type === 'join') {
+        return (
+            <p className="flex animate-fade-in items-center justify-center gap-2 py-0.5 text-[12px] text-ink-dim">
+                <Icon name="users" size={13} />
+                <span><span className="text-ink-icon">@{message.user.name}</span> chegou no servidor</span>
+                <span className="font-mono text-[9.5px]">{when}</span>
+            </p>
+        );
+    }
+
     return (
         <div className={`group flex animate-fade-in gap-2.5 ${mine ? 'flex-row-reverse' : ''}`}>
-            <Avatar name={message.user.name} size={28} mine={mine} />
+            <Avatar name={message.user.name} url={message.user.avatar_url} size={28} mine={mine} />
             <div className={`flex min-w-0 max-w-[75%] flex-col ${mine ? 'items-end' : 'items-start'}`}>
                 <p className="text-[11px] text-ink-dim">
                     {message.user.name} · {when}
