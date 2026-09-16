@@ -223,8 +223,8 @@ Medido com `ps`, `docker stats` e `ss`: tudo abaixo está ligado e não serve ma
 
 | O quê | Ganho | Por que sai |
 |---|---|---|
-| `filebrowser.service` | 25 MB e **a porta 8080** | Gerenciador de arquivos de uma pasta de Minecraft; o site que o expunha (`tarkas.unkvoid.com:8443`) só devolve 404. É ele que ocupa a porta que o Reverb precisa. |
-| `pm2 delete reverb` | 61 MB | É o Reverb do projeto `discord`, na 8081, servindo um Laravel que já não existe. |
+| ~~`filebrowser.service`~~ | 25 MB e **a porta 8080** | **Feito em 16/09/2026** (`stop` + `disable`): era um gerenciador de arquivos de uma pasta de Minecraft, e ocupava a porta que o Reverb do Unkvoid precisava. |
+| ~~`pm2 delete reverb`~~ | 61 MB | **Feito em 16/09/2026**: o processo `reverb` do pm2 agora é o do Unkvoid (`/var/www/projects/unkvoid-web/current`, na 8080). O do projeto `discord` saiu junto. |
 | `systemctl disable --now php8.3-fpm` | 50 MB | Nenhum site aponta para `php8.3-fpm.sock`; o `retro` usa o socket do 8.4. |
 | `systemctl disable --now mysql` (o do sistema, na 3306) | 395 MB | Só tem `discord`, `discord_dev` e `retro_friends`. O Unkvoid usa o MySQL do docker, na 3307. Faça o dump antes. |
 | `ENABLE_AMAVIS=0` no `mailserver` | 176 MB | O rspamd já filtra; o amavis é a segunda passada, e a caixa faz 0,1 mensagem por segundo. |
@@ -278,8 +278,8 @@ existe:
 | O quê | Como roda | Portas | Ainda serve? |
 |---|---|---|---|
 | MySQL do sistema | `mysql.service` (8.0) | 127.0.0.1:3306 | Não — só `discord`, `discord_dev`, `retro_friends` |
-| Reverb do `discord` | pm2, `php`, em `/var/www/projects/discord/current` | 127.0.0.1:8081 | Não — o Laravel daquele caminho já não existe |
-| filebrowser | `filebrowser.service` | 127.0.0.1:8080 | Não — e ocupa a porta do Reverb novo |
+| Reverb do Unkvoid | pm2, `php8.4`, em `/var/www/projects/unkvoid-web/current` | 127.0.0.1:8080 | Sim — é o chat, publicado pelo nginx em `/app/` e `/apps/` desde 16/09/2026 |
+| ~~filebrowser~~ | `filebrowser.service`, desligado em 16/09/2026 | — | Não — saiu para liberar a 8080 |
 | php8.3-fpm | `php8.3-fpm.service` | socket | Não — nenhum site usa o socket dele |
 | TeamSpeak 6 | docker, `teamspeaksystems/teamspeak6-server` | 9987/udp, 30033/tcp | Decisão do dono |
 | Runner do GitHub | `actions.runner.edsuuu-unkvoid.unkvoid-vps` | — | Sim, é o CI |
