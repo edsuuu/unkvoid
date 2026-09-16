@@ -1,14 +1,23 @@
 import { useEffect, useState } from 'react';
 
 import { Failure } from '../../../core/Failure.ts';
+import { Mic } from '../../../core/Mic.ts';
 import { Platform } from '../../../core/Platform.ts';
+import type { InputMode } from '../../../core/Voice.ts';
 import { Avatar } from '../../common/Avatar.tsx';
 import { Icon } from '../../common/Icon.tsx';
+import { KeybindField } from '../../common/KeybindField.tsx';
 import { Modal } from '../../common/Modal.tsx';
 import { useApp } from '../../useApp.ts';
 import { useStore } from '../../useStore.ts';
 
 type ToggleKey = 'noiseSuppression' | 'muteOnJoin';
+
+const MODES: [InputMode, string, string][] = [
+    ['voice', 'Detecção de voz', 'abre o microfone quando você fala'],
+    ['ptt', 'Apertar para falar', 'só abre enquanto a tecla estiver pressionada'],
+    ['open', 'Sempre aberto', 'o microfone fica ligado o tempo todo'],
+];
 
 export function UserSettingsModal() {
     const app = useApp();
@@ -16,13 +25,14 @@ export function UserSettingsModal() {
     const voice = hub.voice;
     const { user } = useStore(hub.store);
     const { preferences } = useStore(voice.store);
+    const live = useStore(voice.mic.store);
     const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
     const [level, setLevel] = useState(0);
     const [meterError, setMeterError] = useState('');
     const native = Platform.isLinux();
 
     useEffect(() => {
-        if (native || ! navigator.mediaDevices?.getUserMedia) {
+        if (native || voice.micTrack || ! navigator.mediaDevices?.getUserMedia) {
             return undefined;
         }
 
@@ -53,25 +63,19 @@ export function UserSettingsModal() {
 
                 const meterContext = new AudioContext();
                 const analyser = meterContext.createAnalyser();
-                const samples = new Uint8Array(512);
+                const samples = new Float32Array(Mic.FFT_SIZE);
                 let shown = 0;
 
                 context = meterContext;
-                analyser.fftSize = 512;
+                analyser.fftSize = Mic.FFT_SIZE;
                 meterContext.createMediaStreamSource(stream).connect(analyser);
 
                 const tick = () => {
-                    analyser.getByteTimeDomainData(samples);
+                    analyser.getFloatTimeDomainData(samples);
 
-                    let sum = 0;
+                    const next = Mic.levelOf(samples);
 
-                    for (const sample of samples) {
-                        sum += ((sample - 128) / 128) ** 2;
-                    }
-
-                    const next = Math.min(1, Math.sqrt(sum / samples.length) * 4);
-
-                    if (Math.abs(next - shown) > 0.03) {
+                    if (Math.abs(next - shown) > 2) {
                         shown = next;
                         setLevel(next);
                     }
@@ -94,11 +98,15 @@ export function UserSettingsModal() {
             stream?.getTracks().forEach(track => track.stop());
             void context?.close();
         };
-    }, [native, preferences.microphone, preferences.noiseSuppression, app]);
+    }, [native, voice.micTrack, preferences.microphone, preferences.noiseSuppression, app]);
 
     if (! user) {
         return null;
     }
+
+    const shown = voice.micTrack ? live.level : level;
+    const chosen = Object.values(preferences.keybinds).filter(key => key.trim() !== '');
+    const repeated = new Set(chosen).size !== chosen.length;
 
     const toggle = (key: ToggleKey, label: string) => (
         <button
@@ -141,8 +149,12 @@ export function UserSettingsModal() {
                         </select>
                         <div className="mt-2.5 flex items-center gap-2.5">
                             <span className="text-[12.5px] text-ink-soft">Entrada</span>
-                            <span className="relative h-[5px] flex-1 overflow-hidden rounded-full bg-white/[0.08]">
-                                <span className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-brand to-online transition-[width] duration-75" style={{ width: `${Math.round(level * 100)}%` }} />
+                            <span className="relative h-[7px] flex-1 overflow-hidden rounded-full bg-white/[0.08]">
+                                <span
+                                    className={`absolute inset-y-0 left-0 rounded-full transition-[width] duration-75 ${shown >= preferences.sensitivity ? 'bg-gradient-to-r from-brand to-online' : 'bg-white/25'}`}
+                                    style={{ width: `${shown}%` }}
+                                />
+                                {preferences.inputMode === 'voice' && <span className="absolute inset-y-0 w-px bg-danger" style={{ left: `${preferences.sensitivity}%` }} />}
                             </span>
                         </div>
                         {meterError && <p className="mt-2 text-[12px] text-danger">{meterError}</p>}
@@ -153,6 +165,65 @@ export function UserSettingsModal() {
                 {! native && toggle('noiseSuppression', 'Supressão de ruído')}
                 {toggle('muteOnJoin', 'Silenciar ao entrar')}
             </div>
+
+            <p className="label-mono mt-6 mb-2">Como o microfone abre</p>
+            <div className="flex flex-col gap-1.5">
+                {MODES.map(([mode, label, hint]) => (
+                    <button
+                        key={mode}
+                        className={`row-item w-full cursor-pointer text-left ${preferences.inputMode === mode ? 'row-item-on' : ''}`}
+                        type="button"
+                        onClick={() => void voice.setPreference('inputMode', mode)}
+                    >
+                        <span className={`size-[9px] flex-none rounded-full ${preferences.inputMode === mode ? 'bg-brand' : 'bg-white/20'}`} />
+                        <span className="min-w-0 flex-1">
+                            <span className="block text-[12.5px]">{label}</span>
+                            <span className="block text-[11px] text-ink-dim">{hint}</span>
+                        </span>
+                    </button>
+                ))}
+            </div>
+
+            {preferences.inputMode === 'voice' && (
+                <label className="mt-3 flex flex-col gap-1 text-[12px] text-ink-soft">
+                    Sensibilidade — abre acima de {preferences.sensitivity}%
+                    <input
+                        className="accent-brand"
+                        type="range"
+                        min="5"
+                        max="90"
+                        value={preferences.sensitivity}
+                        onChange={event => void voice.setPreference('sensitivity', Number(event.target.value))}
+                    />
+                </label>
+            )}
+
+            {preferences.inputMode === 'ptt' && preferences.keybinds.talk.trim() === '' && (
+                <p className="mt-2 text-[12px] text-danger">Escolha a tecla de apertar para falar aqui embaixo — sem ela o microfone fica sempre aberto.</p>
+            )}
+
+            {native && preferences.inputMode === 'voice' && (
+                <p className="mt-2 text-[12px] text-ink-dim">No Linux o microfone é lido fora da janela, então a detecção de voz não mede o nível: use apertar para falar.</p>
+            )}
+
+            <p className="label-mono mt-6 mb-2">Teclas</p>
+            <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 text-[12.5px] text-ink-soft">Mutar o microfone</span>
+                    <KeybindField value={preferences.keybinds.mute} onChange={mute => void voice.setPreference('keybinds', { ...preferences.keybinds, mute })} />
+                </div>
+                <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 text-[12.5px] text-ink-soft">Mutar o áudio de todos</span>
+                    <KeybindField value={preferences.keybinds.deafen} onChange={deafen => void voice.setPreference('keybinds', { ...preferences.keybinds, deafen })} />
+                </div>
+                <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 text-[12.5px] text-ink-soft">Apertar para falar</span>
+                    <KeybindField value={preferences.keybinds.talk} bare onChange={talk => void voice.setPreference('keybinds', { ...preferences.keybinds, talk })} />
+                </div>
+            </div>
+            <p className="mt-2 text-[11.5px] text-ink-dim">As teclas valem com o jogo na frente. Esc dentro do campo apaga a tecla.</p>
+
+            {repeated && <p className="mt-1 text-[11.5px] text-danger">Duas ações com a mesma tecla: o sistema só aceita a primeira.</p>}
         </Modal>
     );
 }

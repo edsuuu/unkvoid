@@ -6,6 +6,7 @@
 mod broadcast;
 mod logbook;
 mod login;
+mod shortcuts;
 mod watch;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -817,6 +818,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(ActiveSession::default())
         .manage(SelfCheck(checking))
         .invoke_handler(tauri::generate_handler![
@@ -841,6 +843,7 @@ pub fn run() {
             broadcast::set_voice_muted,
             broadcast::start_camera,
             broadcast::stop_camera,
+            shortcuts::set_shortcuts,
             login::google_login,
             login::open_url,
             watch_key,
