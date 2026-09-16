@@ -26,6 +26,14 @@ export class Broadcast {
         }
     }
 
+    async changeQuality(quality: string, fps: number): Promise<void> {
+        if (! this.nativeActive) {
+            return;
+        }
+
+        await Tauri.invoke('change_broadcast_quality', { quality, fps });
+    }
+
     async republish(): Promise<boolean> {
         if (! this.nativeActive) {
             return false;

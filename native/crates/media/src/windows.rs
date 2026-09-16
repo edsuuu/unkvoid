@@ -92,6 +92,9 @@ pub struct MediaFoundationEncoder {
     frame_rate: f64,
     bridge: Option<Bridge>,
 
+    /// O teto de fps que a captura do Windows 10 não impõe — ver `FramePacer`.
+    pacer: crate::FramePacer,
+
     /// Pedido de quadro-chave esperando a próxima amostra.
     ///
     /// Guardado em vez de aplicado na hora porque a propriedade vale para o quadro
@@ -133,11 +136,8 @@ enum Backend {
     /// codifique. Só aceita memória do processador, então a textura NV12 — já convertida
     /// e no tamanho final — desce por `staging`, e responde na mesma chamada. É o degrau
     /// que o dono pediu: transmitir pior em vez de recusar, com o teto de
-    /// `EncoderConfig::for_cpu` e `pacer` segurando os 30 fps.
-    Cpu {
-        staging: ID3D11Texture2D,
-        pacer: FramePacer,
-    },
+    /// `EncoderConfig::for_cpu` e o limitador do encoder segurando os 30 fps.
+    Cpu { staging: ID3D11Texture2D },
 }
 
 /// O caminho de um device para o outro, montado uma vez por tamanho de origem.
@@ -226,10 +226,7 @@ impl MediaFoundationEncoder {
 
                     (
                         transform,
-                        Backend::Cpu {
-                            staging,
-                            pacer: FramePacer::new(config.frame_rate),
-                        },
+                        Backend::Cpu { staging },
                         config,
                     )
                 }
@@ -249,6 +246,7 @@ impl MediaFoundationEncoder {
                 height: config.height,
                 frame_rate: config.frame_rate,
                 bridge: None,
+                pacer: crate::FramePacer::new(config.frame_rate),
                 force_keyframe: false,
                 ready: VecDeque::new(),
                 credits: 0,
@@ -272,10 +270,11 @@ impl MediaFoundationEncoder {
         surface: &GpuSurface,
         timestamp_ns: u64,
     ) -> Result<EncodedFrame, EncoderError> {
-        // Antes da ponte: o quadro que o teto de 30 fps descarta não custa nem o blit.
-        if let Backend::Cpu { pacer, .. } = &mut self.backend
-            && !pacer.admit(timestamp_ns)
-        {
+        // Antes da ponte: o quadro acima do teto não custa nem o blit. Vale para os dois
+        // caminhos, e não só para o do processador: no Windows 10 a captura chega na
+        // frequência do monitor, e um monitor de 144 Hz enchia a placa de quadros com o
+        // bitrate pensado para 60.
+        if !self.pacer.admit(timestamp_ns) {
             return Err(EncoderError::NeedsMoreInput);
         }
 

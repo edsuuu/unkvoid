@@ -1,5 +1,6 @@
 import { useState } from 'react';
 
+import { Sharing } from '../../core/Sharing.ts';
 import { Icon } from '../common/Icon.tsx';
 import { Popover } from '../common/Popover.tsx';
 import { Spinner } from '../common/Spinner.tsx';
@@ -11,7 +12,7 @@ const MENU_ITEM = `${MENU_ITEM_BASE} text-ink-icon hover:bg-row hover:text-ink-s
 
 export function ShareButton({ wide = false, disabled = false }: { wide?: boolean; disabled?: boolean }) {
     const app = useApp();
-    const { active, starting, line } = useStore(app.sharing.store);
+    const { active, starting, line, quality, fps } = useStore(app.sharing.store);
     const { selfView } = useStore(app.media.store);
     const [open, setOpen] = useState(false);
 
@@ -38,7 +39,15 @@ export function ShareButton({ wide = false, disabled = false }: { wide?: boolean
                     <p className="px-2.5 pt-1 pb-2 font-mono text-[10.5px] text-ink-dim">
                         {! line || line.starting ? 'começando…' : `${line.fps} fps · ${line.mbps.toFixed(1)} Mb/s · ${line.dropped} perdidos${line.encoder === 'cpu' ? ' · processador' : ''}`}
                     </p>
-                    <button className={MENU_ITEM} type="button" onClick={() => choose(() => app.sharing.open())}>Mudar monitor, aplicativo ou qualidade</button>
+                    <div className="flex items-center gap-1.5 px-2.5 pb-2">
+                        <select className="min-w-0 flex-1 cursor-pointer rounded-[9px] border border-line bg-row px-2 py-1.5 text-[12px] text-ink-icon" value={quality} aria-label="Qualidade da transmissão" onChange={event => void app.sharing.changeQuality(event.target.value, fps)}>
+                            {Sharing.QUALITIES.map(option => <option key={option} value={option}>{option === '2160' ? '4K' : `${option}p`}</option>)}
+                        </select>
+                        <select className="cursor-pointer rounded-[9px] border border-line bg-row px-2 py-1.5 text-[12px] text-ink-icon" value={fps} aria-label="Quadros por segundo" onChange={event => void app.sharing.changeQuality(quality, event.target.value)}>
+                            {Sharing.FRAME_RATES.map(option => <option key={option} value={option}>{option} fps</option>)}
+                        </select>
+                    </div>
+                    <button className={MENU_ITEM} type="button" onClick={() => choose(() => app.sharing.open())}>Mudar monitor ou aplicativo</button>
                     <button className={MENU_ITEM} type="button" onClick={() => choose(() => app.media.toggleSelfView())}>{selfView ? 'Ocultar minha tela' : 'Ver o que a sala vê'}</button>
                     <button className={`${MENU_ITEM_BASE} mt-0.5 border-t border-line text-danger hover:bg-danger/10`} type="button" onClick={() => choose(() => app.sharing.stop())}>Parar de transmitir</button>
                 </Popover>

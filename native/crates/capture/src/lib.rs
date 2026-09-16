@@ -92,7 +92,8 @@ impl Quality {
     }
 
     /// O tamanho de saída para uma origem de `source` pixels: a largura da qualidade
-    /// (nunca acima da origem — um monitor 720p não sobe para 1080p) e a altura que
+    /// (nunca acima da origem — um monitor 720p não sobe para 1080p, e um 1080p pedido em
+    /// 4K continua em 1080p em vez de gastar banda com imagem esticada) e a altura que
     /// mantém a proporção, as duas pares, como o H.264 em 4:2:0 exige.
     ///
     /// Sem isto um ultrawide 21:9 e um monitor em pé saíam espremidos em 16:9.
