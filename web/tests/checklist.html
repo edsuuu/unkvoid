@@ -111,6 +111,22 @@
   <label><input type="checkbox"><span>MinIO local: POST multipart com fields + key dentro de clips/{id}/ grava (204); key fora do prefixo é recusada (403); download assinado vem com Content-Disposition; GET sem assinatura 403</span><i class="tag auto">curl</i></label>
   <label><input type="checkbox"><span>Ponta a ponta: clipar pelo app com alguém transmitindo; aparece processing e vira ready sem refazer o GET; Assistir toca pelo playlist_url; o download salva o mp4</span></label>
   <label><input type="checkbox"><span>Log das chamadas ao SFU em storage/logs/sfu-*.log com a assinatura mascarada; SFU fora do ar não derruba expulsão/banimento</span></label>
+
+  <h2>Conversa direta, auditoria do servidor, ícone e aviso de chegada</h2>
+  <label><input type="checkbox"><span>GET /api/dm: uma linha por conversa, a mais recente primeiro, com user, last (id, body, created_at, mine) e unread por par</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>POST/GET /api/dm/{user} só com amizade accepted: sem amizade, pedido pendente ou bloqueado dá 403 dos dois lados; body vazio ou acima de 2000 dá 422</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>Abrir a conversa (GET /api/dm/{user}) zera o unread do par; before={id} traz as 50 anteriores em ordem crescente</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>PATCH/DELETE /api/dm/{id} só do autor (403 para o outro); editar grava edited_at e apagar é soft delete (some da conversa, fica no banco)</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>Reverb: DirectMessageCreated/Updated/Deleted chegam nos private-user.{id} dos dois lados; o payload não tem mine e leva recipient, e o app calcula mine por message.sender.id</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>Ponta a ponta no app: conversa aberta nas duas máquinas, mensagem aparece nas duas sem refazer o GET, contador sobe para quem está com a conversa fechada</span></label>
+  <label><input type="checkbox"><span>GET /api/servers/{id}/audits: exige VIEW_AUDIT_LOG (membro sem a permissão e não-membro 403), 50 por página, id com a letra da fonte, summary em português</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>A auditoria do servidor não mostra o que aconteceu em outro servidor, e traz canal (channel_audits), cargo, membro, mensagem e o próprio servidor na mesma lista ordenada pela hora</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>POST /api/servers/{id}/icon com MANAGE_SERVER: jpeg/png/webp até 2 MB entram, pdf e 2,1 MB dão 422, sem a permissão 403; trocar apaga o arquivo antigo do bucket</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>icon_url pré-assinada (2 h) aparece em GET /api/servers, na árvore e na resposta do upload; DELETE volta para null</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>MinIO local: o ícone realmente sobe em servers/{id}/, abre pela URL assinada e some do bucket ao trocar ou apagar; sem assinatura 403</span><i class="tag auto">curl</i></label>
+  <label><input type="checkbox"><span>Entrar por convite grava mensagem type=join (body vazio, user = quem entrou) no primeiro canal de texto por position que a pessoa enxerga, e dispara MessageSent</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>Canal de texto escondido para o @everyone é pulado pelo aviso; clicar no convite de novo não avisa duas vezes; mensagem de gente continua type=user</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>No app, o aviso de chegada aparece no chat como frase ("fulano chegou no servidor") montada pelo app, não como mensagem vazia</span></label>
 </main>
 <script>
   const boxes = [...document.querySelectorAll('input[type=checkbox]')];
