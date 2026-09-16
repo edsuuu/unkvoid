@@ -23,19 +23,20 @@ export class ApiClient {
 
     async request<Result = unknown>(method: string, path: string, body?: unknown): Promise<Result> {
         const headers: Record<string, string> = { Accept: 'application/json' };
+        const form = body instanceof FormData;
 
         if (this.token) {
             headers.Authorization = `Bearer ${this.token}`;
         }
 
-        if (body !== undefined) {
+        if (body !== undefined && ! form) {
             headers['Content-Type'] = 'application/json';
         }
 
         const response = await fetch(`${this.server}${path}`, {
             method,
             headers,
-            body: body === undefined ? undefined : JSON.stringify(body),
+            body: body === undefined ? undefined : form ? body : JSON.stringify(body),
         });
 
         const isJson = /json/i.test(response.headers.get('content-type') ?? '');
@@ -51,6 +52,14 @@ export class ApiClient {
         const wrappedByResource = data !== null && typeof data === 'object' && Object.keys(data).length === 1 && 'data' in data;
 
         return (wrappedByResource ? data.data : data) as Result;
+    }
+
+    upload<Result = unknown>(path: string, field: string, file: File): Promise<Result> {
+        const form = new FormData();
+
+        form.append(field, file);
+
+        return this.request<Result>('POST', path, form);
     }
 
     get<Result = unknown>(path: string): Promise<Result> {

@@ -29,7 +29,7 @@ export function ServerRail() {
                 return (
                     <button key={server.id} className={`group flex w-full cursor-pointer items-center gap-2.5 ${railOpen ? '' : 'justify-center'}`} type="button" title={server.name} onClick={() => void hub.attempt(() => hub.openServer(server.id))}>
                         <span className={`rounded-[11px] transition ${active ? '' : 'ring-1 ring-white/[0.08] group-hover:ring-brand/40'}`}>
-                            <Avatar name={server.name} size={34} mine={active} square />
+                            <Avatar name={server.name} url={server.icon_url} size={34} mine={active} square />
                         </span>
                         <span className={`min-w-0 text-left ${label}`}>{server.name}</span>
                     </button>
