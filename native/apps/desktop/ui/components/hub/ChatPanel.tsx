@@ -117,6 +117,11 @@ export function ChatPanel({ onClose = null }: { onClose?: (() => void) | null })
                 <span className="text-[14px] font-semibold">{channel.name}</span>
                 {channel.topic && <span className="min-w-0 flex-1 truncate border-l border-line pl-3 text-[12.5px] text-ink-soft">{channel.topic}</span>}
                 <span className="flex-1" />
+                {! onClose && (
+                    <button className="btn-icon size-7 rounded-[9px]" type="button" title="Mostrar ou esconder os membros" onClick={() => hub.toggleMembers()}>
+                        <Icon name="users" size={14} />
+                    </button>
+                )}
                 {hub.can(Permissions.MANAGE_CHANNELS) && (
                     <button className="btn-icon size-7 rounded-[9px]" type="button" title="Editar canal" onClick={() => hub.openModal({ type: 'channel', channel, channelType: channel.type })}>
                         <Icon name="edit" size={13} />
