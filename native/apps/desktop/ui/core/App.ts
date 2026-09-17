@@ -4,7 +4,7 @@ import { Media } from './Media.ts';
 import type { Channel } from './Models.ts';
 import { Platform } from './Platform.ts';
 import { RoomCode } from './RoomCode.ts';
-import { SfuClient } from './SfuClient.ts';
+import { SfuClient, type RoomIdentity } from './SfuClient.ts';
 import { Sharing } from './Sharing.ts';
 import { Sounds } from './Sounds.ts';
 import { Store } from './Store.ts';
@@ -436,6 +436,14 @@ export class App {
         }
     }
 
+    async roomIdentity(code: string): Promise<RoomIdentity> {
+        if (! this.hub.user) {
+            return { room: code, name: this.name, installId: App.installId() };
+        }
+
+        return { token: (await this.hub.api.post<{ token: string }>(`/api/rooms/${code}/token`)).token };
+    }
+
     async connect(code: string): Promise<void> {
         const sfu = new SfuClient();
 
@@ -443,7 +451,7 @@ export class App {
         this.media.setStageVisible(true);
 
         try {
-            await this.media.enterRoom(sfu, { room: code, name: this.name, installId: App.installId() });
+            await this.media.enterRoom(sfu, () => this.roomIdentity(code));
 
             if (this.media.sfu === sfu && sfu.canWatch() && ! sfu.videoCodecs.some(codec => /h264/i.test(codec))) {
                 this.log('device.h264.missing', {

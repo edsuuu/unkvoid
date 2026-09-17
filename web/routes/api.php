@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\OverwriteController;
 use App\Http\Controllers\Api\ReleaseController;
 use App\Http\Controllers\Api\RoleController;
+use App\Http\Controllers\Api\RoomController;
 use App\Http\Controllers\Api\ServerController;
 use App\Http\Controllers\Api\Sfu\SfuEventController;
 use App\Http\Controllers\Api\VoiceController;
@@ -45,6 +46,11 @@ Route::name('api.')->group(function (): void {
 
     Route::middleware('auth:sanctum')->group(function (): void {
         Route::get('/me', MeController::class)->name('me');
+
+        Route::post('/rooms/{code}/token', [RoomController::class, 'token'])
+            ->where('code', '[a-z0-9][a-z0-9-]{1,30}[a-z0-9]')
+            ->middleware('throttle:30,1')
+            ->name('rooms.token');
 
         Route::prefix('servers')->group(function (): void {
             Route::get('/', [ServerController::class, 'index'])->name('servers.index');
