@@ -106,15 +106,8 @@ export class RoomRegistry {
      * Uma conta, uma sessão no servidor inteiro, como no Discord: entrar de novo derruba a
      * anterior, na mesma sala ou em outra. É o que impede a pessoa duplicada quando o app
      * não conseguiu fechar a conexão velha.
-     *
-     * Visitante fica de fora: o `guest:` vem de um `installId` que o próprio app escolhe e
-     * que a sala inteira recebe no `peerJoined`, então aceitá-lo derrubaria qualquer um.
      */
     public replaceAccount(peer: Peer): void {
-        if (peer.userId.startsWith('guest:')) {
-            return;
-        }
-
         for (const room of [...this.rooms.values()]) {
             for (const other of [...room.peers.values()]) {
                 if (other !== peer && other.userId === peer.userId) {
