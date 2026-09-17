@@ -391,6 +391,37 @@ describe('modo servidor com a API de mentira', () => {
         expect(hub.store.state.servers[0].name).toBe('Jogatina renomeada');
     });
 
+    it('formulário fora da regra vira aviso do próprio app, onde a tela já mostra erro, e nada vai para a API', async () => {
+        calls.length = 0;
+
+        expect(await hub.login('', 'segredo')).toBe(false);
+        expect(hub.store.state.loginError).toBe('Digite o e-mail.');
+        expect(await hub.login('edsu.example.com', 'segredo')).toBe(false);
+        expect(hub.store.state.loginError).toBe('Esse e-mail não parece válido.');
+        expect(await hub.login('edsu@example.com', '')).toBe(false);
+        expect(hub.store.state.loginError).toBe('Digite a senha.');
+        expect(await hub.register('ed', 'edsu@example.com', 'segredo123')).toBe(false);
+        expect(hub.store.state.loginError).toBe('O apelido precisa ter de 3 a 32 caracteres.');
+        expect(await hub.register('edsu!', 'edsu@example.com', 'segredo123')).toBe(false);
+        expect(hub.store.state.loginError).toBe('O apelido aceita letras, números, ponto e _ — sem espaço.');
+        expect(await hub.register('edsu', 'edsu@example.com', '1234567')).toBe(false);
+        expect(hub.store.state.loginError).toBe('A senha precisa ter pelo menos 8 caracteres.');
+        expect(hub.store.state.loginBusy).toBe(false);
+
+        await hub.attempt(() => hub.createServer('   '));
+        expect(toasts.at(-1)).toBe('Dê um nome ao servidor.');
+        await hub.attempt(() => hub.joinInvite(''));
+        expect(toasts.at(-1)).toBe('Cole o código do convite.');
+        expect(await hub.friends.request('fulano')).toBe(false);
+        expect(toasts.at(-1)).toBe('Esse e-mail não parece válido.');
+        await hub.settings.saveRole(null, { name: ' ', color: '#8a7cf5', permissions: 0 });
+        expect(toasts.at(-1)).toBe('Dê um nome ao cargo.');
+        await hub.settings.saveChannel(null, { name: 'sala', type: 'voice', topic: '', limit: '150' });
+        expect(toasts.at(-1)).toBe('O limite de pessoas vai de 1 a 99. Vazio é sem limite.');
+
+        expect(calls.filter(call => call.method !== 'GET'), 'nenhum formulário recusado chega à API').toEqual([]);
+    });
+
     it('no canal em que estou, a lista da voz é a do SFU: quem foi expulso sai na hora', () => {
         voice.channel = hub.tree!.channels[1];
         app.media.sfu = {

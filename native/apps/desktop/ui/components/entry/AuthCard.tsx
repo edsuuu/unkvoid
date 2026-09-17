@@ -44,16 +44,14 @@ export function AuthCard() {
 
                 <div className="divider-or label-mono my-4">ou</div>
 
-                <form onSubmit={submit}>
+                <form onSubmit={submit} noValidate>
                     {registering && (
                         <label className="mb-3.5 block">
                             <span className="label-mono mb-2 block">Apelido</span>
                             <input
                                 className="field w-full"
                                 type="text"
-                                minLength={3}
                                 maxLength={32}
-                                pattern="[A-Za-z0-9._]+"
                                 value={name}
                                 onChange={event => setName(event.target.value.replace(/\s+/g, ''))}
                                 placeholder="edsu"
@@ -62,18 +60,17 @@ export function AuthCard() {
                                 autoCapitalize="off"
                                 autoCorrect="off"
                                 spellCheck={false}
-                                required
                             />
                             <span className="mt-1 block text-[11px] text-ink-dim">É como as pessoas te acham. Sem espaço, e ninguém mais pode usar o mesmo.</span>
                         </label>
                     )}
                     <label className="block">
                         <span className="label-mono mb-2 block">E-mail</span>
-                        <input className="field w-full" type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="voce@email.com" autoComplete="username" required />
+                        <input className="field w-full" type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="voce@email.com" autoComplete="username" />
                     </label>
                     <label className="mt-3.5 block">
                         <span className="label-mono mb-2 block">Senha</span>
-                        <input className="field w-full" type="password" minLength={registering ? 8 : undefined} value={password} onChange={event => setPassword(event.target.value)} placeholder={registering ? '8 ou mais' : '••••••••'} autoComplete={registering ? 'new-password' : 'current-password'} required />
+                        <input className="field w-full" type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder={registering ? '8 ou mais' : '••••••••'} autoComplete={registering ? 'new-password' : 'current-password'} />
                     </label>
                     <button className="btn-primary mt-4 flex w-full items-center justify-center gap-2 text-[14.5px]" type="submit" disabled={loginBusy && ! googleWaiting}>
                         {loginBusy && ! googleWaiting && <Spinner size={15} />}

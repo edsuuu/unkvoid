@@ -7,6 +7,7 @@ import { Chat } from './Chat.ts';
 import { Clips } from './Clips.ts';
 import { Direct } from './Direct.ts';
 import { Failure } from './Failure.ts';
+import { Field } from './Field.ts';
 import { Friends } from './Friends.ts';
 import type {
     AuthToken,
@@ -265,11 +266,35 @@ export class Hub {
     }
 
     login(email: string, password: string): Promise<boolean> {
-        return this.signIn(() => this.api.post<AuthToken>('/api/auth/login', { email: email.trim(), password, device: 'app' }));
+        return this.signIn(() => {
+            Field.requireEmail(email);
+
+            if (password === '') {
+                throw new Error('Digite a senha.');
+            }
+
+            return this.api.post<AuthToken>('/api/auth/login', { email: email.trim(), password, device: 'app' });
+        });
     }
 
     register(name: string, email: string, password: string): Promise<boolean> {
-        return this.signIn(() => this.api.post<AuthToken>('/api/auth/register', { name: name.trim(), email: email.trim(), password, device: 'app' }));
+        return this.signIn(() => {
+            if (name.trim().length < 3 || name.trim().length > 32) {
+                throw new Error('O apelido precisa ter de 3 a 32 caracteres.');
+            }
+
+            if (! /^[A-Za-z0-9._]+$/.test(name.trim())) {
+                throw new Error('O apelido aceita letras, números, ponto e _ — sem espaço.');
+            }
+
+            Field.requireEmail(email);
+
+            if (password.length < 8) {
+                throw new Error('A senha precisa ter pelo menos 8 caracteres.');
+            }
+
+            return this.api.post<AuthToken>('/api/auth/register', { name: name.trim(), email: email.trim(), password, device: 'app' });
+        });
     }
 
     googleLogin(): Promise<boolean> {
@@ -439,6 +464,8 @@ export class Hub {
     }
 
     async createServer(name: string): Promise<boolean> {
+        Field.require(name, 'Dê um nome ao servidor.');
+
         const created = await this.api.post<ServerSummary>('/api/servers', { name: name.trim() });
 
         await this.loadServers(created.id);
@@ -448,6 +475,8 @@ export class Hub {
     }
 
     async joinInvite(code: string): Promise<boolean> {
+        Field.require(code, 'Cole o código do convite.');
+
         const joined = await this.api.post<ServerSummary>(`/api/invites/${code.trim()}`);
 
         await this.loadServers(joined.id);
