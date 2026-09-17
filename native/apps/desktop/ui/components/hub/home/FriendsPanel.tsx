@@ -80,7 +80,7 @@ export function FriendsPanel() {
                 ))}
             </div>
 
-            <form className="flex items-center gap-2" onSubmit={add}>
+            <form className="flex items-center gap-2" onSubmit={add} noValidate>
                 <input
                     className="field min-w-0 flex-1 py-2.5 text-[13px]"
                     type="email"
@@ -88,7 +88,6 @@ export function FriendsPanel() {
                     value={email}
                     placeholder="E-mail de quem você quer adicionar"
                     onChange={event => setEmail(event.target.value)}
-                    required
                 />
                 <button className="btn-primary flex items-center gap-2 px-4 py-2.5 text-[13px]" type="submit" disabled={busy}>
                     {busy && <Spinner size={13} />}

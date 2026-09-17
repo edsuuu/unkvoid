@@ -57,7 +57,7 @@ export function OverviewTab({ name, onName }: { name: string; onName: (value: st
                 />
 
                 <span className="flex min-w-0 flex-1 flex-col gap-1.5">
-                    <input className="field w-full" type="text" maxLength={60} value={name} disabled={! manage} onChange={event => onName(event.target.value)} required />
+                    <input className="field w-full" type="text" maxLength={60} value={name} disabled={! manage} onChange={event => onName(event.target.value)} />
                     {manage && tree.icon_url && (
                         <button className="cursor-pointer self-start text-[11.5px] text-ink-dim hover:text-danger" type="button" onClick={() => void settings.removeIcon()}>Remover o ícone</button>
                     )}
