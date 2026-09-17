@@ -44,8 +44,8 @@ final class Index extends Component
                 'sudo apt update && sudo apt install unkvoid',
             ]),
             'steps' => [
-                ['number' => '01', 'title' => 'Crie uma sala', 'text' => 'Abra o app, entre com a sua conta e crie uma sala. Sai um código de 12 caracteres.', 'footLabel' => 'Código da sala', 'footValue' => 'k3m9xq2vt7bd'],
-                ['number' => '02', 'title' => 'Envie o código', 'text' => 'Quem colar o código entra com a própria conta. Sem link de reunião e sem chat.', 'footLabel' => 'O que é preciso', 'footValue' => 'conta e código'],
+                ['number' => '01', 'title' => 'Crie uma sala', 'text' => 'Abra o app, escreva seu nome e crie uma sala. Sai um código de 12 caracteres.', 'footLabel' => 'Código da sala', 'footValue' => 'k3m9xq2vt7bd'],
+                ['number' => '02', 'title' => 'Envie o código', 'text' => 'Quem colar o código entra. Sem conta, sem cadastro, sem link de reunião e sem chat.', 'footLabel' => 'O que é preciso', 'footValue' => 'só o código'],
                 ['number' => '03', 'title' => 'Transmita', 'text' => 'Todo mundo vê a tela de quem estiver transmitindo. A sala deixa de existir quando a última pessoa sai.', 'footLabel' => 'Qualidade', 'footValue' => 'até 1440p60'],
             ],
             'reasons' => [
@@ -54,9 +54,10 @@ final class Index extends Component
                 ['number' => '03', 'title' => 'Áudio do sistema, sem barra de navegador', 'text' => 'O som vai junto e nada fica por cima da tela transmitida.'],
             ],
             'roadmap' => [
-                ['number' => '01', 'title' => 'Servidores e salas personalizadas', 'text' => 'Salas com nome próprio, no lugar de um código sorteado.'],
-                ['number' => '02', 'title' => 'Transmissão compartilhada', 'text' => 'Mais de uma pessoa transmitindo na mesma sala.'],
-                ['number' => '03', 'title' => 'Câmera e áudio', 'text' => 'Compartilhar câmera e microfone junto com a tela.'],
+                ['number' => '01', 'title' => 'Login opcional', 'text' => 'Só para quem quiser guardar nome e preferências. O app segue funcionando inteiro sem login, como é hoje.'],
+                ['number' => '02', 'title' => 'Servidores e salas personalizadas', 'text' => 'Salas com nome próprio, no lugar de um código sorteado.'],
+                ['number' => '03', 'title' => 'Transmissão compartilhada', 'text' => 'Mais de uma pessoa transmitindo na mesma sala.'],
+                ['number' => '04', 'title' => 'Câmera e áudio', 'text' => 'Compartilhar câmera e microfone junto com a tela.'],
             ],
         ]);
     }

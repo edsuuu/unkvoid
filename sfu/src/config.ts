@@ -33,8 +33,8 @@ export const config = {
     // copiados do encoder, o que a 8 Mbit/s são 300 MB.
     recordingsDir: process.env.SFU_RECORDINGS_DIR || tmpdir(),
 
-    // Teto de conexões novas por IP por minuto. O socket abre antes de qualquer token,
-    // então é isto que segura quem abre conexão em massa sem nunca entrar numa sala.
+    // Teto de conexões novas por IP por minuto. A sala é anônima, então o que impede
+    // varrer códigos é o custo de tentar — cada tentativa precisa de um socket novo.
     // A verificação sobe um punhado de clientes de uma vez e levanta este número.
     connectionsPerMinute: Number(process.env.SFU_CONNECTIONS_PER_MINUTE ?? 20),
 
