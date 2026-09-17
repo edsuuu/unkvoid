@@ -1,6 +1,7 @@
 import { Failure } from './Failure.ts';
 import { Hub } from './Hub.ts';
 import { Media } from './Media.ts';
+import type { Channel } from './Models.ts';
 import { Platform } from './Platform.ts';
 import { RoomCode } from './RoomCode.ts';
 import { SfuClient } from './SfuClient.ts';
@@ -46,6 +47,8 @@ export class App {
     static readonly MAX_LOG_CHARS = 64 * 1024;
     static readonly NAME_KEY = 'unkvoid:name';
     static readonly ROOM_KEY = 'unkvoid:last-room';
+    static readonly RECENT_ROOMS_KEY = 'unkvoid:recent-rooms';
+    static readonly MAX_RECENT_ROOMS = 5;
     static readonly WEBRTC_RELOAD_KEY = 'unkvoid:webrtc-reload';
     static readonly SERVER: string = import.meta.env?.VITE_SERVER ?? localStorage.getItem('server') ?? 'https://unkvoid.com';
 
@@ -53,6 +56,7 @@ export class App {
     logChars = 0;
     reconnectAttempt = 0;
     reconnectTimer: number | null = null;
+    rejoin: { channel: Channel | null; room: string | null } | null = null;
     toastCounter = 0;
     name = '';
     readonly store: Store<AppState>;
@@ -114,7 +118,7 @@ export class App {
         void Tauri.invoke('stop_broadcast').catch(() => null);
         this.sharing.loadPreferences();
 
-        window.addEventListener('offline', () => this.paintOffline());
+        window.addEventListener('offline', () => void this.dropConnection());
         window.addEventListener('online', () => {
             if (this.store.state.screen === 'offline') {
                 this.reconnectAttempt = 0;
@@ -145,10 +149,51 @@ export class App {
         this.store.set({ updateStatus: 'Entrando…', updateProgress: null });
 
         if (await this.hub.restore()) {
+            await this.resumeAfterOffline();
+
             return;
         }
 
         this.showEntry();
+        await this.resumeAfterOffline();
+    }
+
+    async dropConnection(): Promise<void> {
+        if (! ['hub', 'room', 'entry'].includes(this.store.state.screen)) {
+            this.paintOffline();
+
+            return;
+        }
+
+        const room = this.store.state.room;
+
+        this.rejoin = { channel: this.hub.voice.channel, room };
+        this.log('connection.lost', { channel: this.rejoin.channel?.id ?? null, room });
+        this.store.set({ screen: 'offline', room: null, roomError: null });
+        this.paintOffline();
+
+        await this.hub.voice.leave();
+        await this.media.tearDown();
+
+        this.showOffline();
+    }
+
+    async resumeAfterOffline(): Promise<void> {
+        const rejoin = this.rejoin;
+
+        if (this.store.state.screen === 'offline') {
+            return;
+        }
+
+        this.rejoin = null;
+
+        if (rejoin?.room) {
+            await this.openRoom(rejoin.room);
+        }
+
+        if (rejoin?.channel && this.hub.user) {
+            await this.hub.attempt(() => this.hub.openChannel(rejoin.channel));
+        }
     }
 
     checkWebRTC(): void {
@@ -213,6 +258,16 @@ export class App {
     }
 
     async serverAnswered(): Promise<boolean> {
+        if (await this.reachable()) {
+            return true;
+        }
+
+        this.showOffline();
+
+        return false;
+    }
+
+    async reachable(): Promise<boolean> {
         try {
             const response = await fetch(`${App.SERVER}/health`);
 
@@ -223,7 +278,6 @@ export class App {
             return true;
         } catch (failure) {
             this.log('server.health.error', { message: Failure.message(failure) });
-            this.showOffline();
 
             return false;
         }
@@ -365,9 +419,21 @@ export class App {
 
         localStorage.setItem(App.NAME_KEY, name);
         localStorage.setItem(App.ROOM_KEY, code);
+        localStorage.setItem(App.RECENT_ROOMS_KEY, JSON.stringify([code, ...this.recentRooms().filter(recent => recent !== code)].slice(0, App.MAX_RECENT_ROOMS)));
 
         this.name = name;
+        await this.hub.voice.leave();
         await this.connect(code);
+    }
+
+    recentRooms(): string[] {
+        try {
+            const saved: unknown = JSON.parse(localStorage.getItem(App.RECENT_ROOMS_KEY) ?? '[]');
+
+            return Array.isArray(saved) ? saved.filter((code): code is string => typeof code === 'string' && RoomCode.isValid(code)) : [];
+        } catch {
+            return [];
+        }
     }
 
     async connect(code: string): Promise<void> {

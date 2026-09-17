@@ -370,6 +370,10 @@ export class Hub {
 
             this.direct.receive(message, person);
 
+            if (! mine) {
+                this.app.sounds.message();
+            }
+
             if (! mine && this.direct.store.state.person?.id !== person.id) {
                 this.app.toast(`${message.sender.name}: ${message.body.slice(0, 60)}`);
             }

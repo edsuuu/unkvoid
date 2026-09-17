@@ -18,6 +18,7 @@ export class Mic {
     private context: AudioContext | null = null;
     private analyser: AnalyserNode | null = null;
     private source: MediaStreamAudioSourceNode | null = null;
+    private probe: MediaStreamTrack | null = null;
     private samples: Float32Array<ArrayBuffer> | null = null;
     private timer: ReturnType<typeof setInterval> | null = null;
     private spokeAt = 0;
@@ -59,7 +60,9 @@ export class Mic {
         this.analyser = this.context.createAnalyser();
         this.analyser.fftSize = Mic.FFT_SIZE;
         this.samples = new Float32Array(this.analyser.fftSize);
-        this.source = this.context.createMediaStreamSource(new MediaStream([track]));
+        this.probe = track.clone();
+        this.probe.enabled = true;
+        this.source = this.context.createMediaStreamSource(new MediaStream([this.probe]));
         this.source.connect(this.analyser);
         this.timer = setInterval(() => this.tick(), Mic.TICK_MS);
     }
@@ -75,6 +78,8 @@ export class Mic {
         }
 
         this.source?.disconnect();
+        this.probe?.stop();
+        this.probe = null;
         this.analyser?.disconnect();
         this.context?.close().catch((failure: unknown) => this.onFailure('close', failure));
         this.context = null;

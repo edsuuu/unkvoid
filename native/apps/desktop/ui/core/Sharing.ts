@@ -251,6 +251,10 @@ export class Sharing {
     }
 
     paint(on: boolean): void {
+        if (on !== this.store.state.active) {
+            this.app.sounds[on ? 'streamStarted' : 'streamStopped']();
+        }
+
         this.store.set({ active: on });
 
         if (on) {
