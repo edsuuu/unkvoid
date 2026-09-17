@@ -267,11 +267,7 @@ export class Media {
 
             this.forgetPeer(detail.peerId);
         });
-        sfu.on('replaced', () => {
-            if (this.sfu === sfu) {
-                this.app.fail('você entrou de novo por outra conexão, e esta foi encerrada.');
-            }
-        });
+        sfu.on('replaced', () => void this.replaced(sfu));
         sfu.on('producerDead', detail => void this.app.sharing.died(detail));
         sfu.on('producerClosed', detail => {
             if (detail.source === 'screen') {
@@ -284,6 +280,18 @@ export class Media {
             this.consumerSources.delete(detail?.consumerId);
             this.forgetProducer(detail);
         });
+    }
+
+    async replaced(sfu: SfuClient): Promise<void> {
+        if (this.sfu !== sfu) {
+            return;
+        }
+
+        if (this.app.store.state.room) {
+            await this.app.leave();
+        }
+
+        this.app.fail('sua conta entrou nesta chamada por outro dispositivo, e esta conexão foi encerrada.');
     }
 
     async dropIfOffline(sfu: SfuClient): Promise<void> {

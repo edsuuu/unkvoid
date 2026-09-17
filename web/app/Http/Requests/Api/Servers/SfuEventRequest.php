@@ -16,8 +16,7 @@ final class SfuEventRequest extends FormRequest
     {
         return [
             'event' => ['required', Rule::in(['joined', 'left', 'clip.ready', 'clip.failed'])],
-            // O canal é um ULID de 26 letras; a sala por código tem de 3 a 32, e só o
-            // visitante (`guest:`) entra nela.
+            // O canal é um ULID de 26 letras; a sala por código tem de 3 a 32.
             'room' => ['required_if:event,joined,left', 'string', 'regex:/^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$|^[0-9a-z]{26}$/i'],
             'sub' => ['required_if:event,joined,left', 'string', 'regex:/^user:\d+$|^guest:[A-Za-z0-9-]{1,64}$/'],
             'name' => ['required_if:event,joined,left', 'string', 'max:255'],

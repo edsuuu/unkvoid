@@ -245,3 +245,31 @@ it('o webhook recusa visitante com sala ou instalação fora do formato', functi
 
     $this->assertDatabaseCount('guest_accesses', 0);
 });
+
+it('logado, a sala por código dá um token com a conta, e o id de um canal não serve de código', function (): void {
+    $user = User::factory()->create();
+
+    $token = (string) $this->actingAs($user, 'sanctum')->postJson('/api/rooms/sala-da-tela/token')->assertOk()->json('data.token');
+    [$body, $signature] = explode('.', $token);
+    $claims = json_decode(base64_decode(strtr($body, '-_', '+/'), true), true, 512, JSON_THROW_ON_ERROR);
+
+    expect(hash_equals(hash_hmac('sha256', $body, (string) config('services.sfu.secret')), $signature))->toBeTrue()
+        ->and($claims['room'])->toBe('sala-da-tela')
+        ->and($claims['sub'])->toBe("user:{$user->id}")
+        ->and($claims['can'])->toBe(['speak', 'stream', 'video']);
+
+    $this->actingAs($user, 'sanctum')->postJson('/api/rooms/'.str_repeat('a', 26).'/token')->assertNotFound();
+    $this->actingAs($user, 'sanctum')->postJson('/api/rooms/-invalida/token')->assertNotFound();
+    auth()->forgetGuards();
+    $this->postJson('/api/rooms/sala-da-tela/token')->assertUnauthorized();
+});
+
+it('quem entra logado na sala por código vai para a auditoria com a conta', function (): void {
+    $user = User::factory()->create();
+    $joined = ['event' => 'joined', 'room' => 'sala-da-tela', 'sub' => "user:{$user->id}", 'name' => $user->name, 'ip' => '198.51.100.8', 'at' => time()];
+
+    $this->withHeaders(sfuHeaders($joined))->postJson('/api/sfu/events', $joined)->assertNoContent();
+
+    expect(GuestAccess::query()->sole()->install_id)->toBe("user:{$user->id}")
+        ->and(ChannelAccess::query()->count())->toBe(0);
+});
