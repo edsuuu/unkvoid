@@ -27,7 +27,7 @@ export function RoomToolbar({ mode, chatOpen = false, onToggleChat = null }: Roo
         : speakless ? 'Você não tem permissão para falar neste canal' : voiceState.muted ? 'Ativar o microfone' : 'Mutar o microfone';
 
     return (
-        <div className="glass flex flex-none flex-wrap items-center justify-between gap-3 rounded-2xl px-3 py-2">
+        <div className="glass relative z-30 flex flex-none flex-wrap items-center justify-between gap-3 rounded-2xl px-3 py-2">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
                 {inVoice
                     ? (
