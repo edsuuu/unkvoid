@@ -50,6 +50,7 @@ it('cria a conta pelo site e já entra', function (): void {
 
     $this->assertAuthenticated();
     $this->assertDatabaseHas('users', ['email' => 'novo@unkvoid.test']);
+    expect(User::query()->where('email', 'novo@unkvoid.test')->firstOrFail()->hasConfirmedNickname())->toBeTrue();
 });
 
 it('sai da conta', function (): void {

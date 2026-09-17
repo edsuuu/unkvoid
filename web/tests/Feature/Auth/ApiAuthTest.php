@@ -37,13 +37,12 @@ it('conta só do Google não entra por senha', function (): void {
 
 it('cria a conta pela API e revoga o token no logout', function (): void {
     $response = $this->postJson('/api/auth/register', [
-        'name' => 'Edson',
         'email' => 'novo@unkvoid.test',
         'password' => 'senha-forte-123',
         'device' => 'desktop-windows',
     ]);
 
-    $response->assertCreated()->assertJsonPath('data.user.name', 'Edson');
+    $response->assertCreated()->assertJsonPath('data.user.name', 'novo');
 
     $token = $response->json('data.token');
 
@@ -53,4 +52,54 @@ it('cria a conta pela API e revoga o token no logout', function (): void {
 
 it('exige token para o /api/me', function (): void {
     $this->getJson('/api/me')->assertUnauthorized();
+});
+
+it('o cadastro pela API tira o apelido do e-mail, sem confirmar, e desempata quando já existe', function (): void {
+    User::factory()->create(['name' => 'edson.lima']);
+
+    $this->postJson('/api/auth/register', ['email' => 'Edson.Lima@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'd'])
+        ->assertCreated()
+        ->assertJsonPath('data.user.name', 'edson.lima2')
+        ->assertJsonPath('data.user.nickname_confirmed', false);
+
+    expect(User::query()->where('email', 'edson.lima@unkvoid.test')->firstOrFail()->nickname_confirmed_at)->toBeNull();
+});
+
+it('o /api/me diz se o apelido já foi confirmado', function (): void {
+    $this->actingAs(User::factory()->create())->getJson('/api/me')->assertOk()->assertJsonPath('data.nickname_confirmed', true);
+    $this->actingAs(User::factory()->unconfirmedNickname()->create())->getJson('/api/me')->assertOk()->assertJsonPath('data.nickname_confirmed', false);
+});
+
+it('escolhe o apelido pelo PATCH /api/me e confirma', function (): void {
+    $user = User::factory()->unconfirmedNickname()->create(['name' => 'novo']);
+
+    $this->actingAs($user)->patchJson('/api/me', ['name' => 'edsu.dev'])
+        ->assertOk()
+        ->assertJsonPath('data.name', 'edsu.dev')
+        ->assertJsonPath('data.nickname_confirmed', true);
+
+    expect($user->fresh()?->hasConfirmedNickname())->toBeTrue();
+});
+
+it('ficar com o apelido automático também confirma', function (): void {
+    $user = User::factory()->unconfirmedNickname()->create(['name' => 'novo']);
+
+    $this->actingAs($user)->patchJson('/api/me', ['name' => 'novo'])
+        ->assertOk()
+        ->assertJsonPath('data.name', 'novo')
+        ->assertJsonPath('data.nickname_confirmed', true);
+});
+
+it('não troca o apelido de quem já confirmou', function (): void {
+    $user = User::factory()->create(['name' => 'edsu']);
+
+    $this->actingAs($user)->patchJson('/api/me', ['name' => 'outro.nome'])
+        ->assertForbidden()
+        ->assertJsonPath('message', 'Você já escolheu o seu apelido.');
+
+    expect($user->fresh()?->name)->toBe('edsu');
+});
+
+it('o PATCH /api/me exige token', function (): void {
+    $this->patchJson('/api/me', ['name' => 'edsu'])->assertUnauthorized();
 });

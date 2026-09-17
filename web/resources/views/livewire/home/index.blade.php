@@ -8,7 +8,7 @@
     {{-- Herói --}}
     <section id="topo" class="lp-section" style="padding-top:clamp(110px,17vh,190px);padding-bottom:clamp(56px,9vh,110px);display:flex;flex-direction:column;align-items:center;text-align:center">
         <h1 data-reveal style="font-size:clamp(34px,6.4vw,76px);line-height:1.05;letter-spacing:-0.035em;font-weight:600;margin:0;max-width:17ch;text-wrap:balance">Compartilhe sua tela em qualidade cheia com quem você quiser.</h1>
-        <p data-reveal style="font-size:clamp(17px,2.2vw,21px);line-height:1.5;color:var(--lp-ink-2);margin:26px 0 0;max-width:42ch;text-wrap:pretty">Sem conta e sem link de reunião. Um código de 12 caracteres, e quem colar ele vê a sua tela.</p>
+        <p data-reveal style="font-size:clamp(17px,2.2vw,21px);line-height:1.5;color:var(--lp-ink-2);margin:26px 0 0;max-width:42ch;text-wrap:pretty">Sem link de reunião. Entre com a sua conta, crie uma sala e mande o código de 12 caracteres: quem colar ele vê a sua tela.</p>
 
         <div data-reveal style="display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:12px;margin-top:clamp(28px,4.5vh,42px)">
             <a :href="primaryHref" class="lp-btn-primary" style="font-size:16px;padding:16px 28px;box-shadow:0 16px 46px -16px rgba(140,80,240,0.85)">
@@ -67,8 +67,10 @@
                     <div x-show="screen === 'entrada'" class="lp-mock" style="width:min(420px,100%)">
                         <p style="text-align:center;font-size:17px;font-weight:600;letter-spacing:-0.01em;margin:0 0 6px">Unkvoid</p>
                         <p style="text-align:center;font-size:13.5px;color:var(--lp-muted);margin:0 0 22px">Compartilhe sua tela com quem você quiser.</p>
-                        <p class="lp-mock-label">SEU NOME</p>
-                        <div class="lp-mock-input is-focus">Seu nome</div>
+                        <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:0 0 6px">
+                            <span style="width:54px;height:54px;border-radius:50%;background:linear-gradient(180deg,#8a7cf5,#5a3fd6);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:#0d0616">E</span>
+                            <span style="font-size:15px;font-weight:600">edsu</span>
+                        </div>
                         <div class="lp-mock-primary" style="margin-top:12px;box-shadow:0 14px 34px -16px rgba(140,80,240,0.9)">Criar uma sala</div>
                         <div class="lp-mock-or"><i></i><span>OU</span><i></i></div>
                         <div style="display:flex;gap:8px">
