@@ -26,8 +26,13 @@ export class JoinController {
         request.session.room = room;
         request.session.peer = peer;
 
+        console.log(
+            `[INFO] joined room=${room.id} sub=${peer.userId} name=${JSON.stringify(peer.name)} peer=${peer.id} ip=${peer.ip} resumed=${resumed}`,
+        );
+
         // Retomada não é novidade para a sala: ninguém saiu, a sinalização é que voltou.
         if (!resumed) {
+            this.registry.replaceAccount(peer);
             room.broadcast(
                 'peerJoined',
                 { peerId: peer.id, userId: peer.userId, name: peer.name },

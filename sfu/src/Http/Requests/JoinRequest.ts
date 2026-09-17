@@ -6,6 +6,9 @@ import { Signature, type JoinClaims } from '../../Services/Signature.js';
 
 const LEGACY_CODE = /^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/;
 
+/** O app manda um UUID. Qualquer outra coisa é sorteada aqui: ela vai para a auditoria. */
+const INSTALL_ID = /^[A-Za-z0-9-]{1,64}$/;
+
 /**
  * Entrar na sala é apresentar o token que o Laravel assinou. Quem pode entrar, com que
  * nome e o que pode produzir foi decidido lá, contra o banco; aqui só se confere a assinatura e a
@@ -33,7 +36,9 @@ export class JoinRequest extends Request {
         }
 
         const installId =
-            typeof this.data.installId === 'string' ? this.data.installId : randomUUID();
+            typeof this.data.installId === 'string' && INSTALL_ID.test(this.data.installId)
+                ? this.data.installId
+                : randomUUID();
 
         this.claims = {
             room,

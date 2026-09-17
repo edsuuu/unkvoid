@@ -353,6 +353,43 @@ test('sem resume:true a sessão volta limpa, porque o cliente não tem transport
     reaberto.close();
 });
 
+test('a mesma conta entrando de novo derruba a sessão antiga, nesta sala ou em outra', async () => {
+    // O app que não conseguiu fechar a conexão velha deixava a pessoa duas vezes na lista.
+    const antiga = await abrir();
+    await entrar(antiga, { token: token({ room, sub: '60', name: 'Duplicada', can: TUDO }) });
+
+    const nova = await abrir();
+    await entrar(nova, { token: token({ room, sub: '60', name: 'Duplicada', can: TUDO }) });
+    await espera(300);
+
+    assert.ok(antiga.events.some(evento => evento.event === 'replaced'), 'a sessão antiga fica sabendo que foi substituída');
+    assert.equal(antiga.closeCode, 4002, 'e perde o socket');
+
+    let http = await fetch(`${URL_HTTP}/presence`, { headers: signed('GET', '/presence', '') });
+    let presenca = (await http.json()).rooms[room].filter(pessoa => pessoa.sub === '60');
+    assert.equal(presenca.length, 1, 'a conta aparece uma vez só');
+
+    const outraSala = await abrir();
+    await entrar(outraSala, { token: token({ room: 'checkroom002', sub: '60', name: 'Duplicada', can: TUDO }) });
+    await espera(300);
+
+    assert.equal(nova.closeCode, 4002, 'entrar em outra sala também derruba a sessão anterior');
+    http = await fetch(`${URL_HTTP}/presence`, { headers: signed('GET', '/presence', '') });
+    presenca = Object.values((await http.json()).rooms).flat().filter(pessoa => pessoa.sub === '60');
+    assert.equal(presenca.length, 1, 'uma conta, uma sessão no servidor inteiro');
+    outraSala.close();
+
+    const visitanteA = await abrir();
+    const visitanteB = await abrir();
+    await entrar(visitanteA, { room, name: 'Visitante', installId: 'inst-duplo' });
+    await entrar(visitanteB, { room, name: 'Visitante', installId: 'inst-duplo' });
+    await espera(300);
+
+    assert.equal(visitanteA.closeCode, null, 'visitante não derruba ninguém: o installId é escolhido pelo próprio app');
+    visitanteA.close();
+    visitanteB.close();
+});
+
 test('producePlain exige chave e suíte SRTP válidas antes de aceitar o ingest', async () => {
     // Ingest de RTP puro: o app declara o que vai mandar antes de mandar.
     nativo = await abrir();
@@ -696,16 +733,21 @@ test('o webhook avisa o Laravel de quem entrou e saiu, assinado', async () => {
 
         const anonimo = new Client(`ws://127.0.0.1:${port}/sfu`);
         await anonimo.open();
-        await entrar(anonimo, { room: 'webhookroom', name: 'Anônimo' });
+        await entrar(anonimo, { room: 'webhookroom', name: 'Anônimo', installId: 'inst-webhook' });
+        await espera(300);
 
         await entrar(cliente, { token: token({ room: 'webhookroom', sub: 'user:12', name: 'Edsu', can: TUDO }) });
         await cliente.call('leave');
         await espera(500);
 
-        assert.equal(recebidos.length, 2, `sala anônima não avisa; conta avisa entrada e saída: ${JSON.stringify(recebidos)}`);
+        assert.equal(recebidos.length, 3, `visitante avisa a entrada para a auditoria; conta avisa entrada e saída: ${JSON.stringify(recebidos)}`);
+
+        const visitante = JSON.parse(recebidos[0].body);
+        assert.equal(visitante.sub, 'guest:inst-webhook', 'o visitante vai com o id da instalação');
+        assert.equal(visitante.name, 'Anônimo', 'e o nome que digitou');
 
         for (const [indice, evento] of ['joined', 'left'].entries()) {
-            const aviso = recebidos[indice];
+            const aviso = recebidos[indice + 1];
             const corpo = JSON.parse(aviso.body);
 
             assert.equal(aviso.path, '/api/sfu/events', 'bate na rota do Laravel');

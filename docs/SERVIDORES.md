@@ -96,6 +96,14 @@ os bits do canal) para decidir se liga o mic, a câmera e a tela: mutado pelo se
 chega sem `speak`. O SFU também manda `serverMuted { muted }` para a própria pessoa
 quando o Laravel chama `/mute`, e recusa `resumeProducer` do mic enquanto durar.
 
+**Uma conta, uma sessão no SFU inteiro.** O `join` com token (`sub` que não começa com
+`guest:`) derruba qualquer outra sessão daquela conta, na mesma sala ou em outra, e ela
+recebe `replaced { reason }` e perde o socket com o código 4002. A sala vê o `peerLeft` e
+o Laravel o `left` da sala antiga. O visitante (`guest:`) só é substituído pela
+`resumeKey`: o `installId` é escolhido pelo próprio app e a sala inteira o recebe no
+`peerJoined`, então valer como identidade deixaria qualquer um derrubar qualquer um. O
+app ignora `replaced`, `kicked` e `closed` de um `SfuClient` que já não é o atual.
+
 O `join` sem token (sala anônima) recusa sala de 26 caracteres: é o formato do ULID de
 canal, e sem isso qualquer um entraria num canal de voz sem passar pelo Laravel.
 
@@ -111,9 +119,12 @@ sobre `ts\nMÉTODO\ncaminho\ncorpo`, janela de 300 s — como o `kick` de hoje):
 `consumePlain` devolve também `ssrc` do consumer: o receptor nativo do Linux separa os
 producers de uma mesma porta por SSRC, sem adivinhar pelo primeiro pacote.
 
-Webhook do SFU para o Laravel, **fora do caminho do `join`**, fire-and-forget, só para
-peers que entraram com token (sala anônima não avisa). `POST {SFU_LARAVEL_URL}/api/sfu/events`
-com os mesmos cabeçalhos assinados:
+Webhook do SFU para o Laravel, **fora do caminho do `join`**, fire-and-forget, para conta
+(`user:`) e visitante da sala por código (`guest:<installId>`, `room` com o código de 3 a
+32 caracteres). O visitante só vira linha em `guest_accesses` (nome, sala, IP, instalação,
+entrada e saída), na aba "Visitantes" de `/admin/auditoria`: não há canal nem conta a
+avisar. O SFU troca `installId` fora de `[A-Za-z0-9-]{1,64}` por um UUID sorteado.
+`POST {SFU_LARAVEL_URL}/api/sfu/events` com os mesmos cabeçalhos assinados:
 
 ```json
 { "event": "joined", "room": "01j7…", "sub": "user:12", "name": "Edsu", "ip": "203.0.113.9", "at": 1757640000 }
