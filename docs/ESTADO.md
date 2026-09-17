@@ -57,6 +57,15 @@ o dono. O histórico das sessões saiu do repositório e continua no git.
   hipóteses são a caixa "Sem o áudio do Discord" desmarcada ou o Discord entrando na chamada
   depois do início da transmissão — a lista de processos é refeita a cada 2 s. Falta a linha
   `broadcast.start` do log da máquina, que diz qual das duas é.
+  Conferido em 16/09/2026 na máquina Windows do dono: a única transmissão do log (0.0.28, 5 s)
+  saiu com `muteCalls: true` e `scope=ExceptMuted`, e a mistura pegou WebView2 do WhatsApp,
+  Steam, Spotify e Chrome — Discord nenhum. Medido também que o Windows corta a árvore no
+  intermediário morto, igual ao `valid_parent`: o `Update.exe` que abre o Discord e sai não
+  deixa o Explorer trazer o Discord junto. Sobram três caminhos, nenhum reproduzido: Discord
+  aberto no navegador ou em cliente de outro nome (Vesktop), que entra com a árvore do Chrome;
+  mixer que devolve o som na saída de verdade e não está em `RELAYS` (o Sonar da SteelSeries
+  está instalado nessa máquina, e não foi medido com o GG aberto); e o microfone da voz
+  pegando o Discord da caixa de som, que a caixa do compartilhamento não alcança.
 - ~~**Produção atrás da branch**~~ — resolvido em 16/09/2026: a branch foi para a `main`
   (PR #8), os três fluxos da VPS rodaram (`deploy-web` com as migrations, `deploy-sfu` e
   `build-linux`), e a produção responde `/api/dm`, `/api/friends` e `/api/servers/{id}/audits`.

@@ -54,6 +54,19 @@ it('devolve o token para o app pela porta local', function (): void {
     $this->assertDatabaseCount('personal_access_tokens', 1);
 });
 
+it('devolve o token para o app pelo unkvoid:// quando ele não manda porta', function (): void {
+    Socialite::shouldReceive('driver->user')->andReturn(googleUser('g-5', 'deeplink@unkvoid.test', 'App'));
+
+    $this->get(route('oauth2.app', ['state' => 'c0ffee42']))->assertRedirect(route('oauth2.google'));
+
+    $this->get(route('oauth2.google.callback'))
+        ->assertOk()
+        ->assertViewIs('auth.app-return')
+        ->assertSee('unkvoid://login?token=', false);
+
+    $this->assertDatabaseCount('personal_access_tokens', 1);
+});
+
 it('quem entra com o e-mail do dono vira administrador', function (): void {
     $this->seed(Seeder001Roles::class);
     Socialite::shouldReceive('driver->user')->andReturn(googleUser('g-4', config('unkvoid.admin_email'), 'Dono'));

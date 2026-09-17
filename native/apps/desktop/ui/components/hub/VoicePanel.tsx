@@ -29,7 +29,7 @@ export function VoicePanel() {
     const status = ! voiceChannel ? 'Online' : voiceState.micProblem !== '' ? 'Sem microfone' : voiceState.deafened ? 'Surdo' : voiceState.serverMuted ? 'Mutado pelo servidor' : micOff ? 'Mudo' : voiceState.speaking ? 'Falando' : 'Microfone aberto';
 
     return (
-        <div className="glass flex flex-none flex-col gap-2.5 p-3">
+        <div className="glass relative z-30 flex flex-none flex-col gap-2.5 p-3">
             {voiceChannel && (
                 <div className="animate-rise">
                     <div className="flex items-center gap-2.5">

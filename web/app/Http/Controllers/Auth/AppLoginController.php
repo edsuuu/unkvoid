@@ -9,15 +9,17 @@ use Illuminate\Http\RedirectResponse;
 
 /**
  * O app não consegue fazer o login do Google dentro do próprio webview (o Google recusa),
- * então abre o navegador do sistema aqui, com um servidor local esperando na porta que
- * informa. O callback do Google devolve o token para essa porta, junto com o `state` que
- * o app mandou: sem ele igual, o app recusa o que chegar.
+ * então abre o navegador do sistema aqui. O callback do Google devolve o token pelo
+ * `unkvoid://` (ou pela porta local, no app até a 0.0.28), junto com o `state` que o app
+ * mandou: sem ele igual, o app recusa o que chegar.
  */
 final class AppLoginController
 {
     public function __invoke(AppLoginRequest $request): RedirectResponse
     {
-        $request->session()->put('app_port', $request->integer('port'));
+        // Sem porta tem de ficar nulo: o `integer()` devolveria 0, e o callback mandaria o
+        // app novo para `127.0.0.1:0` em vez de abrir o `unkvoid://`.
+        $request->session()->put('app_port', $request->filled('port') ? $request->integer('port') : null);
         $request->session()->put('app_state', $request->string('state')->toString());
 
         return to_route('oauth2.google');

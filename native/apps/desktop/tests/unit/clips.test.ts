@@ -134,7 +134,7 @@ describe('a aba Clipes e o Clipar, com a API de mentira', () => {
 
         expect(await hub.googleLogin()).toBe(false);
         expect(hub.store.state.googleWaiting, 'o botão do Google não fica preso esperando').toBe(false);
-        expect(hub.store.state.loginError).toMatch(/tente de novo/);
+        expect(hub.store.state.loginError).toMatch(/Tente de novo/);
 
         window.__TAURI__!.core.invoke = bridge;
     });
