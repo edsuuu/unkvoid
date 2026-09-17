@@ -381,7 +381,7 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 
 - Duas abas no topo: **Transmissão** (tudo o que está abaixo) e **Clipes**.
 - Entrada: a tela de código continua; ao lado, "Entrar" (e-mail/senha ou Google pelo
-  `/oauth2/app?port=` que já existe) e "Criar conta". Token do Sanctum em `localStorage`
+  `/oauth2/app?state=`, de volta pelo `unkvoid://`) e "Criar conta". Token do Sanctum em `localStorage`
   (`unkvoid:token`). Com token válido (`GET /api/me`), abre o modo servidor.
 - Logado e sem servidor aberto, o centro mostra **Criar sala** e **Últimas salas**. Criar
   sala é `POST /api/servers { name }` (servidor com `#geral` e `Geral` de voz): abre o
@@ -432,7 +432,7 @@ Tauri converte para o snake_case do Rust. Mudou um comando, mude aqui e em `ui/c
 | `stop_watch` | `producerId`, ou `null` para tudo | — | só o `null` fecha o socket de recepção: o `comedia` do SFU aprendeu aquele endereço |
 | `watch_mute` | `producerId, muted` | — | o Rust para de repassar o áudio da tela |
 | `watch_stats` | — | pacotes recebidos | registrado; a interface não chama hoje |
-| `google_login` | `server` (só http/https) | token do Sanctum | login pelo navegador do sistema, de volta por uma porta local |
+| `google_login` | `server` (só http/https) | token do Sanctum | login pelo navegador do sistema, de volta pelo `unkvoid://login?token=&state=` |
 | `open_url` | `url` (só http/https) | — | baixar o clipe pelo navegador do sistema |
 
 ## Rodar tudo local (para testar antes de subir)
