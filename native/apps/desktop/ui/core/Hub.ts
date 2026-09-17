@@ -281,7 +281,7 @@ export class Hub {
             } catch (failure) {
                 this.app.log('hub.google.error', { message: Failure.message(failure) });
 
-                throw new Error('o login pelo navegador não terminou, tente de novo');
+                throw new Error('Não deu para entrar com o Google. Tente de novo.');
             } finally {
                 this.store.set({ googleWaiting: false });
             }
