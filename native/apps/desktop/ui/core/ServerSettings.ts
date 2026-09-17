@@ -1,3 +1,4 @@
+import { Field } from './Field.ts';
 import type { Hub } from './Hub.ts';
 import type { Audit, Ban, Channel, ChannelType, Overwrite, OverwriteTargetType, Role, ServerSummary, ServerTree } from './Models.ts';
 import { Permissions, type PermissionName } from './Permissions.ts';
@@ -39,7 +40,11 @@ export class ServerSettings {
     rename(name: string): Promise<unknown> {
         const tree = this.tree;
 
-        return this.hub.attempt(() => this.hub.api.patch(`/api/servers/${tree.id}`, { name: name.trim() }));
+        return this.hub.attempt(() => {
+            Field.require(name, 'Dê um nome ao servidor.');
+
+            return this.hub.api.patch(`/api/servers/${tree.id}`, { name: name.trim() });
+        });
     }
 
     async loadAudits(): Promise<void> {
@@ -149,6 +154,10 @@ export class ServerSettings {
         const body = role?.is_everyone ? { permissions } : { name: name.trim(), color, permissions };
 
         const saved = await this.hub.attempt(async () => {
+            if (! role?.is_everyone) {
+                Field.require(name, 'Dê um nome ao cargo.');
+            }
+
             await (role ? this.hub.api.patch(`/api/roles/${role.id}`, body) : this.hub.api.post(`/api/servers/${this.tree.id}/roles`, body));
 
             return true;
@@ -183,6 +192,12 @@ export class ServerSettings {
         const body = { name: name.trim(), topic: topic.trim() || null, user_limit: limit === '' ? null : Number(limit) };
 
         const saved = await this.hub.attempt(async () => {
+            Field.require(name, 'Dê um nome ao canal.');
+
+            if (body.user_limit !== null && ! (Number.isInteger(body.user_limit) && body.user_limit >= 1 && body.user_limit <= 99)) {
+                throw new Error('O limite de pessoas vai de 1 a 99. Vazio é sem limite.');
+            }
+
             await (channel
                 ? this.hub.api.patch(`/api/channels/${channel.id}`, body)
                 : this.hub.api.post(`/api/servers/${this.tree.id}/channels`, { ...body, type }));

@@ -57,13 +57,19 @@ pub async fn google_login(server: String) -> Result<String, String> {
 /// O sistema entregou um `unkvoid://…` ao app. Só o retorno do login interessa, e só
 /// quando o `state` é o que este processo sorteou.
 pub fn handle_deep_link(url: &Url) {
+    // Sem a query no log: ela leva o token. O que importa para achar o defeito é se o
+    // endereço chegou a esta janela e por que foi recusado.
+    tracing::info!(host = url.host_str(), path = url.path(), "login: endereço do sistema chegou");
+
     let mut slot = pending();
 
     let Some(state) = slot.as_ref().map(|(state, _)| state.clone()) else {
+        tracing::warn!("login: ninguém esperando o retorno do navegador");
         return;
     };
 
     let Some(token) = token_from_url(url, Some(&state)) else {
+        tracing::warn!("login: retorno sem token ou com outro state");
         return;
     };
 
@@ -141,6 +147,7 @@ mod tests {
         let link = |texto: &str| Url::parse(texto).expect("endereço inválido");
 
         assert_eq!(token_from_url(&link("unkvoid://login?token=12%7Cab%2Bcd&state=abc"), Some("abc")).as_deref(), Some("12|ab+cd"));
+        assert_eq!(token_from_url(&link("unkvoid://login/?token=12%7Cab&state=abc"), Some("abc")).as_deref(), Some("12|ab"), "o Windows acrescenta a barra");
         assert_eq!(token_from_url(&link("unkvoid://login?token=12&state=xyz"), Some("abc")), None);
         assert_eq!(token_from_url(&link("unkvoid://login?token=12"), Some("abc")), None);
         assert_eq!(token_from_url(&link("unkvoid://login?token=&state=abc"), Some("abc")), None);
