@@ -216,23 +216,24 @@ describe('integração: os clientes do app contra o Laravel, o Reverb e o SFU no
         await rejectsWith(() => bia.post(`/api/channels/${voice.id}/voice/token`), [403, 404], 'e não ganha token de voz');
     });
 
-    it('na sala por código, cada conta entra com o token da sala e vê a outra; o join sem token é recusado', async () => {
+    it('na sala por código, sem conta dois entram e se veem; com conta o join leva o token da sala; o canal de voz sem token é recusado', async () => {
         const room = `integracao-${STAMP}`;
         const first = new SfuClient();
         const second = new SfuClient();
+        const third = new SfuClient();
         const intruder = new SfuClient();
-        const roomToken = (client: ApiClient) => async () => ({ token: (await client.post(`/api/rooms/${room}/token`)).token });
 
-        cleanup.push(() => first.disconnect(), () => second.disconnect(), () => intruder.disconnect());
-        await first.connect(config.sfu, roomToken(ana));
+        cleanup.push(() => first.disconnect(), () => second.disconnect(), () => third.disconnect(), () => intruder.disconnect());
+        await first.connect(config.sfu, { room, name: 'Primeira', installId: `install-1-${STAMP}` });
 
-        const secondJoined = await second.connect(config.sfu, roomToken(bia));
+        const secondJoined = await second.connect(config.sfu, { room, name: 'Segunda', installId: `install-2-${STAMP}` });
 
-        expect(secondJoined.peers.some(peer => peer.name === `ana.${STAMP}`), 'a sala por código junta quem tem o código').toBe(true);
+        expect(secondJoined.peers.some(peer => peer.name === 'Primeira'), 'a sala por código junta quem tem o código').toBe(true);
 
-        intruder.url = config.sfu;
-        await intruder.openSocket();
-        await expect(intruder.request('join', { room, name: 'Intrusa', installId: `install-${STAMP}` }), 'o join dos apps antigos, sem token, é recusado').rejects.toThrow();
+        const thirdJoined = await third.connect(config.sfu, async () => ({ token: (await ana.post(`/api/rooms/${room}/token`)).token }));
+
+        expect(thirdJoined.peers.some(peer => peer.name === 'Primeira'), 'com conta é a mesma sala').toBe(true);
+        await expect(intruder.connect(config.sfu, { room: voice.id, name: 'Intrusa', installId: `install-4-${STAMP}` }), 'canal de voz sem token é recusado').rejects.toThrow();
     });
 
     it('a lista de clipes de uma conta nova responde vazia', async () => {

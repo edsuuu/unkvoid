@@ -557,7 +557,7 @@ describe('modo servidor com a API de mentira', () => {
         expect(tornDown.length).toBe(0);
     });
 
-    it('sem conta a sala por código não conecta; com conta, cada join leva o token da sala', async () => {
+    it('a sala por código vai com o nome sem conta, e com o token da sala quando há conta', async () => {
         const identities: unknown[] = [];
 
         app.media.enterRoom = async (_sfu, identity) => {
@@ -569,24 +569,26 @@ describe('modo servidor com a API de mentira', () => {
         calls.length = 0;
 
         hub.user = null;
+        hub.publish();
+        app.setEntry({ entryName: 'Visitante' });
         await app.openRoom('minha-sala');
-        expect(identities, 'sem conta não há join').toEqual([]);
-        expect(calls).toEqual([]);
+        expect(identities).toEqual([{ room: 'minha-sala', name: 'Visitante', installId: expect.any(String) }]);
+        expect(calls, 'sem conta o Laravel fica fora do caminho').toEqual([]);
 
         hub.user = { id: 1, name: 'Edsu', nickname_confirmed: true };
+        hub.publish();
         await app.openRoom('minha-sala');
-        expect(identities).toEqual([{ token: 'token-da-sala' }]);
+        expect(identities.at(-1)).toEqual({ token: 'token-da-sala' });
         expect(app.store.state.screen).toBe('room');
     });
 
-    it('com a sala por código aberta, entrar na conta não esconde a sala, e sair da conta sai dela', async () => {
+    it('com a sala por código aberta, entrar ou sair da conta não esconde a sala', async () => {
         expect(app.store.state.screen).toBe('room');
 
         await hub.open();
         expect(app.store.state.screen, 'entrar na conta não troca a tela da sala').toBe('room');
 
         await hub.logout();
-        expect(app.store.state.screen, 'sem conta não se fica em sala nenhuma').toBe('entry');
-        expect(app.store.state.room).toBeNull();
+        expect(app.store.state.screen, 'sair da conta também não').toBe('room');
     });
 });

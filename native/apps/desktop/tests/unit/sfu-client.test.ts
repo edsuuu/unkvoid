@@ -168,6 +168,13 @@ describe('cliente do SFU, ao entrar e publicar', () => {
         expect(joins, 'cada join leva um token novo').toEqual(['token-1', 'token-2']);
     });
 
+    it('a sala anônima continua mandando o objeto puro', async () => {
+        client.identity = { room: 'sala', name: 'Edsu', installId: 'i' };
+        await client.setup();
+
+        expect(joins.length).toBe(3);
+    });
+
     it('mic e câmera publicados juntos criam um transporte de envio só, e o producer tem o id que o servidor devolveu', async () => {
         client.device = { rtpCapabilities: {}, createSendTransport: () => transport };
         client.request = async (action: string, data: RequestData = {}) => {
