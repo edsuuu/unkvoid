@@ -10,6 +10,7 @@ use App\Models\Channel;
 use App\Models\ChannelAccess;
 use App\Models\Clip;
 use App\Models\Concerns\LogsFailedWrites;
+use App\Models\GuestAccess;
 use App\Models\User;
 use App\Services\Sfu\SfuClient;
 use Carbon\CarbonImmutable;
@@ -21,8 +22,8 @@ final class SfuEventController
     use LogsFailedWrites;
 
     /**
-     * O SFU avisa quem entrou e saiu da voz, e como terminou um clipe. Sala anônima não
-     * chega aqui.
+     * O SFU avisa quem entrou e saiu da voz, e como terminou um clipe. O visitante da sala
+     * por código só vira linha de auditoria: não há conta nem canal para avisar.
      *
      * @throws Throwable
      */
@@ -42,9 +43,24 @@ final class SfuEventController
             return response()->noContent();
         }
 
-        $channel = Channel::query()->findOrFail($request->string('room')->toString());
-        $user = User::query()->findOrFail(User::fromSubject($request->string('sub')->toString()));
         $at = CarbonImmutable::createFromTimestamp($request->integer('at'));
+        $sub = $request->string('sub')->toString();
+
+        if (str_starts_with($sub, 'guest:')) {
+            $room = $request->string('room')->toString();
+            $installId = mb_substr($sub, mb_strlen('guest:'));
+
+            if ($event === 'joined') {
+                GuestAccess::open($room, $installId, mb_substr($request->string('name')->toString(), 0, 40), $request->string('ip')->toString(), $at);
+            } else {
+                GuestAccess::close($room, $installId, $at);
+            }
+
+            return response()->noContent();
+        }
+
+        $channel = Channel::query()->findOrFail($request->string('room')->toString());
+        $user = User::query()->findOrFail(User::fromSubject($sub));
 
         // Expulso ou banido depois de pedir o token (ele vale 60 s): o SFU deixou entrar, e a
         // voz derruba na hora, sem abrir acesso nem avisar o canal.

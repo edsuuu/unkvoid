@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Livewire\Admin\Audit\Index;
 use App\Models\ChannelAccess;
 use App\Models\ChannelAudit;
+use App\Models\GuestAccess;
 use App\Models\Server;
 use App\Models\User;
 use Database\Seeders\Seeder001Roles;
@@ -119,4 +120,28 @@ it('o histórico do canal guarda criação, renomeação e exclusão, e aparece 
         ->assertSee('Channel #'.$extra)
         ->assertSee('deleted')
         ->assertSee($owner->name);
+});
+
+it('a aba de visitantes lista quem entrou sem conta e busca por nome, sala e IP', function (): void {
+    $this->seed(Seeder001Roles::class);
+    $admin = User::factory()->create(['email' => config('unkvoid.admin_email')]);
+
+    GuestAccess::query()->create(['room' => 'sala-um', 'install_id' => 'inst-1', 'name' => 'Matheus', 'ip' => '198.51.100.1', 'joined_at' => '2026-09-01 12:00:00', 'left_at' => '2026-09-01 12:30:00']);
+    GuestAccess::query()->create(['room' => 'sala-dois', 'install_id' => 'inst-2', 'name' => 'Alves', 'ip' => '198.51.100.2', 'joined_at' => '2026-09-10 09:00:00']);
+
+    Livewire::actingAs($admin)->test(Index::class)
+        ->call('showTab', 'guests')
+        ->assertSee('Matheus')
+        ->assertSee('Alves')
+        ->assertSee('em chamada')
+        ->set('search', '198.51.100.2')
+        ->assertDontSee('Matheus')
+        ->assertSee('Alves')
+        ->set('search', 'sala-um')
+        ->assertSee('Matheus')
+        ->assertDontSee('Alves')
+        ->set('search', '')
+        ->set('from', '2026-09-05')
+        ->assertDontSee('Matheus')
+        ->assertSee('Alves');
 });
