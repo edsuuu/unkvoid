@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useId, useState, type FormEvent } from 'react';
 
 import { Spinner } from '../common/Spinner.tsx';
 import { useApp } from '../useApp.ts';
@@ -6,15 +6,15 @@ import { useStore } from '../useStore.ts';
 
 export function AuthCard() {
     const hub = useApp().hub;
-    const { loginMode, loginError, loginBusy, googleWaiting } = useStore(hub.store);
-    const [name, setName] = useState('');
+    const { loginMode, loginError, loginFieldErrors, loginBusy, googleWaiting } = useStore(hub.store);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const registering = loginMode === 'register';
+    const errorId = useId();
 
     const submit = (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
-        void (registering ? hub.register(name, email, password) : hub.login(email, password));
+        void (registering ? hub.register(email, password) : hub.login(email, password));
     };
 
     return (
@@ -22,7 +22,7 @@ export function AuthCard() {
             <div key={loginMode} className="animate-rise">
                 <p className="text-center text-base font-semibold">{registering ? 'Criar conta' : 'Entrar'}</p>
                 <p className="mt-1.5 mb-5 text-center text-[12.5px] text-ink-soft">
-                    {registering ? 'Para ter servidores, voz, chat e clipes.' : 'O login é opcional. Dá para usar tudo sem conta.'}
+                    {registering ? 'Para ter servidores, voz, chat e clipes.' : 'Entre para criar salas, servidores, voz e chat.'}
                 </p>
 
                 <button
@@ -45,32 +45,33 @@ export function AuthCard() {
                 <div className="divider-or label-mono my-4">ou</div>
 
                 <form onSubmit={submit} noValidate>
-                    {registering && (
-                        <label className="mb-3.5 block">
-                            <span className="label-mono mb-2 block">Apelido</span>
-                            <input
-                                className="field w-full"
-                                type="text"
-                                maxLength={32}
-                                value={name}
-                                onChange={event => setName(event.target.value.replace(/\s+/g, ''))}
-                                placeholder="edsu"
-                                title="Letras, números, ponto e _ — sem espaço"
-                                autoComplete="username"
-                                autoCapitalize="off"
-                                autoCorrect="off"
-                                spellCheck={false}
-                            />
-                            <span className="mt-1 block text-[11px] text-ink-dim">É como as pessoas te acham. Sem espaço, e ninguém mais pode usar o mesmo.</span>
-                        </label>
-                    )}
                     <label className="block">
                         <span className="label-mono mb-2 block">E-mail</span>
-                        <input className="field w-full" type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="voce@email.com" autoComplete="username" />
+                        <input
+                            className="field w-full"
+                            type="email"
+                            value={email}
+                            onChange={event => { setEmail(event.target.value); hub.clearLoginFieldError('email'); }}
+                            placeholder="voce@email.com"
+                            autoComplete="username"
+                            aria-invalid={Boolean(loginFieldErrors.email)}
+                            aria-describedby={loginFieldErrors.email ? `${errorId}-email` : undefined}
+                        />
+                        {loginFieldErrors.email && <span id={`${errorId}-email`} className="mt-1.5 block text-[11.5px] text-danger">{loginFieldErrors.email}</span>}
                     </label>
                     <label className="mt-3.5 block">
                         <span className="label-mono mb-2 block">Senha</span>
-                        <input className="field w-full" type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder={registering ? '8 ou mais' : '••••••••'} autoComplete={registering ? 'new-password' : 'current-password'} />
+                        <input
+                            className="field w-full"
+                            type="password"
+                            value={password}
+                            onChange={event => { setPassword(event.target.value); hub.clearLoginFieldError('password'); }}
+                            placeholder={registering ? '8 ou mais' : '••••••••'}
+                            autoComplete={registering ? 'new-password' : 'current-password'}
+                            aria-invalid={Boolean(loginFieldErrors.password)}
+                            aria-describedby={loginFieldErrors.password ? `${errorId}-password` : undefined}
+                        />
+                        {loginFieldErrors.password && <span id={`${errorId}-password`} className="mt-1.5 block text-[11.5px] text-danger">{loginFieldErrors.password}</span>}
                     </label>
                     <button className="btn-primary mt-4 flex w-full items-center justify-center gap-2 text-[14.5px]" type="submit" disabled={loginBusy && ! googleWaiting}>
                         {loginBusy && ! googleWaiting && <Spinner size={15} />}

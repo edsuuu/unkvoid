@@ -150,6 +150,10 @@
         outline: none;
     }
 
+    .field[aria-invalid='true'] {
+        border-color: var(--color-danger);
+    }
+
     .field::placeholder {
         color: var(--color-ink-faint);
     }

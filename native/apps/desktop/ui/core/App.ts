@@ -25,7 +25,6 @@ export type AppState = {
     updateProgress: number | null;
     offlineTitle: string;
     offlineStatus: string;
-    entryName: string;
     entryCode: string;
     entryError: string;
     room: string | null;
@@ -40,12 +39,10 @@ export type AppState = {
 
 export class App {
     static readonly UPDATE_EVERY_MS = 6 * 60 * 60 * 1000;
-    static readonly INSTALL_KEY = 'unkvoid.instalacao';
     static readonly TOAST_MS = 6000;
     static readonly TOAST_INFO_MS = 3500;
     static readonly MAX_LOG_ENTRIES = 250;
     static readonly MAX_LOG_CHARS = 64 * 1024;
-    static readonly NAME_KEY = 'unkvoid:name';
     static readonly ROOM_KEY = 'unkvoid:last-room';
     static readonly RECENT_ROOMS_KEY = 'unkvoid:recent-rooms';
     static readonly MAX_RECENT_ROOMS = 5;
@@ -58,23 +55,11 @@ export class App {
     reconnectTimer: number | null = null;
     rejoin: { channel: Channel | null; room: string | null } | null = null;
     toastCounter = 0;
-    name = '';
     readonly store: Store<AppState>;
     readonly sounds: Sounds;
     readonly media: Media;
     readonly sharing: Sharing;
     readonly hub: Hub;
-
-    static installId(): string {
-        let id = localStorage.getItem(App.INSTALL_KEY);
-
-        if (! id) {
-            id = crypto.randomUUID();
-            localStorage.setItem(App.INSTALL_KEY, id);
-        }
-
-        return id;
-    }
 
     constructor() {
         this.store = new Store<AppState>({
@@ -84,7 +69,6 @@ export class App {
             updateProgress: null,
             offlineTitle: '',
             offlineStatus: '',
-            entryName: '',
             entryCode: '',
             entryError: '',
             room: null,
@@ -376,11 +360,8 @@ export class App {
     }
 
     showEntry(): void {
-        const account = this.hub.store.state.user;
-
         this.store.set({
             screen: 'entry',
-            entryName: account?.name ?? localStorage.getItem(App.NAME_KEY) ?? '',
             entryCode: localStorage.getItem(App.ROOM_KEY) ?? '',
             entryError: '',
         });
@@ -401,13 +382,9 @@ export class App {
     }
 
     async openRoom(code: string): Promise<void> {
-        const name = (this.hub.store.state.user?.name ?? this.store.state.entryName).trim();
-
         this.store.set({ entryError: '' });
 
-        if (name === '') {
-            this.store.set({ entryError: 'Escolha um nome primeiro.' });
-
+        if (! this.hub.user) {
             return;
         }
 
@@ -417,11 +394,9 @@ export class App {
             return;
         }
 
-        localStorage.setItem(App.NAME_KEY, name);
         localStorage.setItem(App.ROOM_KEY, code);
         localStorage.setItem(App.RECENT_ROOMS_KEY, JSON.stringify([code, ...this.recentRooms().filter(recent => recent !== code)].slice(0, App.MAX_RECENT_ROOMS)));
 
-        this.name = name;
         await this.hub.voice.leave();
         await this.connect(code);
     }
@@ -437,10 +412,6 @@ export class App {
     }
 
     async roomIdentity(code: string): Promise<RoomIdentity> {
-        if (! this.hub.user) {
-            return { room: code, name: this.name, installId: App.installId() };
-        }
-
         return { token: (await this.hub.api.post<{ token: string }>(`/api/rooms/${code}/token`)).token };
     }
 

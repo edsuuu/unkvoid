@@ -73,8 +73,11 @@ export type HubState = {
     memberMenu: MemberMenuPosition | null;
     loginMode: LoginMode;
     loginError: string;
+    loginFieldErrors: Record<string, string>;
     loginBusy: boolean;
     googleWaiting: boolean;
+    nicknameError: string;
+    nicknameBusy: boolean;
 };
 
 export type MemberActions = {
@@ -153,8 +156,11 @@ export class Hub {
             memberMenu: null,
             loginMode: 'login',
             loginError: '',
+            loginFieldErrors: {},
             loginBusy: false,
             googleWaiting: false,
+            nicknameError: '',
+            nicknameBusy: false,
         });
 
         this.chat = new Chat(this);
@@ -186,21 +192,25 @@ export class Hub {
         try {
             return await work();
         } catch (failure) {
-            const status = Failure.status(failure);
-
-            this.app.log('hub.error', { status, message: Failure.message(failure) });
-
-            if (status === 401) {
-                this.app.toast('sua sessão expirou, entre de novo', true);
-                await this.logout();
-
-                return undefined;
-            }
-
-            this.app.toast(status === 403 ? `sem permissão: ${Failure.message(failure)}` : Failure.message(failure), true);
+            await this.report(failure);
 
             return undefined;
         }
+    }
+
+    async report(failure: unknown): Promise<void> {
+        const status = Failure.status(failure);
+
+        this.app.log('hub.error', { status, message: Failure.message(failure) });
+
+        if (status === 401) {
+            this.app.toast('sua sessão expirou, entre de novo', true);
+            await this.logout();
+
+            return;
+        }
+
+        this.app.toast(status === 403 ? `sem permissão: ${Failure.message(failure)}` : Failure.message(failure), true);
     }
 
     listen<Payload>(subscription: EchoChannel, name: string, handler: (payload: Payload) => void): void {
@@ -242,11 +252,22 @@ export class Hub {
     }
 
     setLoginMode(loginMode: LoginMode): void {
-        this.store.set({ loginMode, loginError: '' });
+        this.store.set({ loginMode, loginError: '', loginFieldErrors: {} });
+    }
+
+    clearLoginFieldError(field: string): void {
+        if (! (field in this.store.state.loginFieldErrors)) {
+            return;
+        }
+
+        const loginFieldErrors = { ...this.store.state.loginFieldErrors };
+
+        delete loginFieldErrors[field];
+        this.store.set({ loginFieldErrors });
     }
 
     async signIn(work: () => Promise<AuthToken>): Promise<boolean> {
-        this.store.set({ loginError: '', loginBusy: true });
+        this.store.set({ loginError: '', loginFieldErrors: {}, loginBusy: true });
 
         try {
             const { token, user } = await work();
@@ -258,8 +279,14 @@ export class Hub {
 
             return true;
         } catch (failure) {
-            this.app.log('hub.login.error', { message: Failure.message(failure) });
-            this.store.set({ loginError: Failure.message(failure), loginBusy: false });
+            const loginFieldErrors = Field.errors(failure, ['email', 'password']);
+
+            this.app.log('hub.login.error', { status: Failure.status(failure), message: Failure.message(failure) });
+            this.store.set({
+                loginError: Object.keys(loginFieldErrors).length === 0 ? Failure.message(failure) : '',
+                loginFieldErrors,
+                loginBusy: false,
+            });
 
             return false;
         }
@@ -267,34 +294,54 @@ export class Hub {
 
     login(email: string, password: string): Promise<boolean> {
         return this.signIn(() => {
-            Field.requireEmail(email);
-
-            if (password === '') {
-                throw new Error('Digite a senha.');
-            }
+            Field.check({
+                email: Field.emailProblem(email),
+                password: password === '' ? 'Digite a senha.' : null,
+            });
 
             return this.api.post<AuthToken>('/api/auth/login', { email: email.trim(), password, device: 'app' });
         });
     }
 
-    register(name: string, email: string, password: string): Promise<boolean> {
+    register(email: string, password: string): Promise<boolean> {
         return this.signIn(() => {
-            if (name.trim().length < 3 || name.trim().length > 32) {
-                throw new Error('O apelido precisa ter de 3 a 32 caracteres.');
-            }
+            Field.check({
+                email: Field.emailProblem(email),
+                password: password.length < 8 ? 'A senha precisa ter pelo menos 8 caracteres.' : null,
+            });
 
-            if (! /^[A-Za-z0-9._]+$/.test(name.trim())) {
-                throw new Error('O apelido aceita letras, números, ponto e _ — sem espaço.');
-            }
-
-            Field.requireEmail(email);
-
-            if (password.length < 8) {
-                throw new Error('A senha precisa ter pelo menos 8 caracteres.');
-            }
-
-            return this.api.post<AuthToken>('/api/auth/register', { name: name.trim(), email: email.trim(), password, device: 'app' });
+            return this.api.post<AuthToken>('/api/auth/register', { email: email.trim(), password, device: 'app' });
         });
+    }
+
+    async confirmNickname(name: string): Promise<void> {
+        this.store.set({ nicknameError: '', nicknameBusy: true });
+
+        try {
+            Field.check({ name: Field.nicknameProblem(name) });
+            this.user = await this.api.patch<User>('/api/me', { name: name.trim() });
+        } catch (failure) {
+            const nicknameError = Field.errors(failure, ['name']).name ?? '';
+
+            this.app.log('hub.nickname.error', { status: Failure.status(failure), message: Failure.message(failure) });
+            this.store.set({ nicknameError });
+
+            if (Failure.status(failure) === 403) {
+                await this.attempt(async () => {
+                    this.user = await this.api.get<User>('/api/me');
+                });
+            } else if (nicknameError === '') {
+                await this.report(failure);
+            }
+        }
+
+        this.publish({ nicknameBusy: false });
+    }
+
+    clearNicknameError(): void {
+        if (this.store.state.nicknameError !== '') {
+            this.store.set({ nicknameError: '' });
+        }
     }
 
     googleLogin(): Promise<boolean> {
@@ -427,11 +474,15 @@ export class Hub {
         this.api.setToken(null);
         this.user = null;
         this.servers = [];
-        this.publish({ home: true });
+        this.publish({ home: true, nicknameError: '' });
 
-        if (this.app.store.state.screen !== 'room') {
-            this.app.showEntry();
+        if (this.app.store.state.screen === 'room') {
+            await this.app.leave();
+
+            return;
         }
+
+        this.app.showEntry();
     }
 
     async roomByCode(): Promise<void> {
@@ -502,7 +553,8 @@ export class Hub {
         const switching = this.tree?.id !== id;
 
         if (switching) {
-            await this.closeServer();
+            this.store.set({ home: false, treeLoading: true });
+            await this.closeServer({ home: false, treeLoading: true });
         }
 
         const ticket = ++this.openTicket;
@@ -513,16 +565,16 @@ export class Hub {
         try {
             tree = await this.api.get<ServerTree>(`/api/servers/${id}`);
         } catch (failure) {
+            if (ticket === this.openTicket) {
+                this.store.set({ treeLoading: false });
+            }
+
             if (ticket === this.openTicket && [403, 404].includes(Failure.status(failure) ?? 0)) {
                 await this.closeServer();
                 await this.loadServers();
             }
 
             throw failure;
-        } finally {
-            if (ticket === this.openTicket) {
-                this.store.set({ treeLoading: false });
-            }
         }
 
         if (ticket !== this.openTicket) {
@@ -531,6 +583,7 @@ export class Hub {
 
         this.tree = tree;
         this.servers = this.servers.map(server => (server.id === tree.id ? { ...server, name: tree.name } : server));
+        this.publish({ treeLoading: false });
 
         if (switching) {
             this.joinPresence();
@@ -561,7 +614,7 @@ export class Hub {
         }
     }
 
-    async closeServer(): Promise<void> {
+    async closeServer(next: Partial<HubState> = { home: true, treeLoading: false }): Promise<void> {
         this.openTicket += 1;
         clearTimeout(this.refreshTimer ?? undefined);
 
@@ -585,7 +638,7 @@ export class Hub {
         this.tree = null;
         this.channel = null;
         this.online = new Set();
-        this.publish({ inviteBanner: false, home: true, treeLoading: false, stageOpen: false, focusedRoom: false, modal: null, roleEditor: null, memberMenu: null });
+        this.publish({ inviteBanner: false, stageOpen: false, focusedRoom: false, modal: null, roleEditor: null, memberMenu: null, ...next });
     }
 
     joinPresence(): void {
