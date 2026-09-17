@@ -30,6 +30,7 @@ use OwenIt\Auditing\Auditable as AuditableTrait;
 use OwenIt\Auditing\Contracts\Auditable;
 use RuntimeException;
 use stdClass;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 
 /**
@@ -87,7 +88,7 @@ final class Server extends Model implements Auditable
      */
     public static function joinByInvite(User $user, string $code): self
     {
-        $server = self::query()->where('invite_code', $code)->firstOrFail();
+        $server = self::query()->where('invite_code', $code)->first() ?? throw new NotFoundHttpException('Esse convite não existe. Confira o código.');
 
         throw_if($server->bans()->where('user_id', $user->id)->exists(), ForbiddenException::class, 'Você foi banido deste servidor.');
 
