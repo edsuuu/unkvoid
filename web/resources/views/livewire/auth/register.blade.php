@@ -1,6 +1,6 @@
 <div class="lp-form-card">
     <p class="lp-form-title">Criar conta</p>
-    <p class="lp-form-sub">Só para guardar seu nome e suas preferências.</p>
+    <p class="lp-form-sub">Para ter salas, servidores, voz, chat e clipes.</p>
 
     <a href="{{ route('oauth2.google') }}" class="lp-btn-google">
         <x-google-icon />
@@ -31,7 +31,5 @@
     <div class="lp-form-foot">
         <span>Já tem conta?</span>
         <a href="{{ route('login') }}" wire:navigate>Entrar</a>
-        <span style="color:#3a3350">·</span>
-        <a href="{{ route('home') }}" style="color:var(--lp-muted-2)">Continuar sem login</a>
     </div>
 </div>

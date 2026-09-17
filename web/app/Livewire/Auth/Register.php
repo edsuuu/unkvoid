@@ -45,6 +45,7 @@ final class Register extends Component
                 'name' => mb_trim($validated['name']),
                 'email' => mb_strtolower(mb_trim($validated['email'])),
                 'password' => $validated['password'],
+                'nickname_confirmed_at' => now(),
             ]);
         } catch (Throwable $exception) {
             Log::channel('daily')->error('[ERRO] falha ao criar a conta', [

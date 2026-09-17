@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Exceptions\ForbiddenException;
+use App\Models\Concerns\LogsFailedWrites;
 use App\Notifications\ResetPasswordNotification;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
@@ -22,7 +24,7 @@ use Spatie\Permission\Models\Role;
 use Spatie\Permission\Traits\HasRoles;
 use Throwable;
 
-#[Fillable(['name', 'email', 'password', 'google_id', 'avatar_url', 'email_verified_at'])]
+#[Fillable(['name', 'email', 'password', 'google_id', 'avatar_url', 'email_verified_at', 'nickname_confirmed_at'])]
 #[Hidden(['password', 'remember_token'])]
 final class User extends Authenticatable implements Auditable
 {
@@ -32,6 +34,7 @@ final class User extends Authenticatable implements Auditable
     use HasFactory;
 
     use HasRoles;
+    use LogsFailedWrites;
     use Notifiable;
     use \OwenIt\Auditing\Auditable;
 
@@ -65,6 +68,27 @@ final class User extends Authenticatable implements Auditable
         }
 
         return $nickname;
+    }
+
+    /**
+     * Troca o apelido automático pelo que a pessoa escolheu. É uma escolha só: depois de
+     * confirmado, o apelido não muda por aqui.
+     *
+     * @throws Throwable
+     */
+    public function confirmNickname(string $name): void
+    {
+        throw_if($this->hasConfirmedNickname(), ForbiddenException::class, 'Você já escolheu o seu apelido.');
+
+        self::write('falha ao confirmar o apelido', fn () => $this->update([
+            'name' => $name,
+            'nickname_confirmed_at' => now(),
+        ]), ['user_id' => $this->id]);
+    }
+
+    public function hasConfirmedNickname(): bool
+    {
+        return ! is_null($this->nickname_confirmed_at);
     }
 
     public function initials(): string
@@ -137,6 +161,7 @@ final class User extends Authenticatable implements Auditable
     {
         return [
             'email_verified_at' => 'datetime',
+            'nickname_confirmed_at' => 'datetime',
             'password' => 'hashed',
         ];
     }

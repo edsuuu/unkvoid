@@ -15,6 +15,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Laravel\Sanctum\PersonalAccessToken;
 use Throwable;
 
@@ -40,6 +41,9 @@ final class AuthController
     }
 
     /**
+     * O app não pede apelido no cadastro: a conta nasce com um tirado do e-mail, sem
+     * confirmar, e o app abre a escolha do apelido até a pessoa decidir (`PATCH /api/me`).
+     *
      * @throws Throwable
      */
     public function register(RegisterRequest $request): AuthTokenResource
@@ -48,7 +52,7 @@ final class AuthController
 
         try {
             $user = User::query()->create([
-                'name' => mb_trim($request->string('name')->toString()),
+                'name' => User::freeNickname(Str::before($email, '@')),
                 'email' => $email,
                 'password' => $request->string('password')->toString(),
             ]);

@@ -42,9 +42,9 @@ por núcleo, faixa de portas por worker, presença), `Signature` (HMAC do token 
 - **Mute pelo servidor** é estado, não um `pause` solto: `peer.serverMuted` recusa retomar o
   mic e avisa a própria pessoa com `serverMuted { muted }`.
 - **Kick** fecha o socket (4001): sessão expulsa não continua alocando transporte.
-- **Sala anônima** entra sem token como `guest:<installId>` com `can` cheio, e **recusa sala de
-  26 caracteres** — é o formato do ULID de canal, e sem isso alguém entraria num canal de voz
-  sem passar pelo Laravel.
+- **Todo `join` exige token**, inclusive na sala por código (`POST /api/rooms/{code}/token`).
+  Não existe mais visitante `guest:`: o `join` sem token dos apps antigos é recusado com
+  `field token is required`.
 - **Um transporte plain por peer** carrega até quatro SSRC (o app escolhe um por origem).
   Fechar o último producer fecha só os transportes de envio, nunca o de recepção.
 - **Webhook** `joined`/`left` para `${SFU_LARAVEL_URL}/api/sfu/events`, assinado, fora do

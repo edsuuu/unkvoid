@@ -2,6 +2,7 @@ import { useApp } from '../useApp.ts';
 import { useStore } from '../useStore.ts';
 import { ChannelModal } from './modals/ChannelModal.tsx';
 import { MemberMenu } from './modals/MemberMenu.tsx';
+import { NicknameModal } from './modals/NicknameModal.tsx';
 import { RoleModal } from './modals/RoleModal.tsx';
 import { ServerModal } from './modals/ServerModal.tsx';
 import { ServerSettingsModal } from './modals/ServerSettingsModal.tsx';
@@ -19,6 +20,7 @@ export function HubModals() {
             {modal?.type === 'user' && user && <UserSettingsModal />}
             {roleEditor && tree && <RoleModal key={roleEditor.role?.id ?? 'new'} role={roleEditor.role} />}
             {memberMenu && tree && <MemberMenu key={memberMenu.userId} />}
+            {user?.nickname_confirmed === false && <NicknameModal key={user.id} initial={user.name} />}
         </>
     );
 }

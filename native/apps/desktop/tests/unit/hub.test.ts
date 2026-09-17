@@ -151,6 +151,23 @@ describe('modo servidor com a API de mentira', () => {
         expect(hub.tree?.id).toBe(2);
     });
 
+    it('trocar de servidor não passa pela Home no caminho', async () => {
+        await hub.openServer(2);
+        const states: { home: boolean; homeLit: boolean }[] = [];
+        const unsubscribe = hub.store.subscribe(() => {
+            const { home, tree, treeLoading } = hub.store.state;
+
+            states.push({ home, homeLit: home || (! tree && ! treeLoading) });
+        });
+
+        await hub.openServer(5);
+        unsubscribe();
+
+        expect(hub.store.state.tree?.id).toBe(5);
+        expect(states.some(state => state.home), 'a Home não aparece').toBe(false);
+        expect(states.some(state => state.homeLit), 'nem o ícone da Home acende').toBe(false);
+    });
+
     it('criar sala abre a sala nova sem entrar na voz e mostra o convite', async () => {
         await hub.closeServer();
         await hub.createServer('Nova');
@@ -395,17 +412,14 @@ describe('modo servidor com a API de mentira', () => {
         calls.length = 0;
 
         expect(await hub.login('', 'segredo')).toBe(false);
-        expect(hub.store.state.loginError).toBe('Digite o e-mail.');
-        expect(await hub.login('edsu.example.com', 'segredo')).toBe(false);
-        expect(hub.store.state.loginError).toBe('Esse e-mail não parece válido.');
-        expect(await hub.login('edsu@example.com', '')).toBe(false);
-        expect(hub.store.state.loginError).toBe('Digite a senha.');
-        expect(await hub.register('ed', 'edsu@example.com', 'segredo123')).toBe(false);
-        expect(hub.store.state.loginError).toBe('O apelido precisa ter de 3 a 32 caracteres.');
-        expect(await hub.register('edsu!', 'edsu@example.com', 'segredo123')).toBe(false);
-        expect(hub.store.state.loginError).toBe('O apelido aceita letras, números, ponto e _ — sem espaço.');
-        expect(await hub.register('edsu', 'edsu@example.com', '1234567')).toBe(false);
-        expect(hub.store.state.loginError).toBe('A senha precisa ter pelo menos 8 caracteres.');
+        expect(hub.store.state.loginFieldErrors).toEqual({ email: 'Digite o e-mail.' });
+        expect(hub.store.state.loginError, 'erro de campo fica embaixo do campo, não na linha geral').toBe('');
+        expect(await hub.login('edsu.example.com', '')).toBe(false);
+        expect(hub.store.state.loginFieldErrors, 'cada campo com o seu erro, de uma vez').toEqual({ email: 'Esse e-mail não parece válido.', password: 'Digite a senha.' });
+        hub.clearLoginFieldError('email');
+        expect(hub.store.state.loginFieldErrors, 'editar um campo apaga só o erro dele').toEqual({ password: 'Digite a senha.' });
+        expect(await hub.register('edsu@example.com', '1234567')).toBe(false);
+        expect(hub.store.state.loginFieldErrors).toEqual({ password: 'A senha precisa ter pelo menos 8 caracteres.' });
         expect(hub.store.state.loginBusy).toBe(false);
 
         await hub.attempt(() => hub.createServer('   '));
@@ -420,6 +434,60 @@ describe('modo servidor com a API de mentira', () => {
         expect(toasts.at(-1)).toBe('O limite de pessoas vai de 1 a 99. Vazio é sem limite.');
 
         expect(calls.filter(call => call.method !== 'GET'), 'nenhum formulário recusado chega à API').toEqual([]);
+    });
+
+    it('o 422 do Laravel cai no campo de cada chave; o que não é de campo fica na linha geral', async () => {
+        const refused = (status: number, message: string, errors: Record<string, string[]> = {}) => () => {
+            throw Object.assign(new Error(message), { status, errors });
+        };
+
+        responses.set('POST /api/auth/register', refused(422, 'Esse e-mail já tem conta.', { email: ['Esse e-mail já tem conta.'], password: ['Senha fraca.'] }));
+        expect(await hub.register(' ana@example.com ', 'segredo123')).toBe(false);
+        expect(calls.at(-1), 'o cadastro vai sem apelido').toEqual({ method: 'POST', path: '/api/auth/register', body: { email: 'ana@example.com', password: 'segredo123', device: 'app' } });
+        expect(hub.store.state.loginFieldErrors).toEqual({ email: 'Esse e-mail já tem conta.', password: 'Senha fraca.' });
+        expect(hub.store.state.loginError).toBe('');
+
+        responses.set('POST /api/auth/login', refused(429, 'Muitas tentativas.'));
+        expect(await hub.login('ana@example.com', 'segredo123')).toBe(false);
+        expect(hub.store.state.loginFieldErrors).toEqual({});
+        expect(hub.store.state.loginError).toBe('Muitas tentativas.');
+    });
+
+    it('apelido não confirmado: o PATCH /api/me troca a conta e o modal some; recusado, o erro fica no campo', async () => {
+        const unconfirmed = { id: 1, name: 'edsu4821', nickname_confirmed: false };
+
+        hub.user = unconfirmed;
+        hub.publish();
+        calls.length = 0;
+
+        await hub.confirmNickname('ed');
+        expect(hub.store.state.nicknameError).toBe('O apelido precisa ter de 3 a 32 caracteres.');
+        expect(calls, 'recusado aqui, nada vai para a API').toEqual([]);
+
+        responses.set('PATCH /api/me', () => {
+            throw Object.assign(new Error('Esse apelido já é de alguém.'), { status: 422, errors: { name: ['Esse apelido já é de alguém.'] } });
+        });
+        await hub.confirmNickname('edsu');
+        expect(hub.store.state.nicknameError).toBe('Esse apelido já é de alguém.');
+        expect(hub.store.state.user?.nickname_confirmed, 'o modal continua').toBe(false);
+
+        responses.set('PATCH /api/me', ({ name }: { name: string }) => ({ id: 1, name, nickname_confirmed: true }));
+        await hub.confirmNickname('Edsu');
+        expect(calls.at(-1)).toEqual({ method: 'PATCH', path: '/api/me', body: { name: 'Edsu' } });
+        expect(hub.user).toEqual({ id: 1, name: 'Edsu', nickname_confirmed: true });
+        expect(hub.store.state.user?.nickname_confirmed, 'o modal some').toBe(true);
+        expect(hub.store.state.nicknameError).toBe('');
+        expect(hub.store.state.nicknameBusy).toBe(false);
+
+        hub.user = unconfirmed;
+        hub.publish();
+        responses.set('PATCH /api/me', () => {
+            throw Object.assign(new Error('Apelido já confirmado.'), { status: 403, errors: {} });
+        });
+        responses.set('GET /api/me', { id: 1, name: 'Edsu', nickname_confirmed: true });
+        await hub.confirmNickname('Edsu');
+        expect(hub.store.state.user?.nickname_confirmed, 'já confirmado em outro lugar: recarrega o /api/me e fecha').toBe(true);
+        expect(hub.store.state.nicknameError).toBe('');
     });
 
     it('no canal em que estou, a lista da voz é a do SFU: quem foi expulso sai na hora', () => {
@@ -489,13 +557,36 @@ describe('modo servidor com a API de mentira', () => {
         expect(tornDown.length).toBe(0);
     });
 
-    it('com a sala por código aberta, entrar ou sair da conta não esconde a sala', async () => {
+    it('sem conta a sala por código não conecta; com conta, cada join leva o token da sala', async () => {
+        const identities: unknown[] = [];
+
+        app.media.enterRoom = async (_sfu, identity) => {
+            identities.push(await identity());
+
+            return {};
+        };
+        responses.set('POST /api/rooms/minha-sala/token', { token: 'token-da-sala' });
+        calls.length = 0;
+
+        hub.user = null;
+        await app.openRoom('minha-sala');
+        expect(identities, 'sem conta não há join').toEqual([]);
+        expect(calls).toEqual([]);
+
+        hub.user = { id: 1, name: 'Edsu', nickname_confirmed: true };
+        await app.openRoom('minha-sala');
+        expect(identities).toEqual([{ token: 'token-da-sala' }]);
+        expect(app.store.state.screen).toBe('room');
+    });
+
+    it('com a sala por código aberta, entrar na conta não esconde a sala, e sair da conta sai dela', async () => {
         expect(app.store.state.screen).toBe('room');
 
         await hub.open();
         expect(app.store.state.screen, 'entrar na conta não troca a tela da sala').toBe('room');
 
         await hub.logout();
-        expect(app.store.state.screen, 'sair da conta também não').toBe('room');
+        expect(app.store.state.screen, 'sem conta não se fica em sala nenhuma').toBe('entry');
+        expect(app.store.state.room).toBeNull();
     });
 });

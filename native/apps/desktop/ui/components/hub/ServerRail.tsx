@@ -5,7 +5,7 @@ import { useStore } from '../useStore.ts';
 
 export function ServerRail() {
     const hub = useApp().hub;
-    const { servers, serversLoading, tree, home, railOpen } = useStore(hub.store);
+    const { servers, serversLoading, tree, treeLoading, home, railOpen } = useStore(hub.store);
     const label = 'min-w-0 flex-1 truncate whitespace-nowrap text-left text-[13px] text-ink-body';
 
     return (
@@ -18,7 +18,7 @@ export function ServerRail() {
             </button>
 
             <button className="flex w-full cursor-pointer items-center gap-2.5" type="button" title="Home — criar sala e últimas salas" onClick={() => hub.showHome()}>
-                <span className={`btn-icon ${home || ! tree ? 'btn-icon-on' : ''}`}><Icon name="home" size={16} /></span>
+                <span className={`btn-icon ${home || (! tree && ! treeLoading) ? 'btn-icon-on' : ''}`}><Icon name="home" size={16} /></span>
                 <span className={label}>Home</span>
             </button>
 
