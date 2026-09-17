@@ -28,6 +28,7 @@ final class UserFactory extends Factory
     {
         return [
             'name' => fake()->name(),
+            'nickname_confirmed_at' => now(),
             'email' => fake()->unique()->safeEmail(),
             'email_verified_at' => now(),
             'password' => self::$password ??= Hash::make('password'),
@@ -42,6 +43,16 @@ final class UserFactory extends Factory
     {
         return $this->state(fn (array $attributes): array => [
             'email_verified_at' => null,
+        ]);
+    }
+
+    /**
+     * A conta ainda com o apelido automático, como nasce pelo app e pelo Google.
+     */
+    public function unconfirmedNickname(): static
+    {
+        return $this->state(fn (array $attributes): array => [
+            'nickname_confirmed_at' => null,
         ]);
     }
 }

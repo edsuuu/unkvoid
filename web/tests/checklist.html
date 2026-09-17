@@ -55,6 +55,8 @@
   <label><input type="checkbox"><span>POST /api/auth/register devolve token e usuário (201)</span><i class="tag auto">e2e</i></label>
   <label><input type="checkbox"><span>POST /api/auth/login devolve token; senha errada dá 401</span><i class="tag auto">e2e</i></label>
   <label><input type="checkbox"><span>GET /api/me com token devolve a conta; sem token dá 401</span><i class="tag auto">e2e</i></label>
+  <label><input type="checkbox"><span>Conta nova pelo app ou pelo Google nasce com apelido tirado do e-mail (ou do nome do Google) e <code>nickname_confirmed: false</code>; o app abre a escolha do apelido até a pessoa decidir</span><i class="tag auto">Pest</i></label>
+  <label><input type="checkbox"><span>PATCH /api/me com o apelido escolhido (ou o automático) confirma; apelido de outra pessoa ou com espaço dá 422; depois de confirmado dá 403</span><i class="tag auto">Pest</i></label>
   <label><input type="checkbox"><span>POST /api/auth/logout revoga o token (204) e ele não entra mais</span><i class="tag auto">e2e</i></label>
   <label><input type="checkbox"><span>GET /oauth2/app?port=N&amp;state=S abre o Google e devolve o token em http://127.0.0.1:N/?token=…&amp;state=S; sem state (ou fora de hex) → erro de validação</span><i class="tag auto">Pest</i></label>
   <label><input type="checkbox"><span>Login por API acima de 5 por minuto no mesmo e-mail+IP recebe 429</span></label>
