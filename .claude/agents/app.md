@@ -54,8 +54,9 @@ em Docker. Por isso o Linux tem caminho nativo para tudo. Nunca proponha "só us
 
 ## Regras de negócio que a interface obedece
 
-A sala por código **continua existindo e é o caminho sem conta**: nome, criar ou colar código,
-sem banco, sem login. Não a degrade ao mexer no modo servidor.
+A sala por código **continua existindo**: criar ou colar código, sem banco. Desde 17/09/2026
+exige conta — sem login o app só mostra entrar/criar conta, e a sala entra com o token de
+`POST /api/rooms/{code}/token`. Não a degrade ao mexer no modo servidor.
 
 No modo com conta: o app **só esconde botão**. Quem autoriza é o Laravel (API) e o SFU (claims
 do token). Toda resposta 403 vira aviso; nunca confie no bit que você mesmo calculou.
