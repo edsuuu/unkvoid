@@ -71,7 +71,7 @@
                         <th class="py-2 pr-4">{{ __('Nome') }}</th>
                         <th class="py-2 pr-4">{{ __('Sala') }}</th>
                         <th class="py-2 pr-4">IP</th>
-                        <th class="py-2">{{ __('Instalação') }}</th>
+                        <th class="py-2">{{ __('Instalação ou conta') }}</th>
                     </tr>
                 </thead>
                 <tbody>

@@ -39,17 +39,18 @@ final readonly class SfuClient
      */
     public function token(Channel $channel, User $user, array $can): string
     {
-        $claims = json_encode([
-            'room' => $channel->id,
-            'sub' => $user->subject(),
-            'name' => $user->name,
-            'exp' => time() + self::TOKEN_SECONDS,
-            'can' => $can,
-        ], JSON_THROW_ON_ERROR);
+        return $this->sign($channel->id, $user, $can);
+    }
 
-        $body = mb_rtrim(strtr(base64_encode($claims), '+/', '-_'), '=');
-
-        return $body.'.'.hash_hmac('sha256', $body, $this->secret);
+    /**
+     * A sala por código não existe em banco: o token só carrega o código. Quem entra
+     * logado leva a conta junto, e é isso que faz o SFU derrubar o outro dispositivo.
+     *
+     * @throws JsonException
+     */
+    public function roomToken(string $code, User $user): string
+    {
+        return $this->sign($code, $user, ['speak', 'stream', 'video']);
     }
 
     public function kick(Channel $channel, string $subject): int
@@ -109,6 +110,26 @@ final readonly class SfuClient
     public function peers(Channel $channel, bool $fresh = false): array
     {
         return $this->presence($fresh)[$channel->id] ?? [];
+    }
+
+    /**
+     * @param  array<int, string>  $can
+     *
+     * @throws JsonException
+     */
+    private function sign(string $room, User $user, array $can): string
+    {
+        $claims = json_encode([
+            'room' => $room,
+            'sub' => $user->subject(),
+            'name' => $user->name,
+            'exp' => time() + self::TOKEN_SECONDS,
+            'can' => $can,
+        ], JSON_THROW_ON_ERROR);
+
+        $body = mb_rtrim(strtr(base64_encode($claims), '+/', '-_'), '=');
+
+        return $body.'.'.hash_hmac('sha256', $body, $this->secret);
     }
 
     /**

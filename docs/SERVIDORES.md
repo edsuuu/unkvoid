@@ -104,6 +104,13 @@ o Laravel o `left` da sala antiga. O visitante (`guest:`) só é substituído pe
 `peerJoined`, então valer como identidade deixaria qualquer um derrubar qualquer um. O
 app ignora `replaced`, `kicked` e `closed` de um `SfuClient` que já não é o atual.
 
+Quem está logado entra na sala por código **com token**: `POST /api/rooms/{code}/token`
+(`auth:sanctum`, código de 3 a 32 caracteres e nunca 26) devolve o mesmo
+`{ token, url, expires_in }` da voz, com `room` = o código, `sub` = a conta e
+`can: ["speak", "stream", "video"]`. É assim que a regra de uma sessão por conta vale
+também ali: abrir a mesma chamada em outro dispositivo derruba o anterior. O `join` sem
+token fica só para quem não tem conta.
+
 O `join` sem token (sala anônima) recusa sala de 26 caracteres: é o formato do ULID de
 canal, e sem isso qualquer um entraria num canal de voz sem passar pelo Laravel.
 
@@ -121,8 +128,9 @@ producers de uma mesma porta por SSRC, sem adivinhar pelo primeiro pacote.
 
 Webhook do SFU para o Laravel, **fora do caminho do `join`**, fire-and-forget, para conta
 (`user:`) e visitante da sala por código (`guest:<installId>`, `room` com o código de 3 a
-32 caracteres). O visitante só vira linha em `guest_accesses` (nome, sala, IP, instalação,
-entrada e saída), na aba "Visitantes" de `/admin/auditoria`: não há canal nem conta a
+32 caracteres). Em sala por código (qualquer `room` que não tenha 26 caracteres) o aviso só vira linha
+em `guest_accesses` (nome, sala, IP, entrada e saída; `install_id` é o id da instalação do
+visitante, ou `user:<id>` de quem entrou logado), na aba "Visitantes" de `/admin/auditoria`: não há canal nem conta a
 avisar. O SFU troca `installId` fora de `[A-Za-z0-9-]{1,64}` por um UUID sorteado.
 `POST {SFU_LARAVEL_URL}/api/sfu/events` com os mesmos cabeçalhos assinados:
 

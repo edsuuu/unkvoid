@@ -46,9 +46,12 @@ final class SfuEventController
         $at = CarbonImmutable::createFromTimestamp($request->integer('at'));
         $sub = $request->string('sub')->toString();
 
-        if (str_starts_with($sub, 'guest:')) {
-            $room = $request->string('room')->toString();
-            $installId = mb_substr($sub, mb_strlen('guest:'));
+        $room = $request->string('room')->toString();
+
+        // Sala por código: não há canal para avisar. O visitante vai pelo id da instalação e
+        // quem entrou logado pela própria conta (`user:12`), na mesma tabela.
+        if (mb_strlen($room) !== 26) {
+            $installId = str_starts_with($sub, 'guest:') ? mb_substr($sub, mb_strlen('guest:')) : $sub;
 
             if ($event === 'joined') {
                 GuestAccess::open($room, $installId, mb_substr($request->string('name')->toString(), 0, 40), $request->string('ip')->toString(), $at);
@@ -59,7 +62,7 @@ final class SfuEventController
             return response()->noContent();
         }
 
-        $channel = Channel::query()->findOrFail($request->string('room')->toString());
+        $channel = Channel::query()->findOrFail($room);
         $user = User::query()->findOrFail(User::fromSubject($sub));
 
         // Expulso ou banido depois de pedir o token (ele vale 60 s): o SFU deixou entrar, e a
