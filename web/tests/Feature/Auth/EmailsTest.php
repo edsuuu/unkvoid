@@ -21,7 +21,7 @@ it('manda boas-vindas ao criar a conta pelo site e pela API', function (): void 
         ->set('password', 'senha-forte-123')->set('password_confirmation', 'senha-forte-123')
         ->call('register');
 
-    $this->postJson('/api/auth/register', ['name' => 'edson.api', 'email' => 'api@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'd'])->assertCreated();
+    $this->postJson('/api/auth/register', ['email' => 'api@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'd'])->assertCreated();
 
     Notification::assertSentTo(User::query()->where('email', 'site@unkvoid.test')->firstOrFail(), WelcomeNotification::class);
     Notification::assertSentTo(User::query()->where('email', 'api@unkvoid.test')->firstOrFail(), WelcomeNotification::class);
@@ -57,17 +57,19 @@ it('renderiza os três e-mails em HTML com o desenho do site', function (): void
 
 it('o apelido e unico e nao aceita espaco', function (): void {
     User::factory()->create(['name' => 'edsu']);
+    $user = User::factory()->unconfirmedNickname()->create(['name' => 'outro']);
 
-    $this->postJson('/api/auth/register', ['name' => 'edsu', 'email' => 'outro@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'd'])
+    $this->actingAs($user)->patchJson('/api/me', ['name' => 'edsu'])
         ->assertStatus(422)
         ->assertJsonPath('errors.name.0', 'Esse apelido já é de outra pessoa.');
 
-    $this->postJson('/api/auth/register', ['name' => 'edsu lima', 'email' => 'outro@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'd'])
+    $this->actingAs($user)->patchJson('/api/me', ['name' => 'edsu lima'])
         ->assertStatus(422)
         ->assertJsonPath('errors.name.0', 'O apelido aceita letras, números, ponto e _ — sem espaço.');
 
-    $this->postJson('/api/auth/register', ['name' => 'edsu.dois', 'email' => 'outro@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'd'])
-        ->assertCreated();
+    expect($user->fresh()?->hasConfirmedNickname())->toBeFalse();
+
+    $this->actingAs($user)->patchJson('/api/me', ['name' => 'edsu.dois'])->assertOk();
 });
 
 it('o login pelo google vira apelido sem espaco, e desempata quando ja existe', function (): void {

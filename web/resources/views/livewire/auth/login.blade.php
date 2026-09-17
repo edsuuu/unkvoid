@@ -1,6 +1,6 @@
 <div class="lp-form-card">
     <p class="lp-form-title">Entrar</p>
-    <p class="lp-form-sub">O login é opcional. Dá para usar tudo sem conta.</p>
+    <p class="lp-form-sub">Entre para criar salas, servidores, voz e chat.</p>
 
     @if (session('status'))
         <p class="lp-notice">{{ session('status') }}</p>
@@ -28,7 +28,5 @@
     <div class="lp-form-foot">
         <span>Não tem conta?</span>
         <a href="{{ route('register') }}" wire:navigate>Criar conta</a>
-        <span style="color:#3a3350">·</span>
-        <a href="{{ route('home') }}" style="color:var(--lp-muted-2)">Continuar sem login</a>
     </div>
 </div>

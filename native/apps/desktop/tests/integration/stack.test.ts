@@ -82,15 +82,21 @@ describe('integração: os clientes do app contra o Laravel, o Reverb e o SFU no
         }
     });
 
-    it('cria duas contas, o token abre o /api/me, e senha errada é 401', async () => {
-        ana.setToken((await ana.post('/api/auth/register', { name: `ana.${STAMP}`, email: `ana.${STAMP}@local.test`, password: PASSWORD, device: 'app' })).token);
-        bia.setToken((await bia.post('/api/auth/register', { name: `bia.${STAMP}`, email: `bia.${STAMP}@local.test`, password: PASSWORD, device: 'app' })).token);
+    it('cria duas contas sem apelido, confirma o apelido uma vez só, e senha errada é 401', async () => {
+        const registered = await ana.post('/api/auth/register', { email: `ana.${STAMP}@local.test`, password: PASSWORD, device: 'app' });
 
-        const anaUser = await ana.get('/api/me');
+        ana.setToken(registered.token);
+        bia.setToken((await bia.post('/api/auth/register', { email: `bia.${STAMP}@local.test`, password: PASSWORD, device: 'app' })).token);
 
-        biaUser = await bia.get('/api/me');
+        expect(registered.user.nickname_confirmed, 'a conta nasce com o apelido automático, por confirmar').toBe(false);
+
+        const anaUser = await ana.patch('/api/me', { name: `ana.${STAMP}` });
+
+        biaUser = await bia.patch('/api/me', { name: `bia.${STAMP}` });
 
         expect(anaUser.name).toBe(`ana.${STAMP}`);
+        expect((await ana.get('/api/me')).nickname_confirmed).toBe(true);
+        await rejectsWith(() => ana.patch('/api/me', { name: `ana2.${STAMP}` }), [403], 'confirmado, o apelido não muda mais por aqui');
         await rejectsWith(() => new ApiClient(SERVER).post('/api/auth/login', { email: `ana.${STAMP}@local.test`, password: 'errada', device: 'app' }), [401], 'senha errada é 401 (InvalidCredentialsException)');
     });
 
@@ -210,19 +216,23 @@ describe('integração: os clientes do app contra o Laravel, o Reverb e o SFU no
         await rejectsWith(() => bia.post(`/api/channels/${voice.id}/voice/token`), [403, 404], 'e não ganha token de voz');
     });
 
-    it('na sala por código, sem conta e sem token, dois entram e se veem; o canal de voz sem token é recusado', async () => {
+    it('na sala por código, cada conta entra com o token da sala e vê a outra; o join sem token é recusado', async () => {
         const room = `integracao-${STAMP}`;
         const first = new SfuClient();
         const second = new SfuClient();
         const intruder = new SfuClient();
+        const roomToken = (client: ApiClient) => async () => ({ token: (await client.post(`/api/rooms/${room}/token`)).token });
 
         cleanup.push(() => first.disconnect(), () => second.disconnect(), () => intruder.disconnect());
-        await first.connect(config.sfu, { room, name: 'Primeira', installId: `install-1-${STAMP}` });
+        await first.connect(config.sfu, roomToken(ana));
 
-        const secondJoined = await second.connect(config.sfu, { room, name: 'Segunda', installId: `install-2-${STAMP}` });
+        const secondJoined = await second.connect(config.sfu, roomToken(bia));
 
-        expect(secondJoined.peers.some(peer => peer.name === 'Primeira'), 'a sala por código junta quem tem o código').toBe(true);
-        await expect(intruder.connect(config.sfu, { room: voice.id, name: 'Intrusa', installId: `install-3-${STAMP}` }), 'canal de voz sem token é recusado').rejects.toThrow();
+        expect(secondJoined.peers.some(peer => peer.name === `ana.${STAMP}`), 'a sala por código junta quem tem o código').toBe(true);
+
+        intruder.url = config.sfu;
+        await intruder.openSocket();
+        await expect(intruder.request('join', { room, name: 'Intrusa', installId: `install-${STAMP}` }), 'o join dos apps antigos, sem token, é recusado').rejects.toThrow();
     });
 
     it('a lista de clipes de uma conta nova responde vazia', async () => {

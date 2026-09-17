@@ -24,6 +24,7 @@ final class UserResource extends JsonResource
             'email' => $this->email,
             'avatar_url' => $this->avatar_url,
             'admin' => $this->isAdmin(),
+            'nickname_confirmed' => $this->hasConfirmedNickname(),
         ];
     }
 }

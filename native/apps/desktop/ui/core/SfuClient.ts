@@ -44,9 +44,9 @@ export type SfuPeer = {
     reconnecting?: boolean;
 };
 
-export type RoomIdentity = { room: string; name: string; installId: string } | { token: string };
+export type RoomIdentity = { token: string };
 
-export type IdentitySource = RoomIdentity | (() => Promise<RoomIdentity>);
+export type IdentitySource = () => Promise<RoomIdentity>;
 
 export type JoinResponse = {
     resumed: boolean;
@@ -198,7 +198,7 @@ export class SfuClient extends EventTarget {
     }
 
     resolveIdentity(): Promise<RoomIdentity> {
-        return typeof this.identity === 'function' ? this.identity() : Promise.resolve(this.identity as RoomIdentity);
+        return this.identity!();
     }
 
     openSocket(): Promise<void> {

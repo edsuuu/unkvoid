@@ -203,16 +203,20 @@ test('o join só aceita token bem formado, assinado e no prazo', async () => {
     assert.equal(reply.status, 401, 'ação sem sessão deve dar 401');
 });
 
-test('o join antigo entra sem token, mas recusa sala de 26 caracteres', async () => {
-    const reply = await visitante.call('join', { room: '01ARZ3NDEKTSV4RRFFQ69G5FAV', name: 'Intruso' });
-    assert.equal(reply.status, 422, 'canal de servidor (ULID) sem token tem de ser recusado, mesmo no join antigo');
+test('sem token não se entra em sala nenhuma, nem pelo join dos apps antigos', async () => {
+    for (const data of [
+        {},
+        { room, name: 'Legado', installId: 'inst-1' },
+        { room: '01ARZ3NDEKTSV4RRFFQ69G5FAV', name: 'Intruso', installId: 'inst-1' },
+        { room, name: 'Legado', token: 42 },
+    ]) {
+        const reply = await visitante.call('join', data);
+        assert.equal(reply.status, 422, `join sem token é recusado: ${JSON.stringify(data)}`);
+        assert.equal(reply.error, 'field token is required', 'com a mesma mensagem de um join vazio');
+    }
 
-    // O app de hoje ainda entra sem token, como visitante. Some quando todos souberem pedir um.
-    const antigo = await abrir();
-    const legado = await entrar(antigo, { room, name: 'Legado', installId: 'inst-1' });
-    assert.deepEqual(legado.can, TUDO, 'sem token entra com tudo liberado');
-    assert.equal(legado.userId, 'guest:inst-1', 'e a identidade é a instalação');
-    antigo.close();
+    const reply = await visitante.call('createTransport', {});
+    assert.equal(reply.status, 401, 'e o join recusado não deixa sessão nenhuma');
 });
 
 test('a identidade nasce no servidor e o mesmo socket não entra duas vezes', async () => {
@@ -378,16 +382,6 @@ test('a mesma conta entrando de novo derruba a sessão antiga, nesta sala ou em 
     presenca = Object.values((await http.json()).rooms).flat().filter(pessoa => pessoa.sub === '60');
     assert.equal(presenca.length, 1, 'uma conta, uma sessão no servidor inteiro');
     outraSala.close();
-
-    const visitanteA = await abrir();
-    const visitanteB = await abrir();
-    await entrar(visitanteA, { room, name: 'Visitante', installId: 'inst-duplo' });
-    await entrar(visitanteB, { room, name: 'Visitante', installId: 'inst-duplo' });
-    await espera(300);
-
-    assert.equal(visitanteA.closeCode, null, 'visitante não derruba ninguém: o installId é escolhido pelo próprio app');
-    visitanteA.close();
-    visitanteB.close();
 });
 
 test('producePlain exige chave e suíte SRTP válidas antes de aceitar o ingest', async () => {
@@ -731,28 +725,20 @@ test('o webhook avisa o Laravel de quem entrou e saiu, assinado', async () => {
         const cliente = new Client(`ws://127.0.0.1:${port}/sfu`);
         await cliente.open();
 
-        const anonimo = new Client(`ws://127.0.0.1:${port}/sfu`);
-        await anonimo.open();
-        await entrar(anonimo, { room: 'webhookroom', name: 'Anônimo', installId: 'inst-webhook' });
-        await espera(300);
-
         await entrar(cliente, { token: token({ room: 'webhookroom', sub: 'user:12', name: 'Edsu', can: TUDO }) });
         await cliente.call('leave');
         await espera(500);
 
-        assert.equal(recebidos.length, 3, `visitante avisa a entrada para a auditoria; conta avisa entrada e saída: ${JSON.stringify(recebidos)}`);
-
-        const visitante = JSON.parse(recebidos[0].body);
-        assert.equal(visitante.sub, 'guest:inst-webhook', 'o visitante vai com o id da instalação');
-        assert.equal(visitante.name, 'Anônimo', 'e o nome que digitou');
+        assert.equal(recebidos.length, 2, `a conta na sala por código avisa entrada e saída: ${JSON.stringify(recebidos)}`);
 
         for (const [indice, evento] of ['joined', 'left'].entries()) {
-            const aviso = recebidos[indice + 1];
+            const aviso = recebidos[indice];
             const corpo = JSON.parse(aviso.body);
 
             assert.equal(aviso.path, '/api/sfu/events', 'bate na rota do Laravel');
             assert.equal(corpo.event, evento, `o ${indice + 1}º aviso é ${evento}`);
             assert.equal(corpo.sub, 'user:12', 'diz de qual conta');
+            assert.equal(corpo.name, 'Edsu', 'com o nome, que é o que a auditoria mostra');
             assert.equal(corpo.room, 'webhookroom', 'e de qual sala');
             assert.equal(corpo.ip, '127.0.0.1', 'e de onde a pessoa veio');
             assert.equal(
@@ -763,7 +749,6 @@ test('o webhook avisa o Laravel de quem entrou e saiu, assinado', async () => {
         }
 
         cliente.close();
-        anonimo.close();
     } finally {
         // SIGKILL, não SIGTERM: o mediasoup registra `process.once('SIGTERM')` dentro do
         // SFU, então o primeiro TERM morre no handler dele e o processo fica de pé
@@ -929,16 +914,16 @@ test('o clipe grava a tela de quem transmite num canal, mistura o áudio e sobe 
 
         const streamer = await connect();
         const clipper = await connect();
-        const guest = await connect();
+        const codeRoom = await connect();
 
         await entrar(streamer, { token: token({ room: channel, sub: 'user:40', name: 'Transmite', can: TUDO }) });
         await entrar(clipper, { token: token({ room: channel, sub: 'user:41', name: 'Clipa', can: TUDO }) });
-        await entrar(guest, { room: 'clipsanon01', name: 'Visitante', installId: 'inst-clip' });
+        await entrar(codeRoom, { token: token({ room: 'clipscode01', sub: 'user:42', name: 'Sala por código', can: TUDO }) });
 
         const screen = await streamer.call('producePlain', videoPuro('screen', 0x5000));
         assert.equal(screen.ok, true, `a tela tem de ser aceita: ${JSON.stringify(screen)}`);
         assert.equal((await streamer.call('producePlain', audioPuro('screenAudio', 0x5001))).ok, true, 'e o áudio da tela');
-        assert.equal((await guest.call('producePlain', videoPuro('screen', 0x6000))).ok, true, 'a sala anônima também transmite');
+        assert.equal((await codeRoom.call('producePlain', videoPuro('screen', 0x6000))).ok, true, 'a sala por código também transmite');
 
         // O ingest aprende um endereço só: as três mídias saem por um socket, como no app.
         relay.on('message', (packet, from) => from.port !== screen.data.port && relay.send(packet, screen.data.port, '127.0.0.1'));
@@ -970,7 +955,7 @@ test('o clipe grava a tela de quem transmite num canal, mistura o áudio e sobe 
         await streamer.call('resumeProducer', { producerId: mic.data.producerId });
         await waitUntil(26);
 
-        assert.equal(readdirSync(rings).length, 1, 'só a conta logada num canal grava: a sala anônima não abre anel');
+        assert.equal(readdirSync(rings).length, 1, 'só quem transmite num canal grava: a sala por código não abre anel');
 
         let reply = await askClip({ clipper: 'user:99', streamer: 'user:40' });
         assert.equal(reply.status, 403, 'quem pede o clipe precisa estar na sala');
@@ -978,8 +963,8 @@ test('o clipe grava a tela de quem transmite num canal, mistura o áudio e sobe 
         reply = await askClip({ clipper: 'user:41', streamer: 'user:41' });
         assert.equal(reply.status, 404, 'quem não transmite não tem anel');
 
-        reply = await askClip({ clipper: 'guest:inst-clip', streamer: 'guest:inst-clip' }, 'clipsanon01');
-        assert.equal(reply.status, 404, 'sala anônima nunca tem anel');
+        reply = await askClip({ clipper: 'user:42', streamer: 'user:42' }, 'clipscode01');
+        assert.equal(reply.status, 404, 'sala por código nunca tem anel');
 
         reply = await askClip({ clipId: '../fora', clipper: 'user:41', streamer: 'user:40' });
         assert.equal(reply.status, 422, 'o id do clipe vira pasta: só letra e número');

@@ -2,6 +2,7 @@ import { Avatar } from '../../common/Avatar.tsx';
 import { Icon } from '../../common/Icon.tsx';
 import { useApp } from '../../useApp.ts';
 import { useStore } from '../../useStore.ts';
+import { VoicePanel } from '../VoicePanel.tsx';
 
 export function DirectColumn() {
     const hub = useApp().hub;
@@ -65,6 +66,8 @@ export function DirectColumn() {
                     </button>
                 ))}
             </div>
+
+            <VoicePanel />
         </aside>
     );
 }

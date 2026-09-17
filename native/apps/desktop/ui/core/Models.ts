@@ -4,6 +4,7 @@ export type User = {
     email: string;
     avatar_url: string | null;
     admin: boolean;
+    nickname_confirmed: boolean;
 };
 
 export type AuthToken = {

@@ -26,6 +26,7 @@ it('cria a conta na primeira entrada com o Google', function (): void {
 
     $this->assertAuthenticated();
     $this->assertDatabaseHas('users', ['email' => 'edson@unkvoid.test', 'google_id' => 'g-1']);
+    expect(User::query()->firstOrFail()->hasConfirmedNickname())->toBeFalse();
 });
 
 it('vincula o Google a uma conta que já existia pelo e-mail', function (): void {
@@ -36,6 +37,7 @@ it('vincula o Google a uma conta que já existia pelo e-mail', function (): void
 
     $this->assertAuthenticatedAs($existing);
     expect($existing->fresh()->google_id)->toBe('g-2');
+    expect($existing->fresh()->hasConfirmedNickname())->toBeTrue();
     $this->assertDatabaseCount('users', 1);
 });
 
