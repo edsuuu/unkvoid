@@ -43,6 +43,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "publisher": "Unkvoid",
+    "copyright": "Unkvoid - contato@unkvoid.com",
+    "homepage": "https://unkvoid.com",
     "category": "SocialNetworking",
     "shortDescription": "Compartilhar a tela sem perder fps",
     "longDescription": "Unkvoid: um nome, um codigo de sala, e a tela. Captura nativa, encoder da placa de video, sem barra de navegador.",

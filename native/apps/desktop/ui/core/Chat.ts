@@ -34,7 +34,13 @@ export class Chat {
 
         const subscription = this.hub.echo!.private(`channel.${channel.id}`);
 
-        this.hub.listen<{ message: Message }>(subscription, 'MessageSent', ({ message }) => this.append(message));
+        this.hub.listen<{ message: Message }>(subscription, 'MessageSent', ({ message }) => {
+            if (message.user.id !== this.hub.user?.id) {
+                this.hub.app.sounds.message();
+            }
+
+            this.append(message);
+        });
         this.hub.listen<{ message: Message }>(subscription, 'MessageUpdated', ({ message }) => this.append(message));
         this.hub.listen<{ id: number }>(subscription, 'MessageDeleted', ({ id }) => this.remove(id));
 

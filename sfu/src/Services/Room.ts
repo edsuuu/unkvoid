@@ -84,15 +84,6 @@ export class Room {
             return { peer: previous, resumed: true };
         }
 
-        if (previous) {
-            this.cancelEviction(previous.id);
-            previous.send('replaced', { reason: 'you opened this room in another window' });
-            this.peers.delete(previous.id);
-            previous.close();
-            previous.socket.close();
-            this.broadcast('peerLeft', { peerId: previous.id }, previous.id);
-        }
-
         const peer = new Peer(
             randomUUID(),
             name,
@@ -105,7 +96,28 @@ export class Room {
 
         this.peers.set(peer.id, peer);
 
+        // Depois de a nova estar na sala: tirar a antiga antes deixaria a sala vazia por
+        // um instante, e o registro fecharia o router debaixo de quem acabou de entrar.
+        if (previous) {
+            this.replacePeer(previous);
+        }
+
         return { peer, resumed: false };
+    }
+
+    /**
+     * Encerra uma sessão que outra, da mesma pessoa, veio substituir. Sem isto a antiga
+     * seguia de pé ao lado da nova: a mesma conta duas vezes na lista, e o app antigo
+     * disputando a porta de RTP puro com o novo.
+     */
+    public replacePeer(previous: Peer): void {
+        console.log(
+            `[INFO] replaced room=${this.id} sub=${previous.userId} peer=${previous.id} ip=${previous.ip}`,
+        );
+        this.cancelEviction(previous.id);
+        previous.send('replaced', { reason: 'you joined again from another connection' });
+        previous.socket.close(4002, 'replaced');
+        this.removePeer(previous);
     }
 
     /**
@@ -242,6 +254,7 @@ export class Room {
             return;
         }
 
+        console.log(`[INFO] left room=${this.id} sub=${peer.userId} peer=${peer.id} ip=${peer.ip}`);
         peer.close();
         this.peers.delete(peer.id);
         this.broadcast('peerLeft', { peerId: peer.id }, peer.id);

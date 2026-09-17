@@ -66,6 +66,9 @@ export class ProducerController {
         // causa quase sempre é a porta de RTP deste worker fechada no firewall — a faixa
         // inteira precisa estar aberta, não só o começo dela.
         let idleTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+            console.warn(
+                `[WARN] producerDead room=${room.id} sub=${peer.userId} source=${source} ip=${peer.ip}: no packet in ${MEDIA_IDLE_MS / 1000}s`,
+            );
             peer.send('producerDead', { producerId: producer.id, kind: producer.kind, source });
             this.close(peer, room, producer);
         }, MEDIA_IDLE_MS);
