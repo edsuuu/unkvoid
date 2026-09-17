@@ -78,9 +78,9 @@ export function ServersHome() {
                             <span className="block truncate text-[13.5px] font-semibold">{server.name}</span>
                             <span className="label-mono mt-0.5 block text-[9.5px]">{server.owner_id === user?.id ? 'dono' : 'membro'}</span>
                         </span>
-                        <span className="font-mono text-[10.5px] text-ink-dim">
-                            {server.last_accessed_at ? new Date(server.last_accessed_at).toLocaleDateString('pt-BR') : 'nunca na voz'}
-                        </span>
+                        {server.last_accessed_at && (
+                            <span className="font-mono text-[10.5px] text-ink-dim">{new Date(server.last_accessed_at).toLocaleDateString('pt-BR')}</span>
+                        )}
                     </button>
                 ))}
             </div>
