@@ -16,6 +16,7 @@ import { join } from 'node:path';
 
 import { config } from '../config.js';
 import type { Peer } from './Peer.js';
+import type { Room } from './Room.js';
 import { Source } from '../Enums/Source.js';
 
 const RING_SECONDS = 300;
@@ -120,9 +121,12 @@ export class Recorder {
         });
     }
 
-    /** Chamado a cada producer novo. Só a conta logada que compartilha tela é gravada. */
-    public static follow(router: Router, peer: Peer, producer: Producer): void {
-        if (!Recorder.available || !peer.userId.startsWith('user:')) {
+    /**
+     * Chamado a cada producer novo. Só a conta que compartilha tela num canal de voz é
+     * gravada: a sala por código (qualquer id que não seja o ULID de 26 caracteres) não clipa.
+     */
+    public static follow(room: Room, peer: Peer, producer: Producer): void {
+        if (!Recorder.available || !peer.userId.startsWith('user:') || room.id.length !== 26) {
             return;
         }
 
@@ -136,7 +140,7 @@ export class Recorder {
                     return;
                 }
 
-                const recorder = new Recorder(router, peer);
+                const recorder = new Recorder(room.router, peer);
 
                 peer.recorder = recorder;
                 void recorder.add(producer);
