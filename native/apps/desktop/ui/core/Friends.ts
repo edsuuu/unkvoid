@@ -1,5 +1,6 @@
 import type { App } from './App.ts';
 import { Failure } from './Failure.ts';
+import { Field } from './Field.ts';
 import type { Hub } from './Hub.ts';
 import type { Friendship, Person } from './Models.ts';
 import { Store } from './Store.ts';
@@ -82,7 +83,11 @@ export class Friends {
     }
 
     async request(email: string): Promise<boolean> {
-        const friendship = await this.hub.attempt(() => this.hub.api.post<Friendship>('/api/friends', { email }));
+        const friendship = await this.hub.attempt(() => {
+            Field.requireEmail(email);
+
+            return this.hub.api.post<Friendship>('/api/friends', { email: email.trim() });
+        });
 
         if (! friendship) {
             return false;

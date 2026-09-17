@@ -30,7 +30,7 @@ export function RoleModal({ role }: { role: Role | null }) {
         >
             <form id="role-form" onSubmit={event => { event.preventDefault(); void settings.saveRole(role, { name, color, permissions }); }}>
                 <div className="flex gap-2">
-                    <input className="field min-w-0 flex-1" type="text" maxLength={40} value={name} disabled={everyone} onChange={event => setName(event.target.value)} placeholder="Nome do cargo" required />
+                    <input className="field min-w-0 flex-1" type="text" maxLength={40} value={name} disabled={everyone} onChange={event => setName(event.target.value)} placeholder="Nome do cargo" />
                     <input className="field size-11 cursor-pointer p-1" type="color" value={color} disabled={everyone} onChange={event => setColor(event.target.value)} title="Cor" />
                 </div>
 

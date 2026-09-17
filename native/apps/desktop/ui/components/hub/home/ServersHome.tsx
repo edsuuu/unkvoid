@@ -28,7 +28,7 @@ export function ServersHome() {
                 <p className="label-mono">Home</p>
                 <p className="text-[17px] font-semibold tracking-tight">Oi, {user?.name}.</p>
                 <p className="text-[13px] text-ink-soft">Uma sala nova já vem com um canal de texto e um de voz. Depois é só mandar o convite.</p>
-                <input className="field w-full" type="text" maxLength={60} value={name} onChange={event => setName(event.target.value)} placeholder="Nome da sala" required />
+                <input className="field w-full" type="text" maxLength={60} value={name} onChange={event => setName(event.target.value)} placeholder="Nome da sala" />
                 <button className="btn-primary flex items-center justify-center gap-2 text-[13.5px]" type="submit" disabled={busy}>
                     {busy && <Spinner size={14} />}
                     Criar sala
