@@ -14,6 +14,18 @@ export class Sounds {
         this.play([{ hertz: 659, startsAt: 0 }, { hertz: 440, startsAt: 0.08 }]);
     }
 
+    streamStarted(): void {
+        this.play([{ hertz: 587, startsAt: 0 }, { hertz: 740, startsAt: 0.08 }, { hertz: 880, startsAt: 0.16 }]);
+    }
+
+    streamStopped(): void {
+        this.play([{ hertz: 880, startsAt: 0 }, { hertz: 740, startsAt: 0.08 }, { hertz: 587, startsAt: 0.16 }]);
+    }
+
+    message(): void {
+        this.play([{ hertz: 988, startsAt: 0, seconds: 0.06 }, { hertz: 1319, startsAt: 0.05, seconds: 0.1 }]);
+    }
+
     muted(): void {
         this.play([{ hertz: 494, startsAt: 0, seconds: 0.07 }, { hertz: 370, startsAt: 0.06, seconds: 0.07 }]);
     }

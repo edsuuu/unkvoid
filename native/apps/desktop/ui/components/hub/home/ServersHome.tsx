@@ -6,7 +6,9 @@ import { useApp } from '../../useApp.ts';
 import { useStore } from '../../useStore.ts';
 
 export function ServersHome() {
-    const hub = useApp().hub;
+    const app = useApp();
+    const hub = app.hub;
+    const recentRooms = app.recentRooms();
     const { servers, serversLoading, serversFailed, user } = useStore(hub.store);
     const [name, setName] = useState('');
     const [busy, setBusy] = useState(false);
@@ -35,6 +37,23 @@ export function ServersHome() {
                 </button>
                 <button className="btn-ghost" type="button" onClick={() => hub.openModal({ type: 'server' })}>Tenho um convite</button>
             </form>
+
+            <div className="glass flex min-w-[260px] flex-[0_1_360px] animate-rise flex-col gap-3 p-5">
+                <p className="label-mono">Só compartilhar a tela</p>
+                <p className="text-[13px] text-ink-soft">Uma sala por código, sem servidor: quem tiver o código assiste.</p>
+                <button className="btn-primary text-[13.5px]" type="button" onClick={() => void hub.roomByCode()}>Criar ou entrar com código</button>
+
+                {recentRooms.length > 0 && (
+                    <>
+                        <p className="label-mono mt-1">Últimas salas acessadas</p>
+                        <div className="flex flex-wrap gap-2">
+                            {recentRooms.map(code => (
+                                <button key={code} className="btn-ghost px-3 py-1.5 font-mono text-[12.5px]" type="button" onClick={() => void app.openRoom(code)}>{code}</button>
+                            ))}
+                        </div>
+                    </>
+                )}
+            </div>
 
             <div className="glass flex min-w-[280px] flex-1 animate-rise flex-col gap-2 p-5">
                 <p className="label-mono mb-1">Últimas salas</p>

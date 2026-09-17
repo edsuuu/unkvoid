@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Enums\PermissionEnum;
 use App\Events\VoiceStateUpdated;
 use App\Models\ChannelAccess;
+use App\Models\GuestAccess;
 use App\Models\Server;
 use App\Models\User;
 use Illuminate\Support\Facades\Event;
@@ -208,4 +209,39 @@ it('acesso aberto há mais de um dia é fechado quando outro abre', function ():
     $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$voice->id}/voice/token")->assertOk();
 
     expect($stale->refresh()->left_at)->not->toBeNull();
+});
+
+it('o visitante da sala por código entra na auditoria com nome, sala e IP, sem avisar canal nenhum', function (): void {
+    Event::fake([VoiceStateUpdated::class]);
+
+    $joined = ['event' => 'joined', 'room' => 'sala-da-tela', 'sub' => 'guest:4f1c2b9e-0000-4000-8000-000000000001', 'name' => 'Visitante', 'ip' => '198.51.100.7', 'at' => time()];
+
+    $this->withHeaders(sfuHeaders($joined))->postJson('/api/sfu/events', $joined)->assertNoContent();
+
+    $access = GuestAccess::query()->sole();
+
+    expect($access->room)->toBe('sala-da-tela')
+        ->and($access->install_id)->toBe('4f1c2b9e-0000-4000-8000-000000000001')
+        ->and($access->name)->toBe('Visitante')
+        ->and($access->ip)->toBe('198.51.100.7')
+        ->and($access->left_at)->toBeNull();
+
+    $left = [...$joined, 'event' => 'left', 'at' => time() + 90];
+
+    $this->withHeaders(sfuHeaders($left))->postJson('/api/sfu/events', $left)->assertNoContent();
+
+    expect(GuestAccess::query()->whereNull('left_at')->count())->toBe(0)
+        ->and(ChannelAccess::query()->count())->toBe(0);
+
+    Event::assertNotDispatched(VoiceStateUpdated::class);
+});
+
+it('o webhook recusa visitante com sala ou instalação fora do formato', function (): void {
+    foreach ([['room' => 'sala com espaço', 'sub' => 'guest:abc'], ['room' => 'sala-da-tela', 'sub' => 'guest:<script>'], ['room' => 'sala-da-tela', 'sub' => 'guest:'.str_repeat('a', 65)]] as $invalid) {
+        $body = ['event' => 'joined', ...$invalid, 'name' => 'Visitante', 'ip' => '198.51.100.7', 'at' => time()];
+
+        $this->withHeaders(sfuHeaders($body))->postJson('/api/sfu/events', $body)->assertUnprocessable();
+    }
+
+    $this->assertDatabaseCount('guest_accesses', 0);
 });

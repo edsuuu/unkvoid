@@ -6,6 +6,7 @@ namespace App\Livewire\Admin\Audit;
 
 use App\Models\ChannelAccess;
 use App\Models\ChannelAudit;
+use App\Models\GuestAccess;
 use App\Models\Server;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Collection;
@@ -29,6 +30,8 @@ final class Index extends Component
 
     public string $email = '';
 
+    public string $search = '';
+
     public string $from = '';
 
     public string $until = '';
@@ -37,7 +40,7 @@ final class Index extends Component
 
     public function showTab(string $tab): void
     {
-        $this->tab = in_array($tab, ['accesses', 'changes'], true) ? $tab : 'accesses';
+        $this->tab = in_array($tab, ['accesses', 'guests', 'changes'], true) ? $tab : 'accesses';
     }
 
     public function loadMore(): void
@@ -53,16 +56,17 @@ final class Index extends Component
             $servers[$server->id] = $server->name;
         }
 
-        $isAccesses = $this->tab !== 'changes';
-        $accesses = $isAccesses ? $this->accesses() : [];
-        $changes = $isAccesses ? [] : $this->changes();
+        $rows = match ($this->tab) {
+            'guests' => $this->guests(),
+            'changes' => $this->changes(),
+            default => $this->accesses(),
+        };
 
         return view('livewire.admin.audit.index', [
             'servers' => $servers,
-            'isAccesses' => $isAccesses,
-            'accesses' => $accesses,
-            'changes' => $changes,
-            'canLoadMore' => count($isAccesses ? $accesses : $changes) === $this->limit,
+            'current' => in_array($this->tab, ['guests', 'changes'], true) ? $this->tab : 'accesses',
+            'rows' => $rows,
+            'canLoadMore' => count($rows) === $this->limit,
         ]);
     }
 
@@ -103,6 +107,51 @@ final class Index extends Component
                 'ip' => $access->ip,
                 'sfuIp' => $access->sfu_ip,
                 'userAgent' => $access->user_agent,
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Quem entrou numa sala por código sem conta. Sem e-mail para filtrar: a busca olha o
+     * nome, a sala, o IP e o id da instalação, que é o que liga as visitas da mesma máquina.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function guests(): array
+    {
+        $query = GuestAccess::query()->latest('joined_at')->orderByDesc('id')->limit($this->limit);
+        $search = mb_trim($this->search);
+
+        if ($search !== '') {
+            $query->where(fn ($guest) => $guest
+                ->where('name', 'like', '%'.$search.'%')
+                ->orWhere('room', 'like', '%'.$search.'%')
+                ->orWhere('ip', 'like', '%'.$search.'%')
+                ->orWhere('install_id', 'like', '%'.$search.'%'));
+        }
+
+        if ($this->from !== '') {
+            $query->where('joined_at', '>=', $this->from.' 00:00:00');
+        }
+
+        if ($this->until !== '') {
+            $query->where('joined_at', '<=', $this->until.' 23:59:59');
+        }
+
+        $rows = [];
+
+        foreach ($query->get() as $access) {
+            $rows[] = [
+                'id' => $access->id,
+                'joinedAt' => $access->joined_at->setTimezone(self::TIMEZONE)->format('d/m/Y H:i:s'),
+                'leftAt' => $access->left_at?->setTimezone(self::TIMEZONE)->format('d/m/Y H:i:s'),
+                'open' => is_null($access->left_at),
+                'name' => $access->name,
+                'room' => $access->room,
+                'ip' => $access->ip,
+                'installId' => $access->install_id,
             ];
         }
 
