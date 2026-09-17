@@ -105,6 +105,7 @@ export class Media {
     awayTimer: number | null = null;
     idleTimer: number | null = null;
     warnedNoWebRTC = false;
+    tearingDown: Promise<void> = Promise.resolve();
     readonly kickedPeers = new Set<string>();
     stageVisible = true;
     readonly store: Store<MediaState>;
@@ -167,6 +168,7 @@ export class Media {
     }
 
     async enterRoom(sfu: SfuClient, identity: IdentitySource, alongside: (joined: JoinResponse) => unknown = () => null): Promise<JoinResponse> {
+        await this.tearingDown;
         this.attachSfu(sfu);
         this.store.set({ connecting: true });
 
@@ -208,9 +210,17 @@ export class Media {
         sfu.on('reconnecting', detail => {
             this.app.log('sfu.reconnecting', detail);
             this.store.set({ reconnecting: true });
+
+            if (detail.attempt === 1) {
+                void this.dropIfOffline(sfu);
+            }
         });
         sfu.on('reconnected', detail => void this.afterReconnect(detail));
         sfu.on('closed', () => {
+            if (this.sfu !== sfu) {
+                return;
+            }
+
             this.store.set({ reconnecting: false });
             this.app.fail('a conexão caiu e não voltou. Saia e entre de novo.');
 
@@ -220,6 +230,7 @@ export class Media {
         });
         sfu.on('newProducer', detail => {
             if (detail.source === 'screen') {
+                this.app.sounds.streamStarted();
                 this.app.toast(`${sfu.peers.get(detail.peerId)?.name ?? 'alguém'} começou a transmitir`);
             }
 
@@ -235,13 +246,20 @@ export class Media {
             this.app.toast(`${detail.name} foi removido`);
         });
         sfu.on('kicked', detail => {
+            if (this.sfu !== sfu) {
+                return;
+            }
+
             this.app.fail(detail?.reason ?? 'você foi removido');
 
             if (this.app.hub.voice.channel) {
                 void this.app.hub.voice.leave();
             }
         });
-        sfu.on('peerJoined', detail => this.app.toast(`${detail.name} entrou`));
+        sfu.on('peerJoined', detail => {
+            this.app.sounds.joined();
+            this.app.toast(`${detail.name} entrou`);
+        });
         sfu.on('peerLeft', detail => {
             if (! this.kickedPeers.delete(detail.peerId) && detail.name) {
                 this.app.toast(`${detail.name} saiu`);
@@ -249,13 +267,29 @@ export class Media {
 
             this.forgetPeer(detail.peerId);
         });
-        sfu.on('replaced', () => this.app.fail('esta sala foi aberta em outra janela com a mesma conta.'));
+        sfu.on('replaced', () => {
+            if (this.sfu === sfu) {
+                this.app.fail('você entrou de novo por outra conexão, e esta foi encerrada.');
+            }
+        });
         sfu.on('producerDead', detail => void this.app.sharing.died(detail));
-        sfu.on('producerClosed', detail => this.forgetProducer(detail));
+        sfu.on('producerClosed', detail => {
+            if (detail.source === 'screen') {
+                this.app.sounds.streamStopped();
+            }
+
+            this.forgetProducer(detail);
+        });
         sfu.on('consumerClosed', detail => {
             this.consumerSources.delete(detail?.consumerId);
             this.forgetProducer(detail);
         });
+    }
+
+    async dropIfOffline(sfu: SfuClient): Promise<void> {
+        if (this.sfu === sfu && ! await this.app.reachable()) {
+            await this.app.dropConnection();
+        }
     }
 
     forgetPeer(peerId: string): void {
@@ -1052,7 +1086,15 @@ export class Media {
         this.idleTimer = setTimeout(() => this.store.set({ idle: true }), Media.IDLE_MS);
     }
 
-    async tearDown(): Promise<void> {
+    tearDown(): Promise<void> {
+        this.tearingDown = this.tearingDown
+            .then(() => this.release())
+            .catch((failure: unknown) => this.app.log('media.teardown.error', { message: Failure.message(failure) }));
+
+        return this.tearingDown;
+    }
+
+    async release(): Promise<void> {
         this.sfu?.leaveRoom();
         this.sfu?.disconnect();
         await this.app.sharing.stop();

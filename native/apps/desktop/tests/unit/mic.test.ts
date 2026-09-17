@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { Mic } from '../../ui/core/Mic.ts';
 
@@ -28,5 +28,41 @@ describe('detecção de voz: o nível que decide se o microfone abre', () => {
 
         expect(Mic.levelOf(tone(0.001)), 'ruído de fundo não pode abrir o microfone').toBeLessThan(DEFAULT_SENSITIVITY);
         expect(Mic.levelOf(tone(0.15)), 'fala normal precisa abrir o microfone').toBeGreaterThan(DEFAULT_SENSITIVITY);
+    });
+});
+
+describe('detecção de voz: o que o detector escuta', () => {
+    it('escuta uma cópia da faixa, que o portão fechado não silencia', () => {
+        const probe = { enabled: false, stop: vi.fn() };
+        const track = { enabled: false, clone: vi.fn(() => probe) } as unknown as MediaStreamTrack;
+        const connected: unknown[] = [];
+
+        vi.stubGlobal('MediaStream', class { constructor(readonly tracks: unknown[]) {} });
+        vi.stubGlobal('AudioContext', class {
+            state = 'running';
+            createAnalyser() {
+                return { fftSize: 0, disconnect: vi.fn(), getFloatTimeDomainData: vi.fn() };
+            }
+            createMediaStreamSource(stream: { tracks: unknown[] }) {
+                connected.push(...stream.tracks);
+
+                return { connect: vi.fn(), disconnect: vi.fn() };
+            }
+            close() {
+                return Promise.resolve();
+            }
+        });
+
+        const mic = new Mic();
+
+        mic.watch(track, 35, () => undefined);
+
+        expect(connected, 'a faixa desligada pelo portão só entrega silêncio, e o portão nunca abriria').toEqual([probe]);
+        expect(probe.enabled).toBe(true);
+
+        mic.stop();
+        vi.unstubAllGlobals();
+
+        expect(probe.stop).toHaveBeenCalled();
     });
 });

@@ -71,6 +71,7 @@ export class Voice {
     cameraTrack: MediaStreamTrack | null = null;
     can: string[] = [];
     joinTicket = 0;
+    leaving: Promise<void> = Promise.resolve();
     gateOpen = true;
     listening = false;
     registeredShortcuts = new Set<string>();
@@ -201,6 +202,8 @@ export class Voice {
     }
 
     async join(channel: Channel): Promise<void> {
+        await this.leaving;
+
         if (this.channel?.id === channel.id) {
             return;
         }
@@ -229,8 +232,8 @@ export class Voice {
                 }
             });
             sfu.on('serverMuted', detail => void this.applyServerMute(detail.muted));
-            sfu.on('kicked', () => void this.leave());
-            sfu.on('replaced', () => void this.leave());
+            sfu.on('kicked', () => this.leaveIfCurrent(sfu));
+            sfu.on('replaced', () => this.leaveIfCurrent(sfu));
             sfu.on('peersChanged', () => this.hub.syncVoiceSources());
 
             await this.app.media.enterRoom(sfu, () => this.identity(channel), async (joined: JoinResponse) => {
@@ -278,15 +281,27 @@ export class Voice {
         }
     }
 
-    async leave(): Promise<void> {
+    leaveIfCurrent(sfu: SfuClient): void {
+        if (this.app.media.sfu === sfu) {
+            void this.leave();
+        }
+    }
+
+    leave(): Promise<void> {
         const channel = this.channel;
 
         if (! channel) {
-            return;
+            return this.leaving;
         }
 
         this.channel = null;
         this.joinTicket += 1;
+        this.leaving = this.release(channel).catch((failure: unknown) => this.app.log('voice.leave.error', { channel: channel.id, message: Failure.message(failure) }));
+
+        return this.leaving;
+    }
+
+    async release(channel: Channel): Promise<void> {
         this.app.sounds.left();
         this.app.log('voice.leave', { channel: channel.id });
         await this.stopCamera().catch((failure: unknown) => this.app.log('voice.camera.stop.error', { message: Failure.message(failure) }));
