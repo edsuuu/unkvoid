@@ -25,6 +25,9 @@ module.exports = {
             cwd: '/var/www/projects/sfu',
             instances: 1,
             autorestart: true,
+            // Data e hora em cada linha do log: é o que diz quando alguém entrou, de que IP,
+            // e em que ordem as coisas quebraram.
+            time: true,
             max_memory_restart: '600M',
             env: {
                 NODE_ENV: 'production',
