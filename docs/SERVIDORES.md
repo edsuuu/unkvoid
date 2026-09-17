@@ -55,8 +55,8 @@ Cálculo efetivo para um membro num canal (igual ao Discord):
 ```
 
 - `room` é o ULID do canal **em minúsculas** (26 chars de `a-z0-9`; passa no regex atual).
-- `sub` é `user:<id>`. Não existe `join` sem token: a sala por código também exige conta
-  (ver "Quem está logado entra na sala por código" abaixo).
+- `sub` é `user:<id>`. A sala anônima continua entrando sem token como `guest:<installId>`
+  e o SFU dá a ela `can: ["speak", "stream", "video"]`.
 - `exp` = agora + 60 s. O app pede um token novo **antes de cada `join`**, inclusive nas
   reconexões.
 - `can` substitui o `owner: boolean` de hoje. O SFU recusa (403) `produce`/`producePlain`
@@ -96,20 +96,23 @@ os bits do canal) para decidir se liga o mic, a câmera e a tela: mutado pelo se
 chega sem `speak`. O SFU também manda `serverMuted { muted }` para a própria pessoa
 quando o Laravel chama `/mute`, e recusa `resumeProducer` do mic enquanto durar.
 
-**Uma conta, uma sessão no SFU inteiro.** O `join` derruba qualquer outra sessão daquela
-conta, na mesma sala ou em outra, e ela recebe `replaced { reason }` e perde o socket com o
-código 4002. A sala vê o `peerLeft` e o Laravel o `left` da sala antiga. O app ignora
-`replaced`, `kicked` e `closed` de um `SfuClient` que já não é o atual.
+**Uma conta, uma sessão no SFU inteiro.** O `join` com token (`sub` que não começa com
+`guest:`) derruba qualquer outra sessão daquela conta, na mesma sala ou em outra, e ela
+recebe `replaced { reason }` e perde o socket com o código 4002. A sala vê o `peerLeft` e
+o Laravel o `left` da sala antiga. O visitante (`guest:`) só é substituído pela
+`resumeKey`: o `installId` é escolhido pelo próprio app e a sala inteira o recebe no
+`peerJoined`, então valer como identidade deixaria qualquer um derrubar qualquer um. O
+app ignora `replaced`, `kicked` e `closed` de um `SfuClient` que já não é o atual.
 
 Quem está logado entra na sala por código **com token**: `POST /api/rooms/{code}/token`
 (`auth:sanctum`, código de 3 a 32 caracteres e nunca 26) devolve o mesmo
 `{ token, url, expires_in }` da voz, com `room` = o código, `sub` = a conta e
 `can: ["speak", "stream", "video"]`. É assim que a regra de uma sessão por conta vale
-também ali: abrir a mesma chamada em outro dispositivo derruba o anterior.
+também ali: abrir a mesma chamada em outro dispositivo derruba o anterior. O `join` sem
+token fica só para quem não tem conta.
 
-Sem conta não se entra em sala nenhuma. O `join` sem token — inclusive o
-`{ room, name, installId }` que os apps antigos ainda mandam — é recusado com o mesmo
-`field token is required` de um `join` vazio.
+O `join` sem token (sala anônima) recusa sala de 26 caracteres: é o formato do ULID de
+canal, e sem isso qualquer um entraria num canal de voz sem passar pelo Laravel.
 
 HTTP assinado (cabeçalhos `x-unkvoid-timestamp` e `x-unkvoid-signature`, assinatura
 sobre `ts\nMÉTODO\ncaminho\ncorpo`, janela de 300 s — como o `kick` de hoje):
@@ -124,11 +127,11 @@ sobre `ts\nMÉTODO\ncaminho\ncorpo`, janela de 300 s — como o `kick` de hoje):
 producers de uma mesma porta por SSRC, sem adivinhar pelo primeiro pacote.
 
 Webhook do SFU para o Laravel, **fora do caminho do `join`**, fire-and-forget, para conta
-(`user:`), em canal de voz ou em sala por código (`room` com o código de 3 a 32 caracteres).
-Em sala por código (qualquer `room` que não tenha 26 caracteres) o aviso só vira linha
-em `guest_accesses` (nome, sala, IP, entrada e saída; `install_id` é `user:<id>`), na aba
-"Visitantes" de `/admin/auditoria`: não há canal nem conta a avisar. As linhas de antes do
-fim do uso sem login guardam o id da instalação de quem entrou sem conta.
+(`user:`) e visitante da sala por código (`guest:<installId>`, `room` com o código de 3 a
+32 caracteres). Em sala por código (qualquer `room` que não tenha 26 caracteres) o aviso só vira linha
+em `guest_accesses` (nome, sala, IP, entrada e saída; `install_id` é o id da instalação do
+visitante, ou `user:<id>` de quem entrou logado), na aba "Visitantes" de `/admin/auditoria`: não há canal nem conta a
+avisar. O SFU troca `installId` fora de `[A-Za-z0-9-]{1,64}` por um UUID sorteado.
 `POST {SFU_LARAVEL_URL}/api/sfu/events` com os mesmos cabeçalhos assinados:
 
 ```json
@@ -410,18 +413,20 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 ## App — o que aparece
 
 - Duas abas no topo: **Transmissão** (tudo o que está abaixo) e **Clipes**.
-- Entrada sem conta: só "Entrar" (e-mail/senha ou Google pelo `/oauth2/app?state=`, de
-  volta pelo `unkvoid://`) e "Criar conta" (e-mail e senha). Não há uso sem login. Token do
-  Sanctum em `localStorage` (`unkvoid:token`). Com token válido (`GET /api/me`), abre o modo
-  servidor.
+- Entrada: a tela de código continua; ao lado, "Entrar" (e-mail/senha ou Google pelo
+  `/oauth2/app?state=`, de volta pelo `unkvoid://`) e "Criar conta". Token do Sanctum em `localStorage`
+  (`unkvoid:token`). Com token válido (`GET /api/me`), abre o modo servidor. Criar conta pelo
+  app é só e-mail e senha.
 - Com `nickname_confirmed: false`, um modal que não fecha pede o apelido (já preenchido com o
   automático) a cada abertura do app, até o `PATCH /api/me` dar certo. Dá para sair da conta
   por ele.
+- Nos formulários de entrar e criar conta, o campo recusado fica com a borda vermelha e a
+  mensagem embaixo dele; o que não é de campo (credencial errada, 429) fica na linha geral.
 - Logado e sem servidor aberto, o centro mostra **Criar sala** e **Últimas salas**. Criar
   sala é `POST /api/servers { name }` (servidor com `#geral` e `Geral` de voz): abre o
   servidor, **não** entra na voz, e mostra o código de convite para mandar. Últimas salas
   é o `GET /api/servers`: abrir uma mostra quem está em cada voz, e entrar é um clique. A
-  sala por código continua, logado: "Criar ou entrar com código".
+  sala por código sem login continua como está.
 - Entrar numa voz liga o microfone **mutado**; desmutar é da pessoa.
 - Modo servidor: trilho de servidores | canais (texto e voz, quem está em cada voz) |
   centro (chat ou palco) | membros com cargos. Barra de voz embaixo: mutar, ensurdecer,

@@ -1,5 +1,13 @@
+import { randomUUID } from 'node:crypto';
+
 import { Request } from './Request.js';
+import { ValidationException } from '../../Exceptions/ApiException.js';
 import { Signature, type JoinClaims } from '../../Services/Signature.js';
+
+const LEGACY_CODE = /^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/;
+
+/** O app manda um UUID. Qualquer outra coisa é sorteada aqui: ela vai para a auditoria. */
+const INSTALL_ID = /^[A-Za-z0-9-]{1,64}$/;
 
 /**
  * Entrar na sala é apresentar o token que o Laravel assinou. Quem pode entrar, com que
@@ -10,7 +18,34 @@ export class JoinRequest extends Request {
     declare private claims: JoinClaims;
 
     protected override validate(): void {
-        this.claims = Signature.claims(this.string('token'));
+        if (typeof this.data.token === 'string') {
+            this.claims = Signature.claims(this.data.token);
+
+            return;
+        }
+
+        // A sala por código sem conta é produto: quem entra assim é visitante, com tudo
+        // liberado na sala que o código nomeia.
+        const room = this.string('room');
+        const name = this.string('name').trim();
+
+        // 26 caracteres é um ULID: canal de servidor, que só entra com token assinado.
+        if (room.length === 26 || !LEGACY_CODE.test(room) || name === '' || name.length > 40) {
+            throw new ValidationException('field token is required');
+        }
+
+        const installId =
+            typeof this.data.installId === 'string' && INSTALL_ID.test(this.data.installId)
+                ? this.data.installId
+                : randomUUID();
+
+        this.claims = {
+            room,
+            sub: `guest:${installId}`,
+            name,
+            exp: 0,
+            can: ['speak', 'stream', 'video'],
+        };
     }
 
     public roomCode(): string {
