@@ -93,7 +93,7 @@ pub struct MediaFoundationEncoder {
     bridge: Option<Bridge>,
 
     /// O teto de fps que a captura do Windows 10 não impõe — ver `FramePacer`.
-    pacer: crate::FramePacer,
+    pacer: FramePacer,
 
     /// Pedido de quadro-chave esperando a próxima amostra.
     ///
@@ -246,7 +246,7 @@ impl MediaFoundationEncoder {
                 height: config.height,
                 frame_rate: config.frame_rate,
                 bridge: None,
-                pacer: crate::FramePacer::new(config.frame_rate),
+                pacer: FramePacer::new(config.frame_rate),
                 force_keyframe: false,
                 ready: VecDeque::new(),
                 credits: 0,

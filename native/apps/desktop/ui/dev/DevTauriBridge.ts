@@ -71,7 +71,7 @@ export class DevTauriBridge {
                 return null;
             },
             google_login: () => {
-                throw new Error('sem o Tauri não há porta local para o Google devolver o token');
+                throw new Error('sem o Tauri o Google não tem como voltar para o app');
             },
         };
 

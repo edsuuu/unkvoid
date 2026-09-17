@@ -30,7 +30,9 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 # e o plugin é quem escreve isso no bundle do macOS e no instalador do Windows.
 tauri-plugin-deep-link = "2.4.10"
 tauri-plugin-process = "2.3.1"
-tauri-plugin-single-instance = "2.4.4"
+# Com `deep-link`: no Windows e no Linux o `unkvoid://` abre um segundo processo, e só
+# assim o endereço chega ao `on_open_url` da janela que já estava aberta.
+tauri-plugin-single-instance = { version = "2.4.4", features = ["deep-link"] }
 tauri-plugin-updater = "2.11.0"
 
 tokio.workspace = true
