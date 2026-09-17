@@ -476,13 +476,9 @@ export class Hub {
         this.servers = [];
         this.publish({ home: true, nicknameError: '' });
 
-        if (this.app.store.state.screen === 'room') {
-            await this.app.leave();
-
-            return;
+        if (this.app.store.state.screen !== 'room') {
+            this.app.showEntry();
         }
-
-        this.app.showEntry();
     }
 
     async roomByCode(): Promise<void> {

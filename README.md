@@ -32,9 +32,9 @@ De quebra: sem barra do Chrome por cima, e o áudio do sistema entra junto.
 | `sfu/` | o relé de mídia (Node + mediasoup) | na VPS |
 | `web/` | o site, as contas, os servidores com canais, o chat e a auditoria (Laravel) | na VPS |
 
-A sala por código continua sem banco, mas exige conta: o Laravel só assina o token da
-sala, o app fala com o SFU por um WebSocket só, e o `/health` existe para ele saber que o
-servidor está de pé antes de deixar alguém entrar. O modo com conta (servidores, canais de texto e voz, cargos,
+A sala anônima por código continua sem banco e sem conta: o app fala com o SFU por um
+WebSocket só, e o `/health` existe para ele saber que o servidor está de pé antes de
+deixar alguém entrar. O modo com conta (servidores, canais de texto e voz, cargos,
 câmera) é o Laravel quem manda: ele decide quem entra em qual canal e assina o token
 que o SFU confere. O contrato entre as três peças está em [docs/SERVIDORES.md](docs/SERVIDORES.md).
 

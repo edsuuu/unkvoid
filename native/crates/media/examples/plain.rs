@@ -6,10 +6,9 @@
 //! perguntar a ele, então isto entra numa sala, declara a transmissão, manda H.264 de
 //! mentira e espera o servidor dizer que está recebendo.
 //!
-//! cargo run -p media --example plain -- <ws-url> <token>
+//! cargo run -p media --example plain -- <ws-url> <sala>
 //!
-//! O SFU não aceita `join` sem token: o token é o que o `POST /api/rooms/{code}/token`
-//! devolve para uma conta logada, e vale 60 s.
+//! A sala é um código de 12 caracteres a-z0-9, o mesmo que o app sorteia.
 
 use std::time::Duration;
 
@@ -35,8 +34,8 @@ fn frame(keyframe: bool, size: usize) -> EncodedFrame {
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let url = args.next().context("usage: plain <ws-url> <token>")?;
-    let token = args.next().context("usage: plain <ws-url> <token>")?;
+    let url = args.next().context("usage: plain <ws-url> <sala>")?;
+    let room = args.next().context("usage: plain <ws-url> <sala>")?;
 
     let (mut socket, _) = tokio_tungstenite::connect_async(&url)
         .await
@@ -55,7 +54,7 @@ async fn main() -> Result<()> {
     };
 
     socket
-        .send(call("join", json!({ "token": token })))
+        .send(call("join", json!({ "room": room, "name": "plain-check" })))
         .await?;
 
     let mut sender: Option<PlainSender> = None;
