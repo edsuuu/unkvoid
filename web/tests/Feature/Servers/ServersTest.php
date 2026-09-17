@@ -98,7 +98,9 @@ it('entra pelo convite, e quem foi banido não entra', function (): void {
     expect($server->members()->where('user_id', $guest->id)->exists())->toBeFalse();
 
     $this->actingAs($guest, 'sanctum')->postJson("/api/invites/{$server->invite_code}")->assertForbidden();
-    $this->actingAs($guest, 'sanctum')->postJson('/api/invites/nao-existe')->assertNotFound();
+    $this->actingAs($guest, 'sanctum')->postJson('/api/invites/nao-existe')
+        ->assertNotFound()
+        ->assertJsonPath('message', 'Esse convite não existe. Confira o código.');
 
     $this->actingAs($owner, 'sanctum')->getJson("/api/servers/{$server->id}/bans")->assertOk()->assertJsonCount(1, 'data');
     $this->actingAs($owner, 'sanctum')->deleteJson("/api/servers/{$server->id}/bans/{$guest->id}")->assertNoContent();
@@ -519,4 +521,12 @@ it('posição fora do alcance da coluna é recusada, e apagar o servidor avisa q
     $this->actingAs($owner, 'sanctum')->deleteJson("/api/servers/{$server->id}")->assertSuccessful();
 
     Event::assertDispatched(ServerUpdated::class);
+});
+
+it('registro que não existe responde 404 sem o nome do model', function (): void {
+    $user = User::factory()->create();
+
+    $this->actingAs($user, 'sanctum')->getJson('/api/servers/999999')
+        ->assertNotFound()
+        ->assertExactJson(['message' => 'Não encontrado.']);
 });
