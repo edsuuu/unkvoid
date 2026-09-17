@@ -27,9 +27,10 @@ atualize esse arquivo na mesma tarefa — as três peças o leem como lei.
 
 ## Os dois modos, e por que os dois existem
 
-**Sala por código (sem conta).** Nome, "criar uma sala", um código de 12 caracteres. O código
-**é** a sala: não existe em banco nenhum e some quando o último sai. Nada de login, nada de
-Laravel no caminho. Isso é produto, não legado: não degrade esse caminho ao mexer no outro.
+**Sala por código.** "Criar uma sala", um código de 12 caracteres. O código **é** a sala: não
+existe em banco nenhum e some quando o último sai. Desde 17/09/2026 exige conta (decisão do
+dono): o Laravel só assina o token de 60 s da sala, e ela continua fora do banco. Isso é
+produto, não legado: não degrade esse caminho ao mexer no outro.
 
 **Servidores (com conta).** Servidor, cargos com bits de permissão, canais de texto e voz,
 sobrescritas por cargo e por membro (é assim que se oculta canal), convite, expulsar, banir,
