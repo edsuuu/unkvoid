@@ -490,6 +490,28 @@ describe('modo servidor com a API de mentira', () => {
         expect(hub.store.state.nicknameError).toBe('');
     });
 
+    it('a foto de perfil: acima de 2 MB nem sai do app, e a API é quem diz qual foto vale depois', async () => {
+        hub.user = { id: 1, name: 'Edsu' };
+        hub.publish();
+        calls.length = 0;
+        toasts.length = 0;
+
+        await hub.uploadAvatar(new File([new Uint8Array(2 * 1024 * 1024 + 1)], 'grande.png', { type: 'image/png' }));
+        expect(calls, 'o teto é conferido antes da rede').toEqual([]);
+        expect(toasts.at(-1)).toBe('a foto precisa ter menos de 2 MB');
+
+        responses.set('POST /api/me/avatar', { id: 1, name: 'Edsu', avatar_url: 'https://bucket/eu.png', avatar_uploaded: true });
+        await hub.uploadAvatar(new File([new Uint8Array(16)], 'eu.png', { type: 'image/png' }));
+        expect(calls.at(-1)?.path).toBe('/api/me/avatar');
+        expect(hub.store.state.user?.avatar_url).toBe('https://bucket/eu.png');
+        expect(hub.store.state.user?.avatar_uploaded).toBe(true);
+
+        responses.set('DELETE /api/me/avatar', { id: 1, name: 'Edsu', avatar_url: 'https://google/eu.png', avatar_uploaded: false });
+        await hub.removeAvatar();
+        expect(hub.store.state.user?.avatar_url, 'sem a foto enviada volta a valer a do Google').toBe('https://google/eu.png');
+        expect(hub.store.state.user?.avatar_uploaded).toBe(false);
+    });
+
     it('no canal em que estou, a lista da voz é a do SFU: quem foi expulso sai na hora', () => {
         voice.channel = hub.tree!.channels[1];
         app.media.sfu = {

@@ -108,6 +108,8 @@ export class Hub {
     static readonly RAIL_KEY = 'unkvoid:rail';
     static readonly MEMBERS_KEY = 'unkvoid:members';
 
+    static readonly AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+
     readonly app: App;
     readonly server: string;
     readonly api: ApiClient;
@@ -336,6 +338,34 @@ export class Hub {
         }
 
         this.publish({ nicknameBusy: false });
+    }
+
+    async uploadAvatar(file: File): Promise<void> {
+        if (file.size > Hub.AVATAR_MAX_BYTES) {
+            this.app.toast('a foto precisa ter menos de 2 MB', true);
+
+            return;
+        }
+
+        const updated = await this.attempt(() => this.api.upload<User>('/api/me/avatar', 'avatar', file));
+
+        if (! updated) {
+            return;
+        }
+
+        this.user = updated;
+        this.publish();
+    }
+
+    async removeAvatar(): Promise<void> {
+        const updated = await this.attempt(() => this.api.delete<User>('/api/me/avatar'));
+
+        if (! updated) {
+            return;
+        }
+
+        this.user = updated;
+        this.publish();
     }
 
     clearNicknameError(): void {

@@ -80,9 +80,12 @@ o dono. O histórico das sessões saiu do repositório e continua no git.
   não foi executada; exige force-push e re-clone.
 - **Documentação velha:** `BUILD-MACOS.md` e `AUTO-UPDATE.md` ainda citam `discord.unkvoid.com` e
   a publicação pelo GitHub Releases.
-- **Fase 2 do app** — entregue em 16/09/2026, menos: imagem no chat, chat dentro da voz e foto de
-  perfil da pessoa (o `avatar_url` já aparece onde existe, mas não há upload). Mensagens diretas,
-  amigos, ícone do servidor, API da auditoria e não lidas estão de pé.
+- **Fase 2 do app** — entregue em 16/09/2026, menos: imagem no chat e chat dentro da voz.
+  Mensagens diretas, amigos, ícone do servidor, API da auditoria, não lidas e foto de perfil
+  estão de pé.
+- **Imagem no chat** (17/09/2026): a tabela `files` e o `POST /api/me/avatar` já deixaram o
+  caminho de upload pronto. Falta a pivô que liga mensagem e arquivo (mais de uma imagem por
+  mensagem) — é migration, e o esquema é decisão do dono.
 
 ### Achados da noite de 16/09/2026
 
