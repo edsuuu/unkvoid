@@ -485,6 +485,11 @@ export class App {
         await this.media.tearDown().catch((failure: unknown) => this.log('room.leave.error', { message: Failure.message(failure) }));
     }
 
+    async goHome(): Promise<void> {
+        await this.leave();
+        await this.hub.open();
+    }
+
     fail(message: string): void {
         this.log('ui.error', { message });
 
