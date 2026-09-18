@@ -12,8 +12,10 @@ use App\Exceptions\ForbiddenException;
 use App\Models\Concerns\LogsFailedWrites;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Override;
 use OwenIt\Auditing\Auditable as AuditableTrait;
@@ -32,6 +34,7 @@ use Throwable;
  * @property-read Channel $channel
  * @property-read User $user
  * @property-read ?Message $replyTo
+ * @property-read Collection<int, File> $files
  */
 #[Fillable(['channel_id', 'user_id', 'type', 'reply_to_id', 'body', 'edited_at'])]
 final class Message extends Model implements Auditable
@@ -61,6 +64,16 @@ final class Message extends Model implements Auditable
     public function replyTo(): BelongsTo
     {
         return $this->belongsTo(self::class, 'reply_to_id');
+    }
+
+    /**
+     * As imagens da mensagem, na ordem em que subiram.
+     *
+     * @return BelongsToMany<File, $this>
+     */
+    public function files(): BelongsToMany
+    {
+        return $this->belongsToMany(File::class, 'message_files')->orderBy('files.id');
     }
 
     /**

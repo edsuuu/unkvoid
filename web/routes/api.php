@@ -47,6 +47,8 @@ Route::name('api.')->group(function (): void {
     Route::middleware('auth:sanctum')->group(function (): void {
         Route::get('/me', [MeController::class, 'show'])->name('me');
         Route::patch('/me', [MeController::class, 'update'])->middleware('throttle:20,1')->name('me.update');
+        Route::post('/me/avatar', [MeController::class, 'storeAvatar'])->middleware('throttle:20,1')->name('me.avatar.store');
+        Route::delete('/me/avatar', [MeController::class, 'destroyAvatar'])->name('me.avatar.destroy');
 
         Route::post('/rooms/{code}/token', [RoomController::class, 'token'])
             ->where('code', '[a-z0-9][a-z0-9-]{1,30}[a-z0-9]')

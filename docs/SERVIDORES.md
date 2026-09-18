@@ -162,8 +162,16 @@ Conta:
 |---|---|---|
 | `POST /api/auth/register` (público) | `{ email, password, device }` | `{ token, user }`. O apelido nasce de `User::freeNickname` sobre o e-mail, com `nickname_confirmed: false` |
 | `POST /api/auth/login` (público) | `{ email, password, device }` | `{ token, user }` |
-| `GET /api/me` | — | `{ id, name, email, avatar_url, admin, nickname_confirmed }` |
+| `GET /api/me` | — | `{ id, name, email, avatar_url, avatar_uploaded, admin, nickname_confirmed }` |
 | `PATCH /api/me` | `{ name }` (3 a 32 caracteres, `[A-Za-z0-9._]`, único; pode repetir o atual) | o mesmo `user`, agora com `nickname_confirmed: true`. Só enquanto `nickname_confirmed` for `false`: depois é 403 |
+| `POST /api/me/avatar` | `multipart`, campo `avatar` (jpeg/png/webp, ≤ 2 MB) | o mesmo `user`, com a foto nova; guarda no bucket privado dos clipes e apaga a foto anterior |
+| `DELETE /api/me/avatar` | — | o mesmo `user` (200, não 204): tirar a foto enviada faz voltar a valer a do Google, e o app precisa do link novo |
+
+`avatar_url` é a foto que a pessoa enviou, pré-assinada e vencendo em 2 h como a miniatura do
+clipe; sem foto enviada é o link permanente do Google, e sem nenhuma das duas vem `null`.
+`avatar_uploaded` diz qual das duas é, e é o que decide se o app mostra "remover a foto". Toda
+imagem enviada vira uma linha em `files` (caminho no bucket, quem enviou, tipo e tamanho) e a
+conta aponta para ela por `avatar_id`.
 
 `nickname_confirmed` é `users.nickname_confirmed_at` não nulo. Nasce nulo no cadastro pelo app
 e na conta nova pelo Google (os dois ganham um apelido automático); nasce preenchido no
