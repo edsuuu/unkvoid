@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gstreamer1.0-plugins-ugly \
         gstreamer1.0-libav \
         gstreamer1.0-x \
+        gstreamer1.0-pipewire \
         gstreamer1.0-pulseaudio \
         xvfb x11-xserver-utils x11-utils x11-apps \
         pulseaudio pulseaudio-utils \

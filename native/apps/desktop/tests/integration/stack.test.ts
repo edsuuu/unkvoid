@@ -147,6 +147,33 @@ describe('integração: os clientes do app contra o Laravel, o Reverb e o SFU no
         expect((await bia.get(`/api/channels/${text.id}/messages`)).some(item => item.id === message.id), 'apagada some do histórico').toBe(false);
     });
 
+    it('mensagem só com imagem sobe em multipart, chega com files pelo Reverb, e o canal de voz também tem chat', async () => {
+        const sent = [];
+        const pixel = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='), char => char.charCodeAt(0));
+        const form = new FormData();
+
+        form.append('images[]', new File([pixel], 'print.png', { type: 'image/png' }));
+        listen(biaEcho.private(`channel.${text.id}`), 'MessageSent', ({ message }) => sent.push(message));
+
+        const message = await ana.post(`/api/channels/${text.id}/messages`, form);
+
+        expect(message.body, 'mensagem só com imagem sai com corpo vazio').toBe('');
+        expect(message.files.map(file => file.mime_type)).toEqual(['image/png']);
+
+        const arrived = await waitFor('MessageSent com a imagem na outra conta', () => sent.find(item => item.id === message.id));
+        const download = await fetch(arrived.files[0].url);
+
+        expect(download.status, 'o link assinado que chegou pelo Reverb abre').toBe(200);
+        expect(new Uint8Array(await download.arrayBuffer())).toEqual(pixel);
+
+        await ana.delete(`/api/messages/${message.id}`);
+        expect((await fetch(arrived.files[0].url)).status, 'apagar a mensagem tira a imagem do bucket').toBe(404);
+
+        const spoken = await ana.post(`/api/channels/${voice.id}/messages`, { body: 'chat da voz' });
+
+        expect((await bia.get(`/api/channels/${voice.id}/messages`)).some(item => item.id === spoken.id), 'o canal de voz guarda mensagem').toBe(true);
+    });
+
     it('a voz pede um token por join, e a outra conta vê chegar pelo SFU e pelo webhook', async () => {
         const voiceStates = [];
         const peerJoined = [];

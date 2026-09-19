@@ -158,9 +158,9 @@ faria o que o `apt upgrade` já faz junto com o resto da máquina.
 Para quem usa, uma vez só:
 
 ```bash
-curl -fsSL https://discord.unkvoid.com/apt/unkvoid.gpg \
+curl -fsSL https://unkvoid.com/apt/unkvoid.gpg \
   | sudo tee /usr/share/keyrings/unkvoid.gpg > /dev/null
-echo "deb [signed-by=/usr/share/keyrings/unkvoid.gpg] https://discord.unkvoid.com/apt ./" \
+echo "deb [signed-by=/usr/share/keyrings/unkvoid.gpg] https://unkvoid.com/apt ./" \
   | sudo tee /etc/apt/sources.list.d/unkvoid.list
 sudo apt update && sudo apt install unkvoid
 ```
@@ -168,15 +168,18 @@ sudo apt update && sudo apt install unkvoid
 Depois disso, versão nova chega com `sudo apt upgrade`, como qualquer outro
 pacote.
 
-Para publicar uma versão, do Mac:
+Publicar é automático: todo push na `main` que mexe em `native/` dispara o
+`build-linux.yml` no runner da própria VPS, que compila dentro de um Debian 12
+(`Dockerfile.linux`), gera o `.deb` e chama o `apt-publish.sh`, que refaz o índice e
+o assina com a GPG do repositório. A chave do auto-update não viaja: o Linux não a
+usa. A versão que sai é a do `tauri.conf.json`, então subir o número faz parte do
+mesmo PR.
+
+À mão, de qualquer máquina com acesso por SSH à VPS, o mesmo build:
 
 ```bash
 make build-vps
 ```
-
-Ele atualiza o clone na VPS, compila lá, gera o `.deb` e chama o
-`apt-publish.sh`, que refaz o índice e o assina com a GPG do repositório. A
-chave do auto-update não viaja: o Linux não a usa.
 
 O build compartilha a máquina com o SFU, então roda com um núcleo de folga e em
 prioridade baixa — alguns minutos a mais, e nenhuma transmissão engasgando no

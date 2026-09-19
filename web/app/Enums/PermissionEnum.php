@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace App\Enums;
 
 /**
- * Os bits de docs/SERVIDORES.md. Mudou aqui, muda no app.
+ * Os bits de docs/CONTRATO.md. Mudou aqui, muda no app.
  */
 enum PermissionEnum: int
 {

@@ -1,10 +1,27 @@
 type Step = { hertz: number; startsAt: number; seconds?: number };
 
+type RoutableContext = AudioContext & { setSinkId?: (deviceId: string) => Promise<void> };
+
 export class Sounds {
     static readonly VOLUME = 0.07;
     static readonly STEP_SECONDS = 0.09;
 
-    private context: AudioContext | null = null;
+    private context: RoutableContext | null = null;
+    private output = '';
+    private onFailure: (failure: unknown) => void = () => undefined;
+
+    onError(handler: (failure: unknown) => void): void {
+        this.onFailure = handler;
+    }
+
+    setOutput(deviceId: string): void {
+        this.output = deviceId;
+        this.route();
+    }
+
+    private route(): void {
+        this.context?.setSinkId?.(this.output).catch((failure: unknown) => this.onFailure(failure));
+    }
 
     joined(): void {
         this.play([{ hertz: 523, startsAt: 0 }, { hertz: 784, startsAt: 0.08 }]);
@@ -73,7 +90,13 @@ export class Sounds {
             return null;
         }
 
-        this.context ??= new AudioContext();
+        if (! this.context) {
+            this.context = new AudioContext();
+
+            if (this.output !== '') {
+                this.route();
+            }
+        }
 
         if (this.context.state === 'suspended') {
             void this.context.resume();

@@ -1,9 +1,8 @@
 # Servidores, canais, voz e chat — o contrato entre as três peças
 
-> Escrito em 11/09/2026. É a referência que Laravel (`web/`), SFU (`sfu/`) e app
-> (`native/`) implementam. Mudou aqui, muda nos três. O plano e as regras de negócio
-> completas estão em `~/.claude/plans/a-imagem-est-um-kind-sifakis.md`; este arquivo é
-> o que atravessa a rede.
+> É a referência que Laravel (`web/`), SFU (`sfu/`) e app (`native/`) implementam: tudo o que
+> atravessa a rede. Mudou aqui, muda nos três, na mesma tarefa. Chamava-se `SERVIDORES.md` até
+> 19/09/2026.
 
 A sala anônima por código **continua como está**: quem não quer conta abre o app,
 cria uma sala e manda o código. O que este documento descreve é o segundo modo, só
@@ -99,6 +98,18 @@ a que já tinha e reproduz o que perdeu na queda (`peerJoined`, `peerLeft`, `new
 `producerClosed`, `producerPaused`/`Resumed`, `peerConnectionLost`/`Reconnected`). Sem quem
 caiu junto, ele não saberia dizer se a pessoa saiu ou só está voltando.
 
+**Na retomada vale o `can` do token novo.** O app pede token antes de cada `join`, inclusive
+na reconexão, e quem decide permissão é o Laravel: se nos 30 s de carência a pessoa perdeu
+`stream` ou foi mutada, a sessão retomada obedece o token que chegou agora, e não o da
+entrada. Producer de origem que o `can` novo não cobre é fechado, e a sala recebe o
+`producerClosed` de sempre. Se o que fechou foi a tela (`screen`, `screenAudio`), o dono
+recebe `producerDead { producerId, kind, source, reason: 'revoked' }`; o `producerDead` do
+relógio de 30 s sem pacote continua vindo **sem** `reason`. Microfone e câmera revogados
+fecham calados para o dono: o app se acerta pelo `can` que volta no `join` retomado — e o app
+antigo derrubava a tela com qualquer `producerDead`, fosse de que origem fosse. O token tem de
+ser da **mesma conta** da sessão caída: com `sub` diferente o `join` não retoma, vira entrada
+nova (senão uma conta herdaria o `can` de outra pela `resumeKey`).
+
 `JoinResource` devolve `can: string[]` no lugar de `owner`. O app usa esse `can` (e não só
 os bits do canal) para decidir se liga o mic, a câmera e a tela: mutado pelo servidor
 chega sem `speak`. O SFU também manda `serverMuted { muted }` para a própria pessoa
@@ -153,6 +164,12 @@ avisar. O SFU troca `installId` fora de `[A-Za-z0-9-]{1,64}` por um UUID sortead
 
 SSRC no RTP puro (app nativo): um por **origem**, não por tipo. `screen` e `camera`
 são os dois `video`; sem SSRC distinto o mediasoup mistura.
+
+Banda no RTP puro: o app baixa a taxa do encoder quando o SFU pede muito pacote de volta (o
+`nack` que o vídeo já declara) e sobe de novo quando a perda some, entre um piso e o teto da
+qualidade escolhida. Nada muda no protocolo. O `goog-remb` declarado no codec é letra morta: o
+mediasoup só estima banda quando o producer também traz a extensão `abs-send-time`, e estimar
+por atraso sem um pacer no remetente acusaria congestionamento a cada quadro-chave.
 
 ## Laravel — API (`auth:sanctum`, JSON)
 
@@ -264,10 +281,22 @@ Mensagens:
 
 | rota | corpo | resposta |
 |---|---|---|
-| `GET /api/channels/{channel}/messages?before={id}` | — | 50 mais recentes antes de `before`, ordem crescente: `[ { id, channel_id, user: {id,name,avatar_url}, type, body, reply_to, edited_at, created_at } ]` |
-| `POST /api/channels/{channel}/messages` | `{ body }` (1–2000), `reply_to_id` opcional | `MessageResource` (`SEND_MESSAGES`). O `reply_to_id` tem de ser de mensagem **do mesmo canal**, senão 422: aceitar id de fora vazaria texto de canal que a pessoa talvez nem enxergue |
-| `PATCH /api/messages/{message}` | `{ body }` | só o autor |
-| `DELETE /api/messages/{message}` | — | autor ou `MANAGE_MESSAGES` |
+| `GET /api/channels/{channel}/messages?before={id}` | — | 50 mais recentes antes de `before`, ordem crescente: `[ { id, channel_id, user: {id,name,avatar_url}, type, body, files, reply_to, edited_at, created_at } ]` |
+| `POST /api/channels/{channel}/messages` | JSON `{ body }` (1–2000), `reply_to_id` opcional; ou `multipart` com `images[]` (1 a 3 arquivos, jpeg/png/webp/gif, ≤ 2 MB cada) e aí o `body` é opcional (0–2000) | `MessageResource` (`SEND_MESSAGES`). O `reply_to_id` tem de ser de mensagem **do mesmo canal**, senão 422: aceitar id de fora vazaria texto de canal que a pessoa talvez nem enxergue |
+| `PATCH /api/messages/{message}` | `{ body }` | só o autor. As imagens não mudam; o `body` só pode ficar vazio em mensagem que tem imagem |
+| `DELETE /api/messages/{message}` | — | autor ou `MANAGE_MESSAGES`. Apaga também as imagens do bucket e as linhas de `files`: quem apagou uma foto mandada por engano não pode deixá-la no ar |
+
+`files` é `[ { id, url, mime_type, size } ]`, vazio quando a mensagem não tem imagem, e vai
+igual no `MessageSent` e no `MessageUpdated`. `url` é pré-assinada e vence em 2 h, como a foto
+de perfil; ao reconectar o app busca as mensagens de novo e ganha links novos. Cada imagem é
+uma linha em `files` ligada pela pivô `message_files`. O teto de 3 × 2 MB não é gosto: o PHP
+da VPS aceita 2 MB por arquivo e 8 MB por pedido (`upload_max_filesize`, `post_max_size`), e o
+app reduz a imagem antes de enviar para caber. Mensagem direta ainda não leva imagem: não há
+pivô para ela, e criar é migration.
+
+**Canal de voz também tem chat.** As rotas e os eventos acima valem para `type: voice` com as
+mesmas permissões (`VIEW_CHANNEL` para ler, `SEND_MESSAGES` para escrever); o app mostra esse
+chat ao lado do palco de quem está naquela voz.
 
 `reply_to` é `null` ou `{ id, name, body }` com o corpo cortado em 120 caracteres — é só o
 que o cartão da resposta mostra. Apagar a mensagem original é soft delete: a resposta
@@ -388,6 +417,14 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 - Windows/macOS: mic e câmera pelo `getUserMedia` + `sendTransport.produce`. Linux:
   pelo Rust (`pulsesrc`/`v4l2src` → RTP puro), como a tela.
 - Áudio de `screenAudio` chega **mudo**. `mic` toca direto. `camera` vira cartão pequeno.
+- Chat: até 3 imagens por mensagem, por botão, colando ou arrastando; o app reduz cada uma para
+  caber em 2 MB antes de enviar. Quem está numa voz tem o chat daquele canal ao lado do palco.
+- Cada pessoa da voz tem volume e mudo locais (guardados por conta), e as configurações têm
+  "Saída de áudio" onde o motor da janela tem `setSinkId` (WebView2). No Linux a voz dos outros
+  toca pelo Rust, então esses dois controles não aparecem lá.
+- Variáveis de ambiente do app, para calibrar e diagnosticar: `UNKVOID_ENCODER=cpu` (pula o
+  encoder da placa), `UNKVOID_ABR=off` (taxa fixa, sem acompanhar a perda),
+  `UNKVOID_CAPTURE=x11|portal` (força a captura do Linux).
 
 ## App — comandos do Tauri
 
@@ -402,20 +439,20 @@ Tauri converte para o snake_case do Rust. Mudou um comando, mude aqui e em `ui/c
 | `expand_window` | — | — | a janela nasce do tamanho de um diálogo e cresce quando o app está pronto |
 | `log_line` / `log_path` | `line` / — | — / caminho | log em disco: a janela não tem console |
 | `report_check` | `webrtc, receiver[], sender[], userAgent` | — | o diagnóstico do `--check`, chamado pela página que o próprio Rust abre |
-| `list_displays` | — | `[{id, width, height}]` | as telas do seletor |
-| `list_windows` | — | `[{id, title, application}]` | os aplicativos do seletor |
-| `source_preview` | `source` (`display:<id>` ou `window:<id>`) | data URL JPEG, ou `""` | a miniatura do seletor |
+| `list_displays` | — | `[{id, width, height, portal}]` | as telas do seletor. No Linux em sessão Wayland vem **um** item, `{id: 1, width: 0, height: 0, portal: true}`: quem lista e escolhe é o seletor do próprio sistema |
+| `list_windows` | — | `[{id, title, application}]` | os aplicativos do seletor (vazio no Wayland) |
+| `source_preview` | `source` (`display:<id>` ou `window:<id>`) | data URL JPEG, ou `""` | a miniatura do seletor (`""` no Wayland) |
 | `list_cameras` | — | `[{id, …}]` | as câmeras, no Linux |
 | `machine_cores` | — | número de núcleos | registrado; a interface não chama hoje |
-| `start_broadcast` | `quality, fps, source, audio, muteCalls` | — | captura e encoder da tela |
-| `change_broadcast_quality` | `quality, fps` | — | troca resolução e fps no meio da transmissão, sem fechar os producers |
+| `start_broadcast` | `quality, fps, source, audio, muteCalls` | — | captura e encoder da tela. No Wayland o `source` é ignorado: abre o seletor do sistema (monitor ou janela) e só resolve quando a pessoa escolhe; cancelar rejeita com `screen picker closed without choosing a source` |
+| `change_broadcast_quality` | `quality, fps` | — | troca resolução e fps no meio da transmissão, sem fechar os producers (no Wayland reaproveita a sessão do portal: o seletor não abre de novo) |
 | `stop_broadcast` | — | quadros enviados | para a tela; sem nenhuma origem subindo, solta o remetente e sorteia chave SRTP nova |
-| `broadcast_stats` | — | `{active, …, encoder: "gpu" \| "cpu"}` | a linha de números da transmissão |
+| `broadcast_stats` | — | `{active, …, encoder: "gpu" \| "cpu", targetBitrate, lossPermille}` | a linha de números da transmissão. `targetBitrate` (bits por segundo) é a taxa que o governador de perda pediu ao encoder; `lossPermille` (0 a 1000) é a perda da última janela de ~1 s com tráfego — tela parada não atualiza, o valor anterior fica |
 | `sfu_offer` | `source` (`screen`, `screenAudio`, `mic`, `camera`) | `{rtpParameters, srtpParameters}` | o corpo do `producePlain` |
 | `use_sfu` | `address, serverKey` | — | aponta o remetente para a porta do `producePlain`; repetir o mesmo endereço não faz nada |
 | `renew_sfu_key` | — | — | chave SRTP nova para republicar depois de o SFU reiniciar |
-| `set_shortcuts` | `bindings: [{action, accelerator}]` | `{registered, failed}` | atalhos do sistema (mutar, ensurdecer, falar apertando); cada tecla disparada chega no evento `shortcut` com `{action, pressed}` |
-| `start_voice` / `stop_voice` / `set_voice_muted` | — / — / `muted` | — | o mic pelo Rust (Linux) |
+| `set_shortcuts` | `bindings: [{action, accelerator}]` | `{registered, failed}` | atalhos do sistema (mutar, ensurdecer, falar apertando); cada tecla disparada chega no evento `shortcut` com `{action, pressed}`. No Windows a ação `talk` não passa pelo registro de atalho do sistema, que engole a tecla (o jogo deixa de recebê-la) e não enxerga o mouse: o Rust consulta o estado da tecla a cada 20 ms, e `Mouse3`, `Mouse4` e `Mouse5` valem como tecla de falar. O formato do `accelerator` é o mesmo: modificadores + código (`Control+KeyV`, `KeyV`, `Mouse4`) |
+| `start_voice` / `stop_voice` / `set_voice_muted` | — / — / `muted` | — | o mic pelo Rust (Linux). De `start_voice` a `stop_voice` sai o evento `voice:level` com `{ level }` (RMS linear de 0 a 1, o maior de cada janela de 100 ms): é o que a detecção de voz da interface mede, já que ali o áudio não passa pela janela. Sai **mesmo mutado** — é ele que reabre o portão. Mutado, o Rust manda silêncio em Opus em vez de nenhum pacote: sem pacote o relógio de 30 s do SFU mataria o producer |
 | `start_camera` / `stop_camera` | `device` / — | — | a câmera pelo Rust (Linux) |
 | `watch_key` | — | chave SRTP em base64 | a chave de recepção do `consumePlain` |
 | `watch_native` | `producerId, kind, address, serverKey, payloadType, ssrc` | porta do MJPEG em 127.0.0.1 (0 no áudio) | assistir por RTP puro onde a janela não tem WebRTC (Linux) |
@@ -447,5 +484,5 @@ servidores em `APP_URL`, `SFU_PUBLIC_URL`, `REVERB_HOST` (`web/.env`), suba o SF
 `networkingMode=mirrored` no `.wslconfig`.
 
 Windows: o instalador sai de `C:\Users\edsu\unkvoid-build` como descrito em
-[ESTADO.md](ESTADO.md); para apontar para o Laravel local sem rebuildar, grave
+[BUILD-WINDOWS.md](BUILD-WINDOWS.md); para apontar para o Laravel local sem rebuildar, grave
 `localStorage.server = 'http://<IP>:8000'` no console do app.

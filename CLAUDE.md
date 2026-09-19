@@ -21,7 +21,7 @@ vez** e sobe **uma vez**. Mudança que quebre uma dessas três coisas está desf
 Há um agente especialista por módulo em `.claude/agents/`. Tarefa que toca um módulo só vai
 para o agente dele; tarefa que atravessa os três começa pelo contrato.
 
-**O contrato é [docs/SERVIDORES.md](docs/SERVIDORES.md)**: rotas da API, formato do token de voz, ações e
+**O contrato é [docs/CONTRATO.md](docs/CONTRATO.md)**: rotas da API, formato do token de voz, ações e
 eventos do SFU, webhook, canais do Reverb, comandos do Tauri. Mudou o que atravessa a rede,
 atualize esse arquivo na mesma tarefa — as três peças o leem como lei.
 
@@ -45,7 +45,7 @@ Quem manda em quê:
 | App | interface, captura, encoder, mídia local | decidir permissão |
 
 As regras de negócio completas (cálculo de permissão efetiva na ordem do Discord, hierarquia de
-cargos, canal oculto, voz, auditoria) estão em `docs/SERVIDORES.md` e no agente de cada módulo.
+cargos, canal oculto, voz, auditoria) estão em `docs/CONTRATO.md` e no agente de cada módulo.
 
 ## Rodar tudo local
 
@@ -79,17 +79,21 @@ Laravel com `--host=0.0.0.0`. No WSL2 a rede só alcança o UDP do SFU com
 ```bash
 cd web && composer check                 # phpstan max + pint + rector + pest em SQLite (rode 2x: rector estável)
 cd web && composer test:mysql            # a mesma suíte no MySQL: pega tipo de coluna e chave que o SQLite perdoa
-cd sfu && pnpm run check                 # eslint + check.mjs + check-heartbeat.mjs (precisa de um servidor no ar com o mesmo SFU_SECRET)
+cd sfu && pnpm run check                 # eslint + check.mjs (precisa de um servidor no ar com o mesmo SFU_SECRET)
 cd native/apps/desktop && npm run check && npm run build   # tests/static + tsc + eslint + Vitest (tests/unit)
 cd native/apps/desktop && npm run test:integration    # Vitest: os clientes do app contra a pilha local no ar
 cd native && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
 
+O `cargo` do Linux precisa de `cmake` no PATH (o Opus compila em C); sem ele o clippy morre no
+`opusic-sys` com uma mensagem que não diz isso.
+
 Windows não compila de dentro do WSL: espelhe `native/` em `/mnt/c/Users/edsu/unkvoid-build/` com
-`rsync` e use `/mnt/c/Users/edsu/.cargo/bin/cargo.exe`. O instalador sai com
-`cmd.exe /c "npm.cmd ci && npx.cmd tauri build --bundles nsis"` (o PowerShell desta máquina
-bloqueia `npx.ps1`) e termina reclamando de `TAURI_SIGNING_PRIVATE_KEY` — o `.exe` já está pronto
-em `native/target/release/bundle/nsis/`.
+`rsync` e use `/mnt/c/Users/edsu/.cargo/bin/cargo.exe` — com
+`export CMAKE='<cmake.exe do Build Tools>' WSLENV="CMAKE:$WSLENV"` antes, porque o PATH do WSL não
+chega ao `cargo.exe`. O instalador **assinado** sai do `native/apps/desktop/build-windows.ps1` e a
+publicação é `make publish-windows`; o passo a passo está em
+[docs/BUILD-WINDOWS.md](docs/BUILD-WINDOWS.md) e [docs/AUTO-UPDATE.md](docs/AUTO-UPDATE.md).
 
 ## Como escrever código aqui
 
@@ -115,6 +119,9 @@ Vale a skill `style-edsu` inteira, e o resumo que mais pega:
 - Rust: clippy sem aviso, `cfg(target_os)` correto nas três plataformas, nada de trabalho por
   quadro na thread da captura.
 - Atalho deliberado ganha comentário `ponytail:` com o teto e o caminho de saída.
+- **Teste novo entra no arquivo do assunto** (um arquivo por área: conta, servidores, mensagens,
+  voz…), não num arquivo novo por função. Nenhum teste some numa reorganização: a contagem de
+  antes tem de caber na de depois.
 - **Migration nunca é criada por iniciativa própria** — o esquema é decisão do dono. Pergunte.
 - **Regra de negócio nunca muda de passagem** num refactor. Pergunte.
 - **Nunca commite, empurre ou abra PR sem autorização explícita naquele momento**, e nunca com
@@ -125,8 +132,9 @@ Vale a skill `style-edsu` inteira, e o resumo que mais pega:
 
 | Arquivo | Para quê |
 |---|---|
-| [ARQUITETURA.md](ARQUITETURA.md) | o mapa: para que serve cada peça, como elas conversam e os fluxos principais |
-| [docs/SERVIDORES.md](docs/SERVIDORES.md) | o contrato entre as três peças, e como rodar local |
+| [docs/README.md](docs/README.md) | o índice da documentação: um arquivo por pergunta |
+| [docs/ARQUITETURA.md](docs/ARQUITETURA.md) | o mapa: para que serve cada peça, como elas conversam e os fluxos principais |
+| [docs/CONTRATO.md](docs/CONTRATO.md) | o contrato entre as três peças, e como rodar local |
 | [docs/ESTADO.md](docs/ESTADO.md) | o que só foi escrito sem rodar em hardware, o que falta e as perguntas abertas |
 | [docs/DECISOES.md](docs/DECISOES.md) | o que foi decidido e **por quê** (ex.: por que o SFU é Node) |
 | [docs/REDE.md](docs/REDE.md), [docs/UDP.md](docs/UDP.md) | portas, firewall, o que vai por UDP e por quê |
@@ -134,4 +142,5 @@ Vale a skill `style-edsu` inteira, e o resumo que mais pega:
 | [docs/INSTALAR-VPS.md](docs/INSTALAR-VPS.md) | levantar uma VPS do zero, em ordem de execução, e migrar o e-mail |
 | [docs/SEGURANCA.md](docs/SEGURANCA.md) | modelo de ameaça e o que protege o quê |
 | [docs/AUTO-UPDATE.md](docs/AUTO-UPDATE.md), [docs/BUILD-WINDOWS.md](docs/BUILD-WINDOWS.md), [docs/BUILD-MACOS.md](docs/BUILD-MACOS.md), [docs/BUILD-LINUX.md](docs/BUILD-LINUX.md) | publicar e buildar por sistema |
-| `web/tests/checklist.html` | o que já foi validado à mão |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | o mesmo que este arquivo, para gente: ambiente, verificações, fluxo de PR, armadilhas já pagas |
+| `web/tests/checklist.html`, `native/apps/desktop/checklist.html` | o que já foi validado à mão, no site e no app |

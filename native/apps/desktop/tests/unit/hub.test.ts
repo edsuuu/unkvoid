@@ -3,7 +3,10 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { App } from '../../ui/core/App.ts';
 import { Chat } from '../../ui/core/Chat.ts';
 import type { Hub } from '../../ui/core/Hub.ts';
+import { Members } from '../../ui/core/Members.ts';
+import type { Member, Role, ServerTree } from '../../ui/core/Models.ts';
 import { Permissions } from '../../ui/core/Permissions.ts';
+import { RoomCode } from '../../ui/core/RoomCode.ts';
 import type { Voice } from '../../ui/core/Voice.ts';
 
 const EVERYONE = Permissions.VIEW_CHANNEL | Permissions.SEND_MESSAGES | Permissions.CONNECT
@@ -27,7 +30,7 @@ const SERVER = {
 const [OWNER, MOD, VIP, PLAIN] = SERVER.members;
 
 describe('permissões: qual botão aparece', () => {
-    it('os bits batem com a tabela do SERVIDORES.md', () => {
+    it('os bits batem com a tabela do CONTRATO.md', () => {
         expect(Permissions.MOVE_MEMBERS).toBe(131072);
         expect(Permissions.ALL).toBe(262143);
         expect(EVERYONE).toBe(31552);
@@ -56,6 +59,20 @@ describe('modo servidor com a API de mentira', () => {
     const toasts: string[] = [];
     const responses = new Map<string, unknown>();
     const quiet = { here() { return this; }, joining() { return this; }, leaving() { return this; }, listen() { return this; } };
+    const heard: Record<string, (payload: unknown) => void> = {};
+    const echoSteps: string[] = [];
+    const subscription = (name: string) => ({
+        listen(event: string, handler: (payload: unknown) => void) {
+            heard[`${name} ${event}`] = handler;
+
+            return this;
+        },
+        stopListening(event: string) {
+            echoSteps.push(`stop ${name} ${event}`);
+
+            return this;
+        },
+    });
     const track = { enabled: true, stop() {} };
     const micSteps: string[] = [];
     let app: App;
@@ -111,9 +128,11 @@ describe('modo servidor com a API de mentira', () => {
         };
         hub.user = { id: 1, name: 'Edsu' };
         hub.config = {};
-        hub.echo = { private: () => quiet, join: () => quiet, leave() {}, disconnect() {} };
+        hub.echo = { private: subscription, join: () => quiet, leave: (name: string) => echoSteps.push(`leave ${name}`), disconnect() {} };
 
         responses.set('GET /api/servers', () => servers);
+        responses.set('GET /api/channels/voice-2/messages', []);
+        responses.set('GET /api/channels/voice-outra/messages', []);
         responses.set('GET /api/servers/2', tree(2, 'Jogatina'));
         responses.set('GET /api/servers/5', tree(5, 'Nova'));
         responses.set('GET /api/channels/text-2/messages', []);
@@ -252,6 +271,43 @@ describe('modo servidor com a API de mentira', () => {
 
         expect(hub.store.state.stageOpen).toBe(false);
         expect(hub.store.state.focusedRoom).toBe(false);
+    });
+
+    it('a voz tem chat: abre ao entrar, conta o que chega com o painel fechado e fecha ao sair sem largar o canal do Reverb', async () => {
+        const voiceChannel = hub.tree!.channels[1];
+        const message = (id: number, userId: number) => ({ id, channel_id: 'voice-2', type: 'user', body: `m${id}`, files: [], reply_to: null, user: { id: userId, name: 'Alguém' } });
+
+        responses.set('GET /api/channels/voice-2/messages', [message(1, 7)]);
+        echoSteps.length = 0;
+        await hub.openChannel(voiceChannel);
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        expect(hub.voiceChat.store.state.messages.map(item => item.id), 'entrar na voz abre o chat dela').toEqual([1]);
+        expect(hub.chat.store.state.channel?.id, 'o chat de texto continua no canal dele').toBe('text-2');
+        expect(hub.store.state.stageChat, 'o painel começa fechado').toBeNull();
+
+        heard['channel.voice-2 .MessageSent']({ message: message(2, 7) });
+        heard['channel.voice-2 .MessageSent']({ message: message(3, 1) });
+        expect(hub.voiceChat.store.state.unread, 'a minha própria mensagem não conta').toBe(1);
+        expect(hub.chat.store.state.messages, 'mensagem da voz não cai no canal de texto').toEqual([]);
+
+        hub.setStageChat('voice');
+        expect(hub.voiceChat.store.state.unread, 'abrir o painel zera o indicador').toBe(0);
+        heard['channel.voice-2 .MessageSent']({ message: message(4, 7) });
+        expect(hub.voiceChat.store.state.unread, 'com o painel aberto nada acumula').toBe(0);
+
+        hub.showStage(false);
+        heard['channel.voice-2 .MessageSent']({ message: message(5, 7) });
+        expect(hub.voiceChat.store.state.unread, 'de volta ao chat de texto o painel da voz não está à vista').toBe(1);
+
+        await voice.leave();
+
+        expect(hub.voiceChat.store.state.channel).toBeNull();
+        expect(hub.store.state.stageChat).toBeNull();
+        expect(echoSteps).toContain('stop channel.voice-2 .MessageSent');
+        expect(echoSteps, 'o mesmo canal do Reverb carrega o VoiceStateUpdated: sair dele apagaria quem está na voz').not.toContain('leave channel.voice-2');
+
+        responses.set('GET /api/channels/voice-2/messages', []);
     });
 
     it('com "Silenciar ao entrar" desligado, a pessoa entra falando; a regra continua sendo o padrão', async () => {
@@ -664,5 +720,93 @@ describe('o tempo real que caiu e voltou', () => {
         expect(hub.chat.store.state.messages.map(item => item.id), 'o 2 foi apagado e o 3 chegou durante a queda').toEqual([1, 3]);
         expect(hub.direct.store.state.messages.map(item => item.id)).toEqual([30, 31]);
         expect(calls).toEqual(expect.arrayContaining(['GET /api/servers', 'GET /api/servers/2', 'GET /api/friends', 'GET /api/dm']));
+    });
+});
+
+describe('lista de membros: cargo mais alto manda, e quem está fora aparece por último', () => {
+    function role(id: number, name: string, position: number, everyone = false): Role {
+        return { id, name, color: null, position, permissions: 0, is_everyone: everyone };
+    }
+
+    function member(userId: number, name: string, roleIds: number[], nickname: string | null = null): Member {
+        return { user_id: userId, name, avatar_url: null, nickname, role_ids: roleIds, server_mute: false, server_deaf: false, is_owner: false };
+    }
+
+    const tree = {
+        roles: [role(1, '@everyone', 0, true), role(2, 'Moderador', 10), role(3, 'Admin', 20)],
+        members: [
+            member(10, 'Zeca', [2]),
+            member(11, 'Ana', [3, 2]),
+            member(12, 'Bia', []),
+            member(13, 'Caio', [3]),
+            member(14, 'Dora', [2]),
+        ],
+    } as ServerTree;
+
+    it('agrupa pelo cargo de maior posição, ordena os grupos de cima para baixo e os nomes dentro de cada um', () => {
+        const groups = Members.group(tree, new Set([10, 11, 12, 13, 14]));
+
+        expect(groups.map(group => group.label)).toEqual(['Admin', 'Moderador', '@everyone']);
+        expect(groups[0].members.map(item => item.name), 'quem tem Admin e Moderador entra só no Admin').toEqual(['Ana', 'Caio']);
+        expect(groups[1].members.map(item => item.name)).toEqual(['Dora', 'Zeca']);
+        expect(groups[2].members.map(item => item.name), 'sem cargo cai no @everyone').toEqual(['Bia']);
+    });
+
+    it('quem não está online sai do grupo do cargo e vira o último grupo', () => {
+        const groups = Members.group(tree, new Set([11]));
+
+        expect(groups.map(group => group.label)).toEqual(['Admin', 'Offline']);
+        expect(groups[1].members.map(item => item.name)).toEqual(['Bia', 'Caio', 'Dora', 'Zeca']);
+    });
+
+    it('sem ninguém offline o grupo Offline não aparece, e o apelido é quem ordena', () => {
+        const apelidado = { ...tree, members: [member(20, 'Zeca', [2], 'Alfa'), member(21, 'Ana', [2])] } as ServerTree;
+        const groups = Members.group(apelidado, new Set([20, 21]));
+
+        expect(groups.map(group => group.label)).toEqual(['Moderador']);
+        expect(groups[0].members.map(item => Members.displayName(item))).toEqual(['Alfa', 'Ana']);
+    });
+});
+
+describe('código de sala: a única chave que existe, então sorteio torto é sala adivinhável', () => {
+    const SAMPLE_SIZE = 20_000;
+
+    const codes = Array.from({ length: SAMPLE_SIZE }, () => RoomCode.generate());
+
+    it('todo código sorteado tem o tamanho e o formato que o servidor aceita', () => {
+        for (const code of codes) {
+            expect(code.length, `código com tamanho errado: ${code}`).toBe(RoomCode.LENGTH);
+            expect(RoomCode.isValid(code), `código fora do formato aceito pelo servidor: ${code}`).toBe(true);
+        }
+    });
+
+    it('aceita nome legível e o mínimo; recusa vazio, curto, longo, maiúscula e hífen na ponta', () => {
+        expect(RoomCode.isValid(''), 'vazio não é código').toBe(false);
+        expect(RoomCode.isValid('sala-do-time'), 'nome legível precisa ser aceito').toBe(true);
+        expect(RoomCode.isValid('abc'), 'código mínimo precisa ser aceito').toBe(true);
+        expect(RoomCode.isValid('ab'), 'curto demais não é código').toBe(false);
+        expect(RoomCode.isValid('a'.repeat(33)), 'longo demais não é código').toBe(false);
+        expect(RoomCode.isValid('A'.repeat(RoomCode.LENGTH)), 'maiúscula não é código — o servidor recusa').toBe(false);
+        expect(RoomCode.isValid('sala-'), 'hífen no fim não é código').toBe(false);
+    });
+
+    it('vinte mil sorteios não repetem código', () => {
+        expect(new Set(codes).size).toBe(SAMPLE_SIZE);
+    });
+
+    it('nenhuma letra sai muito mais que as outras: o alfabeto inteiro aparece perto do esperado', () => {
+        const counts = new Map<string, number>();
+
+        for (const character of codes.join('')) {
+            counts.set(character, (counts.get(character) ?? 0) + 1);
+        }
+
+        const expected = (SAMPLE_SIZE * RoomCode.LENGTH) / 36;
+
+        expect(counts.size, 'o alfabeto inteiro precisa sair no sorteio').toBe(36);
+
+        for (const [character, times] of counts) {
+            expect(Math.abs(times - expected), `"${character}" saiu ${times} vezes, esperado ~${Math.round(expected)} — sorteio enviesado`).toBeLessThan(expected * 0.15);
+        }
     });
 });

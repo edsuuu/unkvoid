@@ -18,6 +18,9 @@ apple-cf = { version = "0.9", features = ["cv"] }
 windows-capture = "2"
 windows = { version = "0.62", features = [
     "Win32_Graphics_Direct3D11",
+    # A área útil do monitor: o tamanho para o qual volta a janela minimizada que estava
+    # maximizada.
+    "Win32_Graphics_Gdi",
     # O áudio do sistema: laço por processo, para não gravar o que o próprio app toca.
     "Win32_Media_Audio",
     "Win32_System_Com",
@@ -34,6 +37,17 @@ windows = { version = "0.62", features = [
 # O `#[implement]` gera caminhos `windows_core::`, então a crate precisa estar aqui pelo
 # nome dela — o reexport em `windows::core` não serve para o que a macro escreve.
 windows-core = "0.62"
+
+# A tela no Wayland: o portal `org.freedesktop.portal.ScreenCast`, por D-Bus puro. Sem a
+# feature `pipewire` de propósito: ela exigiria `libpipewire-dev` no build, e quem lê o
+# PipeWire aqui é o `pipewiresrc` do `gst-launch`, como o resto da captura.
+#
+# `async-io`, e não `tokio`: o `zbus` que o Tauri já compila (plugin de instância única)
+# está em `async-io`, e o cargo unifica features — pedir `zbus/tokio` daqui trocaria o
+# executor do plugin junto, porque o zbus prefere o tokio quando os dois estão ligados.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "screencast"] }
+async-io = "2"
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

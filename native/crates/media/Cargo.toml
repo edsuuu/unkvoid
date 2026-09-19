@@ -24,6 +24,8 @@ tracing.workspace = true
 [dev-dependencies]
 futures-util = "0.3.34"
 tokio-tungstenite = "0.30.0"
+# O exemplo `encoder` mostra o que o MFT disse: a recusa de um ajuste só sai pelo log.
+tracing-subscriber.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 videotoolbox = "0.19"

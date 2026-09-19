@@ -68,13 +68,15 @@ export class ProducerController {
                 `[WARN] producerDead room=${room.id} sub=${peer.userId} source=${source} ip=${peer.ip}: no packet in ${MEDIA_IDLE_MS / 1000}s`,
             );
             peer.send('producerDead', { producerId: producer.id, kind: producer.kind, source });
-            this.close(peer, room, producer);
+            room.closeProducer(peer, producer);
         }, MEDIA_IDLE_MS);
 
+        // Fechado por qualquer caminho (o dono, o transporte, a permissão que caiu na
+        // retomada): sem isto o relógio seguia e avisava `producerDead` de um producer que
+        // já não existe.
+        producer.observer.once('close', () => clearTimeout(idleTimer));
+
         producer.on('transportclose', () => {
-            if (idleTimer) {
-                clearTimeout(idleTimer);
-            }
             peer.producers.delete(producer.id);
             room.broadcast(
                 'producerClosed',
@@ -136,38 +138,10 @@ export class ProducerController {
     }
 
     public destroy(request: ProducerRequest): StatusResource {
-        this.close(
-            request.peer(),
-            request.room(),
-            request.peer().producers.get(request.producerId()),
-        );
+        const peer = request.peer();
+
+        request.room().closeProducer(peer, peer.producers.get(request.producerId()));
 
         return new StatusResource('closed');
-    }
-
-    private close(peer: Peer, room: Room, producer: Producer | undefined): void {
-        if (!producer || peer.producers.get(producer.id) !== producer) {
-            return;
-        }
-
-        producer.close();
-        peer.producers.delete(producer.id);
-        room.broadcast(
-            'producerClosed',
-            {
-                peerId: peer.id,
-                producerId: producer.id,
-                kind: producer.kind,
-                source: String(producer.appData.source),
-            },
-            peer.id,
-        );
-
-        // Só o transport de RTP puro, e quando sai o último producer que passa por ele. O mic
-        // por WebRTC do Windows e do macOS não conta: com ele o transport ficava vivo, preso ao
-        // socket antigo do app, que abre outro na transmissão seguinte e some no `comedia`.
-        if (![...peer.producers.values()].some((other) => other.appData.plain === true)) {
-            peer.closePlainTransports();
-        }
     }
 }

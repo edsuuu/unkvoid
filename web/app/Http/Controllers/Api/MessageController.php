@@ -11,13 +11,15 @@ use App\Http\Resources\Api\MessageResource;
 use App\Models\Channel;
 use App\Models\Message;
 use App\Models\User;
+use App\Services\Storage\BucketService;
 use Illuminate\Container\Attributes\CurrentUser;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Http\Response;
+use Illuminate\Http\UploadedFile;
 use Throwable;
 
 /**
- * Mensagens de um canal de texto.
+ * Mensagens de um canal, de texto ou de voz: o canal de voz também tem chat.
  */
 final class MessageController
 {
@@ -34,11 +36,14 @@ final class MessageController
     /**
      * @throws Throwable
      */
-    public function store(StoreMessageRequest $request, Channel $channel, #[CurrentUser] User $user): MessageResource
+    public function store(StoreMessageRequest $request, Channel $channel, #[CurrentUser] User $user, BucketService $bucket): MessageResource
     {
         $replyToId = $request->filled('reply_to_id') ? $request->integer('reply_to_id') : null;
 
-        return new MessageResource($channel->post($user, $request->string('body')->toString(), $replyToId));
+        /** @var array<int, UploadedFile> $images */
+        $images = $request->file('images', []);
+
+        return new MessageResource($channel->post($user, $request->string('body')->toString(), $bucket, $replyToId, $images));
     }
 
     /**

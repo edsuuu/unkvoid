@@ -65,6 +65,7 @@ export type MediaState = {
     ping: number | null;
     paused: string[];
     audio: Record<string, AudioState>;
+    voices: Record<string, AudioState>;
     nativeMuted: Record<string, boolean>;
     image: Record<TileKind, ImageSettings>;
     selfView: boolean;
@@ -81,6 +82,10 @@ export class Media {
     static readonly MAX_SCREENS = (navigator.hardwareConcurrency ?? 4) <= 4 ? 2 : 4;
 
     static readonly IMAGE_KEYS: Record<ImageProperty, string> = { brightness: 'unkvoid.brilho', contrast: 'unkvoid.contraste', saturation: 'unkvoid.saturacao', blur: 'unkvoid.desfoque' };
+
+    static readonly VOICES_KEY = 'unkvoid:voice-volumes';
+
+    static readonly FULL_VOICE: AudioState = { volume: 100, muted: false };
 
     static readonly IMAGE_LIMITS: Record<ImageProperty, [number, number, number]> = {
         brightness: [50, 250, 100],
@@ -119,6 +124,10 @@ export class Media {
         return kind === 'camera' ? `${Media.IMAGE_KEYS[property]}.camera` : Media.IMAGE_KEYS[property];
     }
 
+    static canPickOutput(): boolean {
+        return typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
+    }
+
     static loadImage(kind: TileKind): ImageSettings {
         const image = {} as ImageSettings;
 
@@ -138,6 +147,26 @@ export class Media {
         this.stats = new Store<Record<string, TileStats>>({});
     }
 
+    loadVoices(): Record<string, AudioState> {
+        const voices: Record<string, AudioState> = {};
+
+        try {
+            const saved = JSON.parse(localStorage.getItem(Media.VOICES_KEY) ?? '{}') as Record<string, Partial<AudioState> | null> | null;
+
+            for (const [userId, voice] of Object.entries(saved ?? {})) {
+                const volume = Number(voice?.volume);
+
+                if (volume >= 0 && volume <= 100) {
+                    voices[userId] = { volume, muted: Boolean(voice?.muted) };
+                }
+            }
+        } catch (failure) {
+            this.app.log('media.voice.volumes.error', { message: Failure.message(failure) });
+        }
+
+        return voices;
+    }
+
     initialState(): MediaState {
         return {
             connecting: false,
@@ -153,6 +182,7 @@ export class Media {
             ping: null,
             paused: [],
             audio: {},
+            voices: this.loadVoices(),
             nativeMuted: {},
             image: { screen: Media.loadImage('screen'), camera: Media.loadImage('camera') },
             selfView: false,
@@ -614,6 +644,7 @@ export class Media {
         document.body.appendChild(audio);
         this.remoteAudios.set(peerId, audio);
         this.syncAudio(peerId);
+        void this.routeAudio([audio]);
         void audio.play().catch((failure: unknown) => this.app.log('media.audio.autoplay.error', { peerId, message: Failure.message(failure) }));
     }
 
@@ -622,11 +653,13 @@ export class Media {
 
         audio.srcObject = new MediaStream([track]);
         audio.autoplay = true;
-        audio.muted = this.deafened;
         audio.dataset.remote = peerId;
         audio.dataset.source = 'mic';
+        audio.dataset.user = this.sfu?.peers?.get(peerId)?.userId ?? '';
+        this.applyVoice(audio);
         document.body.appendChild(audio);
         this.micAudios.set(producerId, audio);
+        void this.routeAudio([audio]);
         void audio.play().catch((failure: unknown) => this.app.log('media.mic.autoplay.error', { peerId, message: Failure.message(failure) }));
     }
 
@@ -676,11 +709,112 @@ export class Media {
         this.app.log('media.audio.mute', { peerId, muted: audio.muted });
     }
 
+    canAdjustVoices(): boolean {
+        return ! (Platform.isLinux() && this.sfu?.canWatch?.() === false);
+    }
+
+    voiceOf(userId: string): AudioState {
+        return this.store.state.voices[userId] ?? Media.FULL_VOICE;
+    }
+
+    applyVoice(audio: HTMLAudioElement): void {
+        const voice = this.voiceOf(audio.dataset.user ?? '');
+
+        audio.volume = voice.volume / 100;
+        audio.muted = this.deafened || voice.muted;
+    }
+
+    saveVoice(userId: string, voice: AudioState): void {
+        if (userId === '') {
+            return;
+        }
+
+        const voices = { ...this.store.state.voices, [userId]: voice };
+
+        if (voice.volume === Media.FULL_VOICE.volume && ! voice.muted) {
+            delete voices[userId];
+        }
+
+        localStorage.setItem(Media.VOICES_KEY, JSON.stringify(voices));
+        this.store.set({ voices });
+
+        for (const audio of this.micAudios.values()) {
+            if (audio.dataset.user === userId) {
+                this.applyVoice(audio);
+            }
+        }
+
+        this.app.log('media.voice.volume', { userId, ...voice });
+    }
+
+    setVoiceVolume(userId: string, value: number): void {
+        this.saveVoice(userId, { volume: value, muted: value === 0 });
+    }
+
+    toggleVoiceMute(userId: string): void {
+        const voice = this.voiceOf(userId);
+        const muted = ! voice.muted;
+
+        this.saveVoice(userId, { volume: ! muted && voice.volume === 0 ? Media.FULL_VOICE.volume : voice.volume, muted });
+    }
+
+    async routeAudio(audios: HTMLAudioElement[]): Promise<void> {
+        const deviceId = this.app.hub.voice.store.state.preferences.speaker;
+
+        if (! Media.canPickOutput()) {
+            return;
+        }
+
+        try {
+            await Promise.all(audios.filter(audio => audio.sinkId !== deviceId).map(audio => audio.setSinkId(deviceId)));
+        } catch (failure) {
+            this.app.log('media.output.error', { deviceId, message: Failure.message(failure) });
+
+            if (deviceId === '') {
+                this.app.toast(`não deu para tocar na saída de áudio padrão: ${Failure.message(failure)}`, true);
+
+                return;
+            }
+
+            this.app.toast('a saída de áudio escolhida não respondeu: o som voltou para a saída padrão', true);
+            await this.app.hub.voice.setPreference('speaker', '');
+        }
+    }
+
+    async applyOutput(): Promise<void> {
+        this.app.sounds.setOutput(this.app.hub.voice.store.state.preferences.speaker);
+        await this.routeAudio([...this.remoteAudios.values(), ...this.micAudios.values()]);
+    }
+
+    async outputsChanged(): Promise<void> {
+        const chosen = this.app.hub.voice.store.state.preferences.speaker;
+
+        if (chosen === '' || ! Media.canPickOutput()) {
+            return;
+        }
+
+        try {
+            const outputs = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'audiooutput' && device.deviceId !== '');
+
+            if (outputs.length === 0 || outputs.some(device => device.deviceId === chosen)) {
+                return;
+            }
+        } catch (failure) {
+            this.app.log('media.output.list.error', { message: Failure.message(failure) });
+
+            return;
+        }
+
+        this.app.log('media.output.gone', { deviceId: chosen });
+        this.app.toast('a saída de áudio escolhida sumiu: o som voltou para a saída padrão', true);
+        await this.app.hub.voice.setPreference('speaker', '');
+    }
+
     async setDeafened(deafened: boolean): Promise<void> {
         this.deafened = deafened;
 
         for (const audio of this.micAudios.values()) {
-            audio.muted = deafened;
+            this.applyVoice(audio);
         }
 
         if (deafened) {

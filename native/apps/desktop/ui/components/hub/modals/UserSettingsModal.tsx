@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { Failure } from '../../../core/Failure.ts';
+import { Media } from '../../../core/Media.ts';
 import { Mic } from '../../../core/Mic.ts';
 import { Platform } from '../../../core/Platform.ts';
 import type { InputMode } from '../../../core/Voice.ts';
@@ -24,7 +25,7 @@ export function UserSettingsModal() {
     const hub = app.hub;
     const voice = hub.voice;
     const { user } = useStore(hub.store);
-    const { preferences, talkKeyRefused } = useStore(voice.store);
+    const { preferences, talkKeyRefused, channel: voiceChannel } = useStore(voice.store);
     const live = useStore(voice.mic.store);
     const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
     const picker = useRef<HTMLInputElement>(null);
@@ -32,6 +33,32 @@ export function UserSettingsModal() {
     const [level, setLevel] = useState(0);
     const [meterError, setMeterError] = useState('');
     const native = Platform.isLinux();
+
+    useEffect(() => {
+        const mediaDevices = navigator.mediaDevices;
+
+        if (! mediaDevices?.enumerateDevices) {
+            return undefined;
+        }
+
+        let cancelled = false;
+
+        const refresh = () => void mediaDevices.enumerateDevices()
+            .then(found => {
+                if (! cancelled) {
+                    setDevices(found);
+                }
+            })
+            .catch((failure: unknown) => app.log('voice.devices.error', { message: Failure.message(failure) }));
+
+        refresh();
+        mediaDevices.addEventListener?.('devicechange', refresh);
+
+        return () => {
+            cancelled = true;
+            mediaDevices.removeEventListener?.('devicechange', refresh);
+        };
+    }, [app]);
 
     useEffect(() => {
         if (native || voice.micTrack || ! navigator.mediaDevices?.getUserMedia) {
@@ -55,7 +82,7 @@ export function UserSettingsModal() {
                     return;
                 }
 
-                setDevices((await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'audioinput'));
+                setDevices(await navigator.mediaDevices.enumerateDevices());
 
                 if (cancelled) {
                     return;
@@ -106,7 +133,9 @@ export function UserSettingsModal() {
         return null;
     }
 
-    const shown = voice.micTrack ? live.level : level;
+    const shown = voice.micTrack || native ? live.level : level;
+    const microphones = devices.filter(device => device.kind === 'audioinput' && device.deviceId !== '' && device.deviceId !== 'default');
+    const speakers = devices.filter(device => device.kind === 'audiooutput' && device.deviceId !== '' && device.deviceId !== 'default');
     const chosen = Object.values(preferences.keybinds).filter(key => key.trim() !== '');
     const repeated = new Set(chosen).size !== chosen.length;
 
@@ -181,28 +210,29 @@ export function UserSettingsModal() {
 
             <p className="label-mono mb-2">Microfone</p>
             {native
-                ? <p className="text-[12.5px] text-ink-soft">No Linux o microfone é o padrão do sistema (PulseAudio), escolhido nas configurações de som.</p>
+                ? <p className="text-[12.5px] text-ink-soft">No Linux o microfone é o padrão do sistema (PulseAudio), escolhido nas configurações de som. O nível aparece aqui enquanto você está numa voz.</p>
                 : (
-                    <>
-                        <select className="field w-full cursor-pointer text-[13px]" value={preferences.microphone} onChange={event => void voice.setPreference('microphone', event.target.value)}>
-                            <option value="">Microfone padrão</option>
-                            {devices.filter(device => device.deviceId !== 'default').map((device, index) => (
-                                <option key={device.deviceId} value={device.deviceId}>{device.label || `Microfone ${index + 1}`}</option>
-                            ))}
-                        </select>
-                        <div className="mt-2.5 flex items-center gap-2.5">
-                            <span className="text-[12.5px] text-ink-soft">Entrada</span>
-                            <span className="relative h-[7px] flex-1 overflow-hidden rounded-full bg-white/[0.08]">
-                                <span
-                                    className={`absolute inset-y-0 left-0 rounded-full transition-[width] duration-75 ${shown >= preferences.sensitivity ? 'bg-gradient-to-r from-brand to-online' : 'bg-white/25'}`}
-                                    style={{ width: `${shown}%` }}
-                                />
-                                {preferences.inputMode === 'voice' && <span className="absolute inset-y-0 w-px bg-danger" style={{ left: `${preferences.sensitivity}%` }} />}
-                            </span>
-                        </div>
-                        {meterError && <p className="mt-2 text-[12px] text-danger">{meterError}</p>}
-                    </>
+                    <select className="field w-full cursor-pointer text-[13px]" value={preferences.microphone} onChange={event => void voice.setPreference('microphone', event.target.value)}>
+                        <option value="">Microfone padrão</option>
+                        {microphones.map((device, index) => (
+                            <option key={device.deviceId} value={device.deviceId}>{device.label || `Microfone ${index + 1}`}</option>
+                        ))}
+                    </select>
                 )}
+
+            {(! native || voiceChannel) && (
+                <div className="mt-2.5 flex items-center gap-2.5">
+                    <span className="text-[12.5px] text-ink-soft">Entrada</span>
+                    <span className="relative h-[7px] flex-1 overflow-hidden rounded-full bg-white/[0.08]">
+                        <span
+                            className={`absolute inset-y-0 left-0 rounded-full transition-[width] duration-75 ${shown >= preferences.sensitivity ? 'bg-gradient-to-r from-brand to-online' : 'bg-white/25'}`}
+                            style={{ width: `${shown}%` }}
+                        />
+                        {preferences.inputMode === 'voice' && <span className="absolute inset-y-0 w-px bg-danger" style={{ left: `${preferences.sensitivity}%` }} />}
+                    </span>
+                </div>
+            )}
+            {meterError && <p className="mt-2 text-[12px] text-danger">{meterError}</p>}
 
             <div className="mt-4 flex flex-wrap gap-2">
                 {! native && toggle('noiseSuppression', 'Supressão de ruído')}
@@ -249,8 +279,17 @@ export function UserSettingsModal() {
                 <p className="mt-2 text-[12px] text-danger">O sistema recusou essa tecla (outro programa já usa): o microfone fica sempre aberto até você escolher outra.</p>
             )}
 
-            {native && preferences.inputMode === 'voice' && (
-                <p className="mt-2 text-[12px] text-ink-dim">No Linux o microfone é lido fora da janela, então a detecção de voz não mede o nível: use apertar para falar.</p>
+            {Media.canPickOutput() && (
+                <>
+                    <p className="label-mono mt-6 mb-2">Saída de áudio</p>
+                    <select className="field w-full cursor-pointer text-[13px]" value={preferences.speaker} onChange={event => void voice.setPreference('speaker', event.target.value)}>
+                        <option value="">Saída padrão</option>
+                        {speakers.map((device, index) => (
+                            <option key={device.deviceId} value={device.deviceId}>{device.label || `Saída ${index + 1}`}</option>
+                        ))}
+                    </select>
+                    <p className="mt-1.5 text-[11.5px] text-ink-dim">Vale para a voz das pessoas, o áudio das telas e os sons do app.</p>
+                </>
             )}
 
             <p className="label-mono mt-6 mb-2">Teclas</p>

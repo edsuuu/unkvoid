@@ -84,3 +84,22 @@ it('a landing mostra a versão e os links das plataformas publicadas', function 
 
     $this->get('/')->assertOk()->assertSee('v0.0.8')->assertSee(route('downloads.platform', 'linux'))->assertSee('Baixar o .deb');
 });
+
+it('abre a página inicial com o download', function (): void {
+    $this->get(route('home'))
+        ->assertOk()
+        ->assertSee('Baixar Unkvoid')
+        ->assertSee('apt install unkvoid');
+});
+
+it('abre a política de privacidade', function (): void {
+    $this->get(route('privacy'))
+        ->assertOk()
+        ->assertSee('Política de privacidade');
+});
+
+it('abre os termos de uso', function (): void {
+    $this->get(route('terms'))
+        ->assertOk()
+        ->assertSee('Termos de uso');
+});

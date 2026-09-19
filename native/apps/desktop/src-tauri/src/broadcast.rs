@@ -6,13 +6,111 @@
 //! não cresce com a plateia.
 
 use std::sync::{
-    Arc, Mutex, PoisonError,
+    Arc, Mutex, OnceLock, PoisonError,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
+use std::time::{Duration, Instant};
 
 use capture::{CaptureConfig, CaptureEvent, CaptureSource, PlatformCapturer};
-use media::{AudioEncoder, EncoderConfig, PlainSender, PlatformEncoder, Source};
-use tauri::State;
+use media::{AudioEncoder, BitrateGovernor, EncoderConfig, PlainSender, PlatformEncoder, Source};
+use tauri::{Emitter, State};
+
+/// De quanto em quanto tempo o governador da taxa recebe os números. Um segundo junta uns
+/// mil pacotes em 1080p60, amostra em que 5% de perda quer dizer alguma coisa. O encoder
+/// leva bem mais do que isso para chegar a uma taxa nova; quem espera por ele é a carência
+/// do governador, não esta janela.
+const RATE_WINDOW: Duration = Duration::from_secs(1);
+
+/// O encoder de vídeo e quem decide a taxa dele, atrás do mesmo cadeado: a decisão é
+/// aplicada na thread da captura, a única que toca no encoder, no cadeado que o quadro já
+/// tomaria de qualquer jeito.
+struct VideoEncoding {
+    encoder: PlatformEncoder,
+    governor: BitrateGovernor,
+    window_started: Instant,
+    nacked: u64,
+    dropped_before: u64,
+}
+
+impl VideoEncoding {
+    /// Fecha a janela: entrega os números ao governador e aplica o que ele decidir. Roda
+    /// uma vez por `RATE_WINDOW`; por quadro a thread da captura só soma contadores.
+    fn close_window(&mut self, now: Instant, packets: u64, dropped_total: u64) {
+        // Remetente novo (chave renovada) recomeça a contagem dele do zero.
+        let dropped = dropped_total.saturating_sub(self.dropped_before);
+
+        self.dropped_before = dropped_total;
+        self.window_started = now;
+
+        let Some(bitrate) = self.governor.observe(packets, std::mem::take(&mut self.nacked), dropped) else {
+            return;
+        };
+
+        if self.encoder.set_bitrate(bitrate) {
+            tracing::info!(
+                bitrate,
+                loss_permille = self.governor.loss_permille(),
+                "broadcast: a perda mudou a taxa do vídeo"
+            );
+
+            return;
+        }
+
+        self.governor.give_up();
+
+        tracing::info!("broadcast: este encoder não troca a taxa no ar, ela fica fixa");
+    }
+}
+
+/// Quantos blocos de 20 ms entram em cada nível que sai: cinco dão os dez por segundo que
+/// a detecção de voz da interface espera.
+const LEVEL_WINDOW_BLOCKS: u32 = 5;
+
+/// O nível do microfone para a detecção de voz da interface. No Linux o áudio do mic não
+/// passa pela janela, e sem isto ela não tem o que medir.
+///
+/// Sai o MAIOR bloco de cada janela, não a média: uma sílaba curta cabe num bloco de
+/// 20 ms e sumiria diluída nos outros quatro.
+#[derive(Default)]
+struct LevelMeter {
+    /// Só a voz põe alguém aqui. Tela e câmera ficam sem, e o bloco delas nem é medido.
+    sink: OnceLock<Box<dyn Fn(f32) + Send + Sync>>,
+    window: Mutex<(f32, u32)>,
+}
+
+impl LevelMeter {
+    fn push(&self, samples: &[f32]) {
+        let Some(sink) = self.sink.get() else {
+            return;
+        };
+
+        let level = rms(samples);
+        let mut window = self.window.lock().unwrap_or_else(PoisonError::into_inner);
+
+        window.0 = window.0.max(level);
+        window.1 += 1;
+
+        if window.1 < LEVEL_WINDOW_BLOCKS {
+            return;
+        }
+
+        let (peak, _) = std::mem::take(&mut *window);
+
+        drop(window);
+        sink(peak);
+    }
+}
+
+/// A raiz da média dos quadrados, linear, de 0 (silêncio) a 1 (onda quadrada no teto).
+fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+
+    let power = samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32;
+
+    power.sqrt().min(1.0)
+}
 
 /// O destino, compartilhado entre quem transmite (a thread da captura) e quem o define
 /// (o comando `use_sfu`, vindo da interface).
@@ -126,8 +224,9 @@ pub struct Broadcast {
     pub source: CaptureSource,
     /// `"gpu"` ou `"cpu"`: sem encoder na placa a interface avisa que a imagem caiu.
     encoder: &'static str,
-    /// Mudo é não mandar: o pipeline continua, o servidor só para de receber.
+    /// Mudo é mandar silêncio: o pipeline continua, e o servidor continua recebendo pacote.
     muted: Arc<AtomicBool>,
+    level: Arc<LevelMeter>,
     captured: Arc<AtomicU64>,
     encoded: Arc<AtomicU64>,
     sent: Arc<AtomicU64>,
@@ -150,6 +249,11 @@ pub struct Broadcast {
     /// Quantas vezes o servidor pediu um quadro-chave, ou seja, quantas vezes ele viu um
     /// buraco na sequência. É a medida de perda que existe entre nós e ele.
     keyframes: Arc<AtomicU64>,
+
+    /// A taxa que o governador pediu ao encoder, em bits por segundo, e a perda da última
+    /// janela medida, em ‰. Escritas uma vez por janela.
+    target_bitrate: Arc<AtomicU64>,
+    loss_permille: Arc<AtomicU64>,
 
     /// A receita desta transmissão, guardada para refazer captura e encoder com outra
     /// qualidade sem fechar o producer: o destino é o mesmo, e a sala não vê nada sumir.
@@ -193,7 +297,23 @@ impl Broadcast {
 
         tracing::info!(encoder = encoder_kind, "broadcast: encoder de vídeo aberto");
 
-        let encoder = Mutex::new(encoder);
+        // O remetente sobrevive à troca de qualidade, e o contador dele também: partir de
+        // zero faria a primeira janela ver como perda tudo o que já foi largado antes.
+        let dropped_so_far = target(&sfu).as_ref().map_or(0, PlainSender::dropped);
+
+        // O teto é a taxa com que o encoder abriu, não a pedida: no degrau do processador
+        // ela é a de 720p30, e governar pela pedida faria a primeira "queda" ser uma subida.
+        let target_bitrate = Arc::new(AtomicU64::new(u64::from(encoder.bitrate())));
+        let loss_permille = Arc::new(AtomicU64::new(0));
+        let video_packets = AtomicU64::new(0);
+
+        let encoding = Mutex::new(VideoEncoding {
+            governor: BitrateGovernor::from_env(encoder.bitrate()),
+            encoder,
+            window_started: Instant::now(),
+            nacked: 0,
+            dropped_before: dropped_so_far,
+        });
 
         tracing::info!("broadcast: abrindo o encoder de áudio");
 
@@ -203,12 +323,14 @@ impl Broadcast {
         let recipe = config.clone();
         let muted = Arc::new(AtomicBool::new(false));
         let muted_callback = Arc::clone(&muted);
+        let level = Arc::new(LevelMeter::default());
+        let level_callback = Arc::clone(&level);
         let captured = Arc::new(AtomicU64::new(0));
         let encoded = Arc::new(AtomicU64::new(0));
         let sent = Arc::new(AtomicU64::new(0));
         let encode_errors = Arc::new(AtomicU64::new(0));
         let send_errors = Arc::new(AtomicU64::new(0));
-        let send_dropped = Arc::new(AtomicU64::new(0));
+        let send_dropped = Arc::new(AtomicU64::new(dropped_so_far));
         let sent_bytes = Arc::new(AtomicU64::new(0));
         let audio_packets = Arc::new(AtomicU64::new(0));
         let audio_errors = Arc::new(AtomicU64::new(0));
@@ -225,6 +347,8 @@ impl Broadcast {
         let audio_errors_callback = Arc::clone(&audio_errors);
         let busy_us_callback = Arc::clone(&busy_us);
         let keyframes_callback = Arc::clone(&keyframes);
+        let target_bitrate_callback = Arc::clone(&target_bitrate);
+        let loss_permille_callback = Arc::clone(&loss_permille);
 
         tracing::info!(
             source = ?config.source,
@@ -237,9 +361,7 @@ impl Broadcast {
         let capturer = PlatformCapturer::start(
             &CaptureConfig { frame_rate: frame_rate as u32, ..config },
             move |event| {
-                if muted_callback.load(Ordering::Relaxed) {
-                    return;
-                }
+                let muted = muted_callback.load(Ordering::Relaxed);
 
                 let (frame, video_source) = match event {
                     CaptureEvent::Video(frame) => {
@@ -247,13 +369,31 @@ impl Broadcast {
                             return;
                         };
 
+                        if muted {
+                            return;
+                        }
+
                         captured_callback.fetch_add(1, Ordering::Relaxed);
                         (frame, video_source)
                     }
-                    CaptureEvent::Audio(block) => {
+                    CaptureEvent::Audio(mut block) => {
                         let Some(audio_source) = audio_source else {
                             return;
                         };
+
+                        // Medido ANTES do mudo, e com ele ligado também: na detecção de voz
+                        // é a interface que fecha o mic com `set_voice_muted` quando a
+                        // pessoa se cala, e só o nível subindo de novo o reabre.
+                        level_callback.push(&block.samples);
+
+                        // Mutado sobe silêncio, não nada. Entrar na voz já mutado é o
+                        // padrão: sem pacote nenhum o `comedia` do servidor nunca aprende
+                        // de onde o mic vem, o relógio de 30 s sem pacote mata o producer
+                        // (`producerDead`), e desmutar dava 404. É o que a trilha
+                        // desligada do WebRTC faz nos outros sistemas.
+                        if muted {
+                            block.samples.fill(0.0);
+                        }
 
                         let Ok(mut audio) = audio.lock() else {
                             audio_errors_callback.fetch_add(1, Ordering::Relaxed);
@@ -295,26 +435,40 @@ impl Broadcast {
                     return;
                 };
 
-                let started = std::time::Instant::now();
+                let started = Instant::now();
 
                 // Antes de codificar, e uma vez por quadro: é o único momento em que
                 // dá para atender o pedido, e ler o socket aqui custa uma syscall que
                 // volta vazia na esmagadora maioria dos quadros.
-                let asked = target(&capture_target)
+                let feedback = target(&capture_target)
                     .as_mut()
-                    .is_some_and(|sender| sender.read_feedback());
+                    .map(|sender| sender.read_feedback())
+                    .unwrap_or_default();
 
                 let encoded = {
-                    let Ok(mut encoder) = encoder.lock() else {
+                    let Ok(mut encoding) = encoding.lock() else {
                         return;
                     };
 
-                    if asked {
-                        encoder.request_keyframe();
+                    if feedback.keyframe {
+                        encoding.encoder.request_keyframe();
                         keyframes_callback.fetch_add(1, Ordering::Relaxed);
                     }
 
-                    match encoder.encode(surface, frame.timestamp_ns) {
+                    encoding.nacked += u64::from(feedback.lost);
+
+                    if started.duration_since(encoding.window_started) >= RATE_WINDOW {
+                        encoding.close_window(
+                            started,
+                            video_packets.swap(0, Ordering::Relaxed),
+                            send_dropped_callback.load(Ordering::Relaxed),
+                        );
+                        target_bitrate_callback.store(u64::from(encoding.governor.target()), Ordering::Relaxed);
+                        loss_permille_callback
+                            .store(u64::from(encoding.governor.loss_permille()), Ordering::Relaxed);
+                    }
+
+                    match encoding.encoder.encode(surface, frame.timestamp_ns) {
                         Ok(encoded) => {
                             encoded_callback.fetch_add(1, Ordering::Relaxed);
                             encoded
@@ -339,8 +493,9 @@ impl Broadcast {
                 // tokio, sessenta vezes por segundo, para fazer isto.
                 if let Some(sender) = target(&capture_target).as_mut() {
                     match sender.send_frame(video_source, encoded, frame_rate) {
-                        Ok(()) => {
+                        Ok(packets) => {
                             sent_callback.fetch_add(1, Ordering::Relaxed);
+                            video_packets.fetch_add(packets as u64, Ordering::Relaxed);
                             // Lido com o cadeado já na mão: uplink saturado larga pacote
                             // sem devolver erro, e sem este número some do diagnóstico.
                             send_dropped_callback.store(sender.dropped(), Ordering::Relaxed);
@@ -365,6 +520,7 @@ impl Broadcast {
             source,
             encoder: encoder_kind,
             muted,
+            level,
             captured,
             encoded,
             sent,
@@ -373,6 +529,8 @@ impl Broadcast {
             send_dropped,
             busy_us,
             keyframes,
+            target_bitrate,
+            loss_permille,
             sent_bytes,
             audio_packets,
             audio_errors,
@@ -419,6 +577,12 @@ impl Broadcast {
         self.muted.store(muted, Ordering::Relaxed);
     }
 
+    /// Para onde vai o nível do áudio capturado, uns dez por segundo. Vale uma vez por
+    /// transmissão, e só a voz chama.
+    pub fn on_level(&self, sink: impl Fn(f32) + Send + Sync + 'static) {
+        let _ = self.level.sink.set(Box::new(sink));
+    }
+
     pub fn frames(&self) -> u64 {
         self.capturer.frames_captured()
     }
@@ -435,6 +599,8 @@ impl Broadcast {
             "sendDropped": self.send_dropped.load(Ordering::Relaxed),
             "busyUs": self.busy_us.load(Ordering::Relaxed),
             "keyframesAsked": self.keyframes.load(Ordering::Relaxed),
+            "targetBitrate": self.target_bitrate.load(Ordering::Relaxed),
+            "lossPermille": self.loss_permille.load(Ordering::Relaxed),
             "sentBytes": self.sent_bytes.load(Ordering::Relaxed),
             "audioPackets": self.audio_packets.load(Ordering::Relaxed),
             "captureError": self.capturer.error(),
@@ -489,11 +655,12 @@ fn start_native(
     Err("not supported here: the webview does it".into())
 }
 
-/// O microfone padrão do sistema, pelo Rust.
+/// O microfone padrão do sistema, pelo Rust. Enquanto ele está aberto sai o evento
+/// `voice:level` com `{ level }`: o RMS linear de 0 a 1, uns dez por segundo, mutado ou não.
 ///
 /// ponytail: sempre o `@DEFAULT_SOURCE@`; um seletor de microfone traria o `device`.
 #[tauri::command]
-pub async fn start_voice(state: State<'_, ActiveSession>) -> Result<(), String> {
+pub async fn start_voice(app: tauri::AppHandle, state: State<'_, ActiveSession>) -> Result<(), String> {
     let mut session = state.0.lock().await;
 
     if session.voice.is_some() {
@@ -501,6 +668,16 @@ pub async fn start_voice(state: State<'_, ActiveSession>) -> Result<(), String> 
     }
 
     let voice = start_native(&session, CaptureSource::Microphone, None, Some(Source::Mic))?;
+    let emit_failed = AtomicBool::new(false);
+
+    voice.on_level(move |level| {
+        // Uma linha, na primeira vez: a janela que sumiu falha dez vezes por segundo.
+        if let Err(error) = app.emit("voice:level", serde_json::json!({ "level": level }))
+            && ! emit_failed.swap(true, Ordering::Relaxed)
+        {
+            tracing::warn!(error = %error, "voz: o nível do microfone não chegou à interface");
+        }
+    });
 
     session.voice = Some(voice);
 
@@ -571,4 +748,67 @@ pub async fn stop_camera(state: State<'_, ActiveSession>) -> Result<(), String> 
     session.release_if_idle();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rms_is_linear_from_silence_to_full_scale() {
+        assert_eq!(rms(&[]), 0.0, "bloco vazio não divide por zero");
+        assert_eq!(rms(&[0.0; 1920]), 0.0);
+
+        let square: Vec<f32> = (0..1920).map(|index| if index % 2 == 0 { 1.0 } else { -1.0 }).collect();
+
+        assert!((rms(&square) - 1.0).abs() < 1e-6, "onda quadrada no teto é 1");
+
+        let sine: Vec<f32> =
+            (0..1920).map(|index| 0.5 * (index as f32 * std::f32::consts::TAU / 96.0).sin()).collect();
+
+        assert!((rms(&sine) - 0.5 / 2.0_f32.sqrt()).abs() < 1e-4, "senoide de amplitude 0,5 dá 0,3536: {}", rms(&sine));
+        assert_eq!(rms(&[4.0, -4.0]), 1.0, "amostra estourada não passa de 1");
+    }
+
+    #[test]
+    fn the_level_is_the_loudest_block_of_each_window() {
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let meter = LevelMeter::default();
+
+        meter.push(&[1.0; 4]);
+
+        let sink = Arc::clone(&heard);
+
+        assert!(meter.sink.set(Box::new(move |level| sink.lock().unwrap().push(level))).is_ok());
+        assert_eq!(*meter.window.lock().unwrap(), (0.0, 0), "sem ninguém ouvindo o bloco nem é medido");
+
+        for amplitude in [0.0, 0.0, 0.5, 0.0] {
+            meter.push(&[amplitude; 4]);
+        }
+
+        assert!(heard.lock().unwrap().is_empty(), "quatro blocos ainda não fecham a janela");
+
+        meter.push(&[0.0; 4]);
+
+        assert_eq!(*heard.lock().unwrap(), [0.5], "a sílaba de um bloco só não some na média");
+
+        for _ in 0..LEVEL_WINDOW_BLOCKS {
+            meter.push(&[0.25; 4]);
+        }
+
+        assert_eq!(*heard.lock().unwrap(), [0.5, 0.25], "a janela seguinte começa do zero");
+    }
+
+    #[test]
+    fn a_muted_second_still_feeds_the_server_and_costs_little() {
+        let mut encoder = AudioEncoder::new(48_000).expect("encoder");
+        let silence = capture::AudioChunk { sample_rate: 48_000, channels: 2, samples: vec![0.0; 1920] };
+        let packets: Vec<Vec<u8>> = (0..50).flat_map(|_| encoder.push(&silence).expect("push")).collect();
+        let bytes: usize = packets.iter().map(Vec::len).sum();
+
+        assert_eq!(packets.len(), 50, "um pacote a cada 20 ms: é o que segura o relógio de 30 s do servidor");
+        // Sem DTX no `AudioEncoder`, o libopus daqui gasta 3 bytes por pacote de silêncio
+        // (150 em 1 s); o teto é folgado para outra versão dele não quebrar o teste.
+        assert!(bytes * 8 < 48_000 / 4, "silêncio custou {bytes} bytes em 1 s");
+    }
 }

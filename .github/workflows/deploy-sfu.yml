@@ -35,7 +35,7 @@ jobs:
 
       - run: |
           rsync -a --delete --exclude node_modules --exclude .env \
-            ./dist ./check.mjs ./check-heartbeat.mjs ./install.sh ./.env.example \
+            ./dist ./check.mjs ./install.sh ./.env.example \
             ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ./ecosystem.config.cjs \
             /var/www/projects/sfu/
       # O install roda SOLTO do runner, e não como filho deste passo.

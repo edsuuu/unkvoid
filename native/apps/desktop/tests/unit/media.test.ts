@@ -212,6 +212,43 @@ describe('o palco: o que cada origem vira e o que custa decoder', () => {
         app.sharing.store.set({ active: false });
     });
 
+    it('o producerDead do mic ou da câmera não derruba a tela: só tela e áudio da tela são da transmissão', async () => {
+        const stops: number[] = [];
+
+        failures.length = 0;
+        media.broadcast = { stop: async () => { stops.push(1); return 0; } };
+        app.sharing.store.set({ active: true });
+
+        await app.sharing.died({ source: 'mic' });
+        await app.sharing.died({ source: 'camera' });
+        await app.sharing.died(null);
+
+        expect(app.sharing.store.state.active, 'a tela continua no ar').toBe(true);
+        expect(stops.length).toBe(0);
+        expect(failures).toEqual([]);
+        expect(app.logs.some(line => line.includes('broadcast.dead.ignored')), 'o que foi ignorado fica no log').toBe(true);
+
+        app.sharing.store.set({ active: false });
+    });
+
+    it('tela revogada na retomada diz que foi a permissão, e não a porta de RTP, uma vez só', async () => {
+        failures.length = 0;
+        toasts.length = 0;
+        media.broadcast = { stop: async () => new Promise(resolve => setTimeout(() => resolve(0), 20)) };
+        app.sharing.store.set({ active: true });
+
+        await Promise.all([
+            app.sharing.died({ source: 'screen', reason: 'revoked' }),
+            app.sharing.died({ source: 'screenAudio', reason: 'revoked' }),
+        ]);
+
+        expect(app.sharing.store.state.active).toBe(false);
+        expect(failures.length).toBe(1);
+        expect(failures[0]).toMatch(/permissão de transmitir/);
+        expect(failures[0]).not.toMatch(/porta|30 s/);
+        expect(toasts.some(message => /segue sem som/.test(message)), 'o áudio revogado não vira "segue sem som"').toBe(false);
+    });
+
     it('assistir que o servidor recusa diz por quê', async () => {
         media.sfu = { canWatch: () => true, consumersHasProducer: () => false, consume: async () => { throw new Error('producer not found'); } };
 
@@ -251,5 +288,177 @@ describe('o palco: o que cada origem vira e o que custa decoder', () => {
 
         app.onKeyDown({ key: 'Escape', defaultPrevented: false });
         expect(exits, 'o Esc seguinte sai').toEqual(['nina']);
+    });
+});
+
+describe('o som de cada pessoa, e por onde ele sai', () => {
+    const track = { stop() {} };
+    const toasts: string[] = [];
+    const sinks: string[] = [];
+    let app: App;
+    let media: Media;
+
+    const micOf = (producerId: string) => media.micAudios.get(producerId)!;
+    const sinkOf = (audio: HTMLAudioElement) => (audio as HTMLAudioElement & { sinkId?: string }).sinkId ?? '';
+
+    beforeAll(() => {
+        window.__TAURI__ = { core: { invoke: async () => null }, event: { listen: async () => () => null } };
+        window.HTMLMediaElement.prototype.play = async () => undefined;
+        vi.stubGlobal('MediaStream', class {
+            tracks: unknown[];
+
+            constructor(tracks: unknown[] = []) {
+                this.tracks = tracks;
+            }
+
+            getTracks() {
+                return this.tracks;
+            }
+        });
+        Object.defineProperty(navigator, 'platform', { value: 'Win32', configurable: true });
+        localStorage.setItem(Media.VOICES_KEY, JSON.stringify({ 'user:7': { volume: 40, muted: false }, 'user:9': { volume: 'alto' } }));
+
+        app = new App();
+        media = app.media;
+        app.toast = message => toasts.push(message);
+        media.sfu = {
+            peerId: 'me',
+            canWatch: () => true,
+            consumerPeers: new Map(),
+            consumers: new Map(),
+            peers: new Map([
+                ['bia-1', { peerId: 'bia-1', userId: 'user:7', name: 'Bia', producers: [] }],
+                ['caio-1', { peerId: 'caio-1', userId: 'user:8', name: 'Caio', producers: [] }],
+            ]),
+        };
+        media.playMic('mic-bia', 'bia-1', track);
+        media.playMic('mic-caio', 'caio-1', track);
+    });
+
+    afterAll(() => {
+        delete (window.HTMLMediaElement.prototype as { setSinkId?: unknown }).setSinkId;
+        localStorage.clear();
+    });
+
+    it('o volume guardado por conta vale assim que a pessoa chega, e o que veio torto do disco é ignorado', () => {
+        expect(micOf('mic-bia').volume).toBeCloseTo(0.4);
+        expect(micOf('mic-caio').volume, 'sem nada guardado, cheio').toBe(1);
+        expect(media.store.state.voices).toEqual({ 'user:7': { volume: 40, muted: false } });
+    });
+
+    it('mexer no volume de uma pessoa mexe só nela, e fica guardado pela conta, não pelo peerId', () => {
+        media.setVoiceVolume('user:7', 25);
+
+        expect(micOf('mic-bia').volume).toBeCloseTo(0.25);
+        expect(micOf('mic-caio').volume).toBe(1);
+        expect(JSON.parse(localStorage.getItem(Media.VOICES_KEY)!)).toEqual({ 'user:7': { volume: 25, muted: false } });
+
+        media.forgetPeer('bia-1');
+        expect(media.micAudios.has('mic-bia')).toBe(false);
+
+        media.sfu!.peers.set('bia-2', { peerId: 'bia-2', userId: 'user:7', name: 'Bia', producers: [] });
+        media.playMic('mic-bia', 'bia-2', track);
+        expect(micOf('mic-bia').volume, 'voltou com outro peerId e o mesmo volume').toBeCloseTo(0.25);
+    });
+
+    it('o mudo só meu sobrevive ao ensurdecer geral, e voltar ao padrão apaga o que estava guardado', async () => {
+        media.toggleVoiceMute('user:7');
+        expect(micOf('mic-bia').muted).toBe(true);
+        expect(micOf('mic-caio').muted).toBe(false);
+
+        await media.setDeafened(true);
+        expect(micOf('mic-caio').muted).toBe(true);
+
+        await media.setDeafened(false);
+        expect(micOf('mic-caio').muted).toBe(false);
+        expect(micOf('mic-bia').muted, 'voltar a ouvir todo mundo não desfaz o mudo de uma pessoa').toBe(true);
+
+        media.setVoiceVolume('user:7', 0);
+        media.toggleVoiceMute('user:7');
+        expect(media.store.state.voices['user:7'], 'desmutar com o volume em zero sobe o volume').toBeUndefined();
+        expect(micOf('mic-bia').volume).toBe(1);
+        expect(micOf('mic-bia').muted).toBe(false);
+        expect(localStorage.getItem(Media.VOICES_KEY)).toBe('{}');
+    });
+
+    it('no Linux a voz toca pelo Rust, fora do alcance do volume: o controle some em vez de fingir', () => {
+        expect(media.canAdjustVoices()).toBe(true);
+
+        Object.defineProperty(navigator, 'platform', { value: 'Linux x86_64', configurable: true });
+        media.sfu!.canWatch = () => false;
+        expect(media.canAdjustVoices()).toBe(false);
+
+        Object.defineProperty(navigator, 'platform', { value: 'Win32', configurable: true });
+        media.sfu!.canWatch = () => true;
+    });
+
+    it('sem setSinkId no motor da janela não há seletor, e escolher saída não toca em nada', async () => {
+        expect(Media.canPickOutput()).toBe(false);
+
+        await app.hub.voice.setPreference('speaker', 'fone');
+        expect(sinkOf(micOf('mic-bia'))).toBe('');
+
+        await app.hub.voice.setPreference('speaker', '');
+    });
+
+    it('a saída escolhida vale para quem já toca, para quem chega depois e para os sons do app', async () => {
+        const soundOutputs: string[] = [];
+
+        window.HTMLMediaElement.prototype.setSinkId = function (this: HTMLAudioElement, deviceId: string) {
+            sinks.push(deviceId);
+
+            if (deviceId === 'quebrada') {
+                return Promise.reject(new DOMException('Requested device not found', 'NotFoundError'));
+            }
+
+            Object.defineProperty(this, 'sinkId', { value: deviceId, configurable: true });
+
+            return Promise.resolve();
+        };
+        app.sounds.setOutput = deviceId => soundOutputs.push(deviceId);
+        media.playScreenAudio('caio-1', track);
+
+        expect(Media.canPickOutput()).toBe(true);
+
+        await app.hub.voice.setPreference('speaker', 'fone');
+
+        expect(sinkOf(micOf('mic-bia'))).toBe('fone');
+        expect(sinkOf(micOf('mic-caio'))).toBe('fone');
+        expect(sinkOf(media.remoteAudios.get('caio-1')!), 'o áudio da tela também').toBe('fone');
+        expect(soundOutputs).toEqual(['fone']);
+        expect(JSON.parse(localStorage.getItem('unkvoid:voice')!).speaker).toBe('fone');
+
+        media.playMic('mic-novo', 'caio-1', track);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(sinkOf(micOf('mic-novo')), 'quem nasce depois já sai pela saída escolhida').toBe('fone');
+    });
+
+    it('a saída que sumiu volta para a padrão com aviso, sem derrubar nada; lista sem id não prova que sumiu', async () => {
+        toasts.length = 0;
+        Object.defineProperty(window.navigator, 'mediaDevices', {
+            value: { enumerateDevices: async () => [{ kind: 'audiooutput', deviceId: '' }] },
+            configurable: true,
+        });
+        await media.outputsChanged();
+        expect(app.hub.voice.store.state.preferences.speaker, 'sem permissão a lista vem sem id').toBe('fone');
+
+        navigator.mediaDevices.enumerateDevices = async () => [{ kind: 'audiooutput', deviceId: 'caixa' }, { kind: 'audioinput', deviceId: 'fone' }];
+        await media.outputsChanged();
+
+        expect(app.hub.voice.store.state.preferences.speaker).toBe('');
+        expect(sinkOf(micOf('mic-bia'))).toBe('');
+        expect(media.micAudios.size, 'ninguém parou de tocar').toBe(3);
+        expect(toasts).toEqual(['a saída de áudio escolhida sumiu: o som voltou para a saída padrão']);
+    });
+
+    it('o setSinkId que falha fica no log, avisa e cai para a saída padrão', async () => {
+        toasts.length = 0;
+
+        await app.hub.voice.setPreference('speaker', 'quebrada');
+
+        expect(app.logs.some(line => line.includes('media.output.error') && line.includes('Requested device not found'))).toBe(true);
+        expect(toasts).toEqual(['a saída de áudio escolhida não respondeu: o som voltou para a saída padrão']);
+        expect(app.hub.voice.store.state.preferences.speaker).toBe('');
+        expect(sinkOf(micOf('mic-bia'))).toBe('');
     });
 });
