@@ -354,7 +354,8 @@ ainda vale 60 s, então o `joined` de quem já não é membro dispara um `kick` 
   monta o manifesto a partir da tabela `releases`, com URLs do MinIO assinadas por 1 h. O
   app confere a assinatura minisign (a chave pública vai dentro do `tauri.conf.json`),
   instala e reinicia, **nunca dentro de uma sala**.
-- Publicar Windows e macOS: build no próprio sistema (à mão ou pelo `release.yml`) →
+- Publicar Windows e macOS: o `release.yml` compila num runner do GitHub a partir do repositório
+  (tag `v*` para o Windows, disparo à mão para o macOS; o build local é só para testar) →
   `publish-release.sh` → `POST /api/releases` assinado → instalador no MinIO e linha em
   `releases`. Esse é o único caminho: tirar uma versão ruim do ar é direto no banco.
 - Linux: `build-linux.yml` no runner da VPS gera o `.deb` e publica no repositório APT em

@@ -94,6 +94,23 @@ O índice está em [docs/README.md](docs/README.md). Os que mais se abre:
 | [docs/DECISOES.md](docs/DECISOES.md) | o que foi decidido e por quê |
 | [docs/SEGURANCA.md](docs/SEGURANCA.md) | o que é cifrado, o que está protegido e o que não está |
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by
+[SignPath Foundation](https://signpath.org).
+
+- **Committers and reviewers:** [edsuuu](https://github.com/edsuuu)
+- **Approvers:** [edsuuu](https://github.com/edsuuu)
+- Os instaladores do Windows e do macOS saem de build automatizado deste repositório
+  ([`.github/workflows/release.yml`](.github/workflows/release.yml), em runner do GitHub), e toda
+  versão passa por aprovação manual antes de ser assinada.
+- **Privacy policy:** <https://unkvoid.com/privacidade>. O app fala com `unkvoid.com` para
+  procurar atualização, para enviar relatório de erro e para o que a pessoa faz nele (salas,
+  chat, voz); o que é guardado está na política.
+
+A inscrição na SignPath Foundation está em análise. Até a aprovação, os instaladores levam só
+a assinatura do atualizador (minisign), e o Windows avisa que o editor é desconhecido.
+
 ## Contribuir
 
 Leia o [CONTRIBUTING.md](CONTRIBUTING.md) e o [Código de Conduta](CODE_OF_CONDUCT.md). Falha de
