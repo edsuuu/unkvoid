@@ -91,6 +91,14 @@ regras que o cliente precisa saber para não contar errado:
   volta);
 - quem está na carência de reconexão não conta como plateia.
 
+Cada pessoa em `peers` (resposta do `join`) vem como
+`{ peerId, userId, name, reconnecting, producers: [{ producerId, kind, source, paused }] }`.
+Na entrada nova, quem está na carência de reconexão fica de fora da lista. Na **retomada**
+(`resumed: true`) essa pessoa vem junto, com `reconnecting: true`: o app compara a lista com
+a que já tinha e reproduz o que perdeu na queda (`peerJoined`, `peerLeft`, `newProducer`,
+`producerClosed`, `producerPaused`/`Resumed`, `peerConnectionLost`/`Reconnected`). Sem quem
+caiu junto, ele não saberia dizer se a pessoa saiu ou só está voltando.
+
 `JoinResource` devolve `can: string[]` no lugar de `owner`. O app usa esse `can` (e não só
 os bits do canal) para decidir se liga o mic, a câmera e a tela: mutado pelo servidor
 chega sem `speak`. O SFU também manda `serverMuted { muted }` para a própria pessoa
@@ -130,7 +138,7 @@ Webhook do SFU para o Laravel, **fora do caminho do `join`**, fire-and-forget, p
 (`user:`) e visitante da sala por código (`guest:<installId>`, `room` com o código de 3 a
 32 caracteres). Em sala por código (qualquer `room` que não tenha 26 caracteres) o aviso só vira linha
 em `guest_accesses` (nome, sala, IP, entrada e saída; `install_id` é o id da instalação do
-visitante, ou `user:<id>` de quem entrou logado), na aba "Visitantes" de `/admin/auditoria`: não há canal nem conta a
+visitante, ou `user:<id>` de quem entrou logado), sem tela que a mostre por enquanto: não há canal nem conta a
 avisar. O SFU troca `installId` fora de `[A-Za-z0-9-]{1,64}` por um UUID sorteado.
 `POST {SFU_LARAVEL_URL}/api/sfu/events` com os mesmos cabeçalhos assinados:
 
@@ -162,8 +170,15 @@ Conta:
 |---|---|---|
 | `POST /api/auth/register` (público) | `{ email, password, device }` | `{ token, user }`. O apelido nasce de `User::freeNickname` sobre o e-mail, com `nickname_confirmed: false` |
 | `POST /api/auth/login` (público) | `{ email, password, device }` | `{ token, user }` |
-| `GET /api/me` | — | `{ id, name, email, avatar_url, admin, nickname_confirmed }` |
+| `GET /api/me` | — | `{ id, name, email, avatar_url, avatar_uploaded, admin, nickname_confirmed }` |
 | `PATCH /api/me` | `{ name }` (3 a 32 caracteres, `[A-Za-z0-9._]`, único; pode repetir o atual) | o mesmo `user`, agora com `nickname_confirmed: true`. Só enquanto `nickname_confirmed` for `false`: depois é 403 |
+| `POST /api/me/avatar` | `multipart`, campo `avatar` (jpeg/png/webp, ≤ 2 MB) | o mesmo `user`, com a foto nova; guarda no bucket privado e apaga a foto anterior |
+| `DELETE /api/me/avatar` | — | o mesmo `user` (200, não 204): tirar a foto enviada faz voltar a valer a do Google, e o app precisa do link novo |
+
+`avatar_url` é a foto que a pessoa enviou, pré-assinada e vencendo em 2 h; sem foto enviada é o link permanente do Google, e sem nenhuma das duas vem `null`.
+`avatar_uploaded` diz qual das duas é, e é o que decide se o app mostra "remover a foto". Toda
+imagem enviada vira uma linha em `files` (caminho no bucket, quem enviou, tipo e tamanho) e a
+conta aponta para ela por `avatar_id`.
 
 `nickname_confirmed` é `users.nickname_confirmed_at` não nulo. Nasce nulo no cadastro pelo app
 e na conta nova pelo Google (os dois ganham um apelido automático); nasce preenchido no
@@ -182,11 +197,11 @@ Servidores:
 | `POST /api/servers/{server}/invite` | — | `{ invite_code }` (regenera; `CREATE_INVITE`) |
 | `POST /api/invites/{code}` | — | `ServerResource` (entra; banido → 403) |
 | `POST /api/servers/{server}/leave` | — | 204 (dono → 403) |
-| `POST /api/servers/{server}/icon` | `multipart`, campo `icon` (jpeg/png/webp, ≤ 2 MB) | `ServerResource` (`MANAGE_SERVER`); guarda no mesmo bucket privado dos clipes e apaga o arquivo antigo |
+| `POST /api/servers/{server}/icon` | `multipart`, campo `icon` (jpeg/png/webp, ≤ 2 MB) | `ServerResource` (`MANAGE_SERVER`); guarda no mesmo bucket privado e apaga o arquivo antigo |
 | `DELETE /api/servers/{server}/icon` | — | 204 (`MANAGE_SERVER`); volta ao ícone padrão |
 | `GET /api/servers/{server}/audits` | — | as 50 entradas mais recentes do histórico do servidor (`VIEW_AUDIT_LOG`) |
 
-`icon_url` é pré-assinada e vence em 2 h, como a miniatura do clipe; sem ícone vem `null`.
+`icon_url` é pré-assinada e vence em 2 h, como a foto de perfil; sem ícone vem `null`.
 
 Auditoria (`GET /api/servers/{server}/audits`), do mais recente para o mais antigo, com o
 `meta`/`links` de paginação do Laravel:
@@ -321,81 +336,21 @@ desfez, e o par bloqueado some também da lista de conversas.
 é o mesmo para os dois lados, então ele **não leva `mine`** e leva `recipient`: quem recebe
 faz `mine = message.sender.id === euId` e `pessoa = mine ? recipient : message.sender`.
 
-## Clipes
-
-Só no modo servidor. A sala por código não clipa e não muda em nada.
-
-- O SFU guarda em anel os **últimos 5 minutos** de cada pessoa logada que compartilha
-  tela num canal de voz: o vídeo `screen` (copiado, sem recomprimir), o `screenAudio` e o
-  `mic` **dessa mesma pessoa**. A voz de mais ninguém da chamada entra. Parou de
-  compartilhar ou saiu da sala, o anel dela é apagado.
-- **Nada é guardado sem clique.** O que não foi clipado é sobrescrito. Clipar copia o que
-  o anel tem naquele instante (até 5 min), e só isso vai para o MinIO.
-- Quem clipa: quem está **dentro** daquele canal de voz agora (o SFU confere) e tem
-  `VIEW_CHANNEL` + `CONNECT` nele (o Laravel confere). Pode clipar a própria tela.
-- Quem vê: **só quem clipou**. Clipe de outra pessoa responde 404, nunca 403.
-- Expira em **7 dias**: some da lista e da API (404), e o Laravel apaga a linha e
-  `clips/{id}/` do MinIO. Sem teto de quantidade.
-- Formato: HLS VOD em `clips/{clip_id}/` no bucket privado — `index.m3u8`, `seg-NNN.ts`
-  (H.264 copiado + AAC 128 kbit/s com `screenAudio` e `mic` misturados; sem nenhum dos
-  dois, só vídeo), `thumb.jpg` e `clip.mp4` (o mesmo conteúdo num arquivo só, para baixar).
-- **Nenhuma URL de clipe é pública.** Bucket privado; miniatura, playlist, segmentos e
-  download saem sempre assinados e vencem.
-
-API (`auth:sanctum`, menos a playlist):
-
-| rota | corpo | resposta |
-|---|---|---|
-| `POST /api/channels/{channel}/clips` | `{ user_id }` (quem está transmitindo) | 202 `ClipResource` com `status: processing`. Canal de texto → 422; sem `VIEW_CHANNEL`+`CONNECT` → 403; SFU diz que a pessoa não transmite → 422; SFU diz que eu não estou na voz → 403; SFU fora → 503. Recusado, a linha não fica |
-| `GET /api/clips` | — | os meus, mais novo primeiro: `[ClipResource]` |
-| `GET /api/clips/{clip}` | — | `ClipResource` (não é meu → 404) |
-| `DELETE /api/clips/{clip}` | — | 204, e apaga `clips/{id}/` do MinIO (não é meu → 404) |
-| `GET /api/clips/{clip}/playlist.m3u8` | URL assinada pelo Laravel (`temporarySignedRoute`, 2 h), sem Sanctum — o player não manda cabeçalho | `application/vnd.apple.mpegurl`: o `index.m3u8` do MinIO com cada segmento trocado por URL pré-assinada do MinIO (2 h) |
-
-```json
-{ "id": "01j8…", "status": "processing", "streamer": { "id": 40, "name": "Fulano" },
-  "server_name": "Meu servidor", "channel_name": "Geral", "duration_ms": 300000, "size_bytes": 187000000,
-  "created_at": "…", "expires_at": "…", "thumbnail_url": null, "playlist_url": null, "download_url": null }
-```
-
-`thumbnail_url` e `download_url` (pré-assinadas do MinIO, 2 h; a de download com
-`Content-Disposition: attachment`) e `playlist_url` só vêm com `status: ready`. Os
-nomes são cópia do momento do clipe: sobrevivem a servidor, canal ou conta apagados.
-
-SFU, HTTP assinado (os mesmos cabeçalhos do `kick`):
-
-| rota | corpo | resposta |
-|---|---|---|
-| `POST /rooms/:code/clips` | `{ "clipId": "01j8…", "clipper": "user:12", "streamer": "user:40", "upload": { "url": "…", "fields": { … }, "prefix": "clips/01j8…/" } }` | 202 `{ accepted: true }` · 404 `streamer` sem anel nesta sala · 403 `clipper` fora da sala · 503 sem `ffmpeg` |
-
-`upload` é uma política de POST do S3 (`PostObjectV4`) que o Laravel assina, presa a
-`starts-with $key clips/{id}/` e válida por 30 min. O SFU sobe cada arquivo com
-`multipart/form-data` e nunca tem credencial do MinIO. O corpo leva **só** os `fields`, a
-`key` (`prefix` + nome do arquivo) e o `file`, com a `key` antes do `file`: qualquer campo a
-mais (até `Content-Type`) o MinIO recusa com 403. `upload.url` é `{endpoint}/{bucket}`.
-O Laravel pode repetir o mesmo `clipId` depois de um timeout: o SFU aceita de novo (202)
-sem gerar o clipe duas vezes.
-
-Webhook (o mesmo `POST /api/sfu/events`, os mesmos cabeçalhos):
-
-```json
-{ "event": "clip.ready",  "clipId": "01j8…", "durationMs": 300000, "sizeBytes": 187000000, "at": 1757640000 }
-{ "event": "clip.failed", "clipId": "01j8…", "reason": "…", "at": 1757640000 }
-```
-
-Env novo no SFU: `SFU_FFMPEG` (padrão `ffmpeg`) e `SFU_RECORDINGS_DIR` (padrão: a pasta
-temporária do sistema).
-
 ## Reverb (tempo real)
 
 Auth: `POST /broadcasting/auth` com `Authorization: Bearer <sanctum>`; o app usa
 `laravel-echo` + `pusher-js` com `authEndpoint` apontando para `{SERVER}/broadcasting/auth`.
 
+O protocolo do Pusher não reentrega o que se perdeu durante uma queda, e todo deploy do site
+reinicia o Reverb. Por isso, ao reconectar, o app busca de novo pela API os servidores, a
+árvore aberta, amigos, a lista de conversas, e as 50 mensagens mais recentes do canal e da
+conversa abertos, emendando com o que já estava na tela.
+
 | canal | quem entra | eventos |
 |---|---|---|
 | `private-channel.{ulid}` | `VIEW_CHANNEL` | texto: `MessageSent { message }`, `MessageUpdated { message }`, `MessageDeleted { id, channel_id }` · voz: `VoiceStateUpdated { channel_id, user_id, name, event: joined\|left }` (no canal privado da própria voz, para canal oculto não vazar quem está nele; o app assina o canal privado de cada voz que enxerga) |
 | `presence-server.{id}` | membro | (presença: `{ id, name, avatar_url }`) · `ServerUpdated { server_id }` (qualquer mudança de estrutura: o app refaz o `GET`) |
-| `private-user.{id}` | o próprio | `FriendshipUpdated { friendship, removed }` (`FriendResource`, nos canais dos **dois** lados) · `MemberRemoved { server_id, reason: kicked\|banned }` · `ClipUpdated { clip }` (`ClipResource`, quando fica `ready` ou `failed`) · `DirectMessageCreated { message, recipient }`, `DirectMessageUpdated { message, recipient }`, `DirectMessageDeleted { id }` (nos canais dos **dois** lados da conversa; `message` é o `DirectMessageResource` sem o `mine`) |
+| `private-user.{id}` | o próprio | `FriendshipUpdated { friendship, removed }` (`FriendResource`, nos canais dos **dois** lados) · `MemberRemoved { server_id, reason: kicked\|banned }` · `DirectMessageCreated { message, recipient }`, `DirectMessageUpdated { message, recipient }`, `DirectMessageDeleted { id }` (nos canais dos **dois** lados da conversa; `message` é o `DirectMessageResource` sem o `mine`) |
 
 ### Expulsar e banir cortam a pessoa de tudo
 
@@ -412,7 +367,6 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 
 ## App — o que aparece
 
-- Duas abas no topo: **Transmissão** (tudo o que está abaixo) e **Clipes**.
 - Entrada: a tela de código continua; ao lado, "Entrar" (e-mail/senha ou Google pelo
   `/oauth2/app?state=`, de volta pelo `unkvoid://`) e "Criar conta". Token do Sanctum em `localStorage`
   (`unkvoid:token`). Com token válido (`GET /api/me`), abre o modo servidor. Criar conta pelo
@@ -430,15 +384,10 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 - Entrar numa voz liga o microfone **mutado**; desmutar é da pessoa.
 - Modo servidor: trilho de servidores | canais (texto e voz, quem está em cada voz) |
   centro (chat ou palco) | membros com cargos. Barra de voz embaixo: mutar, ensurdecer,
-  câmera, **compartilhar tela (só aqui)**, **Clipar** (só quando alguém no canal
-  compartilha tela: abre a lista de quem transmite), sair.
+  câmera, **compartilhar tela (só aqui)**, sair.
 - Windows/macOS: mic e câmera pelo `getUserMedia` + `sendTransport.produce`. Linux:
   pelo Rust (`pulsesrc`/`v4l2src` → RTP puro), como a tela.
 - Áudio de `screenAudio` chega **mudo**. `mic` toca direto. `camera` vira cartão pequeno.
-- Aba Clipes sem login: o mesmo painel de entrar. Com login: os meus clipes (miniatura,
-  quem transmitia, servidor e canal, data, duração); `processing` com indicador, `failed`
-  com aviso; **Assistir** abre um mini player na própria aba (hls.js; HLS nativo onde
-  existir); **Baixar** usa o `download_url`; **Apagar** pede confirmação.
 
 ## App — comandos do Tauri
 
@@ -459,11 +408,13 @@ Tauri converte para o snake_case do Rust. Mudou um comando, mude aqui e em `ui/c
 | `list_cameras` | — | `[{id, …}]` | as câmeras, no Linux |
 | `machine_cores` | — | número de núcleos | registrado; a interface não chama hoje |
 | `start_broadcast` | `quality, fps, source, audio, muteCalls` | — | captura e encoder da tela |
+| `change_broadcast_quality` | `quality, fps` | — | troca resolução e fps no meio da transmissão, sem fechar os producers |
 | `stop_broadcast` | — | quadros enviados | para a tela; sem nenhuma origem subindo, solta o remetente e sorteia chave SRTP nova |
 | `broadcast_stats` | — | `{active, …, encoder: "gpu" \| "cpu"}` | a linha de números da transmissão |
 | `sfu_offer` | `source` (`screen`, `screenAudio`, `mic`, `camera`) | `{rtpParameters, srtpParameters}` | o corpo do `producePlain` |
 | `use_sfu` | `address, serverKey` | — | aponta o remetente para a porta do `producePlain`; repetir o mesmo endereço não faz nada |
 | `renew_sfu_key` | — | — | chave SRTP nova para republicar depois de o SFU reiniciar |
+| `set_shortcuts` | `bindings: [{action, accelerator}]` | `{registered, failed}` | atalhos do sistema (mutar, ensurdecer, falar apertando); cada tecla disparada chega no evento `shortcut` com `{action, pressed}` |
 | `start_voice` / `stop_voice` / `set_voice_muted` | — / — / `muted` | — | o mic pelo Rust (Linux) |
 | `start_camera` / `stop_camera` | `device` / — | — | a câmera pelo Rust (Linux) |
 | `watch_key` | — | chave SRTP em base64 | a chave de recepção do `consumePlain` |
@@ -472,14 +423,13 @@ Tauri converte para o snake_case do Rust. Mudou um comando, mude aqui e em `ui/c
 | `watch_mute` | `producerId, muted` | — | o Rust para de repassar o áudio da tela |
 | `watch_stats` | — | pacotes recebidos | registrado; a interface não chama hoje |
 | `google_login` | `server` (só http/https) | token do Sanctum | login pelo navegador do sistema, de volta pelo `unkvoid://login?token=&state=` |
-| `open_url` | `url` (só http/https) | — | baixar o clipe pelo navegador do sistema |
 
 ## Rodar tudo local (para testar antes de subir)
 
 Três processos e o app, todos na mesma máquina ou na mesma rede:
 
 ```bash
-# 1. Laravel (API, site, painel) + Reverb (chat e presença)
+# 1. Laravel (API e site) + Reverb (chat e presença)
 cd web && composer dev            # serve em :8000, fila, logs, vite
 cd web && php artisan reverb:start   # :8080
 

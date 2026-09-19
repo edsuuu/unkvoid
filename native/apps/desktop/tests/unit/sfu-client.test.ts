@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { SfuClient } from '../../ui/core/SfuClient.ts';
 
@@ -220,5 +220,76 @@ describe('cliente do SFU, ao entrar e publicar', () => {
         expect(client.sendTransport, 'sem transporte de envio depois de uma sessão nova').toBeNull();
         expect(client.sendTransportPromise).toBeNull();
         expect(transport.closed, 'o transporte antigo foi fechado').toBe(true);
+    });
+});
+
+describe('cliente do SFU, ao retomar a sessão', () => {
+    it('o que mudou durante a queda chega como os eventos que se perderam', async () => {
+        const client = new SfuClient();
+        const events: string[] = [];
+        const closed: string[] = [];
+
+        for (const name of ['peerJoined', 'peerLeft', 'newProducer', 'producerClosed', 'producerPaused', 'peerConnectionLost']) {
+            client.addEventListener(name, event => {
+                const { producerId, peerId } = (event as CustomEvent).detail;
+
+                events.push(`${name}:${producerId ?? peerId}`);
+            });
+        }
+
+        client.handleMessage({ event: 'peerJoined', data: { peerId: 'ana', userId: 'user:1', name: 'Ana' } });
+        client.handleMessage({ event: 'newProducer', data: { peerId: 'ana', producerId: 'tela-ana', kind: 'video', source: 'screen' } });
+        client.handleMessage({ event: 'newProducer', data: { peerId: 'ana', producerId: 'mic-ana', kind: 'audio', source: 'mic' } });
+        client.handleMessage({ event: 'peerJoined', data: { peerId: 'bia', userId: 'user:2', name: 'Bia' } });
+        client.consumers.set('c1', { producerId: 'tela-ana', close: () => closed.push('c1') });
+        client.consumerPeers.set('c1', 'ana');
+        client.identity = { token: 't' };
+        client.request = async () => ({
+            peerId: 'eu',
+            resumeKey: 'k',
+            resumed: true,
+            peers: [
+                { peerId: 'ana', userId: 'user:1', name: 'Ana', producers: [{ producerId: 'mic-ana', kind: 'audio', source: 'mic', paused: true }] },
+                { peerId: 'caio', userId: 'user:3', name: 'Caio', reconnecting: true, producers: [{ producerId: 'tela-caio', kind: 'video', source: 'screen' }] },
+            ],
+        });
+        events.length = 0;
+
+        await client.setup();
+
+        expect(events).toEqual([
+            'peerLeft:bia',
+            'producerClosed:tela-ana',
+            'producerPaused:mic-ana',
+            'peerJoined:caio',
+            'newProducer:tela-caio',
+            'peerConnectionLost:caio',
+        ]);
+        expect(closed, 'o consumer da tela que acabou fecha junto').toEqual(['c1']);
+        expect(client.consumers.size).toBe(0);
+        expect([...client.peers.keys()]).toEqual(['ana', 'caio']);
+        expect(client.peers.get('ana')?.sharing).toBe(false);
+        expect(client.peers.get('caio')?.reconnecting).toBe(true);
+    });
+
+    it('a reconexão espera um tempo sorteado, para a sala inteira não voltar no mesmo instante', () => {
+        const client = new SfuClient();
+        const delays: number[] = [];
+        const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+        const timer = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((_handler: () => void, delay: number) => {
+            delays.push(delay);
+
+            return 0;
+        }) as unknown as typeof setTimeout);
+
+        client.scheduleReconnect();
+        client.reconnectTimer = null;
+        random.mockReturnValue(1);
+        client.scheduleReconnect();
+
+        random.mockRestore();
+        timer.mockRestore();
+
+        expect(delays).toEqual([500, 2000]);
     });
 });

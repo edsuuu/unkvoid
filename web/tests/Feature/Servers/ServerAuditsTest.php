@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Enums\PermissionEnum;
+use App\Models\ChannelAudit;
 use App\Models\Server;
 use App\Models\User;
 use Illuminate\Support\Facades\Http;
@@ -78,4 +79,27 @@ it('o histórico exige VIEW_AUDIT_LOG e não mistura servidor com servidor', fun
         ->and($summaries)->not->toContain('criou o servidor Trabalho');
 
     $this->actingAs($stranger, 'sanctum')->getJson("/api/servers/{$other->id}/audits")->assertOk();
+});
+
+it('o histórico do canal guarda criação, renomeação e exclusão com o antes e o depois', function (): void {
+    $owner = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+
+    // Criar o servidor já semeia dois canais: é aí que o id ULID entra no histórico.
+    expect(ChannelAudit::query()->where('event', 'created')->count())->toBe(2);
+
+    $extra = $this->actingAs($owner, 'sanctum')
+        ->postJson("/api/servers/{$server->id}/channels", ['name' => 'links', 'type' => 'text'])
+        ->assertCreated()
+        ->json('data.id');
+
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$extra}", ['name' => 'avisos'])->assertOk();
+    $this->actingAs($owner, 'sanctum')->deleteJson("/api/channels/{$extra}")->assertNoContent();
+
+    $renamed = ChannelAudit::query()->where('event', 'updated')->where('channel_id', $extra)->firstOrFail();
+
+    expect($renamed->old_values['name'])->toBe('links')
+        ->and($renamed->new_values['name'])->toBe('avisos')
+        ->and($renamed->user_id)->toBe($owner->id)
+        ->and(ChannelAudit::query()->where('event', 'deleted')->where('channel_id', $extra)->firstOrFail()->old_values['name'])->toBe('avisos');
 });

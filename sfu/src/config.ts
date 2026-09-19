@@ -1,5 +1,5 @@
 import type { RouterRtpCodecCapability, WorkerLogTag } from 'mediasoup/types';
-import { availableParallelism, tmpdir } from 'node:os';
+import { availableParallelism } from 'node:os';
 
 /**
  * Sem o segredo o SFU não sobe. Ele assina o token de entrada e o cabeçalho das chamadas
@@ -24,14 +24,6 @@ export const config = {
     // Para onde vai o aviso de quem entrou e saiu de um canal. Vazio (o padrão) desliga
     // o aviso: um SFU que sobe sem configuração não pode ficar batendo em porta alheia.
     laravelUrl: process.env.SFU_LARAVEL_URL ?? '',
-
-    // Quem grava o anel dos clipes e monta o clipe. Sem ele executável o SFU sobe igual,
-    // só que sem clipes: a chamada não pode depender de um recurso de gravação.
-    ffmpeg: process.env.SFU_FFMPEG ?? 'ffmpeg',
-
-    // Onde mora o anel: disco, não memória. Cada transmissão segura os últimos 5 minutos
-    // copiados do encoder, o que a 8 Mbit/s são 300 MB.
-    recordingsDir: process.env.SFU_RECORDINGS_DIR || tmpdir(),
 
     // Teto de conexões novas por IP por minuto. A sala é anônima, então o que impede
     // varrer códigos é o custo de tentar — cada tentativa precisa de um socket novo.

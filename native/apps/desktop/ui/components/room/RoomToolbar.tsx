@@ -1,7 +1,6 @@
 import { Elapsed } from '../common/Elapsed.tsx';
 import { Icon } from '../common/Icon.tsx';
 import { ChannelsMenu } from '../hub/ChannelsMenu.tsx';
-import { ClipButton } from '../hub/ClipButton.tsx';
 import { useApp } from '../useApp.ts';
 import { useStore } from '../useStore.ts';
 import { PeopleMenu } from './PeopleMenu.tsx';
@@ -17,6 +16,7 @@ export function RoomToolbar({ mode, chatOpen = false, onToggleChat = null }: Roo
     const app = useApp();
     const voice = app.hub.voice;
     const { room } = useStore(app.store);
+    const { user } = useStore(app.hub.store);
     const { connectedAt, ping } = useStore(app.media.store);
     const { line } = useStore(app.sharing.store);
     const voiceState = useStore(voice.store);
@@ -40,6 +40,11 @@ export function RoomToolbar({ mode, chatOpen = false, onToggleChat = null }: Roo
                     )
                     : (
                         <>
+                            {user && (
+                                <button className="btn-icon size-[30px] rounded-[9px]" type="button" title="Sair da sala e ir para a Home" onClick={() => void app.goHome()}>
+                                    <Icon name="home" size={14} />
+                                </button>
+                            )}
                             <span className="label-mono">Sala</span>
                             <button className="code-chip flex cursor-pointer items-center gap-1.5 text-[12px] hover:text-ink-strong" type="button" title="Copiar o código para mandar a alguém" onClick={() => void app.copy(room ?? '', 'Código copiado')}>
                                 {room}
@@ -66,8 +71,6 @@ export function RoomToolbar({ mode, chatOpen = false, onToggleChat = null }: Roo
             </div>
 
             <div className="flex flex-none items-center gap-[7px]">
-                {inVoice && <ClipButton />}
-
                 {inVoice && voiceState.can.includes('video') && (
                     <button className={`btn-icon ${voiceState.cameraOn ? 'btn-icon-on' : ''}`} type="button" title={voiceState.cameraOn ? 'Desligar a câmera' : 'Ligar a câmera'} onClick={() => void voice.toggleCamera()}>
                         <Icon name={voiceState.cameraOn ? 'camera' : 'cameraOff'} size={17} />

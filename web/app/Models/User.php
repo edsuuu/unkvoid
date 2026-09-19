@@ -7,11 +7,15 @@ namespace App\Models;
 use App\Exceptions\ForbiddenException;
 use App\Models\Concerns\LogsFailedWrites;
 use App\Notifications\ResetPasswordNotification;
+use App\Services\Storage\BucketService;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Notifications\Notification;
 use Illuminate\Support\Facades\Config;
@@ -24,7 +28,7 @@ use Spatie\Permission\Models\Role;
 use Spatie\Permission\Traits\HasRoles;
 use Throwable;
 
-#[Fillable(['name', 'email', 'password', 'google_id', 'avatar_url', 'email_verified_at', 'nickname_confirmed_at'])]
+#[Fillable(['name', 'email', 'password', 'google_id', 'avatar_url', 'avatar_id', 'email_verified_at', 'nickname_confirmed_at'])]
 #[Hidden(['password', 'remember_token'])]
 final class User extends Authenticatable implements Auditable
 {
@@ -39,6 +43,14 @@ final class User extends Authenticatable implements Auditable
     use \OwenIt\Auditing\Auditable;
 
     public const string ROLE_ADMIN = 'Administrador';
+
+    /**
+     * A foto vem sempre junto: o avatar aparece em toda lista de membro, mensagem, amigo e
+     * conversa, e sem isso cada linha da lista viraria uma consulta.
+     *
+     * @var list<string>
+     */
+    protected $with = ['avatar'];
 
     /**
      * O id de dentro de um `user:<id>`.
@@ -91,6 +103,46 @@ final class User extends Authenticatable implements Auditable
         return ! is_null($this->nickname_confirmed_at);
     }
 
+    /**
+     * A foto que a pessoa manda vence a do Google. A antiga só sai depois que a conta já
+     * aponta para a nova: falhar aqui deixa lixo no bucket, nunca um avatar quebrado na tela.
+     *
+     * @throws Throwable
+     */
+    public function setAvatar(UploadedFile $avatar, BucketService $bucket): void
+    {
+        $previous = $this->avatar;
+        $file = File::put($this, $avatar, 'avatars', $bucket);
+
+        self::write('falha ao guardar a foto de perfil', fn () => $this->update(['avatar_id' => $file->id]), ['user_id' => $this->id]);
+
+        $this->setRelation('avatar', $file);
+
+        $previous?->forget();
+    }
+
+    /**
+     * @throws Throwable
+     */
+    public function removeAvatar(): void
+    {
+        $previous = $this->avatar;
+
+        self::write('falha ao tirar a foto de perfil', fn () => $this->update(['avatar_id' => null]), ['user_id' => $this->id]);
+
+        $this->setRelation('avatar', null);
+
+        $previous?->forget();
+    }
+
+    /**
+     * @return BelongsTo<File, $this>
+     */
+    public function avatar(): BelongsTo
+    {
+        return $this->belongsTo(File::class);
+    }
+
     public function initials(): string
     {
         return Str::of($this->name)
@@ -139,8 +191,8 @@ final class User extends Authenticatable implements Auditable
     #[Override]
     protected static function booted(): void
     {
-        // Quem entra com o e-mail do dono do projeto já nasce administrador. É o que
-        // permite abrir o painel na primeira vez, sem seeder nem senha.
+        // Quem entra com o e-mail do dono do projeto já nasce administrador, sem seeder nem
+        // senha: é o que liga o `admin` do `/api/me` e abre o log-viewer.
         self::created(function (User $user): void {
             $adminEmail = mb_strtolower(mb_trim(Config::string('unkvoid.admin_email')));
 
@@ -164,5 +216,16 @@ final class User extends Authenticatable implements Auditable
             'nickname_confirmed_at' => 'datetime',
             'password' => 'hashed',
         ];
+    }
+
+    /**
+     * A foto enviada vence a do Google, que é o que está na coluna. A URL do bucket sai
+     * assinada e vence.
+     *
+     * @return Attribute<?string, never>
+     */
+    protected function avatarUrl(): Attribute
+    {
+        return Attribute::get(fn (mixed $value): ?string => $this->avatar?->url() ?? (is_string($value) ? $value : null));
     }
 }

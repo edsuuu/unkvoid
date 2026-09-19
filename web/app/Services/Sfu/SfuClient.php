@@ -68,22 +68,6 @@ final readonly class SfuClient
     }
 
     /**
-     * @param  array{url: string, fields: array<string, string>, prefix: string}  $upload
-     * @return int o status do SFU; 503 quando ele nem respondeu
-     */
-    public function clip(Channel $channel, string $clipId, User $clipper, User $streamer, array $upload): int
-    {
-        $response = $this->call('POST', "/rooms/{$channel->id}/clips", [
-            'clipId' => $clipId,
-            'clipper' => $clipper->subject(),
-            'streamer' => $streamer->subject(),
-            'upload' => $upload,
-        ]);
-
-        return $response?->status() ?? 503;
-    }
-
-    /**
      * Quem está em cada sala: cache de 3 s entre requests e uma chamada só dentro do
      * mesmo request, mesmo que a árvore pergunte canal por canal. `fresh` esquece o cache
      * antes, para quem precisa contar de verdade.
@@ -186,8 +170,7 @@ final readonly class SfuClient
                 'method' => $method,
                 'path' => $path,
                 'headers' => [...$headers, 'X-Unkvoid-Signature' => '***'],
-                // O pedido de clipe leva a política de upload assinada, que vale 30 min no bucket.
-                'body' => isset($data['upload']) ? 'omitido: leva a política de upload assinada' : $body,
+                'body' => $body,
                 'status' => $response->status(),
                 'response' => $response->body(),
             ]);
@@ -207,8 +190,7 @@ final readonly class SfuClient
                 'message' => $exception->getMessage(),
                 'method' => $method,
                 'path' => $path,
-                // O pedido de clipe leva a política de upload assinada, que vale 30 min no bucket.
-                'body' => isset($data['upload']) ? 'omitido: leva a política de upload assinada' : $body,
+                'body' => $body,
             ]);
 
             return null;

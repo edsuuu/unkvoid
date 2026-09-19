@@ -17,7 +17,10 @@ export class JoinResource implements Resource {
             // Vai só para o dono da sessão. É com ela que ele volta depois de uma queda.
             resumeKey: this.peer.resumeKey,
             routerRtpCapabilities: this.room.router.rtpCapabilities,
-            peers: this.room.describePeers(this.peer.id),
+            // Quem retoma compara esta lista com a que já tinha para achar o que perdeu na
+            // queda. Sem quem está na carência, ela não saberia dizer se a pessoa saiu ou
+            // só caiu também.
+            peers: this.room.describePeers(this.peer.id, this.resumed),
             userId: this.peer.userId,
             // Só para desenhar a interface: o servidor confere de novo no `produce`.
             can: this.peer.can,

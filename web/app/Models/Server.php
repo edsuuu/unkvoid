@@ -237,7 +237,7 @@ final class Server extends Model implements Auditable
     }
 
     /**
-     * O bucket é privado: a URL sai assinada e vence, como a do clipe.
+     * O bucket é privado: a URL sai assinada e vence.
      */
     public function iconUrl(): ?string
     {
@@ -255,7 +255,7 @@ final class Server extends Model implements Auditable
     {
         $this->memberOrFail($actor)->authorize(PermissionEnum::ManageServer);
 
-        // Numa máquina nova o bucket pode não existir, e o ícone falharia igual ao clipe.
+        // Numa máquina nova o bucket pode não existir, e o ícone falharia no upload.
         $bucket->ensure();
 
         $previous = $this->icon_path;

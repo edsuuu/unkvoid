@@ -3,8 +3,6 @@ import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 
 import { config } from '../config.js';
 import { NotFoundException, ValidationException } from '../Exceptions/ApiException.js';
-import { Clip } from '../Services/Clip.js';
-import { Recorder } from '../Services/Recorder.js';
 import { RoomRegistry } from '../Services/RoomRegistry.js';
 import { Signature } from '../Services/Signature.js';
 import type { Session } from '../types.js';
@@ -17,7 +15,7 @@ const WINDOW_MS = 60_000;
 /** Um corpo maior que isto não é uma chamada do Laravel. */
 const MAX_BODY_BYTES = 16 * 1024;
 
-const ROOM_ACTION_PATH = /^\/rooms\/([a-z0-9-]+)\/(kick|mute|clips)$/;
+const ROOM_ACTION_PATH = /^\/rooms\/([a-z0-9-]+)\/(kick|mute)$/;
 
 /**
  * Um socket meio aberto — tampa do notebook fechada, Wi-Fi trocado por 4G — nunca manda
@@ -41,7 +39,6 @@ export class Server {
     private readonly alive = new WeakSet<WebSocket>();
 
     public async start(): Promise<void> {
-        Recorder.boot();
         await this.registry.boot();
 
         const http = createServer((request, response) => void this.serve(request, response));
@@ -97,13 +94,6 @@ export class Server {
                 const body = await this.body(request);
 
                 this.verifySignature(request, path, body);
-
-                if (roomAction[2] === 'clips') {
-                    Clip.accept(this.registry.find(roomAction[1]), Clip.order(body));
-                    this.reply(response, 202, { accepted: true });
-
-                    return;
-                }
 
                 const { userId, muted } = JSON.parse(body) as { userId?: unknown; muted?: unknown };
 

@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace App\Http\Requests\Api\Servers;
+namespace App\Http\Requests\Api\Auth;
 
 use Illuminate\Foundation\Http\FormRequest;
 
-final class StoreClipRequest extends FormRequest
+final class StoreAvatarRequest extends FormRequest
 {
     /**
      * @return array<string, array<int, mixed>>
@@ -14,7 +14,7 @@ final class StoreClipRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'user_id' => ['required', 'integer', 'exists:users,id'],
+            'avatar' => ['required', 'file', 'mimetypes:image/jpeg,image/png,image/webp', 'max:2048'],
         ];
     }
 }

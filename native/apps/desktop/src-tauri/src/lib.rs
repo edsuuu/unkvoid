@@ -845,7 +845,6 @@ pub fn run() {
             broadcast::stop_camera,
             shortcuts::set_shortcuts,
             login::google_login,
-            login::open_url,
             watch_key,
             watch_native,
             stop_watch,

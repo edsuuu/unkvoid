@@ -3,7 +3,7 @@ import { Failure } from './Failure.ts';
 import type { Hub } from './Hub.ts';
 import { Media } from './Media.ts';
 import { Mic } from './Mic.ts';
-import type { Channel, Clip } from './Models.ts';
+import type { Channel } from './Models.ts';
 import { Platform } from './Platform.ts';
 import { SfuClient, type JoinResponse, type PlainProducerResponse, type RoomIdentity, type SourceName } from './SfuClient.ts';
 import { Store } from './Store.ts';
@@ -26,8 +26,6 @@ export type VoicePreferences = {
     keybinds: Keybinds;
 };
 
-export type Streamer = { userId: number; name: string };
-
 export type VoiceState = {
     channel: Channel | null;
     joining: boolean;
@@ -36,7 +34,6 @@ export type VoiceState = {
     serverMuted: boolean;
     can: string[];
     cameraOn: boolean;
-    clipOpen: boolean;
     speaking: boolean;
     talkKeyRefused: boolean;
     micProblem: string;
@@ -98,7 +95,6 @@ export class Voice {
             serverMuted: false,
             can: [],
             cameraOn: false,
-            clipOpen: false,
             speaking: false,
             talkKeyRefused: false,
             micProblem: '',
@@ -218,7 +214,7 @@ export class Voice {
         this.muted = this.store.state.preferences.muteOnJoin;
         this.can = [];
         this.serverMuted = Boolean(this.hub.me()?.server_mute);
-        this.publish({ joining: true, clipOpen: false });
+        this.publish({ joining: true });
 
         try {
             const sfu = new SfuClient();
@@ -310,51 +306,8 @@ export class Voice {
         this.can = [];
         this.deafened = false;
         this.serverMuted = false;
-        this.publish({ joining: false, clipOpen: false });
+        this.publish({ joining: false });
         this.hub.publish({ stageOpen: false, focusedRoom: false });
-    }
-
-    streamers(): Streamer[] {
-        const streamers: Streamer[] = [];
-
-        if (! this.channel) {
-            return streamers;
-        }
-
-        for (const peer of this.app.media.sfu?.peers?.values() ?? []) {
-            if (peer.self && this.app.sharing.store.state.active) {
-                streamers.push({ userId: this.hub.user!.id, name: `${this.hub.user!.name} (você)` });
-            } else if (! peer.self && peer.sharing && peer.userId?.startsWith('user:')) {
-                streamers.push({ userId: Number(peer.userId.slice('user:'.length)), name: peer.name });
-            }
-        }
-
-        return streamers;
-    }
-
-    toggleClipList(): void {
-        this.store.set(state => ({ clipOpen: ! state.clipOpen }));
-    }
-
-    closeEmptyClipList(): void {
-        if (this.store.state.clipOpen && this.streamers().length === 0) {
-            this.store.set({ clipOpen: false });
-        }
-    }
-
-    async clip(streamer: Streamer): Promise<void> {
-        const channel = this.channel;
-
-        this.store.set({ clipOpen: false });
-
-        const created = await this.hub.attempt(() => this.hub.api.post<Clip>(`/api/channels/${channel!.id}/clips`, { user_id: streamer.userId }));
-
-        if (! created) {
-            return;
-        }
-
-        this.app.toast('Clipando os últimos 5 min — vai aparecer na aba Clipes');
-        this.hub.clips.update(created);
     }
 
     async publishNative(source: SourceName): Promise<string> {
