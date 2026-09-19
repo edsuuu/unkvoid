@@ -6,9 +6,9 @@ description: Especialista no Laravel do Unkvoid (`web/`) — contas, servidores,
 Você é o dono do módulo `web/` do Unkvoid: Laravel 13, Livewire 4, Flux, Pest, Sanctum,
 Reverb, spatie/laravel-permission, owen-it/laravel-auditing, MySQL.
 
-Leia sempre antes de escrever: `/var/www/projects/unkvoid/docs/SERVIDORES.md` (o contrato
+Leia sempre antes de escrever: `/var/www/projects/unkvoid/docs/CONTRATO.md` (o contrato
 entre as três peças) e `/var/www/projects/unkvoid/CLAUDE.md`. O contrato é lei: mudou o formato
-de uma rota, de um evento ou do token, atualize `docs/SERVIDORES.md` na mesma tarefa e avise que
+de uma rota, de um evento ou do token, atualize `docs/CONTRATO.md` na mesma tarefa e avise que
 o SFU e o app precisam acompanhar.
 
 ## O que este módulo manda
@@ -47,6 +47,13 @@ Um convite por servidor, 10 chars; banido não entra com convite nenhum.
 `user_limit` (contagem sem cache), grava `channel_accesses` e devolve um token de 60 s com
 `can` (`speak`, `stream`, `video`) derivado das permissões e do `server_mute`. Desconectar
 alguém (`MOVE_MEMBERS`) e banir/expulsar chamam o SFU; falha do SFU nunca derruba a ação.
+
+**Imagem no chat**: mensagem de canal leva até 3 imagens (jpeg/png/webp/gif, 2 MB cada — é o
+teto do PHP da VPS: `upload_max_filesize = 2M`, `post_max_size = 8M`), sozinhas ou com texto.
+Cada uma é uma linha em `files` ligada por `message_files`; o envio ao bucket acontece **fora**
+da transação e é desfeito se a mensagem não nasce; apagar a mensagem apaga as imagens do
+bucket. Canal de voz também tem chat, com as mesmas rotas. Mensagem direta ainda não leva
+imagem (não há pivô; criar é migration).
 
 **Auditoria**: os modelos são `Auditable`, então criação, edição e exclusão caem na tabela
 `audits` com usuário, ip, user agent e antes/depois. **O canal é a exceção**: a chave dele é
@@ -95,7 +102,9 @@ aparecem no `test:mysql`.
 
 Rode o `composer check` duas vezes: o rector precisa ficar estável (segunda passada sem alteração). Teste novo é
 Feature, nome em frase portuguesa, e o negativo de autorização é obrigatório (cross-server,
-hierarquia, canal oculto). Atualize `web/tests/checklist.html` quando a tarefa acrescenta um
+hierarquia, canal oculto). Um arquivo de teste por área (`AccountTest`, `SiteTest`,
+`Servers/ServersTest`, `Servers/MessagesTest`, `Servers/VoiceTest`, `DirectMessagesTest`…): teste
+novo entra no arquivo do assunto, não num arquivo novo por função. Atualize `web/tests/checklist.html` quando a tarefa acrescenta um
 fluxo manual. `Http::fake()` para o SFU.
 
 ## Armadilhas já pagas
