@@ -42,11 +42,12 @@ perguntas que esperam o dono. O histórico das sessões saiu do repositório e c
 - Largura da tela Retina em pontos ou pixels, e a pergunta de encoder de hardware feita antes
   do primeiro quadro.
 - `set_bitrate` do VideoToolbox (`kVTCompressionPropertyKey_AverageBitRate`), escrito em
-  19/09/2026 pela leitura do binding: **nunca compilou num Mac**. Sem teto de rajada
-  (`DataRateLimits` pede um `CFArray`).
+  19/09/2026 pela leitura do binding. Sem teto de rajada (`DataRateLimits` pede um `CFArray`).
+- **Compila, e ninguém abriu.** Em 19/09/2026 o `release.yml` compilou e empacotou o `.app` e o
+  `.dmg` num `macos-latest` do GitHub, sem publicar — é a primeira vez que o código do Mac
+  compila desde a 0.0.29. Rodar, ninguém rodou.
 - **Nenhuma versão do macOS está no manifesto de atualização** (conferido em 19/09/2026: o
-  `latest.json` só tem as três chaves `windows-*`). Quem está no Mac não recebe nada, e tudo o
-  que entrou desde a 0.0.29 nunca compilou lá.
+  `latest.json` só tem as três chaves `windows-*`). Quem está no Mac não recebe nada.
 
 ### Linux
 
@@ -102,11 +103,16 @@ perguntas que esperam o dono. O histórico das sessões saiu do repositório e c
 
 ## O que falta fazer
 
-- **macOS sem release.** O bloqueio era de cobrança: o `release.yml` roda em runner do GitHub e o
-  repositório era privado. **O repositório agora é público**, e runner padrão é de graça em
-  repositório público: vale disparar o `release.yml` à mão com `platform: macos` e ver se volta a
-  passar. Antes de publicar, alguém precisa abrir o app num Mac — é muito código que nunca
-  compilou lá.
+- **macOS sem release.** O bloqueio era de cobrança, e caiu quando o repositório ficou público:
+  o `release.yml` voltou a rodar nos runners do GitHub (19/09/2026) e o macOS compila lá. Falta
+  alguém abrir o app num Mac antes de publicar: `gh workflow run release.yml -f platform=macos
+  -f publish=false` deixa o `.dmg` como artefato do run para testar.
+- **Assinatura de código do Windows (SignPath Foundation).** Inscrição enviada em 19/09/2026, em
+  análise. O que eles conferem já existe: a página `/code-signing-policy`, a seção no README, a
+  licença MIT e a release saindo do `release.yml`. Quando aprovarem, falta o passo de assinatura
+  no fluxo (a ordem está em [AUTO-UPDATE.md](AUTO-UPDATE.md#de-onde-sai-a-release)) e
+  autenticação em dois fatores na conta do GitHub. Até lá o Windows avisa que o editor é
+  desconhecido.
 - **Áudio do Discord vazando no Windows.** A exclusão é por nome de executável. Em 0.0.38
   entraram os clientes alternativos mais comuns (Vesktop, ArmCord/Legcord, WebCord). Continua sem
   conserto: o Discord aberto **no navegador** (entra pela árvore do Chrome, e nome não distingue),
@@ -140,8 +146,6 @@ perguntas que esperam o dono. O histórico das sessões saiu do repositório e c
   [SEGURANCA.md](SEGURANCA.md).
 - **VPS:** remover os projetos antigos (backup em `/home/ubuntu/backups/2026-09-10`), depois de
   confirmada a lista.
-- **Histórico do git:** 77 mensagens de commit com linha de co-autor. A reescrita foi aprovada e
-  não foi executada; exige force-push na `main` e re-clone — e o repositório agora é público.
 - **O Ubuntu 24.04 não distribui o `webrtcdsp`**, que o `microphone_pipeline()` usa para cancelar
   eco, tratar ruído e ganho: sem ele o microfone do Linux vai cru (o Caso 4 de
   `native/tests/linux` avisa). O caminho de saída é o `module-echo-cancel aec_method=webrtc` do
