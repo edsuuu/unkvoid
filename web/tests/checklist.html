@@ -130,6 +130,19 @@
   <label><input type="checkbox"><span>Janela do app: botão direito não abre menu do navegador, texto da interface não seleciona por arrasto, F5 não recarrega, Ctrl+roda não dá zoom — mas Ctrl+= ainda aumenta (acessibilidade)</span></label>
   <label><input type="checkbox"><span>Windows: entrar na voz pede o microfone pelo sistema, sem o balão do WebView2</span></label>
   <label><input type="checkbox"><span>Linux (contêiner): os seis casos de <code>native/tests/linux/cenarios.sh</code> passam, e o Caso 1 não tem nenhum segundo sem quadro</span><i class="tag auto">docker</i></label>
+
+  <h2>Imagem no chat e chat do canal de voz</h2>
+  <label><input type="checkbox"><span>POST de mensagem por multipart com <code>images[]</code> (1 a 3, jpeg/png/webp/gif, até 2 MB cada): com imagem o corpo é opcional, sem imagem continua obrigatório; 4 imagens, mais de 2 MB ou PDF dão 422 e nada vai para o bucket</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>A resposta, o GET de mensagens, o MessageSent e o MessageUpdated trazem <code>files: [{ id, url, mime_type, size }]</code> (vazio sem imagem), e o GET carrega os arquivos numa consulta só</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>Sem SEND_MESSAGES, de fora do servidor ou em canal oculto a imagem não sobe: a recusa vem antes do upload</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>Editar para corpo vazio só vale em mensagem com imagem; quem não é o autor leva 403, não 422</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>Apagar a mensagem (autor ou MANAGE_MESSAGES) tira as imagens do bucket, de <code>files</code> e da pivô; bucket fora do ar fica no log e não segura a exclusão; mensagem que não nasce não deixa imagem órfã</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>Canal de voz tem chat com as mesmas permissões do de texto (VIEW_CHANNEL lê, SEND_MESSAGES escreve, oculto dá 403), e mensagem direta continua sem imagem</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>Ponta a ponta com o MinIO de verdade: mandar 3 imagens pelo app, elas aparecem na outra máquina sem refazer o GET, e o link abre no navegador</span></label>
+  <label><input type="checkbox"><span>Deixar o app aberto por mais de 2 h: a imagem antiga quebra, e reconectar (ou reabrir o canal) traz link novo</span></label>
+  <label><input type="checkbox"><span>Apagar no app uma mensagem com imagem e conferir no console do MinIO que o objeto saiu de <code>messages/{id de quem enviou}/</code></span></label>
+  <label><input type="checkbox"><span>Na VPS, mandar 3 imagens perto de 2 MB cada: passa pelo nginx e pelo PHP (2 MB por arquivo, 8 MB por pedido); acima disso o app tem de ter reduzido antes</span></label>
+  <label><input type="checkbox"><span>Entrar numa voz e escrever no chat ao lado do palco: quem está na mesma voz recebe na hora, e quem não enxerga o canal não recebe</span></label>
 </main>
 <script>
   const boxes = [...document.querySelectorAll('input[type=checkbox]')];

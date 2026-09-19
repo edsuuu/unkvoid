@@ -7,10 +7,12 @@ use App\Events\DirectMessageCreated;
 use App\Events\DirectMessageDeleted;
 use App\Events\DirectMessageUpdated;
 use App\Models\DirectMessage;
+use App\Models\File;
 use App\Models\Friendship;
 use App\Models\Server;
 use App\Models\User;
 use Illuminate\Broadcasting\PrivateChannel;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 
@@ -203,4 +205,26 @@ it('marcar a conversa como lida zera o contador do outro lado', function (): voi
     $this->actingAs($alice, 'sanctum')->postJson("/api/dm/{$bob->id}/read")->assertNoContent();
 
     expect($this->actingAs($alice, 'sanctum')->getJson('/api/dm')->assertOk()->json('data.0.unread'))->toBe(0);
+});
+
+it('mensagem direta não leva imagem: sem corpo continua 422, no envio e na edição', function (): void {
+    Http::fake();
+    $alice = User::factory()->create();
+    $bob = User::factory()->create();
+    befriend($alice, $bob);
+
+    $this->actingAs($alice, 'sanctum')
+        ->postJson("/api/dm/{$bob->id}", ['images' => [UploadedFile::fake()->image('um.jpg')]])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('body');
+
+    $messageId = $this->actingAs($alice, 'sanctum')
+        ->postJson("/api/dm/{$bob->id}", ['body' => 'com foto', 'images' => [UploadedFile::fake()->image('um.jpg')]])
+        ->assertCreated()
+        ->assertJsonMissingPath('data.files')
+        ->json('data.id');
+
+    $this->actingAs($alice, 'sanctum')->patchJson("/api/dm/{$messageId}", ['body' => ''])->assertUnprocessable()->assertJsonValidationErrors('body');
+
+    expect(File::query()->count())->toBe(0);
 });

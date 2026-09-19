@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api;
 
+use App\Http\Requests\Api\Friends\StoreDirectMessageRequest;
+use App\Http\Requests\Api\Friends\UpdateDirectMessageRequest;
 use App\Http\Requests\Api\Servers\IndexMessageRequest;
-use App\Http\Requests\Api\Servers\StoreMessageRequest;
-use App\Http\Requests\Api\Servers\UpdateMessageRequest;
 use App\Http\Resources\Api\ConversationResource;
 use App\Http\Resources\Api\DirectMessageResource;
 use App\Models\DirectMessage;
@@ -49,7 +49,7 @@ final class DirectMessageController
     /**
      * @throws Throwable
      */
-    public function store(StoreMessageRequest $request, User $user, #[CurrentUser] User $sender): DirectMessageResource
+    public function store(StoreDirectMessageRequest $request, User $user, #[CurrentUser] User $sender): DirectMessageResource
     {
         return new DirectMessageResource(DirectMessage::send($sender, $user, $request->string('body')->toString()));
     }
@@ -57,7 +57,7 @@ final class DirectMessageController
     /**
      * @throws Throwable
      */
-    public function update(UpdateMessageRequest $request, DirectMessage $directMessage, #[CurrentUser] User $user): DirectMessageResource
+    public function update(UpdateDirectMessageRequest $request, DirectMessage $directMessage, #[CurrentUser] User $user): DirectMessageResource
     {
         $directMessage->edit($user, $request->string('body')->toString());
 
