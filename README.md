@@ -100,12 +100,14 @@ Sai em `native\target\release\bundle\msi\Unkvoid_<versão>_x64_en-US.msi`.
 Para o `.msi` sair assinado — **sem assinatura ninguém se atualiza sozinho**:
 
 ```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $HOME\.tauri\unkvoid.key -Raw
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $HOME\auxilos\unkvoid.key -Raw
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 ```
 
-A chave pública já está no `tauri.conf.json`; a privada é `~/.tauri/unkvoid.key` e precisa
-ser copiada para a máquina que gera o build.
+A chave pública já está no `tauri.conf.json`; a privada é `~/auxilos/unkvoid.key` e precisa
+ser copiada para a máquina que gera o build. O `~/.tauri/unkvoid.key` do WSL e do Windows é
+o par **antigo**: assina sem reclamar e o app recusa a atualização. O
+[docs/AUTO-UPDATE.md](docs/AUTO-UPDATE.md) diz como conferir o identificador.
 
 ### macOS
 
@@ -135,19 +137,20 @@ vazia (o caminho é `pipewiresrc` via portal). Sem lista de janelas ainda.
 
 ### Publicar uma release
 
-Não há GitHub Actions — o build é feito na máquina de quem tem o sistema, e a release é
-montada localmente com o `gh` autenticado:
+A release não passa pelo GitHub: cada instalador vai para o site pela API assinada do
+`publish-release.sh`, o Laravel o guarda no MinIO e monta o
+`https://unkvoid.com/downloads/latest.json` que o app lê. Cada sistema registra só a sua
+linha, então publicar o Windows não tira o macOS.
 
-```bash
-cd native/apps/desktop
-node release.mjs --dry-run   # mostra o que achou
-node release.mjs             # cria/atualiza a release e o latest.json
-```
+- **GitHub Actions** (`.github/workflows/release.yml`): uma tag `v*` compila e publica o
+  Windows; o disparo à mão escolhe macOS, Windows ou os dois. Usa os secrets
+  `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` e `RELEASE_SECRET`.
+- **Na mão**, da máquina que compilou: `./publish-release.sh <plataforma> <instalador> <.sig>`,
+  ou `make publish-windows`. O Linux sai pelo repositório APT.
 
-O script lê o `latest.json` já publicado e mescla, então subir o Windows depois do macOS
-não deixa os Macs sem para onde atualizar. **A release não pode ser marcada como
-pré-lançamento**: o endpoint do auto-update é `/releases/latest/download/latest.json`, e o
-"latest" do GitHub ignora pré-lançamentos — a URL responde 404 e ninguém atualiza.
+Os três sistemas saem na mesma versão: o manifesto anuncia a mais nova entre todas as
+plataformas, e o sistema que ficar para trás entra em laço de atualização. O passo a passo
+está em [docs/AUTO-UPDATE.md](docs/AUTO-UPDATE.md).
 
 ## O servidor
 
@@ -159,6 +162,9 @@ pnpm install
 pnpm run build
 ./deploy.sh vps      # rsync + pm2 restart + confere o /health
 ```
+
+Isso é o deploy à mão. Push em `main` que toca `sfu/` ou `web/` já faz o deploy sozinho
+(`deploy-sfu.yml`, `deploy-web.yml`, num runner na própria VPS).
 
 | Porta | Protocolo | Para quê |
 |---|---|---|
@@ -208,8 +214,9 @@ cargo run -p media --example plain -- <ws> <sala>     # o SFU confirmando que re
 
 ## Documentos
 
-O mapa de tudo (peças, fluxos, portas, deploy) está em [ARQUITETURA.md](ARQUITETURA.md). O
-detalhe de cada assunto, em [`docs/`](docs/):
+Para uma visão geral do fluxo e da estrutura de pastas, comece por [`doc.md`](doc.md). O
+mapa de cada peça, dos fluxos, das portas e do deploy está em [ARQUITETURA.md](ARQUITETURA.md).
+O resto está em [`docs/`](docs/):
 
 | Arquivo | O que tem |
 |---|---|
