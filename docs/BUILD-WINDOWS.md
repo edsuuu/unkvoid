@@ -1,5 +1,9 @@
 # Build e instalação no Windows
 
+> **A release de verdade sai do `release.yml`**, num runner do GitHub (ver
+> [AUTO-UPDATE.md](AUTO-UPDATE.md#de-onde-sai-a-release)). O que está aqui é o build **local**:
+> para testar um instalador antes de soltar a tag, e como saída de emergência.
+
 Saem dois instaladores da mesma compilação: o `.exe` do NSIS, que é o que a pessoa
 baixa do site, e o `.msi` do WiX, que é o que se instala por política de rede. Os
 dois precisam rodar no Windows — nenhum dos dois se gera em Linux.

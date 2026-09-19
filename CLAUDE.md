@@ -91,8 +91,9 @@ O `cargo` do Linux precisa de `cmake` no PATH (o Opus compila em C); sem ele o c
 Windows não compila de dentro do WSL: espelhe `native/` em `/mnt/c/Users/edsu/unkvoid-build/` com
 `rsync` e use `/mnt/c/Users/edsu/.cargo/bin/cargo.exe` — com
 `export CMAKE='<cmake.exe do Build Tools>' WSLENV="CMAKE:$WSLENV"` antes, porque o PATH do WSL não
-chega ao `cargo.exe`. O instalador **assinado** sai do `native/apps/desktop/build-windows.ps1` e a
-publicação é `make publish-windows`; o passo a passo está em
+chega ao `cargo.exe`. A **release** do Windows sai do `release.yml` (tag `v<versão>`, ou disparo à mão com
+`publish=false` para só compilar); o `native/apps/desktop/build-windows.ps1` é o build local,
+para testar. O passo a passo está em
 [docs/BUILD-WINDOWS.md](docs/BUILD-WINDOWS.md) e [docs/AUTO-UPDATE.md](docs/AUTO-UPDATE.md).
 
 ## Como escrever código aqui

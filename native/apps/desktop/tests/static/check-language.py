@@ -80,7 +80,7 @@ def main():
             dentro = False
             lidos += 1
 
-            for numero, linha in enumerate(caminho.read_text(errors='ignore').splitlines(), 1):
+            for numero, linha in enumerate(caminho.read_text(encoding='utf-8', errors='ignore').splitlines(), 1):
                 codigo, dentro = sem_comentario(linha, dentro)
 
                 # Texto entre aspas é o que o usuário lê, e continua em português.

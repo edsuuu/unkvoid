@@ -103,3 +103,22 @@ it('abre os termos de uso', function (): void {
         ->assertOk()
         ->assertSee('Termos de uso');
 });
+
+it('abre a política de assinatura de código com a frase, os papéis e a privacidade que a SignPath exige', function (): void {
+    $this->get('/code-signing-policy')
+        ->assertOk()
+        ->assertSee('<h1>Code signing policy</h1>', false)
+        ->assertSeeText('Free code signing provided by SignPath.io, certificate by SignPath Foundation')
+        ->assertSee('<a href="https://about.signpath.io">SignPath.io</a>', false)
+        ->assertSee('<a href="https://signpath.org">SignPath Foundation</a>', false)
+        ->assertSeeInOrder(['Committers and reviewers', 'https://github.com/edsuuu', 'Approvers', 'https://github.com/edsuuu'])
+        ->assertSee('https://github.com/edsuuu/unkvoid')
+        ->assertSee('<a href="'.route('privacy').'" wire:navigate>Política de privacidade</a>', false);
+});
+
+it('a página inicial aponta para a política de assinatura de código nos downloads e no rodapé', function (): void {
+    $this->get(route('home'))
+        ->assertOk()
+        ->assertSee('<a href="'.route('code-signing').'" class="lp-link" wire:navigate>Code signing policy</a>', false)
+        ->assertSee('<a href="'.route('code-signing').'">Code signing policy</a>', false);
+});

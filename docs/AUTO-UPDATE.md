@@ -93,6 +93,39 @@ rm -f native/target/release/bundle/macos/rw.*.dmg
 
 ## Windows
 
+### De onde sai a release
+
+**Do `release.yml`, num runner do GitHub, a partir do próprio repositório** — e não da máquina
+de ninguém. É o que a assinatura de código exige (a SignPath Foundation só assina build
+automatizado e verificável; a política está no [README](../README.md#code-signing-policy)), e
+funciona de novo desde que o repositório ficou público: runner padrão é de graça ali.
+
+```bash
+# a versão do tauri.conf.json já subiu e está na main
+git tag v0.0.39 && git push origin v0.0.39          # compila, confere a assinatura e publica o Windows
+
+gh workflow run release.yml -f platform=windows -f publish=false   # só compila: os instaladores ficam como artefato do run
+gh workflow run release.yml -f platform=macos                      # o macOS, só por disparo à mão
+```
+
+A tag tem de bater com a versão do `tauri.conf.json`, senão o fluxo para antes de compilar. Os
+secrets do repositório que ele usa: `TAURI_SIGNING_PRIVATE_KEY` (o par `9a18c9243ef59b08`; para
+trocar, `gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/auxilos/unkvoid.key`) e `RELEASE_SECRET`. O
+passo `check-signature.mjs` derruba o fluxo **antes de publicar** se a chave do secret não for a
+do app.
+
+Quando a SignPath aprovar o projeto, a assinatura Authenticode entra entre o build e a
+publicação, nesta ordem: compilar → guardar os instaladores como artefato do run (a SignPath só
+aceita o que veio dali) → pedir a assinatura e esperar a aprovação manual → **refazer o `.sig` do
+atualizador** em cima do instalador já assinado (`npx tauri signer sign`), porque assinar muda os
+bytes e o `.sig` antigo deixa de valer → publicar. O artefato do run já existe; o resto depende
+dos identificadores que a SignPath entrega na aprovação.
+
+O build local (`build-windows.ps1`, abaixo) continua existindo para testar um instalador antes
+de soltar a tag, e como saída de emergência.
+
+### Os dois instaladores
+
 Saem dois instaladores, e os dois são publicados: o `.exe` do NSIS, que é o que a
 pessoa baixa do site, e o `.msi`, que é o que a empresa instala por política. Cada
 um vira uma chave própria no manifesto, porque o app se atualiza pelo mesmo
@@ -126,7 +159,7 @@ Sem a chave, ou com a chave errada, o build para com erro. É de propósito: um
 build sem `.sig`, ou com `.sig` de outro par, sobe igual e não atualiza ninguém,
 enquanto a publicação parece certa.
 
-### A cada versão
+### O build local
 
 No PowerShell, para compilar e assinar — o script lê o código direto do WSL, então
 não há nada a copiar antes:

@@ -456,6 +456,10 @@ fn app_version(app: tauri::AppHandle) -> String {
 /// Tamanho da janela depois que o app está pronto para uso.
 const APP_SIZE: (f64, f64) = (1280.0, 800.0);
 
+/// O menor tamanho em que a interface ainda cabe inteira: trilho, canais, centro e membros.
+#[cfg(not(target_os = "macos"))]
+const MIN_SIZE: (f64, f64) = (940.0, 600.0);
+
 /// Cresce a janela quando a abertura termina.
 ///
 /// Ela nasce pequena de propósito: procurar atualização numa janela de 1280 por 800
@@ -466,12 +470,19 @@ fn expand_window(window: tauri::Window) -> Result<(), String> {
 
     let paint = |erro: tauri::Error| erro.to_string();
 
-    // Sem piso de tamanho aqui. Definir um mínimo enquanto a janela ainda é a pequena
-    // fazia o macOS crescê-la até o próprio mínimo e engolir este `set_size`: ela
-    // parava em 940x600 em vez de 1280x800, nas duas ordens possíveis. O piso é um
-    // luxo; abrir do tamanho certo não é.
     window
         .set_size(LogicalSize::new(APP_SIZE.0, APP_SIZE.1))
+        .map_err(paint)?;
+
+    // O piso vem depois do tamanho, e fora do macOS. Lá, definir um mínimo enquanto a
+    // janela ainda é a pequena fazia o sistema crescê-la até o próprio mínimo e engolir o
+    // `set_size`: ela parava em 940x600 em vez de 1280x800, nas duas ordens possíveis.
+    // Abrir do tamanho certo vale mais do que o piso.
+    // ponytail: o macOS fica sem piso; a saída é defini-lo no primeiro evento de
+    // redimensionamento, quando a janela já chegou ao tamanho final.
+    #[cfg(not(target_os = "macos"))]
+    window
+        .set_min_size(Some(LogicalSize::new(MIN_SIZE.0, MIN_SIZE.1)))
         .map_err(paint)?;
 
     // O `center()` usa o tamanho que a janela tem na hora da chamada, e no macOS o
