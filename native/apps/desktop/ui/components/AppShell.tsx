@@ -1,4 +1,3 @@
-import { ClipsView } from './clips/ClipsView.tsx';
 import { EntryScreen } from './entry/EntryScreen.tsx';
 import { HubModals } from './hub/HubModals.tsx';
 import { HubScreen } from './hub/HubScreen.tsx';
@@ -14,7 +13,7 @@ import { useStore } from './useStore.ts';
 
 export function AppShell() {
     const app = useApp();
-    const { screen, tab } = useStore(app.store);
+    const { screen } = useStore(app.store);
 
     return (
         <div className="flex h-screen flex-col overflow-hidden">
@@ -24,12 +23,9 @@ export function AppShell() {
             {['entry', 'room', 'hub'].includes(screen) && (
                 <>
                     <main className="relative min-h-0 flex-1">
-                        <div className="h-full" hidden={tab !== 'broadcast'}>
-                            {screen === 'entry' && <EntryScreen />}
-                            {screen === 'room' && <RoomScreen />}
-                            {screen === 'hub' && <HubScreen />}
-                        </div>
-                        {tab === 'clips' && <ClipsView />}
+                        {screen === 'entry' && <EntryScreen />}
+                        {screen === 'room' && <RoomScreen />}
+                        {screen === 'hub' && <HubScreen />}
                     </main>
                 </>
             )}

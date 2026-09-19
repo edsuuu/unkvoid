@@ -12,10 +12,7 @@
         "erasableSyntaxOnly": true,
         "noFallthroughCasesInSwitch": true,
         "skipLibCheck": true,
-        "types": ["vite/client"],
-        "paths": {
-            "hls.js/light": ["./node_modules/hls.js/dist/hls.d.mts"]
-        }
+        "types": ["vite/client"]
     },
     "include": ["ui"]
 }

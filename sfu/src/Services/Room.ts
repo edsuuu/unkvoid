@@ -271,13 +271,14 @@ export class Room {
         this.onEvicted?.(this);
     }
 
-    public describePeers(exceptPeerId?: string): PeerDescription[] {
+    public describePeers(exceptPeerId?: string, withOrphans = false): PeerDescription[] {
         return [...this.peers.values()]
-            .filter((peer) => peer.id !== exceptPeerId && !peer.isOrphaned())
+            .filter((peer) => peer.id !== exceptPeerId && (withOrphans || !peer.isOrphaned()))
             .map((peer) => ({
                 peerId: peer.id,
                 userId: peer.userId,
                 name: peer.name,
+                reconnecting: peer.isOrphaned(),
                 producers: peer.describeProducers(),
             }));
     }

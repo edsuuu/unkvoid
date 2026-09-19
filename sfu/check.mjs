@@ -8,12 +8,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { createSocket } from 'node:dgram';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { Readable } from 'node:stream';
 import { after, before, test } from 'node:test';
 
 const URL_WS = process.env.SFU_CHECK_URL ?? 'ws://127.0.0.1:3000/sfu';
@@ -351,6 +346,47 @@ test('sem resume:true a sessão volta limpa, porque o cliente não tem transport
 
     assert.equal(limpa.resumed, false, 'sem resume:true NÃO pode retomar — o cliente não tem transporte');
     reaberto.close();
+});
+
+test('quem retoma recebe também quem está na carência, e quem chega não', async () => {
+    // O app que retoma compara esta lista com a que já tinha: sem quem caiu junto, não
+    // saberia dizer se a pessoa saiu da sala ou só está voltando também.
+    const sala = 'checkroom002';
+    const quemFica = await abrir();
+    const ficou = await entrar(quemFica, { token: token({ room: sala, sub: '70', name: 'Fica', can: TUDO }) });
+
+    let reply = await quemFica.call('producePlain', audioPuro('mic', 0x701));
+    assert.equal(reply.ok, true, `o mic deveria subir: ${JSON.stringify(reply)}`);
+    reply = await quemFica.call('pauseProducer', { producerId: reply.data.producerId });
+    assert.equal(reply.ok, true, 'e pausar');
+
+    const quemCai = await abrir();
+    const caiu = await entrar(quemCai, { token: token({ room: sala, sub: '71', name: 'Cai', can: TUDO }) });
+
+    quemFica.close();
+    quemCai.close();
+    await espera(800);
+
+    const volta = await abrir();
+    const retomada = await entrar(volta, {
+        token: token({ room: sala, sub: '71', name: 'Cai', can: TUDO }),
+        resumeKey: caiu.resumeKey,
+        resume: true,
+    });
+    const fica = retomada.peers.find(peer => peer.peerId === ficou.peerId);
+
+    assert.equal(retomada.resumed, true, 'a sessão é retomada');
+    assert.equal(fica?.reconnecting, true, 'quem caiu junto vem na lista, marcado');
+    assert.equal(fica.producers[0].paused, true, 'e o mic pausado vem pausado');
+
+    const novo = await abrir();
+    const chegada = await entrar(novo, { token: token({ room: sala, sub: '72', name: 'Novo', can: TUDO }) });
+
+    assert.ok(!chegada.peers.some(peer => peer.peerId === ficou.peerId), 'quem chega não vê quem está na carência');
+    assert.equal(chegada.peers.find(peer => peer.peerId === caiu.peerId)?.reconnecting, false, 'e vê quem voltou como presente');
+
+    volta.close();
+    novo.close();
 });
 
 test('a mesma conta entrando de novo derruba a sessão antiga, nesta sala ou em outra', async () => {
@@ -774,306 +810,5 @@ test('o webhook avisa o Laravel de quem entrou e saiu, assinado', async () => {
         // segurando o runner de teste para sempre.
         server.kill('SIGKILL');
         laravel.close();
-    }
-});
-
-const FFMPEG = process.env.SFU_FFMPEG ?? 'ffmpeg';
-const FFPROBE = FFMPEG.includes('/') ? join(dirname(FFMPEG), 'ffprobe') : 'ffprobe';
-
-/** Roda até o fim e devolve a saída inteira. */
-const execute = (command, args) =>
-    new Promise((resolve, reject) => {
-        const child = spawn(command, args);
-        let stdout = '';
-        let stderr = '';
-
-        child.stdout.on('data', chunk => (stdout += chunk));
-        child.stderr.on('data', chunk => (stderr += chunk));
-        child.on('error', reject);
-        child.on('exit', code => resolve({ code, stdout, stderr }));
-    });
-
-const until = async (probe, ms) => {
-    for (const deadline = Date.now() + ms; Date.now() < deadline; await espera(200)) {
-        const found = probe();
-
-        if (found) {
-            return found;
-        }
-    }
-
-    throw new Error(`nada em ${ms} ms`);
-};
-
-/**
- * Onde cada clarão da tela e cada bipe caem no clipe. A fonte pisca a cada 5 s com o bipe
- * do áudio da tela junto, e o mic bipa 2,5 s depois de cada clarão: a distância medida é
- * o erro de sincronia.
- */
-const markers = async file => {
-    const { stderr } = await execute(FFMPEG, [
-        '-nostdin', '-i', file,
-        '-filter_complex', '[0:v]signalstats,metadata=mode=print:key=lavfi.signalstats.YAVG[v];[0:a]silencedetect=n=-30dB:d=0.02[a]',
-        '-map', '[v]', '-map', '[a]', '-f', 'null', '-',
-    ]);
-    const flashes = [];
-    const beeps = [];
-    let at = 0;
-    let previous = 0;
-
-    for (const line of stderr.split('\n')) {
-        const frame = line.match(/pts_time:([\d.]+)/);
-        const brightness = line.match(/YAVG=([\d.]+)/);
-        const beep = line.match(/silence_end: ([\d.]+)/);
-
-        if (frame) {
-            at = Number(frame[1]);
-        } else if (brightness) {
-            if (Number(brightness[1]) > 100 && previous <= 100) {
-                flashes.push(at);
-            }
-
-            previous = Number(brightness[1]);
-        } else if (beep) {
-            beeps.push(Number(beep[1]));
-        }
-    }
-
-    const offsets = phase => flashes
-        .map(flash => beeps.map(beep => beep - flash - phase).find(delta => Math.abs(delta) < 0.3))
-        .filter(delta => delta !== undefined);
-
-    return { flashes, screenAudio: offsets(0), mic: offsets(2.5) };
-};
-
-test('o clipe grava a tela de quem transmite num canal, mistura o áudio e sobe para o bucket', async () => {
-    const recordings = mkdtempSync(join(tmpdir(), 'unkvoid-recordings-'));
-    const bucket = mkdtempSync(join(tmpdir(), 'unkvoid-bucket-'));
-    const clipId = '01k9c1ip000000000000000000';
-    const prefix = `clips/${clipId}/`;
-    const fields = { policy: 'cG9saWN5', 'x-amz-signature': 'assinatura' };
-    const events = [];
-
-    const http = createServer(async (request, response) => {
-        const body = new Response(Readable.toWeb(request), { headers: { 'content-type': request.headers['content-type'] ?? '' } });
-
-        if (request.url === '/api/sfu/events') {
-            events.push({ headers: request.headers, body: await body.text() });
-            response.end('{}');
-
-            return;
-        }
-
-        // Como o MinIO: os campos da política, a key, o arquivo por último, e nada a mais.
-        const form = await body.formData();
-        const names = [...form.keys()];
-        const key = String(form.get('key'));
-        const accepted = names.every(name => name in fields || name === 'key' || name === 'file')
-            && Object.keys(fields).every(name => names.includes(name))
-            && names.at(-1) === 'file'
-            && names.indexOf('key') < names.indexOf('file')
-            && key.startsWith(prefix);
-
-        if (!accepted) {
-            response.statusCode = 403;
-            response.end(`campos recusados: ${names.join(',')}`);
-
-            return;
-        }
-
-        writeFileSync(join(bucket, key.slice(prefix.length)), Buffer.from(await form.get('file').arrayBuffer()));
-        response.statusCode = 204;
-        response.end();
-    });
-
-    await new Promise(resolve => http.listen(0, '127.0.0.1', resolve));
-
-    const relay = createSocket('udp4');
-
-    await new Promise(resolve => relay.bind(0, '127.0.0.1', resolve));
-
-    const port = 3196;
-    const laravel = `http://127.0.0.1:${http.address().port}`;
-    const channel = '01k9c1ipr00m00000000000000';
-    const rings = join(recordings, `unkvoid-sfu-${port}`, 'rings');
-    const server = await startSfu(port, {
-        SFU_MEDIA_PORT: '40600',
-        SFU_PLAIN_PORT: '42100',
-        SFU_LARAVEL_URL: laravel,
-        SFU_RECORDINGS_DIR: recordings,
-    });
-    const withoutFfmpeg = await startSfu(3195, {
-        SFU_MEDIA_PORT: '40700',
-        SFU_PLAIN_PORT: '42200',
-        SFU_LARAVEL_URL: '',
-        SFU_FFMPEG: '/nao/existe/ffmpeg',
-    });
-    let sender;
-
-    const askClip = (order, room = channel, target = port) => {
-        const path = `/rooms/${room}/clips`;
-        const body = JSON.stringify({ clipId, upload: { url: `${laravel}/bucket`, fields, prefix }, ...order });
-
-        return fetch(`http://127.0.0.1:${target}${path}`, { method: 'POST', body, headers: signed('POST', path, body) });
-    };
-
-    try {
-        let http503 = await askClip({ clipper: 'user:41', streamer: 'user:40' }, channel, 3195);
-        assert.equal(http503.status, 503, 'sem ffmpeg executável o pedido de clipe é 503');
-        withoutFfmpeg.kill('SIGKILL');
-
-        const connect = async () => {
-            const client = new Client(`ws://127.0.0.1:${port}/sfu`);
-
-            await client.open();
-            abertos.push(client);
-
-            return client;
-        };
-
-        const streamer = await connect();
-        const clipper = await connect();
-        const codeRoom = await connect();
-
-        await entrar(streamer, { token: token({ room: channel, sub: 'user:40', name: 'Transmite', can: TUDO }) });
-        await entrar(clipper, { token: token({ room: channel, sub: 'user:41', name: 'Clipa', can: TUDO }) });
-        await entrar(codeRoom, { token: token({ room: 'clipscode01', sub: 'user:42', name: 'Sala por código', can: TUDO }) });
-
-        const screen = await streamer.call('producePlain', videoPuro('screen', 0x5000));
-        assert.equal(screen.ok, true, `a tela tem de ser aceita: ${JSON.stringify(screen)}`);
-        assert.equal((await streamer.call('producePlain', audioPuro('screenAudio', 0x5001))).ok, true, 'e o áudio da tela');
-        assert.equal((await codeRoom.call('producePlain', videoPuro('screen', 0x6000))).ok, true, 'a sala por código também transmite');
-
-        // O ingest aprende um endereço só: as três mídias saem por um socket, como no app.
-        relay.on('message', (packet, from) => from.port !== screen.data.port && relay.send(packet, screen.data.port, '127.0.0.1'));
-
-        const srtp = ['-srtp_out_suite', 'AES_CM_128_HMAC_SHA1_80', '-srtp_out_params', Buffer.alloc(30, 7).toString('base64')];
-        const destination = `srtp://127.0.0.1:${relay.address().port}`;
-        const opus = ssrc => ['-ac', '2', '-c:a', 'libopus', '-b:a', '64k', '-f', 'rtp', '-payload_type', '111', '-ssrc', String(ssrc), ...srtp, destination];
-        const startedAt = Date.now();
-        const waitUntil = second => espera(Math.max(0, startedAt + second * 1000 - Date.now()));
-
-        sender = spawn(FFMPEG, [
-            '-nostdin', '-loglevel', 'error',
-            '-re', '-t', '60', '-f', 'lavfi', '-i', "color=c=black:s=640x360:r=30,drawbox=c=white:t=fill:enable='lt(mod(t\\,5)\\,0.1)'",
-            '-re', '-t', '60', '-f', 'lavfi', '-i', "aevalsrc='if(lt(mod(t,5),0.1),0.5*sin(2*PI*440*t),0)':s=48000",
-            '-re', '-t', '60', '-f', 'lavfi', '-i', "aevalsrc='if(between(mod(t,5),2.5,2.6),0.5*sin(2*PI*880*t),0)':s=48000",
-            '-map', '0:v', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-bf', '0', '-g', '30', '-profile:v', 'baseline',
-            '-f', 'rtp', '-payload_type', '96', '-ssrc', String(0x5000), ...srtp, destination,
-            '-map', '1:a', ...opus(0x5001),
-            '-map', '2:a', ...opus(0x5002),
-        ], { stdio: ['ignore', 'ignore', 'inherit'] });
-
-        // O mic aparece depois da tela e fica mudo no meio: o anel da tela não pode esperar.
-        await waitUntil(4);
-        const mic = await streamer.call('producePlain', audioPuro('mic', 0x5002));
-        assert.equal(mic.ok, true, `o mic tem de ser aceito: ${JSON.stringify(mic)}`);
-        await waitUntil(10);
-        await streamer.call('pauseProducer', { producerId: mic.data.producerId });
-        await waitUntil(16);
-        await streamer.call('resumeProducer', { producerId: mic.data.producerId });
-        await waitUntil(26);
-
-        assert.equal(readdirSync(rings).length, 1, 'só quem transmite num canal grava: a sala por código não abre anel');
-
-        let reply = await askClip({ clipper: 'user:99', streamer: 'user:40' });
-        assert.equal(reply.status, 403, 'quem pede o clipe precisa estar na sala');
-
-        reply = await askClip({ clipper: 'user:41', streamer: 'user:41' });
-        assert.equal(reply.status, 404, 'quem não transmite não tem anel');
-
-        reply = await askClip({ clipper: 'user:42', streamer: 'user:42' }, 'clipscode01');
-        assert.equal(reply.status, 404, 'sala por código nunca tem anel');
-
-        reply = await askClip({ clipId: '../fora', clipper: 'user:41', streamer: 'user:40' });
-        assert.equal(reply.status, 422, 'o id do clipe vira pasta: só letra e número');
-
-        const clipAt = Date.now();
-        reply = await askClip({ clipper: 'user:41', streamer: 'user:40' });
-        assert.equal(reply.status, 202, 'quem está na sala clipa quem transmite');
-        assert.deepEqual(await reply.json(), { accepted: true });
-
-        reply = await askClip({ clipper: 'user:41', streamer: 'user:40' });
-        assert.equal(reply.status, 202, 'o Laravel repete o pedido e ouve 202 de novo');
-
-        const clipEvents = () => events.map(event => ({ ...event, data: JSON.parse(event.body) })).filter(event => event.data.event.startsWith('clip.'));
-        const ready = (await until(() => clipEvents()[0], 120_000));
-        const readyInMs = Date.now() - clipAt;
-        const streamedSeconds = (clipAt - startedAt) / 1000;
-
-        assert.equal(ready.data.event, 'clip.ready', `o clipe tem de ficar pronto: ${ready.body}`);
-        assert.equal(ready.data.clipId, clipId);
-        assert.equal(
-            ready.headers['x-unkvoid-signature'],
-            hmac(`${ready.headers['x-unkvoid-timestamp']}\nPOST\n/api/sfu/events\n${ready.body}`),
-            'o clip.ready vai assinado como o joined',
-        );
-
-        const uploaded = readdirSync(bucket);
-
-        for (const name of ['index.m3u8', 'seg-000.ts', 'thumb.jpg', 'clip.mp4']) {
-            assert.ok(uploaded.includes(name), `${name} chega no bucket sob o prefixo: ${uploaded.join(', ')}`);
-        }
-
-        assert.equal(
-            ready.data.sizeBytes,
-            uploaded.reduce((total, name) => total + statSync(join(bucket, name)).size, 0),
-            'sizeBytes é a soma de tudo o que subiu',
-        );
-        assert.match(readFileSync(join(bucket, 'index.m3u8'), 'utf8'), /#EXT-X-PLAYLIST-TYPE:VOD/);
-
-        const probe = async file => JSON.parse((await execute(FFPROBE, [
-            '-v', 'error', '-show_entries', 'stream=codec_name:format=duration', '-of', 'json', file,
-        ])).stdout);
-        const playlist = await probe(join(bucket, 'index.m3u8'));
-        const download = await probe(join(bucket, 'clip.mp4'));
-        const seconds = Number(download.format.duration);
-
-        assert.deepEqual(playlist.streams.map(stream => stream.codec_name).sort(), ['aac', 'h264'], 'o HLS tem H.264 e AAC');
-        assert.deepEqual(download.streams.map(stream => stream.codec_name).sort(), ['aac', 'h264'], 'o MP4 também');
-        assert.ok(Math.abs(ready.data.durationMs / 1000 - seconds) < 0.2, `a duração do HLS (${ready.data.durationMs} ms) é a do MP4 (${seconds} s)`);
-        assert.ok(seconds <= 300 && seconds <= streamedSeconds && seconds > streamedSeconds - 8, `${seconds} s de clipe para ${streamedSeconds} s transmitidos`);
-
-        const { flashes, screenAudio, mic: micOffsets } = await markers(join(bucket, 'clip.mp4'));
-        const worst = Math.max(...[...screenAudio, ...micOffsets].map(Math.abs));
-
-        console.log(`# clipe de ${seconds} s pronto em ${readyInMs} ms; ${flashes.length} clarões; atraso áudio da tela ${screenAudio.map(delta => Math.round(delta * 1000)).join('/')} ms; mic ${micOffsets.map(delta => Math.round(delta * 1000)).join('/')} ms`);
-        assert.ok(screenAudio.length >= 3, 'o áudio da tela está no clipe, junto dos clarões');
-        assert.ok(micOffsets.length >= 2, 'o mic está no clipe, antes e depois de ficar mudo');
-        assert.ok(worst <= 0.1, `áudio e vídeo em sincronia (pior caso ${Math.round(worst * 1000)} ms)`);
-
-        await espera(1000);
-        assert.equal(clipEvents().length, 1, 'o pedido repetido não gerou um segundo clipe');
-        assert.deepEqual(readdirSync(join(recordings, `unkvoid-sfu-${port}`, 'clips')), [], 'o clipe não deixa temporário');
-
-        // Recompartilhar na hora: o anel novo não pode cair na pasta do anterior, que ainda
-        // está sendo apagada. Isso derrubava o processo inteiro com EEXIST.
-        await streamer.call('closeProducer', { producerId: screen.data.producerId });
-        const again = await streamer.call('producePlain', videoPuro('screen', 0x5000));
-        assert.equal(again.ok, true, `recompartilhar na hora é aceito: ${JSON.stringify(again)}`);
-        await espera(2500);
-        assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200, 'e o SFU segue de pé');
-        assert.equal(readdirSync(rings).length, 1, 'só o anel da transmissão atual sobra');
-
-        await streamer.call('closeProducer', { producerId: again.data.producerId });
-        await espera(1500);
-        assert.deepEqual(readdirSync(rings), [], 'parar a tela apaga o anel');
-
-        // A última pessoa sai transmitindo: a sala fecha o router, e o anel tem de ir junto.
-        await streamer.call('producePlain', videoPuro('screen', 0x5000));
-        await espera(2500);
-        assert.equal(readdirSync(rings).length, 1, 'transmitindo de novo, o anel volta');
-        await clipper.call('leave');
-        await streamer.call('leave');
-        await espera(1500);
-        assert.deepEqual(readdirSync(rings), [], 'sair transmitindo, com a sala esvaziando, apaga o anel');
-    } finally {
-        sender?.kill('SIGKILL');
-        relay.close();
-        server.kill('SIGKILL');
-        withoutFfmpeg.kill('SIGKILL');
-        http.close();
-        rmSync(recordings, { recursive: true, force: true });
-        rmSync(bucket, { recursive: true, force: true });
     }
 });

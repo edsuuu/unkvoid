@@ -524,7 +524,7 @@ export class Media {
 
     paintWatching(): void {
         const { tiles, fullscreen } = this.store.state;
-        const away = document.hidden || this.app.store.state.tab !== 'broadcast' || ! this.stageVisible;
+        const away = document.hidden || ! this.stageVisible;
 
         for (const tile of tiles) {
             const peerId = tile.key;

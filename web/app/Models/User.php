@@ -191,8 +191,8 @@ final class User extends Authenticatable implements Auditable
     #[Override]
     protected static function booted(): void
     {
-        // Quem entra com o e-mail do dono do projeto já nasce administrador. É o que
-        // permite abrir o painel na primeira vez, sem seeder nem senha.
+        // Quem entra com o e-mail do dono do projeto já nasce administrador, sem seeder nem
+        // senha: é o que liga o `admin` do `/api/me` e abre o log-viewer.
         self::created(function (User $user): void {
             $adminEmail = mb_strtolower(mb_trim(Config::string('unkvoid.admin_email')));
 
@@ -220,7 +220,7 @@ final class User extends Authenticatable implements Auditable
 
     /**
      * A foto enviada vence a do Google, que é o que está na coluna. A URL do bucket sai
-     * assinada e vence, como a miniatura do clipe.
+     * assinada e vence.
      *
      * @return Attribute<?string, never>
      */

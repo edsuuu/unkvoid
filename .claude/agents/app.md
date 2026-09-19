@@ -29,11 +29,11 @@ native/apps/desktop/src-tauri/  comandos do Tauri: lib.rs (wiring), broadcast.rs
 native/apps/desktop/ui/core/        lógica sem DOM, uma classe por arquivo, estado numa Store:
                                     App.ts (abertura, entrada, sala por código, avisos, logs),
                                     Media.ts (palco), Sharing.ts (transmissão), Hub.ts,
-                                    Voice.ts, Chat.ts, Clips.ts, ServerSettings.ts,
+                                    Voice.ts, Chat.ts, ServerSettings.ts,
                                     SfuClient.ts, Broadcast.ts, ApiClient.ts, Permissions.ts,
                                     RoomCode.ts, Failure.ts, Models.ts (o formato da API)
 native/apps/desktop/ui/components/  React em .tsx, um componente por arquivo: layout/, entry/,
-                                    room/, hub/ (e hub/modals/), clips/, common/
+                                    room/, hub/ (e hub/modals/), common/
 native/apps/desktop/ui/dev/         DevTauriBridge.ts: a ponte fingida, só no `npm run dev`
 native/apps/desktop/tests/          unit/ (Vitest + jsdom), integration/ (Vitest contra a pilha
                                     local), static/ (check-language.py e check-ui.py)
@@ -102,7 +102,7 @@ cd native && cargo clippy --workspace --all-targets -- -D warnings && cargo test
 ```
 Comportamento novo entra como teste em `tests/unit/*.test.ts` (Vitest), que roda o núcleo em
 jsdom sem abrir o app (`media.test.ts`: palco e consumo; `sfu-client.test.ts`; `hub.test.ts`:
-permissão, voz e servidor; `clips.test.ts`; `broadcast.test.ts`: o `use_sfu` depois das
+permissão, voz e servidor; `broadcast.test.ts`: o `use_sfu` depois das
 declarações). Com a pilha local no ar, `npm run test:integration` roda os clientes do app contra
 Laravel, Reverb e SFU. A
 interface se testa clicando em `npm run dev` no navegador (a ponte do Tauri é fingida lá). Lógica

@@ -18,6 +18,7 @@ export type PeerDescription = {
     peerId: string;
     userId: string;
     name: string;
+    reconnecting: boolean;
     producers: ProducerDescription[];
 };
 
@@ -25,4 +26,5 @@ export type ProducerDescription = {
     producerId: string;
     kind: string;
     source: string;
+    paused: boolean;
 };

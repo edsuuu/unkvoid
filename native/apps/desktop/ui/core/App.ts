@@ -12,15 +12,12 @@ import { Tauri } from './Tauri.ts';
 
 export type AppScreen = 'update' | 'offline' | 'entry' | 'room' | 'hub';
 
-export type AppTab = 'broadcast' | 'clips';
-
 export type Toast = { id: number; message: string; error: boolean };
 
 export type Dialog = { message: string; confirmLabel: string; resolve: (accepted: boolean) => void };
 
 export type AppState = {
     screen: AppScreen;
-    tab: AppTab;
     updateStatus: string;
     updateProgress: number | null;
     offlineTitle: string;
@@ -79,7 +76,6 @@ export class App {
     constructor() {
         this.store = new Store<AppState>({
             screen: 'update',
-            tab: 'broadcast',
             updateStatus: 'Procurando atualizações…',
             updateProgress: null,
             offlineTitle: '',
@@ -356,23 +352,6 @@ export class App {
 
         this.store.set({ dialog: null });
         dialog.resolve(accepted);
-    }
-
-    setTab(tab: AppTab): void {
-        if (tab === 'clips' && ! Platform.isWindows()) {
-            return;
-        }
-
-        this.store.set({ tab });
-        this.media.paintWatching();
-
-        if (tab === 'clips') {
-            void this.hub.clips.load();
-
-            return;
-        }
-
-        this.hub.clips.closePlayer();
     }
 
     showEntry(): void {

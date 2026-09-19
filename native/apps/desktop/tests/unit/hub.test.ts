@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { App } from '../../ui/core/App.ts';
+import { Chat } from '../../ui/core/Chat.ts';
 import type { Hub } from '../../ui/core/Hub.ts';
 import { Permissions } from '../../ui/core/Permissions.ts';
 import type { Voice } from '../../ui/core/Voice.ts';
@@ -612,5 +613,56 @@ describe('modo servidor com a API de mentira', () => {
 
         await hub.logout();
         expect(app.store.state.screen, 'sair da conta também não').toBe('room');
+    });
+});
+
+describe('o tempo real que caiu e voltou', () => {
+    const ids = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, index) => ({ id: from + index }));
+
+    it('a página nova emenda na que já estava na tela, sem buraco e sem o que foi apagado', () => {
+        expect(Chat.mergeLatest(ids(1, 5), ids(4, 53)).map(item => item.id), 'encostou no que já havia: fica o mais antigo').toEqual(ids(1, 53).map(item => item.id));
+        expect(Chat.mergeLatest(ids(1, 2), ids(100, 149)), 'chegou mais que uma página: sem emenda, só o que veio').toEqual(ids(100, 149));
+        expect(Chat.mergeLatest([{ id: 1 }, { id: 2 }, { id: 3 }], [{ id: 1 }, { id: 3 }]), 'página curta é o canal inteiro: o apagado sai').toEqual([{ id: 1 }, { id: 3 }]);
+        expect(Chat.mergeLatest(ids(1, 3), []), 'canal esvaziado').toEqual([]);
+    });
+
+    it('reconectado, busca de novo os servidores, o canal e a conversa abertos', async () => {
+        const app = new App();
+        const hub = app.hub;
+        const quiet = { here() { return this; }, joining() { return this; }, leaving() { return this; }, listen() { return this; } };
+        const responses = new Map<string, unknown>();
+        const calls: string[] = [];
+        const message = (id: number) => ({ id, channel_id: 'text-2', body: `m${id}`, user: { id: 1, name: 'Edsu' } });
+
+        hub.api.request = async (method: string, path: string) => {
+            calls.push(`${method} ${path}`);
+
+            return responses.get(`${method} ${path}`) ?? [];
+        };
+        hub.user = { id: 1, name: 'Edsu' };
+        hub.echo = { private: () => quiet, join: () => quiet, leave() {}, disconnect() {} };
+        responses.set('GET /api/servers', [{ id: 2, name: 'Jogatina', owner_id: 1 }]);
+        responses.set('GET /api/servers/2', {
+            id: 2,
+            name: 'Jogatina',
+            me: { user_id: 1, permissions: Permissions.ALL, top_position: 1 },
+            roles: [],
+            members: [],
+            voice: {},
+            channels: [{ id: 'text-2', name: 'geral', type: 'text', position: 0, permissions: Permissions.ALL }],
+        });
+        responses.set('GET /api/channels/text-2/messages', [message(1), message(2)]);
+        await hub.openServer(2);
+        hub.direct.store.set({ person: { id: 9, name: 'Zé' }, messages: [{ id: 30, body: 'oi' }] });
+
+        responses.set('GET /api/channels/text-2/messages', [message(1), message(3)]);
+        responses.set('GET /api/dm/9', [{ id: 30, body: 'oi' }, { id: 31, body: 'voltou?' }]);
+        calls.length = 0;
+
+        await hub.catchUp();
+
+        expect(hub.chat.store.state.messages.map(item => item.id), 'o 2 foi apagado e o 3 chegou durante a queda').toEqual([1, 3]);
+        expect(hub.direct.store.state.messages.map(item => item.id)).toEqual([30, 31]);
+        expect(calls).toEqual(expect.arrayContaining(['GET /api/servers', 'GET /api/servers/2', 'GET /api/friends', 'GET /api/dm']));
     });
 });

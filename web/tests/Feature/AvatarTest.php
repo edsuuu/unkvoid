@@ -63,3 +63,20 @@ it('a foto é sempre a de quem está logado, e só imagem de até 2 MB entra', f
 
     expect(File::query()->count())->toBe(0);
 });
+
+it('a primeira foto cria o bucket que falta, e o comando cria o bucket à mão', function (): void {
+    $user = User::factory()->create();
+    $commands = fakeS3Client(bucketExists: false);
+
+    $this->actingAs($user, 'sanctum')->postJson('/api/me/avatar', ['avatar' => UploadedFile::fake()->image('eu.jpg')])->assertOk();
+
+    expect(array_slice($commands->getArrayCopy(), 0, 2))->toBe(['HeadBucket', 'CreateBucket']);
+
+    $this->artisan('storage:bucket')->expectsOutput('Bucket criado.')->assertSuccessful();
+
+    $commands = fakeS3Client(bucketExists: true);
+
+    $this->artisan('storage:bucket')->expectsOutput('O bucket já existia.')->assertSuccessful();
+
+    expect($commands->getArrayCopy())->toBe(['HeadBucket']);
+});

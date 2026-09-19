@@ -5,7 +5,7 @@ import { Signature } from './Signature.js';
 const PATH = '/api/sfu/events';
 
 /**
- * Avisa o Laravel de quem entrou e saiu de um canal, e de quando um clipe fica pronto.
+ * Avisa o Laravel de quem entrou e saiu de um canal.
  * Fora do caminho do `join` de propósito: o site fora do ar não pode impedir ninguém de
  * falar, então isto nunca espera resposta nem lança — no máximo reclama no log.
  */
@@ -22,48 +22,32 @@ export class Webhook {
         Webhook.post(event, { room: roomId, sub: peer.userId, name: peer.name, ip: peer.ip });
     }
 
-    public static post(event: string, data: Record<string, unknown>): void {
+    private static post(event: string, data: Record<string, unknown>): void {
         if (config.laravelUrl === '') {
             return;
         }
 
-        // O fim de um clipe tenta de novo: sem isso, uma queda de segundos do site deixava o
-        // clipe "processando" por 7 dias. Entrar e sair não: o evento seguinte corrige.
-        const delays = event.startsWith('clip.') ? [0, 5_000, 30_000, 120_000] : [0];
+        const at = Math.floor(Date.now() / 1000);
+        const body = JSON.stringify({ event, ...data, at });
 
         void (async () => {
-            for (const delay of delays) {
-                await new Promise((resolve) => setTimeout(resolve, delay));
+            try {
+                const response = await fetch(`${config.laravelUrl}${PATH}`, {
+                    method: 'POST',
+                    body,
+                    headers: {
+                        'content-type': 'application/json',
+                        'x-unkvoid-timestamp': String(at),
+                        'x-unkvoid-signature': Signature.header(String(at), 'POST', PATH, body),
+                    },
+                    signal: AbortSignal.timeout(3000),
+                });
 
-                // Carimbo e assinatura novos a cada tentativa: o Laravel recusa assinatura repetida.
-                const at = Math.floor(Date.now() / 1000);
-                const body = JSON.stringify({ event, ...data, at });
-
-                try {
-                    const response = await fetch(`${config.laravelUrl}${PATH}`, {
-                        method: 'POST',
-                        body,
-                        headers: {
-                            'content-type': 'application/json',
-                            'x-unkvoid-timestamp': String(at),
-                            'x-unkvoid-signature': Signature.header(String(at), 'POST', PATH, body),
-                        },
-                        signal: AbortSignal.timeout(3000),
-                    });
-
-                    if (response.ok) {
-                        return;
-                    }
-
+                if (!response.ok) {
                     console.warn(`[WARN] webhook ${event} answered ${response.status}`);
-
-                    // 4xx é recusa, e não queda: repetir não muda a resposta.
-                    if (response.status < 500) {
-                        return;
-                    }
-                } catch (failure) {
-                    console.warn(`[WARN] webhook ${event} failed: ${String(failure)}`);
                 }
+            } catch (failure) {
+                console.warn(`[WARN] webhook ${event} failed: ${String(failure)}`);
             }
         })();
     }

@@ -2,7 +2,6 @@ import type { Producer } from 'mediasoup/types';
 
 import type { SourceName } from '../../Enums/Source.js';
 import type { Peer } from '../../Services/Peer.js';
-import { Recorder } from '../../Services/Recorder.js';
 import type { Room } from '../../Services/Room.js';
 import type { ProducePlainRequest } from '../Requests/ProducePlainRequest.js';
 import type { ProduceRequest } from '../Requests/ProduceRequest.js';
@@ -59,7 +58,6 @@ export class ProducerController {
     /** Registra o producer e conta para a sala. É isto que acende o "ao vivo" dos outros. */
     private announce(peer: Peer, room: Room, producer: Producer, source: SourceName): void {
         peer.addProducer(producer, source);
-        Recorder.follow(room, peer, producer);
         // Trinta segundos sem um pacote e o producer morre. Avisar quem transmite é o
         // ponto: `close` fala com a sala inteira MENOS o dono, então sem esta linha o app
         // segue mostrando "ao vivo" para sempre enquanto todo mundo vê tela preta. A
