@@ -4,12 +4,19 @@
  * Sobe o SFU (`npm run build && SFU_CONNECTIONS_PER_MINUTE=200 node dist/server.js`) e
  * rode `npm run check`. O teto de conexões precisa ser levantado porque a conferência
  * abre uma dúzia de clientes de uma vez, que é exatamente o que ele existe para barrar.
+ *
+ * Dois cenários, o do webhook e o do heartbeat, sobem um SFU próprio a partir do `dist/`:
+ * precisam de uma configuração que o servidor de todos não pode ter.
  */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import { after, before, test } from 'node:test';
+
+// O WebSocket do próprio Node responde ao ping sozinho e não tem como desligar: fingir um
+// socket mudo, no cenário do heartbeat, só com o cliente do `ws`.
+import { WebSocket as WsSocket } from 'ws';
 
 const URL_WS = process.env.SFU_CHECK_URL ?? 'ws://127.0.0.1:3000/sfu';
 const URL_HTTP = URL_WS.replace(/^ws/, 'http').replace(/\/sfu$/, '');
@@ -167,6 +174,24 @@ let consumo;
 let plainAudio;
 let verVideo;
 let chaveVer;
+let plateia;
+let retomando;
+let sessao;
+let micDaSessao;
+let telaDaSessao;
+
+/** Derruba a sinalização e volta dentro da carência, como o app: token novo, a mesma chave. */
+const retomar = async (cliente, data) => {
+    cliente.socket.close();
+    await espera(800);
+
+    const volta = await abrir();
+
+    return { volta, retomada: await entrar(volta, { ...data, resume: true }) };
+};
+
+const salaRetomada = 'checkroom003';
+const tokenRetomada = can => token({ room: salaRetomada, sub: '81', name: 'Volta', can });
 
 before(async () => {
     visitante = await abrir();
@@ -387,6 +412,131 @@ test('quem retoma recebe também quem está na carência, e quem chega não', as
 
     volta.close();
     novo.close();
+});
+
+test('a retomada com `can` reduzido fecha o producer que o token novo não cobre', async () => {
+    // Quem decide permissão é o Laravel, e o token da reconexão é a palavra mais recente
+    // dele: perder `stream` na carência tira a tela do ar na volta, e não na próxima entrada.
+    plateia = await abrir();
+    await entrar(plateia, { token: token({ room: salaRetomada, sub: '80', name: 'Plateia', can: TUDO }) });
+
+    retomando = await abrir();
+    sessao = await entrar(retomando, { token: tokenRetomada(TUDO) });
+
+    micDaSessao = await retomando.call('producePlain', audioPuro('mic', 0x811));
+    const tela = await retomando.call('producePlain', videoPuro('screen', 0x812));
+    assert.equal(micDaSessao.ok && tela.ok, true, `mic e tela deveriam subir: ${JSON.stringify([micDaSessao, tela])}`);
+
+    plateia.events.length = 0;
+    const { volta, retomada } = await retomar(retomando, { token: tokenRetomada(['speak']), resumeKey: sessao.resumeKey });
+    retomando = volta;
+    await espera(300);
+
+    assert.equal(retomada.resumed, true, 'perder permissão não impede a retomada');
+    assert.equal(retomada.peerId, sessao.peerId, 'e é a mesma pessoa');
+    assert.deepEqual(retomada.can, ['speak'], 'a resposta traz o `can` do token novo, e não o da entrada');
+
+    const fechados = plateia.events.filter(evento => evento.event === 'producerClosed');
+    assert.deepEqual(fechados.map(evento => evento.data.producerId), [tela.data.producerId], 'a sala vê a tela fechar, e só ela');
+    assert.equal(fechados[0].data.source, 'screen', 'com a origem, como em qualquer `producerClosed`');
+    const avisos = retomando.events.filter(evento => evento.event === 'producerDead');
+    assert.equal(avisos.length, 1, 'a própria pessoa fica sabendo: o `producerClosed` não vai para o dono');
+    assert.deepEqual(
+        avisos[0].data,
+        { producerId: tela.data.producerId, kind: 'video', source: 'screen', reason: 'revoked' },
+        'com o motivo, que é o que separa a permissão perdida dos 30 s sem pacote',
+    );
+
+    let reply = await retomando.call('producePlain', videoPuro('screen', 0x813));
+    assert.equal(reply.status, 403, 'sem `stream` a tela não volta');
+
+    reply = await retomando.call('pauseProducer', { producerId: micDaSessao.data.producerId });
+    assert.equal(reply.ok, true, 'o mic, que o token novo cobre, continua de pé');
+});
+
+test('a retomada com o mesmo `can` mantém tudo', async () => {
+    plateia.events.length = 0;
+    const { volta, retomada } = await retomar(retomando, { token: tokenRetomada(['speak']), resumeKey: sessao.resumeKey });
+    retomando = volta;
+    await espera(300);
+
+    assert.equal(retomada.resumed, true, 'a sessão é retomada');
+    assert.deepEqual(retomada.can, ['speak'], 'com o mesmo `can`');
+    assert.ok(!plateia.events.some(evento => evento.event === 'producerClosed'), 'a sala não vê nada fechar');
+    assert.ok(!retomando.events.some(evento => evento.event === 'producerDead'), 'nem a própria pessoa');
+
+    const reply = await retomando.call('resumeProducer', { producerId: micDaSessao.data.producerId });
+    assert.equal(reply.ok, true, 'e o mic de antes da queda segue obedecendo');
+});
+
+test('a retomada com `can` ampliado passa a permitir produzir', async () => {
+    const { volta, retomada } = await retomar(retomando, { token: tokenRetomada(TUDO), resumeKey: sessao.resumeKey });
+    retomando = volta;
+
+    assert.equal(retomada.resumed, true, 'a sessão é retomada');
+    assert.deepEqual(retomada.can, TUDO, 'a resposta traz o `can` ampliado');
+
+    telaDaSessao = await retomando.call('producePlain', videoPuro('screen', 0x814));
+    assert.equal(telaDaSessao.ok, true, `com stream de volta a tela sobe sem precisar entrar de novo: ${JSON.stringify(telaDaSessao)}`);
+});
+
+test('o mic revogado na retomada fecha para a sala, e o dono não recebe `producerDead`', async () => {
+    // O app já instalado derruba a transmissão com qualquer `producerDead`, sem olhar a
+    // origem: avisar do mic tiraria do ar a tela que o token novo continua permitindo.
+    plateia.events.length = 0;
+    const { volta, retomada } = await retomar(retomando, { token: tokenRetomada(['stream']), resumeKey: sessao.resumeKey });
+    retomando = volta;
+    await espera(300);
+
+    assert.equal(retomada.resumed, true, 'a sessão é retomada');
+    assert.deepEqual(retomada.can, ['stream'], 'e é pelo `can` da resposta que o app fica sabendo');
+
+    const fechados = plateia.events.filter(evento => evento.event === 'producerClosed');
+    assert.deepEqual(fechados.map(evento => evento.data.producerId), [micDaSessao.data.producerId], 'a sala vê o mic fechar, e só ele');
+    assert.equal(fechados[0].data.source, 'mic', 'com a origem');
+    assert.ok(!retomando.events.some(evento => evento.event === 'producerDead'), 'o dono não recebe `producerDead` do mic');
+
+    let reply = await retomando.call('resumeProducer', { producerId: micDaSessao.data.producerId });
+    assert.equal(reply.status, 404, 'o mic fechou de verdade, não ficou só pausado');
+
+    reply = await retomando.call('pauseProducer', { producerId: telaDaSessao.data.producerId });
+    assert.equal(reply.ok, true, 'e a tela, que o token novo cobre, continua de pé');
+});
+
+test('o visitante retoma sem token e nada muda', async () => {
+    // Sem `installId` o `sub` do visitante é sorteado a cada entrada: a retomada dele não
+    // pode depender de a identidade bater, que é o que vale para quem vem com token.
+    const convidado = await abrir();
+    const chegada = await entrar(convidado, { room: salaRetomada, name: 'Convidado' });
+    const camera = await convidado.call('producePlain', videoPuro('camera', 0x821));
+    assert.equal(camera.ok, true, `a câmera do visitante deveria subir: ${JSON.stringify(camera)}`);
+
+    plateia.events.length = 0;
+    const { volta, retomada } = await retomar(convidado, { room: salaRetomada, name: 'Convidado', resumeKey: chegada.resumeKey });
+    await espera(300);
+
+    assert.equal(retomada.resumed, true, 'o visitante retoma só com a chave');
+    assert.equal(retomada.peerId, chegada.peerId, 'e é a mesma pessoa');
+    assert.deepEqual(retomada.can, TUDO, 'com tudo liberado, como na entrada');
+    assert.ok(!plateia.events.some(evento => evento.event === 'producerClosed'), 'a sala não vê nada fechar');
+
+    const reply = await volta.call('pauseProducer', { producerId: camera.data.producerId });
+    assert.equal(reply.ok, true, 'e a câmera de antes da queda segue de pé');
+    volta.close();
+});
+
+test('o token de outra conta não retoma a sessão, mesmo com a chave', async () => {
+    // Senão a conta sem `stream` voltaria com o `can` que o Laravel assinou para outra.
+    const { volta, retomada } = await retomar(retomando, {
+        token: token({ room: salaRetomada, sub: '82', name: 'Outra', can: TUDO }),
+        resumeKey: sessao.resumeKey,
+    });
+
+    assert.equal(retomada.resumed, false, 'token de outra conta é entrada nova');
+    assert.notEqual(retomada.peerId, sessao.peerId, 'e não herda a sessão de ninguém');
+    assert.equal(retomada.userId, '82', 'a identidade é a do token');
+    volta.close();
+    plateia.close();
 });
 
 test('a mesma conta entrando de novo derruba a sessão antiga, nesta sala ou em outra', async () => {
@@ -724,8 +874,10 @@ test('remover alguém ao vivo pelo socket é recusado', async () => {
 });
 
 /**
- * Um SFU só para um cenário, apontado para servidores HTTP daqui — como faz o
- * check-heartbeat. Quem chama mata com SIGKILL: o mediasoup engole o primeiro SIGTERM.
+ * Um SFU só para um cenário, com a configuração que o servidor de todos não pode ter (o
+ * Laravel de mentira do webhook, o heartbeat de 200 ms). Sempre com faixa de portas
+ * própria, para não disputar com o servidor que já está no ar. Quem chama mata com
+ * SIGKILL: o mediasoup engole o primeiro SIGTERM.
  */
 const startSfu = async (port, env) => {
     const server = spawn('node', ['dist/server.js'], {
@@ -810,5 +962,56 @@ test('o webhook avisa o Laravel de quem entrou e saiu, assinado', async () => {
         // segurando o runner de teste para sempre.
         server.kill('SIGKILL');
         laravel.close();
+    }
+});
+
+/**
+ * Um cliente que não responde ao ping é indistinguível de um cliente vivo, do ponto de
+ * vista do TCP, quando a queda é suja: a tampa do notebook fecha e nunca chega FIN nem
+ * RST. Enquanto o servidor não perguntava, essa pessoa ficava ativa na sala para sempre,
+ * o router do mediasoup nunca era devolvido e as portas de RTP puro dela também não.
+ * Este cenário existe porque esse vazamento não aparece em nenhum teste de caminho feliz.
+ */
+test('o heartbeat derruba o socket mudo, e o socket vivo fica', async () => {
+    const port = 3199;
+    const heartbeatMs = 200;
+    const server = await startSfu(port, {
+        SFU_MEDIA_PORT: '40600',
+        SFU_PLAIN_PORT: '42100',
+        SFU_HEARTBEAT_MS: String(heartbeatMs),
+    });
+    const sockets = [];
+
+    const conectar = options => new Promise((resolve, reject) => {
+        const socket = new WsSocket(`ws://127.0.0.1:${port}/sfu`, options);
+
+        sockets.push(socket);
+        socket.on('open', () => resolve(socket));
+        socket.on('error', reject);
+    });
+
+    /** Se o socket fechou dentro do prazo. O prazo não segura o processo depois do cenário. */
+    const fechouEm = (socket, ms) => new Promise(resolve => {
+        socket.on('close', () => resolve(true));
+        setTimeout(() => resolve(false), ms).unref();
+    });
+
+    try {
+        // `autoPong: false` é o cliente fingindo estar morto sem fechar a conexão. É
+        // exatamente o que um notebook com a tampa fechada parece, visto daqui.
+        const mudo = await conectar({ autoPong: false });
+
+        assert.equal(await fechouEm(mudo, heartbeatMs * 15), true, 'quem não responde ao ping precisa perder a conexão');
+
+        // E quem responde continua de pé: derrubar todo mundo seria o oposto do conserto.
+        const vivo = await conectar();
+
+        assert.equal(await fechouEm(vivo, heartbeatMs * 10), false, 'quem responde ao ping não pode ser derrubado junto');
+    } finally {
+        for (const socket of sockets) {
+            socket.terminate();
+        }
+
+        server.kill('SIGKILL');
     }
 });

@@ -11,7 +11,7 @@ pnpm run build
 
 echo "[INFO] uploading to $REMOTE:$TARGET"
 rsync -az --exclude node_modules \
-    ./dist ./check.mjs ./check-heartbeat.mjs ./install.sh ./.env.example ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ./ecosystem.config.cjs \
+    ./dist ./check.mjs ./install.sh ./.env.example ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ./ecosystem.config.cjs \
     "$REMOTE:$TARGET/"
 
 # Daqui em diante é o install.sh, que é o mesmo que o runner do GitHub Actions roda: ele

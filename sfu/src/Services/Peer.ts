@@ -38,8 +38,11 @@ export class Peer {
          * conexão.
          */
         public readonly userId: string,
-        /** Decidido pelo Laravel, contra o banco. O SFU só confere na hora de produzir. */
-        public readonly can: readonly string[],
+        /**
+         * Decidido pelo Laravel, contra o banco. O SFU só confere na hora de produzir, e
+         * troca pelo do token novo quando a sessão é retomada.
+         */
+        public can: readonly string[],
         public readonly ip: string,
     ) {
         this.socket = socket;
@@ -102,8 +105,12 @@ export class Peer {
         return consumer;
     }
 
+    public allows(source: SourceName): boolean {
+        return this.can.includes(PERMISSION_BY_SOURCE[source]);
+    }
+
     public assertCanProduce(source: SourceName): void {
-        if (!this.can.includes(PERMISSION_BY_SOURCE[source])) {
+        if (!this.allows(source)) {
             throw new ForbiddenException(`this participant cannot produce ${source}`);
         }
 
