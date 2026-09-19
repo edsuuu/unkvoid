@@ -1,3 +1,4 @@
+import { Sharing } from '../../core/Sharing.ts';
 import { Elapsed } from '../common/Elapsed.tsx';
 import { Icon } from '../common/Icon.tsx';
 import { ChannelsMenu } from '../hub/ChannelsMenu.tsx';
@@ -6,17 +7,12 @@ import { useStore } from '../useStore.ts';
 import { PeopleMenu } from './PeopleMenu.tsx';
 import { ShareButton } from './ShareButton.tsx';
 
-type RoomToolbarProps = {
-    mode: 'code' | 'voice';
-    chatOpen?: boolean;
-    onToggleChat?: (() => void) | null;
-};
-
-export function RoomToolbar({ mode, chatOpen = false, onToggleChat = null }: RoomToolbarProps) {
+export function RoomToolbar({ mode }: { mode: 'code' | 'voice' }) {
     const app = useApp();
     const voice = app.hub.voice;
     const { room } = useStore(app.store);
-    const { user } = useStore(app.hub.store);
+    const { user, stageChat } = useStore(app.hub.store);
+    const { unread } = useStore(app.hub.voiceChat.store);
     const { connectedAt, ping } = useStore(app.media.store);
     const { line } = useStore(app.sharing.store);
     const voiceState = useStore(voice.store);
@@ -35,7 +31,7 @@ export function RoomToolbar({ mode, chatOpen = false, onToggleChat = null }: Roo
                             <button className="btn-icon btn-icon-on size-[30px] rounded-[9px]" type="button" title="Voltar para os canais do servidor" onClick={() => app.hub.setFocusedRoom(false)}>
                                 <Icon name="grid" size={14} />
                             </button>
-                            <ChannelsMenu onOpenText={chatOpen ? null : onToggleChat} />
+                            <ChannelsMenu onOpenText={() => app.hub.setStageChat('text')} />
                         </>
                     )
                     : (
@@ -66,7 +62,7 @@ export function RoomToolbar({ mode, chatOpen = false, onToggleChat = null }: Roo
                 <span className="hidden font-mono text-[10.5px] whitespace-nowrap text-ink-dim tabular-nums sm:inline" title="Ida e volta até o servidor de mídia">
                     {ping === null ? '-- ms' : `${ping} ms`}
                     {line?.starting && ' · transmitindo…'}
-                    {line && ! line.starting && ` · ${line.fps} fps · ${line.mbps.toFixed(1)} Mb/s · ${line.dropped} perdidos`}
+                    {line && ! line.starting && ` · ${Sharing.numbers(line)}`}
                 </span>
             </div>
 
@@ -89,9 +85,10 @@ export function RoomToolbar({ mode, chatOpen = false, onToggleChat = null }: Roo
                     </button>
                 )}
 
-                {inVoice && onToggleChat && (
-                    <button className={`btn-icon ${chatOpen ? 'btn-icon-on' : ''}`} type="button" title={chatOpen ? 'Fechar o chat' : 'Ver o chat'} onClick={onToggleChat}>
+                {inVoice && (
+                    <button className={`btn-icon relative ${stageChat === 'voice' ? 'btn-icon-on' : ''}`} type="button" title={stageChat === 'voice' ? 'Fechar o chat desta voz' : 'Ver o chat desta voz'} onClick={() => app.hub.setStageChat(stageChat === 'voice' ? null : 'voice')}>
                         <Icon name="chat" size={16} />
+                        {unread > 0 && <span className="absolute -top-1 -right-1 size-2.5 rounded-full bg-danger" title="Mensagem nova" />}
                     </button>
                 )}
 

@@ -1,0 +1,24 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Requests\Api\Friends;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+/**
+ * Mensagem direta não leva imagem (não há pivô para ela), então o corpo continua
+ * obrigatório: é por isso que ela não divide o request com a mensagem de canal.
+ */
+final class StoreDirectMessageRequest extends FormRequest
+{
+    /**
+     * @return array<string, array<int, mixed>>
+     */
+    public function rules(): array
+    {
+        return [
+            'body' => ['required', 'string', 'min:1', 'max:2000'],
+        ];
+    }
+}

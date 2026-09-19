@@ -13,12 +13,15 @@ use App\Events\ServerUpdated;
 use App\Exceptions\ForbiddenException;
 use App\Models\Concerns\LogsFailedWrites;
 use App\Services\Sfu\SfuClient;
+use App\Services\Storage\BucketService;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Override;
@@ -178,7 +181,7 @@ final class Channel extends Model
     {
         $this->memberOrFail($viewer)->authorize(PermissionEnum::ViewChannel, $this);
 
-        $query = $this->messages()->with(['user', 'replyTo.user'])->orderByDesc('id')->limit(self::PAGE);
+        $query = $this->messages()->with(['user', 'replyTo.user', 'files'])->orderByDesc('id')->limit(self::PAGE);
 
         if (! is_null($before)) {
             $query->where('id', '<', $before);
@@ -188,9 +191,14 @@ final class Channel extends Model
     }
 
     /**
+     * As imagens sobem antes da mensagem nascer, fora da transação: segurar uma transação
+     * aberta esperando o bucket travaria as linhas do canal e do autor.
+     *
+     * @param  array<int, UploadedFile>  $images
+     *
      * @throws Throwable
      */
-    public function post(User $author, string $body, ?int $replyToId = null): Message
+    public function post(User $author, string $body, BucketService $bucket, ?int $replyToId = null, array $images = []): Message
     {
         $member = $this->memberOrFail($author);
         $member->authorize(PermissionEnum::ViewChannel, $this);
@@ -202,14 +210,45 @@ final class Channel extends Model
 
         throw_if(! is_null($replyToId) && is_null($replyTo), ValidationException::withMessages(['reply_to_id' => 'A mensagem respondida não é deste canal.']));
 
-        $message = self::write('falha ao gravar a mensagem', fn (): Message => $this->messages()->create([
-            'user_id' => $author->id,
-            'reply_to_id' => $replyTo?->id,
-            'body' => $body,
-        ]), ['channel_id' => $this->id]);
+        $files = [];
+
+        try {
+            foreach ($images as $image) {
+                $files[] = File::put($author, $image, 'messages', $bucket);
+            }
+
+            $message = self::write('falha ao gravar a mensagem', function () use ($author, $replyTo, $body, $files): Message {
+                $message = $this->messages()->create([
+                    'user_id' => $author->id,
+                    'reply_to_id' => $replyTo?->id,
+                    'body' => $body,
+                ]);
+
+                $message->files()->attach(array_map(fn (File $file): int => $file->id, $files));
+
+                return $message;
+            }, ['channel_id' => $this->id]);
+        } catch (Throwable $exception) {
+            Log::channel('daily')->error('[ERRO] falha ao enviar a mensagem', [
+                'channel_id' => $this->id,
+                'user_id' => $author->id,
+                'uploaded' => count($files),
+                'exception' => $exception,
+                'message' => $exception->getMessage(),
+            ]);
+
+            // Sem a mensagem, ninguém mais aponta para estas imagens: ficariam no bucket
+            // para sempre, sem tela nenhuma de onde apagá-las.
+            foreach ($files as $file) {
+                $file->forget();
+            }
+
+            throw $exception;
+        }
 
         $message->setRelation('user', $author);
         $message->setRelation('replyTo', $replyTo);
+        $message->setRelation('files', new Collection($files));
 
         self::broadcast(new MessageSent($message));
 
@@ -233,6 +272,7 @@ final class Channel extends Model
         ]), ['channel_id' => $this->id, 'user_id' => $user->id]);
 
         $message->setRelation('user', $user);
+        $message->setRelation('files', new Collection());
 
         self::broadcast(new MessageSent($message));
     }

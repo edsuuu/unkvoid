@@ -1,29 +1,30 @@
 import { memo, useState } from 'react';
 
+import type { Chat } from '../../core/Chat.ts';
 import type { Message } from '../../core/Models.ts';
 import { Avatar } from '../common/Avatar.tsx';
 import { Icon } from '../common/Icon.tsx';
-import { useApp } from '../useApp.ts';
+import { MessageImages } from './MessageImages.tsx';
 
 const TIME_FORMAT: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' };
 
 const ACTION = 'flex size-7 cursor-pointer items-center justify-center rounded-lg border border-line-strong bg-row text-ink-icon transition hover:border-brand/50 hover:text-ink-strong';
 
 type MessageRowProps = {
+    chat: Chat;
     message: Message;
     mine: boolean;
     canDelete: boolean;
     unreadMark: boolean;
 };
 
-export const MessageRow = memo(function MessageRow({ message, mine, canDelete, unreadMark }: MessageRowProps) {
-    const chat = useApp().hub.chat;
+export const MessageRow = memo(function MessageRow({ chat, message, mine, canDelete, unreadMark }: MessageRowProps) {
     const [editing, setEditing] = useState(false);
-    const [draft, setDraft] = useState(message.body);
+    const [draft, setDraft] = useState(message.body ?? '');
     const when = new Date(message.created_at).toLocaleString('pt-BR', TIME_FORMAT);
 
     const cancelEdit = () => {
-        setDraft(message.body);
+        setDraft(message.body ?? '');
         setEditing(false);
     };
 
@@ -69,7 +70,7 @@ export const MessageRow = memo(function MessageRow({ message, mine, canDelete, u
                         <p className="mb-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-ink-dim">
                             <Icon name="arrowLeft" size={11} className="rotate-90" />
                             <span className="flex-none text-ink-icon">{message.reply_to.name}</span>
-                            <span className="min-w-0 truncate">{message.reply_to.body}</span>
+                            <span className="min-w-0 truncate">{message.reply_to.body || 'imagem'}</span>
                         </p>
                     )}
 
@@ -109,7 +110,9 @@ export const MessageRow = memo(function MessageRow({ message, mine, canDelete, u
                                 </span>
                             </span>
                         )
-                        : <p className="message-text mt-0.5">{message.body}</p>}
+                        : Boolean(message.body) && <p className="message-text mt-0.5">{message.body}</p>}
+
+                    <MessageImages chat={chat} message={message} />
                 </div>
 
                 {! editing && (
@@ -119,7 +122,7 @@ export const MessageRow = memo(function MessageRow({ message, mine, canDelete, u
                         </button>
 
                         {mine && (
-                            <button className={ACTION} type="button" title="Editar" onClick={() => { setDraft(message.body); setEditing(true); }}>
+                            <button className={ACTION} type="button" title="Editar" onClick={() => { setDraft(message.body ?? ''); setEditing(true); }}>
                                 <Icon name="edit" size={13} />
                             </button>
                         )}

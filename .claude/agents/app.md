@@ -7,7 +7,7 @@ Você é o dono do módulo `native/` do Unkvoid: Rust + Tauri 2 + interface em R
 estrito com Tailwind pelo Vite. Roda em Windows, macOS e Linux.
 
 Leia sempre antes de escrever: `/var/www/projects/unkvoid/CLAUDE.md`,
-`/var/www/projects/unkvoid/docs/SERVIDORES.md` (o contrato entre as três peças), e
+`/var/www/projects/unkvoid/docs/CONTRATO.md` (o contrato entre as três peças), e
 `README.md` + `docs/ESTADO.md` (o que está provado em hardware e o que só compila).
 
 ## O objetivo que manda em tudo
@@ -45,9 +45,16 @@ native/apps/desktop/tests/          unit/ (Vitest + jsdom), integration/ (Vitest
 |---|---|---|---|---|
 | Windows | Graphics Capture + Media Foundation: cada MFT de hardware da lista (NVENC/QuickSync/VCE); sem nenhum, MFT de software em 720p30 (provado numa RTX 4060 Ti; integrada atrás da dedicada não provada) | WASAPI loopback, por processo | `getUserMedia` no WebView2 | WebRTC no webview |
 | macOS | ScreenCaptureKit + VideoToolbox (hardware; software em 720p30 — só escrito, nunca compilado num Mac) | sim | `getUserMedia` no WKWebView | WebRTC no webview |
-| Linux | `gst-launch-1.0` como processo filho: `ximagesrc` → `nvh264enc`/`vah264enc`/`vaapih264enc` sondados com um quadro de teste, senão `x264enc` (CPU), só X11 (placa não provada em hardware) | monitor do PulseAudio | `pulsesrc` e `v4l2src` pelo Rust | receptor nativo: RTP puro → SRTP no Rust → GStreamer → MJPEG no cartão |
+| Linux | `gst-launch-1.0` como processo filho: `ximagesrc` (X11) ou `pipewiresrc` pelo portal ScreenCast (Wayland: o seletor é o do sistema, `capture::prepare` negocia antes do cadeado da sessão — escrito, nunca rodou numa sessão Wayland) → `nvh264enc`/`vah264enc`/`vaapih264enc` sondados com um quadro de teste, senão `x264enc` (CPU) (placa não provada em hardware) | monitor do PulseAudio | `pulsesrc` e `v4l2src` pelo Rust | receptor nativo: RTP puro → SRTP no Rust → GStreamer → MJPEG no cartão |
 
 `broadcast_stats` diz `encoder: "gpu" | "cpu"`; `UNKVOID_ENCODER=cpu` força o degrau do processador nas três.
+`UNKVOID_CAPTURE=x11|portal` força a captura do Linux (o WSLg define `WAYLAND_DISPLAY` sem ter
+portal: no desenvolvimento use `x11`). `UNKVOID_ABR=off` desliga o governador de taxa.
+
+A taxa do vídeo não é fixa: `media::BitrateGovernor` baixa o alvo do encoder quando o SFU pede
+muito pacote de volta (NACK) e sobe quando a perda some, entre 35% e 100% da taxa da qualidade.
+Depois de cada queda espera 8 janelas: o MFT da NVIDIA leva de 6 a 8 s para chegar à taxa nova
+(medido na RTX 4060 Ti). No Linux o encoder é o `gst-launch` filho e não aceita ajuste.
 
 O WebKitGTK de Debian, Ubuntu, Mint e Parrot vem **sem WebRTC** e sem `getUserMedia` — provado
 em Docker. Por isso o Linux tem caminho nativo para tudo. Nunca proponha "só usar WebRTC lá".
@@ -68,6 +75,12 @@ do token). Toda resposta 403 vira aviso; nunca confie no bit que você mesmo cal
 - `can` do `join` (não só os bits do canal) decide mic, câmera e tela: mutado pelo servidor
   chega sem `speak`. `serverMuted { muted }` cinza o botão do mic.
 - Ensurdecer pausa só consumer de áudio: pausar vídeo faz esperar keyframe ao voltar.
+- Na retomada (`resumed`) vale o `can` novo: o app larga mic, câmera e tela que ele não cobre
+  sem chamar `closeProducer` (o servidor já fechou). `Sharing.died()` só reage a tela.
+- Canal de voz também tem chat (o mesmo `Chat`, numa segunda instância no `Hub`). Imagem no chat:
+  até 3 por mensagem, e o app **reduz** para caber em 2 MB antes de enviar (`ImageShrinker`).
+- Mic nativo mutado manda **silêncio**, não nada: sem pacote o relógio de 30 s do SFU mata o
+  producer. O `voice:level` sai mesmo mutado — é ele que reabre o portão da detecção de voz.
 - Ajuste de imagem (brilho, contraste, saturação) é filtro CSS por cartão, guardado em
   `localStorage`, e só entra no `filter` quando sai do padrão (`data-tuned`).
 
@@ -101,15 +114,22 @@ cd native/apps/desktop && npm run check && npm run build
 cd native && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
 Comportamento novo entra como teste em `tests/unit/*.test.ts` (Vitest), que roda o núcleo em
-jsdom sem abrir o app (`media.test.ts`: palco e consumo; `sfu-client.test.ts`; `hub.test.ts`:
-permissão, voz e servidor; `broadcast.test.ts`: o `use_sfu` depois das
-declarações). Com a pilha local no ar, `npm run test:integration` roda os clientes do app contra
+jsdom sem abrir o app — um arquivo por área, e teste novo entra no do assunto: `hub.test.ts`
+(servidor, permissão, membros, código da sala), `media.test.ts` (palco, consumo, volume, saída),
+`voice.test.ts` (voz, mic, retomada, `voice:level`), `chat.test.ts` (chat, imagem, mensagens
+diretas), `sfu-client.test.ts`, `broadcast.test.ts` (o `use_sfu` depois das declarações, a linha
+de números) e `components.test.tsx` (componentes React). Com a pilha local no ar, `npm run test:integration` roda os clientes do app contra
 Laravel, Reverb e SFU. A
 interface se testa clicando em `npm run dev` no navegador (a ponte do Tauri é fingida lá). Lógica
 nova em Rust deixa um teste unitário.
 
-**Windows não compila de dentro do WSL.** Verifique pela cópia:
+O `cargo` do Linux precisa de `cmake` no PATH (o `opusic-sys` compila o Opus). Nesta máquina não
+há cmake do sistema; há um portátil em `native/target/.tools/` (some com `cargo clean`).
+
+**Windows não compila de dentro do WSL.** Verifique pela cópia (o `CMAKE` vai por `WSLENV` porque
+o PATH do WSL não chega ao `cargo.exe`):
 ```bash
+export CMAKE='C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' WSLENV="CMAKE:$WSLENV"
 rsync -a --delete --exclude node_modules --exclude target --exclude dist \
   /var/www/projects/unkvoid/native/ /mnt/c/Users/edsu/unkvoid-build/native/
 cd /mnt/c/Users/edsu/unkvoid-build/native && /mnt/c/Users/edsu/.cargo/bin/cargo.exe clippy --workspace --all-targets -- -D warnings

@@ -9,6 +9,7 @@ use App\Models\ChannelAccess;
 use App\Models\Server;
 use App\Models\ServerMember;
 use App\Models\User;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use OwenIt\Auditing\Models\Audit;
@@ -529,4 +530,93 @@ it('registro que não existe responde 404 sem o nome do model', function (): voi
     $this->actingAs($user, 'sanctum')->getJson('/api/servers/999999')
         ->assertNotFound()
         ->assertExactJson(['message' => 'Não encontrado.']);
+});
+
+it('o ícone sobe, troca apagando o antigo e some, sempre com MANAGE_SERVER', function (): void {
+    Http::fake();
+    $commands = fakeS3Client();
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+
+    $this->actingAs($owner, 'sanctum')->getJson("/api/servers/{$server->id}")->assertOk()->assertJsonPath('data.icon_url', null);
+
+    $this->actingAs($member, 'sanctum')
+        ->postJson("/api/servers/{$server->id}/icon", ['icon' => UploadedFile::fake()->image('icone.jpg')])
+        ->assertForbidden();
+
+    $this->actingAs($owner, 'sanctum')
+        ->postJson("/api/servers/{$server->id}/icon", ['icon' => UploadedFile::fake()->image('icone.jpg')])
+        ->assertOk()
+        ->assertJsonPath('data.icon_url', fn (?string $url): bool => ! is_null($url));
+
+    $first = $server->refresh()->icon_path;
+
+    expect($first)->toStartWith("servers/{$server->id}/")
+        ->and($commands->getArrayCopy())->toContain('PutObject')
+        ->and($commands->getArrayCopy())->not->toContain('DeleteObject');
+
+    $this->actingAs($owner, 'sanctum')
+        ->postJson("/api/servers/{$server->id}/icon", ['icon' => UploadedFile::fake()->image('outro.png')])
+        ->assertOk();
+
+    expect($server->refresh()->icon_path)->not->toBe($first)
+        ->and($commands->getArrayCopy())->toContain('DeleteObject');
+
+    $this->actingAs($owner, 'sanctum')->getJson('/api/servers')->assertOk()->assertJsonPath('data.0.icon_url', fn (?string $url): bool => ! is_null($url));
+    $this->actingAs($owner, 'sanctum')->getJson("/api/servers/{$server->id}")->assertOk()->assertJsonPath('data.icon_url', fn (?string $url): bool => ! is_null($url));
+
+    $this->actingAs($member, 'sanctum')->deleteJson("/api/servers/{$server->id}/icon")->assertForbidden();
+    $this->actingAs($owner, 'sanctum')->deleteJson("/api/servers/{$server->id}/icon")->assertNoContent();
+
+    expect($server->refresh()->icon_path)->toBeNull();
+
+    $this->actingAs($owner, 'sanctum')->getJson("/api/servers/{$server->id}")->assertOk()->assertJsonPath('data.icon_url', null);
+});
+
+it('quem tem MANAGE_SERVER sem ser dono troca o ícone, e só imagem de até 2 MB entra', function (): void {
+    Http::fake();
+    fakeS3Client();
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+    giveRole($server, $member, PermissionEnum::ManageServer->value);
+
+    $this->actingAs($member, 'sanctum')
+        ->postJson("/api/servers/{$server->id}/icon", ['icon' => UploadedFile::fake()->image('icone.webp')])
+        ->assertOk();
+
+    $this->actingAs($owner, 'sanctum')->postJson("/api/servers/{$server->id}/icon")->assertUnprocessable();
+    $this->actingAs($owner, 'sanctum')
+        ->postJson("/api/servers/{$server->id}/icon", ['icon' => UploadedFile::fake()->create('livro.pdf', 10, 'application/pdf')])
+        ->assertUnprocessable();
+    $this->actingAs($owner, 'sanctum')
+        ->postJson("/api/servers/{$server->id}/icon", ['icon' => UploadedFile::fake()->create('enorme.jpg', 2100, 'image/jpeg')])
+        ->assertUnprocessable();
+});
+
+it('ensurdecer no servidor exige DEAFEN_MEMBERS, respeita a hierarquia e nunca chama o SFU', function (): void {
+    Http::fake();
+    $owner = User::factory()->create();
+    $target = User::factory()->create();
+    $bystander = User::factory()->create();
+    $lowMod = User::factory()->create();
+    $bigBoss = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $target);
+    joinServer($server, $bystander);
+    joinServer($server, $lowMod);
+    joinServer($server, $bigBoss);
+    giveRole($server, $target, 0, 5);
+    giveRole($server, $lowMod, PermissionEnum::DeafenMembers->value, 3);
+    giveRole($server, $bigBoss, PermissionEnum::DeafenMembers->value, 10);
+
+    $this->actingAs($bystander, 'sanctum')->patchJson("/api/servers/{$server->id}/members/{$target->id}", ['server_deaf' => true])->assertForbidden();
+    $this->actingAs($lowMod, 'sanctum')->patchJson("/api/servers/{$server->id}/members/{$target->id}", ['server_deaf' => true])->assertForbidden();
+    $this->actingAs($bigBoss, 'sanctum')->patchJson("/api/servers/{$server->id}/members/{$target->id}", ['server_deaf' => true])->assertOk()->assertJsonPath('data.server_deaf', true);
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/servers/{$server->id}/members/{$target->id}", ['server_deaf' => false])->assertOk()->assertJsonPath('data.server_deaf', false);
+
+    Http::assertNothingSent();
 });

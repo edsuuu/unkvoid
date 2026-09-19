@@ -100,9 +100,11 @@ export class App {
         });
 
         this.sounds = new Sounds();
+        this.sounds.onError(failure => this.log('sounds.output.error', { message: Failure.message(failure) }));
         this.media = new Media(this);
         this.sharing = new Sharing(this);
         this.hub = new Hub(this, App.SERVER);
+        void this.media.applyOutput();
     }
 
     socketUrl(): string {
@@ -124,6 +126,7 @@ export class App {
         document.addEventListener('keydown', event => this.onKeyDown(event));
         document.addEventListener('mousemove', () => this.media.wakeUp());
         document.addEventListener('visibilitychange', () => this.media.visibilityChanged());
+        navigator.mediaDevices?.addEventListener?.('devicechange', () => void this.media.outputsChanged());
 
         this.showDownloadProgress();
 

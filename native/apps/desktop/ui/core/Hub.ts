@@ -49,6 +49,8 @@ export type LoginMode = 'login' | 'register';
 
 export type HomeTab = 'servers' | 'friends';
 
+export type StageChat = 'voice' | 'text';
+
 export type HubState = {
     user: User | null;
     servers: ServerSummary[];
@@ -62,6 +64,7 @@ export type HubState = {
     home: boolean;
     stageOpen: boolean;
     focusedRoom: boolean;
+    stageChat: StageChat | null;
     railOpen: boolean;
     membersOpen: boolean;
     homeTab: HomeTab;
@@ -125,6 +128,7 @@ export class Hub {
     readonly guardedSubscriptions = new WeakSet<object>();
     readonly store: Store<HubState>;
     readonly chat: Chat;
+    readonly voiceChat: Chat;
     readonly voice: Voice;
     readonly settings: ServerSettings;
     readonly friends: Friends;
@@ -147,6 +151,7 @@ export class Hub {
             home: true,
             stageOpen: false,
             focusedRoom: false,
+            stageChat: null,
             railOpen: localStorage.getItem(Hub.RAIL_KEY) === 'open',
             membersOpen: localStorage.getItem(Hub.MEMBERS_KEY) !== 'closed',
             homeTab: 'servers',
@@ -164,7 +169,10 @@ export class Hub {
         });
 
         this.chat = new Chat(this);
+        this.voiceChat = new Chat(this);
+        this.voiceChat.watched = false;
         this.voice = new Voice(app, this);
+        this.voice.store.subscribe(() => this.followVoice());
         this.settings = new ServerSettings(this);
         this.friends = new Friends(app, this);
         this.direct = new Direct(app, this);
@@ -180,11 +188,35 @@ export class Hub {
             ...extra,
         });
 
-        const { home, stageOpen, focusedRoom } = this.store.state;
+        const { home, stageOpen, focusedRoom, stageChat } = this.store.state;
 
         if (this.app.store.state.screen === 'hub') {
-            this.app.media.setStageVisible(Boolean(this.voice.channel) && ! home && (stageOpen || focusedRoom));
+            const stageVisible = Boolean(this.voice.channel) && ! home && (stageOpen || focusedRoom);
+
+            this.app.media.setStageVisible(stageVisible);
+            this.voiceChat.setWatched(stageVisible && stageChat === 'voice');
         }
+    }
+
+    followVoice(): void {
+        const channel = this.voice.store.state.channel;
+
+        if (channel?.id === this.voiceChat.channel?.id) {
+            return;
+        }
+
+        if (! channel) {
+            this.voiceChat.close();
+            this.publish({ stageChat: null });
+
+            return;
+        }
+
+        void this.attempt(() => this.voiceChat.open(channel));
+    }
+
+    setStageChat(stageChat: StageChat | null): void {
+        this.publish({ stageChat });
     }
 
     async attempt<Result>(work: () => Promise<Result>): Promise<Result | undefined> {
@@ -395,7 +427,7 @@ export class Hub {
         this.publish({ serversLoading: this.servers.length === 0 });
 
         this.voice.watchMicErrors();
-        this.voice.listenShortcuts();
+        this.voice.listenNative();
         await this.voice.applyShortcuts();
 
         this.config ??= await this.attempt(() => this.api.get<Config>('/api/config')) ?? null;
@@ -504,7 +536,7 @@ export class Hub {
 
         try {
             await this.loadServers();
-            await Promise.all([this.friends.load(), this.direct.loadConversations(), this.direct.catchUp(), this.chat.catchUp()]);
+            await Promise.all([this.friends.load(), this.direct.loadConversations(), this.direct.catchUp(), this.chat.catchUp(), this.voiceChat.catchUp()]);
         } catch (failure) {
             this.app.log('hub.catchup.error', { status: Failure.status(failure), message: Failure.message(failure) });
         }

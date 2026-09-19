@@ -37,7 +37,7 @@ export function ShareButton({ wide = false, disabled = false }: { wide?: boolean
                 <Popover open={open} onClose={() => setOpen(false)} className={wide ? 'bottom-10 left-0 w-64' : 'top-11 right-0 w-64'}>
                     <p className="label-mono px-2.5 pt-1.5">Você está transmitindo</p>
                     <p className="px-2.5 pt-1 pb-2 font-mono text-[10.5px] text-ink-dim">
-                        {! line || line.starting ? 'começando…' : `${line.fps} fps · ${line.mbps.toFixed(1)} Mb/s · ${line.dropped} perdidos${line.encoder === 'cpu' ? ' · processador' : ''}`}
+                        {! line || line.starting ? 'começando…' : `${Sharing.numbers(line)}${line.encoder === 'cpu' ? ' · processador' : ''}`}
                     </p>
                     <div className="flex items-center gap-1.5 px-2.5 pb-2">
                         <select className="min-w-0 flex-1 cursor-pointer rounded-[9px] border border-line bg-row px-2 py-1.5 text-[12px] text-ink-icon" value={quality} aria-label="Qualidade da transmissão" onChange={event => void app.sharing.changeQuality(event.target.value, fps)}>

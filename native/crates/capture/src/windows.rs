@@ -14,8 +14,14 @@ use windows_capture::settings::{
 };
 use windows_capture::window::Window as CaptureWindow;
 
-use ::windows::Win32::Foundation::HWND;
-use ::windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+use ::windows::Win32::Foundation::{HWND, RECT};
+use ::windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect,
+};
+use ::windows::Win32::UI::WindowsAndMessaging::{
+    GetWindowPlacement, GetWindowThreadProcessId, IsIconic, WINDOWPLACEMENT,
+    WPF_RESTORETOMAXIMIZED,
+};
 
 use crate::windows_audio::{AudioScope, SystemAudio};
 use crate::{
@@ -35,6 +41,70 @@ fn id_from_hwnd(hwnd: *mut std::ffi::c_void) -> u64 {
 
 fn hwnd_from_id(id: u64) -> *mut std::ffi::c_void {
     id as usize as *mut std::ffi::c_void
+}
+
+/// O tamanho da janela para o encoder.
+///
+/// Minimizada, o `GetWindowRect` devolve o retângulo do ícone (160×28 em -32000,-32000), e
+/// nenhum encoder de H.264 abre nisso. Vale o tamanho para o qual ela volta: o normal, ou a
+/// área útil do monitor quando ela volta maximizada — o encoder estica a fonte na saída
+/// inteira, e abrir com a proporção errada deformaria a imagem na volta.
+///
+/// Minimizada é o caso comum, não o raro: jogo em tela cheia exclusiva minimiza sozinho
+/// quando a pessoa vem ao app escolher o que compartilhar. A Graphics Capture abre, não
+/// entrega quadro nenhum enquanto a janela está embaixo (medido: 0 em 3 s) e volta a
+/// entregar, já no tamanho certo, quando a pessoa volta ao jogo. Recusar o início aqui
+/// tornaria esse jogo impossível de compartilhar por janela.
+fn window_size(shown: (i32, i32), restored: Option<Restored>) -> (u32, u32) {
+    let (width, height) = match restored {
+        Some(restored) => restored.work_area.unwrap_or(restored.normal),
+        None => shown,
+    };
+
+    (width.max(0) as u32, height.max(0) as u32)
+}
+
+/// Para onde a janela minimizada volta.
+struct Restored {
+    normal: (i32, i32),
+
+    /// A área útil do monitor dela, só quando ela volta maximizada.
+    work_area: Option<(i32, i32)>,
+}
+
+fn extent(rect: RECT) -> (i32, i32) {
+    (rect.right - rect.left, rect.bottom - rect.top)
+}
+
+/// `None` para janela que não está minimizada.
+fn restored_placement(hwnd: HWND) -> Option<Restored> {
+    unsafe {
+        if !IsIconic(hwnd).as_bool() {
+            return None;
+        }
+
+        let mut placement = WINDOWPLACEMENT {
+            length: size_of::<WINDOWPLACEMENT>() as u32,
+            ..Default::default()
+        };
+
+        GetWindowPlacement(hwnd, &mut placement).ok()?;
+
+        let work_area = placement.flags.contains(WPF_RESTORETOMAXIMIZED).then(|| {
+            let mut monitor = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+
+            // Pelo retângulo normal, não pela janela: minimizada ela mora em -32000, e o
+            // monitor "mais perto" disso não é o dela.
+            GetMonitorInfoW(
+                MonitorFromRect(&placement.rcNormalPosition, MONITOR_DEFAULTTONEAREST),
+                &mut monitor,
+            )
+            .as_bool()
+            .then(|| extent(monitor.rcWork))
+        });
+
+        Some(Restored { normal: extent(placement.rcNormalPosition), work_area: work_area.flatten() })
+    }
 }
 
 /// Liga a captura no alvo escolhido. Genérica porque monitor e janela são tipos
@@ -216,6 +286,11 @@ impl WindowsCapturer {
     /// Captura um quadro curto para a pessoa confirmar a tela ou janela escolhida.
     pub fn preview(source: crate::CaptureSource) -> Result<Vec<u8>, CaptureError> {
         match source {
+            // Janela minimizada não tem quadro para mostrar: sem isto cada uma segurava uma
+            // captura aberta por 5 s até o tempo esgotar. Vazio é "sem imagem" no seletor.
+            crate::CaptureSource::Window(id) if unsafe { IsIconic(HWND(hwnd_from_id(id))) }.as_bool() => {
+                Ok(Vec::new())
+            }
             crate::CaptureSource::Window(id) => capture_preview(
                 CaptureWindow::from_raw_hwnd(hwnd_from_id(id)),
             ),
@@ -276,11 +351,9 @@ impl WindowsCapturer {
         match source {
             CaptureSource::Window(id) => {
                 let window = CaptureWindow::from_raw_hwnd(hwnd_from_id(id));
+                let shown = (window.width().map_err(platform)?, window.height().map_err(platform)?);
 
-                Ok((
-                    window.width().map_err(platform)?.max(0) as u32,
-                    window.height().map_err(platform)?.max(0) as u32,
-                ))
+                Ok(window_size(shown, restored_placement(HWND(hwnd_from_id(id)))))
             }
             CaptureSource::Display(index) => {
                 let monitor = Monitor::from_index(index as usize + 1).map_err(|_| CaptureError::NoDisplay)?;
@@ -446,5 +519,30 @@ impl WindowsCapturer {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Restored, window_size};
+
+    #[test]
+    fn a_minimized_window_is_sized_by_where_it_comes_back_to() {
+        let icon = (160, 28);
+
+        // À mostra, vale o que está na tela.
+        assert_eq!(window_size((1280, 720), None), (1280, 720));
+
+        // Minimizada, o retângulo do ícone nunca é o tamanho.
+        let restored = Restored { normal: (1920, 1080), work_area: None };
+        assert_eq!(window_size(icon, Some(restored)), (1920, 1080));
+
+        // Minimizada a partir de maximizada: o normal tem outra proporção, e ela volta
+        // ocupando a área útil do monitor.
+        let restored = Restored { normal: (1000, 800), work_area: Some((1920, 1040)) };
+        assert_eq!(window_size(icon, Some(restored)), (1920, 1040));
+
+        // Retângulo invertido não vira número gigante ao perder o sinal.
+        assert_eq!(window_size((-5, 10), None), (0, 10));
     }
 }

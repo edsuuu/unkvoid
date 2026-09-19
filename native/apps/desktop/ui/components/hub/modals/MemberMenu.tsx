@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
+import { Media } from '../../../core/Media.ts';
 import { Members } from '../../../core/Members.ts';
 import { Avatar } from '../../common/Avatar.tsx';
+import { Icon } from '../../common/Icon.tsx';
 import { useApp } from '../../useApp.ts';
 import { useStore } from '../../useStore.ts';
 
@@ -10,8 +12,11 @@ const ITEM = `${ITEM_BASE} text-ink-icon hover:text-ink-strong`;
 const DANGER_ITEM = `${ITEM_BASE} text-danger`;
 
 export function MemberMenu() {
-    const hub = useApp().hub;
+    const app = useApp();
+    const hub = app.hub;
+    const media = app.media;
     const { memberMenu, tree } = useStore(hub.store);
+    const { peers, voices } = useStore(media.store);
     const member = tree?.members.find(item => item.user_id === memberMenu?.userId);
     const [nickname, setNickname] = useState(member?.nickname ?? '');
     const [note, setNote] = useState('');
@@ -52,6 +57,9 @@ export function MemberMenu() {
     const self = member.user_id === hub.user?.id;
     const person = { id: member.user_id, name: member.name, avatar_url: member.avatar_url };
     const badges = (tree?.roles ?? []).filter(role => ! role.is_everyone && member.role_ids.includes(role.id));
+    const voiceKey = `user:${member.user_id}`;
+    const heard = ! self && media.canAdjustVoices() && peers.some(peer => peer.userId === voiceKey);
+    const voice = voices[voiceKey] ?? Media.FULL_VOICE;
 
     const message = async () => {
         if (note.trim() === '') {
@@ -86,6 +94,30 @@ export function MemberMenu() {
                             {role.name}
                         </span>
                     ))}
+                </div>
+            )}
+
+            {heard && (
+                <div className="flex items-center gap-2 border-t border-line px-2 py-2">
+                    <button
+                        className={`btn-icon size-7 flex-none rounded-[8px] ${voice.muted ? 'btn-icon-off' : ''}`}
+                        type="button"
+                        title={voice.muted ? 'Voltar a ouvir esta pessoa' : 'Silenciar esta pessoa só para mim'}
+                        onClick={() => media.toggleVoiceMute(voiceKey)}
+                    >
+                        <Icon name={voice.muted ? 'speakerOff' : 'speaker'} size={13} />
+                    </button>
+                    <input
+                        className="min-w-0 flex-1 accent-brand"
+                        type="range"
+                        min="0"
+                        max="100"
+                        aria-label={`Volume de ${member.name}`}
+                        title="Volume desta pessoa — só do seu lado"
+                        value={voice.muted ? 0 : voice.volume}
+                        onChange={event => media.setVoiceVolume(voiceKey, Number(event.target.value))}
+                    />
+                    <span className="w-9 flex-none text-right font-mono text-[10.5px] text-ink-dim">{voice.muted ? 'mudo' : `${voice.volume}%`}</span>
                 </div>
             )}
 

@@ -31,6 +31,10 @@ pub struct VideoToolboxEncoder {
 
     /// Só existe quando o VideoToolbox caiu para software: é quem segura os 30 fps.
     pacer: Option<FramePacer>,
+
+    /// A taxa média em vigor. Nasce como a da configuração que abriu — em software, a de
+    /// 720p30 e não a pedida — e muda com `set_bitrate`.
+    bitrate: u32,
 }
 
 impl VideoToolboxEncoder {
@@ -71,7 +75,7 @@ impl VideoToolboxEncoder {
 
         tracing::info!("encoder: VideoToolbox por hardware");
 
-        Ok(Self { session, pacer: None })
+        Ok(Self { session, pacer: None, bitrate: config.bitrate })
     }
 
     fn software(config: &EncoderConfig) -> Result<Self, EncoderError> {
@@ -87,12 +91,56 @@ impl VideoToolboxEncoder {
         Ok(Self {
             session: open_session(&config)?,
             pacer: Some(FramePacer::new(config.frame_rate)),
+            bitrate: config.bitrate,
         })
     }
 
     /// Se o H.264 sai do chip de mídia.
     pub fn hardware(&self) -> bool {
         self.pacer.is_none()
+    }
+
+    /// A taxa média em vigor, que ao abrir é o teto de quem a ajusta.
+    pub fn bitrate(&self) -> u32 {
+        self.bitrate
+    }
+
+    /// Troca a taxa média com a sessão no ar. Devolve se o VideoToolbox aceitou; recusa não
+    /// derruba nada, a transmissão segue na taxa que tinha e quem chamou para de tentar.
+    ///
+    /// ponytail: nunca compilou nem rodou num Mac, como o resto deste arquivo. É a mesma
+    /// chamada que o builder da crate faz para `with_average_bit_rate` — o
+    /// `set_property_i32` dela é privado, então o CFNumber é montado aqui. Sem teto de
+    /// rajada: `DataRateLimits` pede um CFArray, e entra se a média sozinha não segurar.
+    pub fn set_bitrate(&mut self, bitrate: u32) -> bool {
+        let value = i32::try_from(bitrate).unwrap_or(i32::MAX);
+
+        // SEGURANÇA: a chave é o CFString estático do SDK; o CFNumber nasce aqui, vale
+        // durante a chamada e é solto em seguida — a sessão retém o que guardar.
+        let outcome = unsafe {
+            let number = ffi::CFNumberCreate(
+                ffi::kCFAllocatorDefault,
+                ffi::kCFNumberSInt32Type,
+                ptr::from_ref(&value).cast(),
+            );
+            let outcome = self
+                .session
+                .set_property(ffi::kVTCompressionPropertyKey_AverageBitRate, number.cast());
+
+            ffi::CFRelease(number.cast());
+
+            outcome
+        };
+
+        if let Err(error) = outcome {
+            tracing::warn!(error = %error, bitrate, "encoder: o VideoToolbox não troca a taxa no ar, ela fica fixa");
+
+            return false;
+        }
+
+        self.bitrate = bitrate;
+
+        true
     }
 }
 
