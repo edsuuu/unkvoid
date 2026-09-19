@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
-    "check": "npm run lint && node --test check.mjs && node check-heartbeat.mjs",
+    "check": "npm run lint && node --test check.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",

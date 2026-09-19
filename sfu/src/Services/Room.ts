@@ -11,6 +11,7 @@ import { randomUUID, randomBytes } from 'node:crypto';
 import type { WebSocket } from 'ws';
 
 import { config } from '../config.js';
+import type { SourceName } from '../Enums/Source.js';
 import { NotFoundException, ValidationException } from '../Exceptions/ApiException.js';
 import type { PeerDescription } from '../types.js';
 import { Peer } from './Peer.js';
@@ -67,10 +68,22 @@ export class Room {
     ): JoinOutcome {
         const previous = options.resumeKey ? this.findByResumeKey(options.resumeKey) : null;
 
-        if (previous?.isOrphaned() && options.resume) {
+        // Visitante não traz token: o `can` dele é sempre o cheio, e o `sub` é sorteado a
+        // cada entrada quando o app não manda `installId`. Só o token tem conta a conferir.
+        const tokened = !identity.userId.startsWith('guest:');
+
+        // Token de outra conta não retoma: daria a esta sessão o `can` que o Laravel
+        // assinou para outra pessoa. Vira entrada nova, que substitui a antiga.
+        const stranger = tokened && previous?.userId !== identity.userId;
+
+        if (previous?.isOrphaned() && options.resume && !stranger) {
             this.cancelEviction(previous.id);
             previous.attachSocket(socket);
             this.broadcast('peerReconnected', { peerId: previous.id }, previous.id);
+
+            if (tokened) {
+                this.applyCan(previous, identity.can);
+            }
 
             // Quem voltou nunca parou de receber a mídia — a carência existe para isso.
             // Sem reanunciar, quem transmite ficaria vendo "ninguém assistindo" pelo resto
@@ -178,6 +191,69 @@ export class Room {
             { peerId: peer.id, producerId: producer.id },
             peer.id,
         );
+    }
+
+    /**
+     * Quem decide permissão é o Laravel, e o token da reconexão é a palavra mais recente
+     * dele. O que o `can` novo não cobre sai do ar agora: esperar a próxima entrada deixaria
+     * a tela de quem perdeu `stream` na carência no ar até a pessoa sair por conta própria.
+     */
+    private applyCan(peer: Peer, can: string[]): void {
+        peer.can = can;
+
+        for (const producer of [...peer.producers.values()]) {
+            const source = String(producer.appData.source) as SourceName;
+
+            if (peer.allows(source)) {
+                continue;
+            }
+
+            console.log(
+                `[INFO] revoked room=${this.id} sub=${peer.userId} source=${source} peer=${peer.id} ip=${peer.ip}`,
+            );
+            // `producerClosed` fala com a sala inteira MENOS o dono: sem este aviso o app
+            // dele seguia "ao vivo", codificando para um transporte que já não existe.
+            //
+            // Só tela. O app já instalado derruba a transmissão com QUALQUER `producerDead`,
+            // sem olhar a origem: avisar do mic ou da câmera tiraria do ar uma tela que
+            // continua permitida. Desses dois o app fica sabendo pelo `can` da resposta.
+            if (source === 'screen' || source === 'screenAudio') {
+                peer.send('producerDead', {
+                    producerId: producer.id,
+                    kind: producer.kind,
+                    source,
+                    reason: 'revoked',
+                });
+            }
+
+            this.closeProducer(peer, producer);
+        }
+    }
+
+    public closeProducer(peer: Peer, producer: Producer | undefined): void {
+        if (!producer || peer.producers.get(producer.id) !== producer) {
+            return;
+        }
+
+        producer.close();
+        peer.producers.delete(producer.id);
+        this.broadcast(
+            'producerClosed',
+            {
+                peerId: peer.id,
+                producerId: producer.id,
+                kind: producer.kind,
+                source: String(producer.appData.source),
+            },
+            peer.id,
+        );
+
+        // Só o transport de RTP puro, e quando sai o último producer que passa por ele. O mic
+        // por WebRTC do Windows e do macOS não conta: com ele o transport ficava vivo, preso ao
+        // socket antigo do app, que abre outro na transmissão seguinte e some no `comedia`.
+        if (![...peer.producers.values()].some((other) => other.appData.plain === true)) {
+            peer.closePlainTransports();
+        }
     }
 
     private findByResumeKey(resumeKey: string): Peer | null {
