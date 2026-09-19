@@ -1,6 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 
+import { App } from '../../ui/core/App.ts';
 import { Broadcast } from '../../ui/core/Broadcast.ts';
+import { Sharing } from '../../ui/core/Sharing.ts';
 
 type RequestData = { kind?: string; producerId?: string; source?: string };
 
@@ -122,5 +124,45 @@ describe('transmissão: a ordem que o Rust e o servidor precisam', () => {
         await expect(partial.start('1080', 30, 'display:1', true, false)).rejects.toThrow(/SFU indisponível/);
         expect(partial.nativeActive).toBe(false);
         expect(partial.producerIds).toEqual([]);
+    });
+});
+
+describe('transmissão: a linha de números', () => {
+    const reading = (sent: number, extra: Record<string, unknown> = {}) => ({ active: true, captured: sent, sent, sentBytes: sent * 10_000, sendDropped: 2, encodeErrors: 0, sendErrors: 0, audioErrors: 0, encoder: 'gpu', ...extra });
+
+    beforeAll(() => {
+        window.__TAURI__ = { core: { invoke: async () => null }, event: { listen: async () => () => null } };
+    });
+
+    it('mostra a perda em %, e só fala em internet apertada quando o alvo cai abaixo do teto com que a qualidade nasceu', async () => {
+        const sharing = new App().sharing;
+
+        sharing.updateStats(reading(0, { targetBitrate: 8_000_000, lossPermille: 0 }));
+        expect(Sharing.numbers(sharing.store.state.line), 'a primeira leitura ainda não tem taxa').toBe('');
+
+        sharing.updateStats(reading(60, { targetBitrate: 8_000_000, lossPermille: 4 }));
+        expect(Sharing.numbers(sharing.store.state.line)).toMatch(/^\d+ fps · \d+\.\d Mb\/s · 2 perdidos · perda 0\.4%$/);
+
+        sharing.updateStats(reading(120, { targetBitrate: 3_600_000, lossPermille: 62 }));
+        expect(Sharing.numbers(sharing.store.state.line)).toMatch(/perda 6\.2% · internet apertada: reduzido para 3\.6 Mb\/s$/);
+
+        sharing.updateStats(reading(180, { targetBitrate: 8_000_000, lossPermille: 0 }));
+        expect(Sharing.numbers(sharing.store.state.line), 'o alvo voltou ao teto: o aviso some').not.toMatch(/apertada/);
+
+        sharing.store.set({ active: true });
+        sharing.app.media.broadcast = { changeQuality: async () => undefined } as never;
+        await sharing.changeQuality('720', '30');
+        sharing.updateStats(reading(240, { targetBitrate: 4_000_000, lossPermille: 0 }));
+        expect(Sharing.numbers(sharing.store.state.line), 'qualidade menor tem teto menor: não é internet apertada').not.toMatch(/apertada/);
+    });
+
+    it('Rust antigo e ponte fingida sem os dois campos: a linha sai como sempre, sem perda e sem aviso', () => {
+        const sharing = new App().sharing;
+
+        sharing.updateStats(reading(0));
+        sharing.updateStats(reading(60, { targetBitrate: 'muito', lossPermille: null }));
+
+        expect(sharing.store.state.line).toMatchObject({ lossPercent: null, reducedToMbps: null });
+        expect(Sharing.numbers(sharing.store.state.line)).toMatch(/^\d+ fps · \d+\.\d Mb\/s · 2 perdidos$/);
     });
 });

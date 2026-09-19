@@ -1,24 +1,33 @@
-//! Captura no Linux: X11 pelo GStreamer, já codificada.
+//! Captura no Linux: X11 ou Wayland pelo GStreamer, já codificada.
 //!
 //! Ligar a biblioteca do GStreamer ao binário exigiria as `-dev` no build e as `.so`
 //! certas em cada máquina. Então o app fala com o `gst-launch-1.0` como processo:
-//! `ximagesrc` lê a tela, o encoder da placa que abrir (`LinuxCapturer::video_encoder`)
-//! ou o `x264enc` comprime, e o H.264 (Annex-B) chega por um pipe. O `.deb` já exige os
-//! plugins; o `gstreamer1.0-tools` é a única dependência a mais.
+//! `ximagesrc` (X11) ou `pipewiresrc` (Wayland) lê a tela, o encoder da placa que abrir
+//! (`LinuxCapturer::video_encoder`) ou o `x264enc` comprime, e o H.264 (Annex-B) chega
+//! por um pipe. O `.deb` já exige os plugins; o `gstreamer1.0-tools` e o
+//! `gstreamer1.0-pipewire` são as dependências a mais.
 //!
 //! O que sai daqui NÃO é buffer de GPU: é o quadro pronto, e `PlatformEncoder` no
 //! Linux só o repassa. É o jeito de encaixar no fluxo dos outros sistemas sem mexer
 //! no `broadcast.rs`.
 //!
-//! ponytail: só X11 (`ximagesrc`). Numa sessão Wayland pura o `DISPLAY` não existe e a
-//! lista de telas sai vazia; o caminho é `pipewiresrc` via portal quando alguém pedir.
-//! Sem lista de janelas ainda pelo mesmo motivo.
+//! No Wayland o app não enxerga a tela: o `ximagesrc` só vê o XWayland, preto ou vazio.
+//! Quem mostra é o portal `org.freedesktop.portal.ScreenCast`: o seletor é o do próprio
+//! sistema (monitor ou janela), e o que ele devolve é um nó do PipeWire e um fd para lê-lo.
+//! Por isso lá a lista de telas tem um item só e a de janelas nenhum.
+//!
+//! ponytail: no X11 continua sem lista de janelas; o `ximagesrc xid=` a traria.
 
 use std::io::{BufRead, BufReader, Read};
+use std::os::fd::OwnedFd;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
+
+use ashpd::desktop::screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType};
+use ashpd::desktop::{ResponseError, Session};
+use ashpd::enumflags2::BitFlags;
 
 use crate::{
     AudioChunk, CaptureConfig, CaptureError, CaptureEvent, CaptureSource, Display, Quality,
@@ -43,11 +52,16 @@ pub struct LinuxCapturer {
     /// A última linha de erro do gst de vídeo. É o que aparece no app quando a captura
     /// não gera quadro nenhum — sem isto o diagnóstico culpava a rede.
     error: Arc<Mutex<Option<String>>>,
+    /// A sessão do portal, no Wayland. Nada a lê: o capturador só a mantém viva, e ela
+    /// fecha quando o último que a segura some — não no `stop`, porque trocar a qualidade
+    /// para este capturador e abre outro na MESMA sessão.
+    _portal: Option<Arc<PortalSession>>,
 }
 
 impl LinuxCapturer {
     pub fn preview(source: CaptureSource) -> Result<Vec<u8>, CaptureError> {
-        if std::env::var_os("DISPLAY").is_none() {
+        // No portal não há o que mostrar antes de a pessoa escolher no seletor do sistema.
+        if backend() == Backend::Portal || std::env::var_os("DISPLAY").is_none() {
             return Ok(Vec::new());
         }
 
@@ -69,7 +83,14 @@ impl LinuxCapturer {
 
     /// Um item por monitor, o principal primeiro. Sem `xrandr` fica a tela do X
     /// inteira, que com dois monitores é os dois lado a lado.
+    ///
+    /// No portal é um item só e sem tamanho: a lista de verdade é a do seletor do
+    /// sistema, que só abre no `prepare`.
     pub fn displays() -> Result<Vec<Display>, CaptureError> {
+        if backend() == Backend::Portal {
+            return Ok(vec![Display { id: 1, width: 0, height: 0 }]);
+        }
+
         if std::env::var_os("DISPLAY").is_none() {
             return Ok(Vec::new());
         }
@@ -118,11 +139,13 @@ impl LinuxCapturer {
         dedupe_cameras(found)
     }
 
-    /// O tamanho da origem, para a altura da saída seguir a proporção dela.
+    /// O tamanho da origem, para a altura da saída seguir a proporção dela. No portal é
+    /// o do que a pessoa escolheu no `prepare`.
     pub fn source_size(source: CaptureSource) -> Result<(u32, u32), CaptureError> {
         Ok(match source {
             CaptureSource::Camera(_) => CAMERA_SIZE,
             CaptureSource::Microphone => (0, 0),
+            _ if backend() == Backend::Portal => portal_session(false)?.size,
             _ => region(source)
                 .map(|monitor| (monitor.width, monitor.height))
                 .or_else(screen_size)
@@ -173,30 +196,36 @@ impl LinuxCapturer {
 
         // Microfone: só áudio, com a mesma forma da tela para o app não saber a diferença.
         if config.source == CaptureSource::Microphone {
-            let mut audio = launch(&microphone_pipeline(), true)?;
+            let mut audio = launch(&microphone_pipeline(), Stdio::null())?;
 
             watch_stderr(&mut audio, Arc::clone(&error));
             read_audio(&mut audio, Arc::clone(&audio_chunks), on_event);
 
-            return Ok(Self { video: None, audio: Some(audio), frames, audio_chunks, error });
+            return Ok(Self { video: None, audio: Some(audio), frames, audio_chunks, error, _portal: None });
         }
 
         // Câmera: só vídeo, pequeno, já em H.264 como a tela.
         if let CaptureSource::Camera(index) = config.source {
             let (width, height) = CAMERA_SIZE;
-            let mut video = launch(&camera_pipeline(index), true)?;
+            let mut video = launch(&camera_pipeline(index), Stdio::null())?;
 
             watch_stderr(&mut video, Arc::clone(&error));
             read_video(&mut video, width, height, Arc::clone(&frames), on_event);
 
-            return Ok(Self { video: Some(video), audio: None, frames, audio_chunks, error });
+            return Ok(Self { video: Some(video), audio: None, frames, audio_chunks, error, _portal: None });
         }
 
-        if std::env::var_os("DISPLAY").is_none() {
-            return Err(CaptureError::NoDisplay);
-        }
+        let portal = match backend() {
+            Backend::Portal => Some(portal_session(true)?),
+            Backend::X11 if std::env::var_os("DISPLAY").is_none() => return Err(CaptureError::NoDisplay),
+            Backend::X11 => None,
+        };
 
-        let (width, height) = config.quality.fit(Self::source_size(config.source)?);
+        let source_size = match &portal {
+            Some(session) => session.size,
+            None => Self::source_size(config.source)?,
+        };
+        let (width, height) = config.quality.fit(source_size);
         let frame_rate = config.frame_rate.clamp(1, 60);
 
         // Os mesmos tetos do `EncoderConfig`, em kbit/s, porque aqui o encoder é o x264.
@@ -213,15 +242,18 @@ impl LinuxCapturer {
         // ponytail: sem pedido de keyframe por fora; um a cada segundo é o que quem entra
         // na sala espera no pior caso.
         let (format, encoder) = encoder_tail(Self::video_encoder(), frame_rate, bitrate);
-        let pipeline = format!(
-            "ximagesrc use-damage=false show-pointer={} {} ! video/x-raw,framerate={frame_rate}/1 \
-             ! videoconvert ! videoscale ! video/x-raw,format={format},colorimetry=bt709,width={width},pixel-aspect-ratio=1/1 \
-             ! {encoder}",
-            config.show_cursor,
-            region(config.source).map(|monitor| monitor.area()).unwrap_or_default()
-        );
 
-        let mut video = launch(&pipeline, true)?;
+        // O fd do PipeWire entra como a entrada padrão do filho, e é por isso que o
+        // pipeline diz `fd=0`. Tirar o `FD_CLOEXEC` dele neste processo o entregaria a
+        // TODO filho aberto enquanto isso — o `gst-launch` do áudio logo abaixo, o de quem
+        // assiste, o `xrandr` — e é um fd que lê a tela. Assim só este filho o recebe, e o
+        // nosso lado fecha no `spawn`. O `pipewiresrc` o duplica antes de usar.
+        let (source, stdin) = match &portal {
+            Some(session) => (portal_source(session.node, frame_rate), Stdio::from(session.remote()?)),
+            None => (x11_source(config.show_cursor, region(config.source)), Stdio::null()),
+        };
+
+        let mut video = launch(&screen_pipeline(&source, frame_rate, width, format, &encoder), stdin)?;
 
         watch_stderr(&mut video, Arc::clone(&error));
         read_video(&mut video, width, height, Arc::clone(&frames), Arc::clone(&on_event));
@@ -229,10 +261,7 @@ impl LinuxCapturer {
         let audio = if config.capture_audio {
             // O monitor da saída padrão é o som do sistema inteiro. Filtrar por app
             // (`MUTED_APPS`) não existe aqui.
-            match launch(
-                &format!("pulsesrc device=@DEFAULT_MONITOR@ ! {AUDIO_TAIL}"),
-                true,
-            ) {
+            match launch(&format!("pulsesrc device=@DEFAULT_MONITOR@ ! {AUDIO_TAIL}"), Stdio::null()) {
                 Ok(mut child) => {
                     // O stderr vai para o log: sem servidor de som o gst sai na hora, e só a
                     // linha dele diz por quê.
@@ -250,7 +279,7 @@ impl LinuxCapturer {
             None
         };
 
-        Ok(Self { video: Some(video), audio, frames, audio_chunks, error })
+        Ok(Self { video: Some(video), audio, frames, audio_chunks, error, _portal: portal })
     }
 
     pub fn error(&self) -> Option<String> {
@@ -279,6 +308,249 @@ impl Drop for LinuxCapturer {
     fn drop(&mut self) {
         let _ = self.stop();
     }
+}
+
+/// De onde a tela vem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Backend {
+    /// `ximagesrc`: o app enxerga a tela e lista os monitores.
+    X11,
+    /// `pipewiresrc` pelo portal: quem escolhe é o seletor do próprio sistema.
+    Portal,
+}
+
+/// Sessão Wayland vai pelo portal. `UNKVOID_CAPTURE=x11|portal` força um dos dois: é o
+/// botão para calibrar numa máquina de verdade (GNOME e KDE têm portal também no X11, e
+/// um compositor sem portal ainda tem o XWayland).
+fn backend_for(forced: Option<&str>, session_type: Option<&str>, wayland_display: Option<&str>) -> Backend {
+    match forced {
+        Some("x11") => Backend::X11,
+        Some("portal") => Backend::Portal,
+        _ if session_type == Some("wayland") || wayland_display.is_some_and(|name| ! name.is_empty()) => {
+            Backend::Portal
+        }
+        _ => Backend::X11,
+    }
+}
+
+fn backend() -> Backend {
+    let read = |name: &str| std::env::var(name).ok();
+
+    backend_for(
+        read("UNKVOID_CAPTURE").as_deref(),
+        read("XDG_SESSION_TYPE").as_deref(),
+        read("WAYLAND_DISPLAY").as_deref(),
+    )
+}
+
+pub fn uses_system_picker() -> bool {
+    backend() == Backend::Portal
+}
+
+fn x11_source(show_cursor: bool, region: Option<Monitor>) -> String {
+    format!(
+        "ximagesrc use-damage=false show-pointer={show_cursor} {}",
+        region.map(Monitor::area).unwrap_or_default()
+    )
+}
+
+/// Tela parada no PipeWire não gera buffer, e sem quadro novo o encoder não solta o
+/// keyframe por segundo que quem entra na sala espera. O `keepalive-time` reenvia o
+/// último quadro a cada intervalo (com o relógio de agora) e o `videorate` acerta a
+/// cadência, que é o que o `ximagesrc use-damage=false` já entrega no X11. O `videorate`
+/// vem antes da conversão para que o excedente de um monitor de 144 Hz caia sem custar
+/// `videoconvert`.
+fn portal_source(node: u32, frame_rate: u32) -> String {
+    format!(
+        "pipewiresrc fd=0 path={node} do-timestamp=true keepalive-time={} ! videorate",
+        1000 / frame_rate.max(1)
+    )
+}
+
+/// Da origem ao pipe. Só a largura é fixa: a altura sai da proporção do que chegar, e no
+/// portal o que chega pode ser maior do que o `size` anunciado (monitor com escala).
+fn screen_pipeline(source: &str, frame_rate: u32, width: u32, format: &str, encoder: &str) -> String {
+    format!(
+        "{source} ! video/x-raw,framerate={frame_rate}/1 \
+         ! videoconvert ! videoscale ! video/x-raw,format={format},colorimetry=bt709,width={width},pixel-aspect-ratio=1/1 \
+         ! {encoder}"
+    )
+}
+
+fn is_screen(source: CaptureSource) -> bool {
+    matches!(
+        source,
+        CaptureSource::PrimaryDisplay | CaptureSource::Display(_) | CaptureSource::Window(_)
+    )
+}
+
+/// O que o portal promete quando não diz o tamanho do stream (o campo é opcional).
+const PORTAL_FALLBACK_SIZE: (u32, u32) = (1920, 1080);
+
+/// Uma sessão do portal já com a escolha da pessoa.
+///
+/// A conexão D-Bus é só dela: o portal encerra a captura quando a conexão some, então o
+/// app morrer, ou o `Close` não chegar, não deixa a tela sendo lida por ninguém.
+struct PortalSession {
+    proxy: Screencast,
+    session: Arc<Session<Screencast>>,
+    node: u32,
+    /// ponytail: é o tamanho em coordenadas do compositor. Num monitor com escala o stream
+    /// é maior, e a qualidade fica limitada à largura lógica; o tamanho real só vem das
+    /// caps do PipeWire, que exigiriam a biblioteca ligada ao binário.
+    size: (u32, u32),
+}
+
+impl PortalSession {
+    /// Abre o seletor do sistema e espera pela pessoa, o tempo que ela levar.
+    fn negotiate(show_cursor: bool) -> Result<Self, CaptureError> {
+        async_io::block_on(async {
+            let connection = ashpd::zbus::connection::Builder::session()?.build().await?;
+            let proxy = Screencast::with_connection(connection).await?;
+            let cursor = cursor_mode(proxy.available_cursor_modes().await.unwrap_or_default(), show_cursor);
+            let sources = source_types(proxy.available_source_types().await.unwrap_or_default());
+            let session = Arc::new(proxy.create_session(Default::default()).await?);
+
+            // Daqui em diante qualquer saída, inclusive a pessoa cancelar, fecha a sessão.
+            let mut portal = Self { proxy, session, node: 0, size: PORTAL_FALLBACK_SIZE };
+
+            portal
+                .proxy
+                .select_sources(
+                    &portal.session,
+                    SelectSourcesOptions::default()
+                        .set_cursor_mode(cursor)
+                        .set_sources(sources)
+                        .set_multiple(false),
+                )
+                .await?
+                .response()?;
+
+            let chosen = portal.proxy.start(&portal.session, None, Default::default()).await?.response()?;
+
+            let Some(stream) = chosen.streams().first() else {
+                return Ok(None);
+            };
+
+            portal.node = stream.pipe_wire_node_id();
+
+            match stream.size() {
+                Some((width, height)) if width > 0 && height > 0 => portal.size = (width as u32, height as u32),
+                _ => tracing::warn!("captura: o portal não disse o tamanho da origem, supondo 1920x1080"),
+            }
+
+            tracing::info!(node = portal.node, size = ?portal.size, "captura: origem escolhida no portal");
+
+            Ok(Some(portal))
+        })
+        .map_err(portal_error)?
+        .ok_or_else(|| CaptureError::Platform("o portal respondeu sem nenhuma tela".into()))
+    }
+
+    /// Um fd novo para o PipeWire. Um por `gst-launch`: o socket guarda o estado do
+    /// cliente que o usou, e o filho seguinte não pode continuar a conversa do anterior.
+    fn remote(&self) -> Result<OwnedFd, CaptureError> {
+        async_io::block_on(self.proxy.open_pipe_wire_remote(&self.session, Default::default()))
+            .map_err(portal_error)
+    }
+}
+
+impl Drop for PortalSession {
+    fn drop(&mut self) {
+        let session = Arc::clone(&self.session);
+
+        // Noutra thread: quem larga a sessão pode ser uma thread do tokio, e uma chamada
+        // D-Bus a um portal travado a seguraria.
+        std::thread::spawn(move || {
+            if let Err(error) = async_io::block_on(session.close()) {
+                tracing::warn!(error = %error, "captura: o portal não fechou a sessão a pedido; ela cai com a conexão");
+            }
+        });
+    }
+}
+
+fn portal_error(error: ashpd::Error) -> CaptureError {
+    match error {
+        ashpd::Error::Response(ResponseError::Cancelled) => CaptureError::Cancelled,
+        other => CaptureError::Platform(format!(
+            "o portal de captura de tela falhou ({other}); confira o xdg-desktop-portal e o backend do seu ambiente"
+        )),
+    }
+}
+
+/// O cursor embutido na imagem ou fora dela, se o portal souber fazer o que foi pedido:
+/// modo que ele não anuncia é recusado ("Unavailable cursor mode") e derruba a sessão.
+/// Sem dizer nada o portal esconde o cursor.
+fn cursor_mode(available: BitFlags<CursorMode>, show_cursor: bool) -> Option<CursorMode> {
+    let wanted = if show_cursor { CursorMode::Embedded } else { CursorMode::Hidden };
+
+    available.contains(wanted).then_some(wanted)
+}
+
+/// Monitor e janela, menos o que este portal não anuncia: o do wlroots só tem monitor, e
+/// o que cada backend faz com um tipo que não conhece é problema que não precisa existir.
+fn source_types(available: BitFlags<SourceType>) -> BitFlags<SourceType> {
+    let wanted = SourceType::Monitor | SourceType::Window;
+    let offered = wanted & available;
+
+    if offered.is_empty() { wanted } else { offered }
+}
+
+/// A sessão que o `prepare` negociou, à espera do `start`, e a que está no ar — fraca,
+/// porque quem a segura é o capturador. Trocar a qualidade refaz a captura, e é por esta
+/// que ela acha a sessão aberta em vez de abrir o seletor do sistema outra vez.
+struct PortalSlots {
+    prepared: Option<Arc<PortalSession>>,
+    active: Weak<PortalSession>,
+}
+
+static PORTAL: Mutex<PortalSlots> = Mutex::new(PortalSlots { prepared: None, active: Weak::new() });
+
+fn portal_slots() -> MutexGuard<'static, PortalSlots> {
+    PORTAL.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A sessão que vale agora. `consume` é o `start`: a recém-negociada sai da espera e
+/// passa a ser a que está no ar.
+///
+/// Nunca negocia por conta própria: quem chama daqui pode estar com o cadeado da sessão
+/// de envio na mão, e esperar a pessoa ali pararia voz e câmera junto.
+fn portal_session(consume: bool) -> Result<Arc<PortalSession>, CaptureError> {
+    let mut slots = portal_slots();
+    let prepared = if consume { slots.prepared.take() } else { slots.prepared.clone() };
+
+    let session = prepared.or_else(|| slots.active.upgrade()).ok_or_else(|| {
+        CaptureError::Platform("no Wayland a tela é escolhida no `prepare`, antes de ligar a captura".into())
+    })?;
+
+    if consume {
+        slots.active = Arc::downgrade(&session);
+    }
+
+    Ok(session)
+}
+
+pub(crate) fn prepare(config: &CaptureConfig) -> Result<(), CaptureError> {
+    if ! is_screen(config.source) || backend() != Backend::Portal {
+        return Ok(());
+    }
+
+    let show_cursor = config.show_cursor;
+
+    // Noutra thread, e esperada aqui: o ashpd tem `assert!` e `unwrap` no caminho da
+    // resposta, e um pânico dentro do comando deixaria o `start_broadcast` sem resposta
+    // nenhuma, com a interface esperando para sempre. Assim ele vira erro.
+    let session = std::thread::spawn(move || PortalSession::negotiate(show_cursor))
+        .join()
+        .map_err(|_| CaptureError::Platform("o portal de captura de tela respondeu o que não devia".into()))??;
+
+    portal_slots().prepared = Some(Arc::new(session));
+
+    Ok(())
+}
+
+pub(crate) fn discard_prepared() {
+    portal_slots().prepared = None;
 }
 
 /// A câmera sobe pequena: é um cartão ao lado da tela, não a tela.
@@ -520,13 +792,16 @@ fn read_audio(
     });
 }
 
-fn launch(pipeline: &str, keep_stderr: bool) -> Result<Child, CaptureError> {
+fn launch(pipeline: &str, stdin: Stdio) -> Result<Child, CaptureError> {
     Command::new("gst-launch-1.0")
         .arg("-q")
         .args(pipeline.split_whitespace())
-        .stdin(Stdio::null())
+        // Com `PIPEWIRE_NODE` no ambiente o PipeWire liga o stream nesse nó, e não no que
+        // o portal devolveu.
+        .env_remove("PIPEWIRE_NODE")
+        .stdin(stdin)
         .stdout(Stdio::piped())
-        .stderr(if keep_stderr { Stdio::piped() } else { Stdio::inherit() })
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| {
             CaptureError::Platform(format!(
@@ -694,6 +969,87 @@ mod tests {
         assert_eq!(monitors[0], Monitor { width: 1920, height: 1080, x: 0, y: 0 });
         assert_eq!(monitors[1].x, 1920);
         assert_eq!(monitors[1].area(), "startx=1920 starty=0 endx=3839 endy=1079");
+    }
+
+    #[test]
+    fn wayland_goes_through_the_portal_and_the_override_wins() {
+        assert_eq!(backend_for(None, Some("x11"), None), Backend::X11);
+        assert_eq!(backend_for(None, None, None), Backend::X11, "sem sessão gráfica declarada segue como sempre foi");
+        assert_eq!(backend_for(None, Some("wayland"), None), Backend::Portal);
+        assert_eq!(backend_for(None, Some("tty"), Some("wayland-0")), Backend::Portal, "compositor aberto à mão de um tty");
+        assert_eq!(backend_for(None, Some("x11"), Some("")), Backend::X11, "variável vazia não é Wayland");
+
+        assert_eq!(backend_for(Some("x11"), Some("wayland"), Some("wayland-0")), Backend::X11);
+        assert_eq!(backend_for(Some("portal"), Some("x11"), None), Backend::Portal);
+        assert_eq!(backend_for(Some("pipewire"), Some("x11"), None), Backend::X11, "valor desconhecido não força nada");
+        assert_eq!(backend_for(Some(""), Some("wayland"), None), Backend::Portal);
+    }
+
+    #[test]
+    fn the_two_screen_pipelines_differ_only_in_the_source() {
+        let (format, encoder) = encoder_tail("x264enc", 60, 10_000);
+        let region = Monitor { width: 1920, height: 1080, x: 1920, y: 0 };
+        let words = |pipeline: String| pipeline.split_whitespace().map(str::to_string).collect::<Vec<_>>().join(" ");
+
+        let x11 = words(screen_pipeline(&x11_source(false, Some(region)), 60, 1920, format, &encoder));
+        let portal = words(screen_pipeline(&portal_source(47, 60), 60, 1920, format, &encoder));
+        let shared = words(format!(
+            "! video/x-raw,framerate=60/1 ! videoconvert ! videoscale \
+             ! video/x-raw,format=I420,colorimetry=bt709,width=1920,pixel-aspect-ratio=1/1 ! {encoder}"
+        ));
+
+        assert_eq!(
+            x11,
+            format!("ximagesrc use-damage=false show-pointer=false startx=1920 starty=0 endx=3839 endy=1079 {shared}")
+        );
+        assert_eq!(
+            portal,
+            format!("pipewiresrc fd=0 path=47 do-timestamp=true keepalive-time=16 ! videorate {shared}"),
+            "o fd é a entrada padrão do filho, e tela parada continua gerando quadro"
+        );
+
+        assert_eq!(words(x11_source(true, None)), "ximagesrc use-damage=false show-pointer=true");
+        assert!(portal_source(3, 30).contains("keepalive-time=33 "), "um reenvio por quadro a 30 fps");
+        assert!(portal_source(3, 0).contains("keepalive-time=1000 "), "fps zero não divide por zero");
+    }
+
+    #[test]
+    fn the_portal_is_only_asked_for_what_it_offers() {
+        let every_cursor = CursorMode::Hidden | CursorMode::Embedded | CursorMode::Metadata;
+
+        assert_eq!(cursor_mode(every_cursor, true), Some(CursorMode::Embedded));
+        assert_eq!(cursor_mode(every_cursor, false), Some(CursorMode::Hidden));
+        assert_eq!(cursor_mode(CursorMode::Hidden.into(), true), None, "sem cursor embutido, vale o padrão do portal");
+        assert_eq!(cursor_mode(BitFlags::empty(), false), None, "portal antigo não diz o que sabe");
+
+        assert_eq!(source_types(SourceType::Monitor.into()), BitFlags::from(SourceType::Monitor), "wlroots");
+        assert_eq!(
+            source_types(SourceType::Monitor | SourceType::Window | SourceType::Virtual),
+            SourceType::Monitor | SourceType::Window
+        );
+        assert_eq!(source_types(BitFlags::empty()), SourceType::Monitor | SourceType::Window);
+    }
+
+    #[test]
+    fn only_a_screen_source_waits_for_the_system_picker() {
+        assert!(is_screen(CaptureSource::PrimaryDisplay));
+        assert!(is_screen(CaptureSource::Display(2)));
+        assert!(is_screen(CaptureSource::Window(7)));
+        assert!(! is_screen(CaptureSource::Camera(0)));
+        assert!(! is_screen(CaptureSource::Microphone));
+    }
+
+    #[test]
+    fn a_cancelled_picker_is_not_a_platform_failure() {
+        assert!(matches!(
+            portal_error(ashpd::Error::Response(ResponseError::Cancelled)),
+            CaptureError::Cancelled
+        ));
+        assert!(matches!(
+            portal_error(ashpd::Error::Response(ResponseError::Other)),
+            CaptureError::Platform(_)
+        ));
+        assert!(matches!(portal_error(ashpd::Error::NoResponse), CaptureError::Platform(_)));
     }
 
     #[test]

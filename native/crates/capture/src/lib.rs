@@ -27,6 +27,43 @@ pub use windows::WindowsCapturer as PlatformCapturer;
 #[cfg(target_os = "linux")]
 pub use linux::LinuxCapturer as PlatformCapturer;
 
+/// Se quem escolhe a tela é o seletor do próprio sistema (o portal do Wayland) e não a
+/// lista do app: aí `displays()` devolve um item só, sem tamanho, e `windows()` nenhum.
+#[cfg(target_os = "linux")]
+pub use linux::uses_system_picker;
+
+#[cfg(not(target_os = "linux"))]
+pub fn uses_system_picker() -> bool {
+    false
+}
+
+/// O que tem de acontecer antes de `source_size` e `start` e pode esperar pela pessoa:
+/// no Wayland é aqui que o seletor do sistema abre, uma vez só, e o que ela escolher fica
+/// guardado para os dois. Bloqueia; quem chama não pode estar com cadeado nenhum na mão.
+/// Nos outros sistemas, e no X11, não faz nada.
+pub fn prepare(config: &CaptureConfig) -> Result<Prepared, CaptureError> {
+    #[cfg(target_os = "linux")]
+    linux::prepare(config)?;
+
+    #[cfg(not(target_os = "linux"))]
+    let _ = config;
+
+    Ok(Prepared(()))
+}
+
+/// O que o `prepare` deixou separado. Largado sem que um `start` tenha consumido, fecha
+/// o que abriu: sem isto um encoder que não abre deixaria a tela "sendo compartilhada"
+/// no indicador do sistema, sem transmissão nenhuma.
+#[must_use]
+pub struct Prepared(());
+
+impl Drop for Prepared {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        linux::discard_prepared();
+    }
+}
+
 /// A full screen available for capture.
 #[derive(Debug, Clone)]
 pub struct Display {
@@ -173,11 +210,19 @@ impl CaptureConfig {
     /// Os mesmos aplicativos no Windows, pelo nome do executável, sem diferenciar
     /// maiúsculas. O Discord toca a chamada num processo filho com o mesmo nome; o
     /// `DiscordSystemHelper.exe` nasce fora da árvore dele e precisa vir pelo nome.
+    ///
+    /// Os clientes alternativos entram pelo nome próprio: a chamada é a mesma, num processo
+    /// que não se chama Discord. O Discord aberto no navegador não tem nome que o separe
+    /// do resto do navegador, e continua entrando.
     pub const MUTED_EXECUTABLES: &'static [&'static str] = &[
         "Discord.exe",
         "DiscordPTB.exe",
         "DiscordCanary.exe",
         "DiscordSystemHelper.exe",
+        "Vesktop.exe",
+        "ArmCord.exe",
+        "Legcord.exe",
+        "WebCord.exe",
     ];
 }
 
@@ -246,6 +291,11 @@ pub enum CaptureError {
 
     #[error("screen recording permission denied — enable it in System Settings")]
     PermissionDenied,
+
+    /// A pessoa fechou o seletor de tela do sistema sem escolher nada. Não é defeito, e
+    /// a interface precisa poder distinguir.
+    #[error("screen picker closed without choosing a source")]
+    Cancelled,
 
     #[error("capture failed: {0}")]
     Platform(String),

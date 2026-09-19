@@ -7,6 +7,7 @@
 use capture::Quality;
 
 mod audio;
+mod governor;
 mod plain;
 mod receiver;
 
@@ -17,7 +18,8 @@ mod macos;
 mod windows;
 
 pub use audio::{AudioEncoder, FRAME_MS};
-pub use plain::{PlainSender, Source};
+pub use governor::BitrateGovernor;
+pub use plain::{Feedback, PlainSender, Source};
 pub use receiver::{PlainReceiver, resolve};
 
 #[cfg(target_os = "macos")]
@@ -180,16 +182,31 @@ pub enum EncoderError {
 /// é H.264 Annex-B, e este encoder só o repassa — com a mesma forma dos outros para o
 /// `broadcast.rs` não saber a diferença.
 #[cfg(target_os = "linux")]
-pub struct PlatformEncoder;
+pub struct PlatformEncoder {
+    bitrate: u32,
+}
 
 #[cfg(target_os = "linux")]
 impl PlatformEncoder {
-    pub fn new(_config: &EncoderConfig) -> Result<Self, EncoderError> {
-        Ok(Self)
+    pub fn new(config: &EncoderConfig) -> Result<Self, EncoderError> {
+        Ok(Self { bitrate: config.bitrate })
     }
 
     /// ponytail: o x264 no pipe não recebe pedidos; o keyframe periódico (1 s) cobre.
     pub fn request_keyframe(&mut self) {}
+
+    /// A taxa com que o encoder abriu, que é o teto de quem a ajusta.
+    pub fn bitrate(&self) -> u32 {
+        self.bitrate
+    }
+
+    /// ponytail: sem efeito, e diz que recusou para o governador parar de tentar. O encoder
+    /// é o `gst-launch` filho, com a taxa escrita na linha de comando: o teto é a taxa fixa
+    /// de hoje. A saída é o pipeline dentro do processo (`gstreamer-rs`), onde `bitrate` é
+    /// propriedade que o x264enc e o nvh264enc aceitam com o pipeline no ar.
+    pub fn set_bitrate(&mut self, _bitrate: u32) -> bool {
+        false
+    }
 
     /// Se o H.264 sai da placa. Quem escolhe o encoder é a captura, que monta o pipeline.
     pub fn hardware(&self) -> bool {
@@ -221,6 +238,14 @@ impl PlatformEncoder {
     }
 
     pub fn request_keyframe(&mut self) {}
+
+    pub fn bitrate(&self) -> u32 {
+        0
+    }
+
+    pub fn set_bitrate(&mut self, _bitrate: u32) -> bool {
+        false
+    }
 
     pub fn hardware(&self) -> bool {
         false

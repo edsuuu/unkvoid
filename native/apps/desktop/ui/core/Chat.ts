@@ -1,5 +1,8 @@
+import type { Channel as EchoChannel } from 'laravel-echo';
+
 import { Failure } from './Failure.ts';
 import type { Hub } from './Hub.ts';
+import { ImageShrinker } from './ImageShrinker.ts';
 import type { Channel, Message } from './Models.ts';
 import { Permissions } from './Permissions.ts';
 import { Store } from './Store.ts';
@@ -13,11 +16,24 @@ export type ChatState = {
     failed: boolean;
     replyTo: Message | null;
     newFrom: number | null;
+    images: PendingImage[];
+    sending: boolean;
+    unread: number;
+};
+
+export type PendingImage = {
+    id: number;
+    file: File;
+    preview: string;
 };
 
 export class Chat {
     static readonly MAX_ROWS = 500;
     static readonly PAGE_SIZE = 50;
+    static readonly MAX_IMAGES = 3;
+    static readonly RENEW_EVERY_MS = 10 * 60_000;
+    static readonly EVENTS = ['MessageSent', 'MessageUpdated', 'MessageDeleted'];
+    static readonly EMPTY: ChatState = { channel: null, messages: [], loading: false, loadingOlder: false, exhausted: false, failed: false, replyTo: null, newFrom: null, images: [], sending: false, unread: 0 };
 
     static mergeLatest<Item extends { id: number }>(known: Item[], latest: Item[]): Item[] {
         const start = latest[0]?.id ?? 0;
@@ -28,23 +44,33 @@ export class Chat {
 
     readonly hub: Hub;
     channel: Channel | null = null;
+    subscription: EchoChannel | null = null;
+    watched = true;
+    imageSerial = 0;
+    renewing = false;
+    readonly renewedAt = new Map<number, number>();
     readonly store: Store<ChatState>;
 
     constructor(hub: Hub) {
         this.hub = hub;
-        this.store = new Store<ChatState>({ channel: null, messages: [], loading: false, loadingOlder: false, exhausted: false, failed: false, replyTo: null, newFrom: null });
+        this.store = new Store<ChatState>(Chat.EMPTY);
     }
 
     async open(channel: Channel): Promise<void> {
         this.close();
         this.channel = channel;
-        this.store.replace({ channel, messages: [], loading: true, loadingOlder: false, exhausted: false, failed: false, replyTo: null, newFrom: null });
+        this.store.replace({ ...Chat.EMPTY, channel, loading: true });
 
         const subscription = this.hub.echo!.private(`channel.${channel.id}`);
 
+        this.subscription = subscription;
         this.hub.listen<{ message: Message }>(subscription, 'MessageSent', ({ message }) => {
             if (message.user.id !== this.hub.user?.id) {
                 this.hub.app.sounds.message();
+
+                if (! this.watched) {
+                    this.store.set(state => ({ unread: state.unread + 1 }));
+                }
             }
 
             this.append(message);
@@ -92,12 +118,102 @@ export class Chat {
     }
 
     close(): void {
-        if (this.channel) {
+        if (this.channel?.type === 'voice') {
+            for (const name of Chat.EVENTS) {
+                this.subscription?.stopListening(`.${name}`).stopListening(name);
+            }
+        } else if (this.channel) {
             this.hub.echo?.leave(`channel.${this.channel.id}`);
         }
 
+        for (const image of this.store.state.images) {
+            URL.revokeObjectURL(image.preview);
+        }
+
         this.channel = null;
-        this.store.replace({ channel: null, messages: [], loading: false, loadingOlder: false, exhausted: false, failed: false, replyTo: null, newFrom: null });
+        this.subscription = null;
+        this.renewedAt.clear();
+        this.store.replace(Chat.EMPTY);
+    }
+
+    setWatched(watched: boolean): void {
+        this.watched = watched;
+
+        if (watched && this.store.state.unread > 0) {
+            this.store.set({ unread: 0 });
+        }
+    }
+
+    async attach(files: File[]): Promise<void> {
+        const channel = this.channel;
+        const room = Chat.MAX_IMAGES - this.store.state.images.length;
+
+        if (! channel || files.length === 0) {
+            return;
+        }
+
+        if (files.length > room) {
+            this.hub.app.toast(`no máximo ${Chat.MAX_IMAGES} imagens por mensagem`, true);
+        }
+
+        for (const file of files.slice(0, Math.max(0, room))) {
+            try {
+                const fitted = await ImageShrinker.fit(file);
+
+                if (this.channel !== channel || this.store.state.images.length >= Chat.MAX_IMAGES) {
+                    return;
+                }
+
+                this.imageSerial += 1;
+                this.store.set(state => ({ images: [...state.images, { id: this.imageSerial, file: fitted, preview: URL.createObjectURL(fitted) }] }));
+            } catch (failure) {
+                this.hub.app.log('chat.image.error', { name: file.name, type: file.type, size: file.size, message: Failure.message(failure) });
+                this.hub.app.toast(Failure.message(failure), true);
+            }
+        }
+    }
+
+    detach(id: number): void {
+        const image = this.store.state.images.find(item => item.id === id);
+
+        if (! image) {
+            return;
+        }
+
+        URL.revokeObjectURL(image.preview);
+        this.store.set(state => ({ images: state.images.filter(item => item.id !== id) }));
+    }
+
+    async renewFiles(message: Message): Promise<void> {
+        const channel = this.channel;
+        const last = this.renewedAt.get(message.id);
+
+        if (! channel || this.renewing || (last !== undefined && Date.now() - last < Chat.RENEW_EVERY_MS)) {
+            return;
+        }
+
+        this.renewing = true;
+        this.renewedAt.set(message.id, Date.now());
+
+        try {
+            const page = await this.hub.api.get<Message[]>(`/api/channels/${channel.id}/messages?before=${message.id + 1}`);
+
+            if (this.channel !== channel) {
+                return;
+            }
+
+            const fresh = new Map(page.map(item => [item.id, item]));
+
+            for (const id of fresh.keys()) {
+                this.renewedAt.set(id, Date.now());
+            }
+
+            this.store.set(state => ({ messages: state.messages.map(item => fresh.get(item.id) ?? item) }));
+        } catch (failure) {
+            this.hub.app.log('chat.files.renew.error', { message: Failure.message(failure) });
+        } finally {
+            this.renewing = false;
+        }
     }
 
     async loadOlder(): Promise<boolean> {
@@ -194,20 +310,62 @@ export class Chat {
     async send(body: string): Promise<boolean> {
         const text = body.trim();
         const channel = this.channel;
+        const { images, sending } = this.store.state;
 
-        if (text === '' || ! channel) {
+        if ((text === '' && images.length === 0) || ! channel) {
             return true;
         }
 
+        if (sending) {
+            return false;
+        }
+
         const replyToId = this.store.state.replyTo?.id ?? null;
+        let payload: FormData | { body: string; reply_to_id: number | null } = { body: text, reply_to_id: replyToId };
+
+        if (images.length > 0) {
+            payload = new FormData();
+
+            if (text !== '') {
+                payload.append('body', text);
+            }
+
+            if (replyToId !== null) {
+                payload.append('reply_to_id', String(replyToId));
+            }
+
+            for (const image of images) {
+                payload.append('images[]', image.file);
+            }
+        }
+
+        this.store.set({ sending: true });
 
         const sent = await this.hub.attempt(async () => {
-            this.append(await this.hub.api.post<Message>(`/api/channels/${channel.id}/messages`, { body: text, reply_to_id: replyToId }));
+            try {
+                this.append(await this.hub.api.post<Message>(`/api/channels/${channel.id}/messages`, payload));
+            } catch (failure) {
+                this.hub.app.log('chat.send.error', { status: Failure.status(failure), images: images.length, message: Failure.message(failure) });
+
+                throw Failure.status(failure) === 413
+                    ? Object.assign(new Error('imagens grandes demais para uma mensagem só: mande menos, ou menores'), { status: 413 })
+                    : failure;
+            }
 
             return true;
         });
 
+        if (this.channel !== channel) {
+            return Boolean(sent);
+        }
+
+        this.store.set({ sending: false });
+
         if (sent) {
+            for (const image of images) {
+                this.detach(image.id);
+            }
+
             this.reply(null);
             this.markSeen();
         }

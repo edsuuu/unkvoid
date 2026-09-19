@@ -8,8 +8,9 @@ import { MemberList } from './MemberList.tsx';
 
 export function ServerView() {
     const hub = useApp().hub;
-    const { tree, stageOpen, inviteBanner, membersOpen } = useStore(hub.store);
+    const { tree, channel, stageOpen, stageChat, inviteBanner, membersOpen } = useStore(hub.store);
     const voiceState = useStore(hub.voice.store);
+    const { unread } = useStore(hub.voiceChat.store);
     const stageChannel = stageOpen ? voiceState.channel : null;
 
     return (
@@ -39,6 +40,11 @@ export function ServerView() {
                                 <span className="text-online"><Icon name="speaker" size={15} /></span>
                                 <span className="min-w-0 truncate text-[14px] font-semibold">{stageChannel.name}</span>
                                 <span className="flex-1" />
+                                <button className={`btn-ghost relative flex items-center gap-1.5 px-2.5 py-1.5 text-[12px] ${stageChat === 'voice' ? 'border-brand/60 text-ink-strong' : ''}`} type="button" title={stageChat === 'voice' ? 'Fechar o chat desta voz' : 'Ver o chat desta voz'} onClick={() => hub.setStageChat(stageChat === 'voice' ? null : 'voice')}>
+                                    <Icon name="chat" size={13} />
+                                    Chat da voz
+                                    {unread > 0 && <span className="absolute -top-1 -right-1 size-2.5 rounded-full bg-danger" title="Mensagem nova" />}
+                                </button>
                                 <button className="btn-ghost flex items-center gap-1.5 px-2.5 py-1.5 text-[12px]" type="button" title="Mudar visual para focado" onClick={() => hub.setFocusedRoom(true)}>
                                     <Icon name="focus" size={13} />
                                     Sala focada
@@ -48,8 +54,14 @@ export function ServerView() {
                             <Stage canShare={voiceState.can.includes('stream')} compact />
                         </section>
                     )
-                    : <ChatPanel />}
+                    : <ChatPanel chat={hub.chat} channel={channel} />}
             </div>
+
+            {stageChannel && stageChat === 'voice' && (
+                <div className="flex w-[320px] flex-none animate-rise flex-col">
+                    <ChatPanel chat={hub.voiceChat} channel={stageChannel} onClose={() => hub.setStageChat(null)} />
+                </div>
+            )}
 
             {membersOpen && ! stageChannel && <MemberList />}
         </div>

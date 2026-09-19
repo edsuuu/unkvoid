@@ -143,8 +143,20 @@ pub struct PlainSender {
     sent_bytes: u64,
 
     /// Os últimos pacotes de vídeo já cifrados, com o número de sequência, para reenviar
-    /// o que o servidor disser que não chegou.
-    history: VecDeque<(u16, Bytes)>,
+    /// o que o servidor disser que não chegou. O `bool` diz se ele já foi pedido de volta.
+    history: VecDeque<(u16, Bytes, bool)>,
+}
+
+/// O que o servidor devolveu desde a última leitura.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Feedback {
+    pub keyframe: bool,
+
+    /// Pacotes de vídeo pedidos de volta **pela primeira vez**. O mediasoup repete o pedido
+    /// a cada ~100 ms enquanto o pacote não chega, e a ida e volta do Brasil aos EUA passa
+    /// disso: contando pedido em vez de pacote, 2,5% de perda pareceriam 5% para quem
+    /// decide a taxa.
+    pub lost: u32,
 }
 
 impl PlainSender {
@@ -281,7 +293,9 @@ impl PlainSender {
     /// que uma MTU. O avanço do relógio RTP é o que diz ao outro lado quando exibir.
     ///
     /// O quadro entra por valor: os bytes viram o `Bytes` do empacotador sem cópia.
-    pub fn send_frame(&mut self, source: Source, frame: EncodedFrame, frame_rate: f64) -> Result<()> {
+    ///
+    /// Devolve quantos pacotes o quadro virou: é o denominador da perda.
+    pub fn send_frame(&mut self, source: Source, frame: EncodedFrame, frame_rate: f64) -> Result<usize> {
         let stream = self.streams.entry(source).or_insert_with(|| source.stream());
 
         // Todo quadro que a captura ou o encoder não entregam abre um buraco no tempo.
@@ -319,19 +333,21 @@ impl PlainSender {
             &mut self.sent_bytes,
         )?;
 
-        for packet in sent {
+        let packets = sent.len();
+
+        for (sequence, packet) in sent {
             if self.history.len() == HISTORY {
                 self.history.pop_front();
             }
 
-            self.history.push_back(packet);
+            self.history.push_back((sequence, packet, false));
         }
 
-        Ok(())
+        Ok(packets)
     }
 
     /// Lê o que o servidor devolveu: reenvia na hora os pacotes de vídeo que ele diz não
-    /// ter recebido, e diz se ele pediu um quadro-chave.
+    /// ter recebido, e diz quantos foram e se ele pediu um quadro-chave.
     ///
     /// O caminho até o servidor é a internet aberta, do Brasil aos EUA, e 1% de perda ali
     /// congelava quem assiste por segundos: o servidor pedia o pacote de volta (o `nack`
@@ -342,13 +358,14 @@ impl PlainSender {
     ///
     /// Não bloqueia: o socket é não-bloqueante e quem chama é a thread da captura, que
     /// não pode esperar por nada. Lê o que já chegou e volta.
-    pub fn read_feedback(&mut self) -> bool {
+    pub fn read_feedback(&mut self) -> Feedback {
+        let mut feedback = Feedback::default();
+
         let Some(incoming) = self.incoming.as_mut() else {
-            return false;
+            return feedback;
         };
 
         let mut buffer = [0_u8; 1500];
-        let mut asked = false;
 
         while let Ok(size) = self.socket.recv(&mut buffer) {
             // Falha ao abrir é pacote de outra pessoa ou lixo da rede. Ignorar é o certo:
@@ -358,20 +375,26 @@ impl PlainSender {
                 continue;
             };
 
-            asked |= wants_keyframe(&plain);
+            feedback.keyframe |= wants_keyframe(&plain);
 
             // ponytail: busca linear no histórico a cada pacote perdido, até 1024 passos.
             // Índice por número de sequência se isto aparecer no custo por quadro.
             for sequence in lost_video_packets(&plain) {
-                if let Some((_, packet)) = self.history.iter().find(|(stored, _)| *stored == sequence)
-                    && let Ok(written) = self.socket.send(packet)
-                {
+                let Some((_, packet, asked)) =
+                    self.history.iter_mut().find(|(stored, ..)| *stored == sequence)
+                else {
+                    continue;
+                };
+
+                feedback.lost += u32::from(!std::mem::replace(asked, true));
+
+                if let Ok(written) = self.socket.send(packet) {
                     self.sent_bytes += written as u64;
                 }
             }
         }
 
-        asked
+        feedback
     }
 
     /// Pacotes largados porque o buffer de saída estava cheio.
@@ -607,16 +630,17 @@ mod tests {
         nack.extend_from_slice(&sequence.to_be_bytes());
         nack.extend_from_slice(&[0, 0]);
 
-        let protected = SrtpContext::new(
+        let mut server_srtp = SrtpContext::new(
             &server_key[..KEY_LEN],
             &server_key[KEY_LEN..],
             ProtectionProfile::Aes128CmHmacSha1_80,
             None,
             None,
         )
-        .expect("could not start the server SRTP")
-        .encrypt_rtcp(&nack)
-        .expect("could not protect the NACK");
+        .expect("could not start the server SRTP");
+
+        let protected = server_srtp.encrypt_rtcp(&nack).expect("could not protect the NACK");
+        let protected_again = server_srtp.encrypt_rtcp(&nack).expect("could not protect the NACK");
 
         let port = sender.socket.local_addr().expect("sender without an address").port();
 
@@ -625,11 +649,25 @@ mod tests {
             .expect("could not send the NACK");
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        assert!(!sender.read_feedback(), "um NACK não é pedido de quadro-chave");
+        assert_eq!(
+            sender.read_feedback(),
+            Feedback { keyframe: false, lost: 1 },
+            "um NACK não é pedido de quadro-chave, e é um pacote perdido",
+        );
 
         let size = server_socket.recv(&mut buffer).expect("the lost packet was not sent again");
 
         assert_eq!(buffer[..size], original[..]);
+
+        // O mediasoup repete o pedido enquanto o pacote não chega. O pacote volta de novo,
+        // mas é a mesma perda: contá-la outra vez dobraria a perda que o governador vê.
+        server_socket
+            .send_to(&protected_again, ("127.0.0.1", port))
+            .expect("could not send the NACK again");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        assert_eq!(sender.read_feedback(), Feedback::default(), "o mesmo pacote não é perda nova");
+        assert!(server_socket.recv(&mut buffer).is_ok(), "o pedido repetido também é atendido");
     }
 
     /// Um PLI atrás de um relatório de recepção, que é como ele chega de verdade. Se o

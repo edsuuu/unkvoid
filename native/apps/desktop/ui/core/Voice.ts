@@ -5,7 +5,7 @@ import { Media } from './Media.ts';
 import { Mic } from './Mic.ts';
 import type { Channel } from './Models.ts';
 import { Platform } from './Platform.ts';
-import { SfuClient, type JoinResponse, type PlainProducerResponse, type RoomIdentity, type SourceName } from './SfuClient.ts';
+import { SfuClient, type JoinResponse, type PlainProducerResponse, type Reconnected, type RoomIdentity, type SfuEventData, type SourceName } from './SfuClient.ts';
 import { Store } from './Store.ts';
 import { Tauri } from './Tauri.ts';
 
@@ -19,6 +19,7 @@ export type Keybinds = {
 
 export type VoicePreferences = {
     microphone: string;
+    speaker: string;
     noiseSuppression: boolean;
     muteOnJoin: boolean;
     inputMode: InputMode;
@@ -49,6 +50,7 @@ export class Voice {
     static readonly DEFAULT_KEYBINDS: Keybinds = { mute: 'CmdOrCtrl+Shift+KeyM', deafen: 'CmdOrCtrl+Shift+KeyD', talk: '' };
     static readonly DEFAULT_PREFERENCES: VoicePreferences = {
         microphone: '',
+        speaker: '',
         noiseSuppression: true,
         muteOnJoin: true,
         inputMode: 'voice',
@@ -119,10 +121,16 @@ export class Voice {
     }
 
     watchMicErrors(): void {
-        this.mic.onError((stage, failure) => this.app.log('voice.detection.error', { stage, message: Failure.message(failure) }));
+        this.mic.onError((stage, failure) => {
+            this.app.log('voice.detection.error', { stage, message: Failure.message(failure) });
+
+            if (stage === 'level') {
+                this.app.toast('a detecção de voz parou de medir o microfone: ele fica aberto até o nível voltar', true);
+            }
+        });
     }
 
-    listenShortcuts(): void {
+    listenNative(): void {
         if (this.listening || ! Tauri.available()) {
             return;
         }
@@ -130,6 +138,7 @@ export class Voice {
         this.listening = true;
 
         void Tauri.listen<{ action: string; pressed: boolean }>('shortcut', ({ payload }) => this.onShortcut(payload.action, payload.pressed));
+        void Tauri.listen<{ level: number }>('voice:level', ({ payload }) => this.mic.feed(payload.level));
     }
 
     async applyShortcuts(): Promise<void> {
@@ -154,7 +163,7 @@ export class Voice {
                 this.app.log('voice.shortcuts.refused', { failed: result.failed });
                 this.app.toast(
                     result.failed.includes('talk')
-                        ? 'outro programa já usa a tecla de falar: o seu microfone fica aberto até você escolher outra'
+                        ? 'o sistema não aceitou a tecla de falar: o seu microfone fica aberto até você escolher outra'
                         : `o sistema recusou ${result.failed.length === 1 ? 'uma tecla' : 'algumas teclas'}: outro programa já a usa. Escolha outra.`,
                     true,
                 );
@@ -219,14 +228,8 @@ export class Voice {
         try {
             const sfu = new SfuClient();
 
-            sfu.on('reconnected', detail => {
-                this.can = detail.can ?? this.can;
-                this.publish();
-
-                if (! detail.resumed) {
-                    void this.republish();
-                }
-            });
+            sfu.on('reconnected', detail => void this.afterReconnect(detail).catch((failure: unknown) => this.app.log('voice.reconnect.error', { message: Failure.message(failure) })));
+            sfu.on('producerDead', detail => void this.producerDied(detail).catch((failure: unknown) => this.app.log('voice.dead.error', { message: Failure.message(failure) })));
             sfu.on('serverMuted', detail => void this.applyServerMute(detail.muted));
             sfu.on('kicked', () => this.leaveIfCurrent(sfu));
             sfu.on('replaced', () => this.leaveIfCurrent(sfu));
@@ -414,9 +417,9 @@ export class Voice {
         }
     }
 
-    async stopMic(): Promise<void> {
+    async stopMic(closedByServer = false): Promise<void> {
         if (this.micProducerId) {
-            await this.app.media.sfu?.closeProducer(this.micProducerId);
+            await this.forgetProducer(this.micProducerId, closedByServer);
             this.micProducerId = null;
         }
 
@@ -438,31 +441,31 @@ export class Voice {
     startGate(): void {
         const { inputMode, sensitivity } = this.store.state.preferences;
 
+        const onSpeaking = (speaking: boolean): void => {
+            if (this.store.state.preferences.inputMode === 'voice') {
+                this.setGate(speaking);
+            }
+        };
+        const onSilence = (): void => {
+            if (this.store.state.preferences.inputMode === 'voice' && ! this.muted && ! this.serverMuted) {
+                this.app.log('voice.detection.silent', { microphone: this.store.state.preferences.microphone });
+                this.app.toast('seu microfone não captou nada até agora: confira o botão do fone e a entrada nas configurações', true);
+            }
+        };
+
         this.mic.stop();
         this.gateOpen = ! this.pushToTalk() && (inputMode !== 'voice' || ! this.micTrack);
 
         if (this.micTrack) {
             try {
-                this.mic.watch(
-                    this.micTrack,
-                    sensitivity,
-                    speaking => {
-                        if (this.store.state.preferences.inputMode === 'voice') {
-                            this.setGate(speaking);
-                        }
-                    },
-                    () => {
-                        if (this.store.state.preferences.inputMode === 'voice' && ! this.muted && ! this.serverMuted) {
-                            this.app.log('voice.detection.silent', { microphone: this.store.state.preferences.microphone });
-                            this.app.toast('seu microfone não captou nada até agora: confira o botão do fone e a entrada nas configurações', true);
-                        }
-                    },
-                );
+                this.mic.watch(this.micTrack, sensitivity, onSpeaking, onSilence);
             } catch (failure) {
                 this.app.log('voice.detection.error', { message: Failure.message(failure) });
                 this.app.toast('a detecção de voz não abriu neste sistema: o microfone fica sempre aberto', true);
                 this.gateOpen = true;
             }
+        } else if (this.native() && this.micProducerId) {
+            this.mic.watchLevels(sensitivity, onSpeaking, onSilence);
         }
 
         this.applyGate();
@@ -605,9 +608,9 @@ export class Voice {
         this.app.media.showScreen(Media.cameraKey(this.app.media.sfu!.peerId!), new MediaStream([cameraTrack]), 'camera');
     }
 
-    async stopCamera(): Promise<void> {
+    async stopCamera(closedByServer = false): Promise<void> {
         if (this.cameraProducerId) {
-            await this.app.media.sfu?.closeProducer(this.cameraProducerId);
+            await this.forgetProducer(this.cameraProducerId, closedByServer);
             this.cameraProducerId = null;
         }
 
@@ -620,6 +623,66 @@ export class Voice {
 
         if (this.native()) {
             await Tauri.invoke('stop_camera').catch((failure: unknown) => this.app.log('voice.camera.stop.error', { message: Failure.message(failure) }));
+        }
+    }
+
+    async forgetProducer(producerId: string, closedByServer: boolean): Promise<void> {
+        if (closedByServer) {
+            this.app.media.sfu?.releaseProducer(producerId);
+
+            return;
+        }
+
+        await this.app.media.sfu?.closeProducer(producerId);
+    }
+
+    async afterReconnect({ resumed, can }: Reconnected): Promise<void> {
+        this.can = can ?? this.can;
+
+        if (! this.allowed('stream')) {
+            void this.app.sharing.revoked();
+        }
+
+        this.publish();
+
+        if (! this.allowed('speak') && (this.micProducerId || this.micTrack)) {
+            this.app.log('voice.mic.revoked', { producerId: this.micProducerId, resumed });
+            await this.stopMic(true);
+            this.app.toast('você perdeu a permissão de falar neste canal: o microfone foi desligado', true);
+        }
+
+        if (! this.allowed('video') && this.cameraProducerId) {
+            this.app.log('voice.camera.revoked', { producerId: this.cameraProducerId, resumed });
+            await this.stopCamera(true);
+            this.app.toast('você perdeu a permissão de usar a câmera neste canal: ela foi desligada', true);
+        }
+
+        if (! resumed) {
+            await this.republish();
+        }
+
+        this.publish();
+    }
+
+    async producerDied({ producerId, source }: SfuEventData): Promise<void> {
+        if (source === 'mic' && producerId === this.micProducerId) {
+            const wasLive = ! this.muted && ! this.serverMuted;
+
+            this.app.log('voice.mic.dead', { producerId, wasLive });
+            this.muted = true;
+            await this.stopMic(true);
+            this.publish();
+
+            if (wasLive) {
+                this.app.toast('o microfone não chegou ao servidor em 30 s e foi desligado: clique nele para tentar de novo', true);
+            }
+        }
+
+        if (source === 'camera' && producerId === this.cameraProducerId) {
+            this.app.log('voice.camera.dead', { producerId });
+            await this.stopCamera(true);
+            this.publish();
+            this.app.toast('a câmera não chegou ao servidor em 30 s e foi desligada', true);
         }
     }
 
@@ -665,6 +728,12 @@ export class Voice {
 
         localStorage.setItem(Voice.PREFERENCES_KEY, JSON.stringify(preferences));
         this.store.set({ preferences });
+
+        if (key === 'speaker') {
+            await this.app.media.applyOutput();
+
+            return;
+        }
 
         if (key === 'keybinds') {
             await this.applyShortcuts();
