@@ -279,6 +279,8 @@
             </div>
 
             <p style="font-size:12.5px;color:var(--lp-dim);margin:0;text-align:center;max-width:52ch">Ao baixar, você concorda com os <a href="{{ route('terms') }}" class="lp-link" wire:navigate>Termos de uso</a> e a <a href="{{ route('privacy') }}" class="lp-link" wire:navigate>Política de privacidade</a>. O app manda o trecho do log quando dá erro, para a gente conseguir consertar.</p>
+
+            <p style="font-size:12.5px;color:var(--lp-dim);margin:0;text-align:center"><a href="{{ route('code-signing') }}" class="lp-link" wire:navigate>Code signing policy</a></p>
         </div>
 
         <div class="lp-dl-grid">
