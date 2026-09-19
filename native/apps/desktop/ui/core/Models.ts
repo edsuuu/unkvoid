@@ -100,6 +100,13 @@ export type ReplyTo = {
     body: string;
 };
 
+export type MessageFile = {
+    id: number;
+    url: string;
+    mime_type: string;
+    size: number;
+};
+
 export type Message = {
     id: number;
     channel_id: string;
@@ -107,6 +114,7 @@ export type Message = {
     user: { id: number; name: string; avatar_url: string | null };
     reply_to: ReplyTo | null;
     body: string;
+    files: MessageFile[];
     edited_at: string | null;
     created_at: string;
 };

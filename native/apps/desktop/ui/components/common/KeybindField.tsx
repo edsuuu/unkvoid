@@ -1,8 +1,12 @@
-import { useState, type KeyboardEvent } from 'react';
+import { useState, type KeyboardEvent, type MouseEvent } from 'react';
+
+import { Platform } from '../../core/Platform.ts';
 
 const MODIFIERS = ['Control', 'Shift', 'Alt', 'Meta', 'CapsLock', 'Tab'];
 
 const USABLE = /^(Key[A-Z]|Digit[0-9]|F[0-9]{1,2}|Numpad[A-Za-z0-9]+|Arrow(Up|Down|Left|Right)|Space|Backquote|Minus|Equal|Bracket(Left|Right)|Semicolon|Quote|Comma|Period|Slash|Backslash|Insert|Home|End|PageUp|PageDown)$/;
+
+const MOUSE_BUTTONS: Record<number, string> = { 1: 'Mouse3', 3: 'Mouse4', 4: 'Mouse5' };
 
 const LABELS: Record<string, string> = {
     CmdOrCtrl: navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl',
@@ -21,10 +25,42 @@ type KeybindFieldProps = {
 export function KeybindField({ value, bare = false, onChange }: KeybindFieldProps) {
     const [capturing, setCapturing] = useState(false);
     const [refused, setRefused] = useState('');
+    const mouse = bare && Platform.isWindows();
 
     const label = value === ''
         ? 'sem tecla'
-        : value.split('+').map(part => LABELS[part] ?? part.replace(/^(Key|Digit)/, '')).join(' + ');
+        : value.split('+').map(part => LABELS[part] ?? part.replace(/^(Key|Digit)/, '').replace(/^Mouse(\d)$/, 'Mouse $1')).join(' + ');
+
+    const modifiersOf = (event: KeyboardEvent | MouseEvent): string[] => [
+        ...(event.metaKey ? ['Super'] : []),
+        ...(event.ctrlKey ? ['Control'] : []),
+        ...(event.altKey ? ['Alt'] : []),
+        ...(event.shiftKey ? ['Shift'] : []),
+    ];
+
+    const swallowSideButton = (event: MouseEvent<HTMLButtonElement>) => {
+        if (mouse && MOUSE_BUTTONS[event.button]) {
+            event.preventDefault();
+        }
+    };
+
+    const captureMouse = (event: MouseEvent<HTMLButtonElement>) => {
+        const button = MOUSE_BUTTONS[event.button];
+
+        if (! mouse || ! button) {
+            return;
+        }
+
+        event.preventDefault();
+
+        if (! capturing) {
+            return;
+        }
+
+        onChange([...modifiersOf(event), button].join('+'));
+        setRefused('');
+        setCapturing(false);
+    };
 
     const capture = (event: KeyboardEvent<HTMLButtonElement>) => {
         event.preventDefault();
@@ -54,23 +90,7 @@ export function KeybindField({ value, bare = false, onChange }: KeybindFieldProp
             return;
         }
 
-        const parts: string[] = [];
-
-        if (event.metaKey) {
-            parts.push('Super');
-        }
-
-        if (event.ctrlKey) {
-            parts.push('Control');
-        }
-
-        if (event.altKey) {
-            parts.push('Alt');
-        }
-
-        if (event.shiftKey) {
-            parts.push('Shift');
-        }
+        const parts = modifiersOf(event);
 
         if (parts.length === 0 && ! bare) {
             setRefused('junte Ctrl, Alt ou Shift — tecla solta roubaria a digitação do sistema inteiro');
@@ -92,8 +112,11 @@ export function KeybindField({ value, bare = false, onChange }: KeybindFieldProp
                 onClick={() => { setRefused(''); setCapturing(true); }}
                 onBlur={() => { setRefused(''); setCapturing(false); }}
                 onKeyDown={capturing ? capture : undefined}
+                onMouseDown={captureMouse}
+                onMouseUp={swallowSideButton}
+                onAuxClick={swallowSideButton}
             >
-                {capturing ? 'aperte a tecla…' : label}
+                {capturing ? (mouse ? 'aperte a tecla ou o botão do mouse…' : 'aperte a tecla…') : label}
             </button>
             {refused && <span className="text-right text-[10.5px] text-danger">{refused}</span>}
         </span>

@@ -21,7 +21,8 @@
 //!
 //! Na tela inteira não há um processo só, e aí a inclusão vira várias: um laço por
 //! processo que toca som, menos a nossa árvore e a do Discord, somados aqui por um
-//! relógio só. Excluir só a nossa árvore fica para quem pediu o Discord junto.
+//! relógio só. Excluir só a nossa árvore fica para quem pediu o Discord junto — e para
+//! quando a mistura não abre: ela cai uma vez para esse laço, em vez de transmitir mudo.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem::ManuallyDrop;
@@ -103,6 +104,10 @@ const BACKLOG_SAMPLES: usize = 19_200;
 
 /// Uma volta travada por mais que isso não vira silêncio despejado de uma vez: 200 ms.
 const STALL_FRAMES: u64 = 9_600;
+
+/// Quantas varreduras seguidas sem enxergar os processos a mistura aguenta com laço
+/// aberto antes de desistir: 10 s.
+const BLIND_SCANS: u32 = 5;
 
 /// Teto de ancestrais a seguir. Número de processo reciclado pode fechar um ciclo.
 const MAX_LINEAGE: usize = 64;
@@ -364,24 +369,34 @@ unsafe fn record(
             .ok()
             .map_err(platform_error)?;
 
-        let outcome = match scope {
-            AudioScope::ExcludeSelf => Tap::open(
+        let exclude_self = || {
+            Tap::open(
                 GetCurrentProcessId(),
                 PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
                 BUFFER_HNS,
             )
-            .map(|tap| pump(stop_event, sink, chunks, &tap)),
+            .map(|tap| pump(stop_event, sink, chunks, &tap))
+        };
+
+        let outcome = match scope {
+            AudioScope::ExcludeSelf => exclude_self(),
             AudioScope::OnlyProcess(process) => Tap::open(
                 process,
                 PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
                 BUFFER_HNS,
             )
             .map(|tap| pump(stop_event, sink, chunks, &tap)),
-            AudioScope::ExceptMuted => {
-                mix(stop_event, sink, chunks);
+            // Uma queda só, e fica: o laço clássico não tenta voltar para a mistura, e se
+            // ele também não abrir o erro sobe e a transmissão segue muda. Transmitir com o
+            // Discord junto é ruim; transmitir o jogo sem som é pior.
+            AudioScope::ExceptMuted => mix(stop_event, sink, chunks).or_else(|failure| {
+                tracing::warn!(
+                    failure = %failure,
+                    "áudio: a mistura por processo falhou; passa a gravar tudo menos o app, e o Discord entra junto"
+                );
 
-                Ok(())
-            }
+                exclude_self()
+            }),
         };
 
         CoUninitialize();
@@ -405,19 +420,42 @@ unsafe fn pump(stop_event: HANDLE, sink: &EventSink, chunks: &Arc<AtomicU64>, ta
 ///
 /// ponytail: um laço por processo e varredura a cada `RESCAN`; se o custo de muitos
 /// processos aparecer, trocar a varredura por `IAudioSessionNotification`.
-unsafe fn mix(stop_event: HANDLE, sink: &EventSink, chunks: &Arc<AtomicU64>) {
+///
+/// Devolve erro quando desiste (`gives_up`), com o motivo da última varredura: quem chama
+/// cai para o laço clássico.
+unsafe fn mix(
+    stop_event: HANDLE,
+    sink: &EventSink,
+    chunks: &Arc<AtomicU64>,
+) -> Result<(), CaptureError> {
     unsafe {
         let own = GetCurrentProcessId();
         let started = Instant::now();
         let mut taps: Vec<Tap> = Vec::new();
         let mut refused: Vec<(u32, Option<u64>)> = Vec::new();
         let mut scanned: Option<Instant> = None;
+        let mut failed_scans = 0_u32;
         let mut emitted = 0_u64;
 
         while WaitForSingleObject(stop_event, MIX_TICK_MS) == WAIT_TIMEOUT {
             if scanned.is_none_or(|at| at.elapsed() >= RESCAN) {
                 scanned = Some(Instant::now());
-                rescan(own, &mut taps, &mut refused);
+
+                match rescan(own, &mut taps, &mut refused) {
+                    Ok(()) => failed_scans = 0,
+                    Err(failure) => {
+                        failed_scans += 1;
+
+                        if gives_up(failed_scans, taps.len()) {
+                            return Err(failure);
+                        }
+
+                        // Só a primeira da sequência: a varredura volta a cada 2 s.
+                        if failed_scans == 1 {
+                            tracing::warn!(failure = %failure, "áudio: não deu para ver quem toca som");
+                        }
+                    }
+                }
             }
 
             for tap in &mut taps {
@@ -446,21 +484,36 @@ unsafe fn mix(stop_event: HANDLE, sink: &EventSink, chunks: &Arc<AtomicU64>) {
             emitted = clock;
             emit(sink, chunks, mixed);
         }
+
+        Ok(())
     }
+}
+
+/// A mistura desiste quando uma varredura falha sem laço nenhum aberto — está muda e sem
+/// como deixar de estar — ou quando fica cega por `BLIND_SCANS` seguidas: o que já toca
+/// continua, mas o jogo aberto depois não entraria nunca. Falha passageira com laço aberto
+/// (fone desplugado no meio da varredura) não derruba nada.
+fn gives_up(failed_scans: u32, open_taps: usize) -> bool {
+    failed_scans > 0 && (open_taps == 0 || failed_scans >= BLIND_SCANS)
 }
 
 /// Abre o laço de quem começou a tocar som e fecha o de quem saiu ou deixou de poder
 /// entrar.
-unsafe fn rescan(own: u32, taps: &mut Vec<Tap>, refused: &mut Vec<(u32, Option<u64>)>) {
+///
+/// Falha quando não dá para ver os processos, ou quando quem tentou entrar recusou e não
+/// sobrou laço nenhum aberto.
+///
+/// ponytail: recusa de um processo com outro laço aberto só vai para o log, e esse
+/// processo fica mudo na transmissão. Se aparecer em hardware um jogo que recusa o laço,
+/// a saída é cair para o `ExcludeSelf` em qualquer recusa.
+unsafe fn rescan(
+    own: u32,
+    taps: &mut Vec<Tap>,
+    refused: &mut Vec<(u32, Option<u64>)>,
+) -> Result<(), CaptureError> {
     unsafe {
-        let (table, mut candidates) = match (processes(), audible_processes()) {
-            (Ok(table), Ok(audible)) => (table, audible),
-            (Err(failure), _) | (_, Err(failure)) => {
-                tracing::warn!(failure = %failure, "áudio: não deu para ver quem toca som");
-
-                return;
-            }
-        };
+        let table = processes()?;
+        let mut candidates = audible_processes()?;
 
         let excluded: Vec<u32> = table
             .iter()
@@ -484,6 +537,8 @@ unsafe fn rescan(own: u32, taps: &mut Vec<Tap>, refused: &mut Vec<(u32, Option<u
 
         taps.retain(|tap| wanted.contains(&tap.process) && created(tap.process) == tap.created);
 
+        let mut refusal = None;
+
         for process in wanted {
             let identity = (process, created(process));
 
@@ -505,8 +560,14 @@ unsafe fn rescan(own: u32, taps: &mut Vec<Tap>, refused: &mut Vec<(u32, Option<u
                 Err(failure) => {
                     tracing::warn!(process, name, failure = %failure, "áudio: processo recusou o laço");
                     refused.push(identity);
+                    refusal = Some(failure);
                 }
             }
+        }
+
+        match refusal {
+            Some(failure) if taps.is_empty() => Err(failure),
+            _ => Ok(()),
         }
     }
 }
@@ -825,6 +886,21 @@ mod testes {
         // O Explorer traria o Discord na árvore, 21 e 32 descendem de silenciados, e o 51
         // já vem na árvore da Steam.
         assert_eq!(wanted, vec![40, 50, 61]);
+    }
+
+    #[test]
+    fn the_mix_gives_up_once_it_is_mute_or_blind_for_too_long() {
+        // Varredura que deu certo nunca derruba, com ou sem laço aberto.
+        assert!(!gives_up(0, 0));
+        assert!(!gives_up(0, 3));
+
+        // Falhou sem nada aberto: muda, e a primeira já basta.
+        assert!(gives_up(1, 0));
+
+        // Falhou com laço aberto: aguenta a passageira, não a que não passa.
+        assert!(!gives_up(1, 2));
+        assert!(!gives_up(BLIND_SCANS - 1, 2));
+        assert!(gives_up(BLIND_SCANS, 2));
     }
 
     #[test]

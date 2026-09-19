@@ -641,6 +641,10 @@ export class SfuClient extends EventTarget {
 
     async closeProducer(producerId: string): Promise<void> {
         await this.tolerate('closeProducer', { producerId });
+        this.releaseProducer(producerId);
+    }
+
+    releaseProducer(producerId: string): void {
         this.producers.get(producerId)?.close();
         this.producers.delete(producerId);
     }

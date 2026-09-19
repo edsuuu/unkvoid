@@ -90,6 +90,13 @@ pub struct MediaFoundationEncoder {
     width: u32,
     height: u32,
     frame_rate: f64,
+
+    /// A taxa média em vigor. Nasce como a da configuração que abriu — no degrau do
+    /// processador, a de 720p30 e não a pedida — e muda com `set_bitrate`.
+    bitrate: u32,
+
+    /// O MFT recusou trocar a taxa de pico no ar: avisado uma vez, e só.
+    peak_refused: bool,
     bridge: Option<Bridge>,
 
     /// O teto de fps que a captura do Windows 10 não impõe — ver `FramePacer`.
@@ -245,6 +252,8 @@ impl MediaFoundationEncoder {
                 width: config.width,
                 height: config.height,
                 frame_rate: config.frame_rate,
+                bitrate: config.bitrate,
+                peak_refused: false,
                 bridge: None,
                 pacer: FramePacer::new(config.frame_rate),
                 force_keyframe: false,
@@ -262,6 +271,52 @@ impl MediaFoundationEncoder {
     /// Se o H.264 sai do MFT da placa.
     pub fn hardware(&self) -> bool {
         matches!(self.backend, Backend::Gpu { .. })
+    }
+
+    /// A taxa média em vigor, que ao abrir é o teto de quem a ajusta.
+    pub fn bitrate(&self) -> u32 {
+        self.bitrate
+    }
+
+    /// Troca a taxa com o encoder no ar, sem reabrir nada. Devolve se o MFT aceitou.
+    ///
+    /// Recusa não derruba nada, como no `mark_keyframe`: a transmissão segue na taxa que
+    /// tinha, a recusa vai para o log, e quem chamou para de tentar — é assim que o aviso
+    /// sai uma vez só. Quem decide é a taxa média; MFT que aceita a média e recusa o pico
+    /// continua valendo, só com rajadas medidas pelo teto antigo.
+    pub fn set_bitrate(&mut self, bitrate: u32) -> bool {
+        let Ok(codec) = self.transform.cast::<ICodecAPI>() else {
+            tracing::warn!("encoder: sem ICodecAPI, a taxa fica fixa");
+
+            return false;
+        };
+
+        let mean = (&CODECAPI_AVEncCommonMeanBitRate, bitrate);
+        let peak = (&CODECAPI_AVEncCommonMaxBitRate, bitrate.saturating_add(bitrate / 2));
+
+        // O pico (uma vez e meia, como no `tune`) nunca pode ficar abaixo da média: subindo
+        // ele vai na frente, descendo vai atrás.
+        let order = if bitrate > self.bitrate { [peak, mean] } else { [mean, peak] };
+
+        for (key, value) in order {
+            let Err(error) = (unsafe { codec.SetValue(key, &variant(VT_UI4, VARIANT_0_0_0 { ulVal: value })) }) else {
+                continue;
+            };
+
+            if *key == CODECAPI_AVEncCommonMeanBitRate {
+                tracing::warn!(error = %error, bitrate, "encoder: o MFT não troca a taxa no ar, ela fica fixa");
+
+                return false;
+            }
+
+            if !std::mem::replace(&mut self.peak_refused, true) {
+                tracing::warn!(error = %error, "encoder: o MFT não troca a taxa de pico no ar (as próximas não avisam)");
+            }
+        }
+
+        self.bitrate = bitrate;
+
+        true
     }
 
     /// Codifica um quadro. `surface` vem da captura sem passar pela CPU.

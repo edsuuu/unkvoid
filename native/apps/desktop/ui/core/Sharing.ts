@@ -20,11 +20,13 @@ export type BroadcastStats = {
     busyUs?: number;
     encoder?: string;
     captureError?: string;
+    targetBitrate?: number;
+    lossPermille?: number;
 };
 
 export type BroadcastLine =
     | { starting: true }
-    | { starting?: false; fps: number; mbps: number; dropped: number; encoder: string | null };
+    | { starting?: false; fps: number; mbps: number; dropped: number; encoder: string | null; lossPercent: number | null; reducedToMbps: number | null };
 
 export type SharingState = {
     open: boolean;
@@ -54,11 +56,24 @@ export class Sharing {
     static readonly MAX_WINDOW_SOURCES = 12;
     static readonly MAX_WINDOW_PREVIEWS = 4;
 
+    static numbers(line: BroadcastLine | null): string {
+        if (! line || line.starting) {
+            return '';
+        }
+
+        const loss = line.lossPercent === null ? '' : ` · perda ${line.lossPercent.toFixed(1)}%`;
+        const reduced = line.reducedToMbps === null ? '' : ` · internet apertada: reduzido para ${line.reducedToMbps.toFixed(1)} Mb/s`;
+
+        return `${line.fps} fps · ${line.mbps.toFixed(1)} Mb/s · ${line.dropped} perdidos${loss}${reduced}`;
+    }
+
     readonly app: App;
     readonly previewInFlight = new Set<string>();
     statsTimer: number | null = null;
     lastStats: BroadcastStats | null = null;
     statsAt = 0;
+    statsGeneration = 0;
+    ceilingBitrate = 0;
     cpuEncoderWarned = false;
     readonly store: Store<SharingState>;
 
@@ -119,6 +134,8 @@ export class Sharing {
 
         try {
             await broadcast.changeQuality(quality, Number(fps));
+            this.statsGeneration += 1;
+            this.ceilingBitrate = 0;
             this.app.toast(`transmitindo em ${quality === '2160' ? '4K' : `${quality}p`} a ${fps} fps`);
         } catch (failure) {
             this.setQuality(previous.quality);
@@ -245,8 +262,14 @@ export class Sharing {
     }
 
     readStats(): Promise<void> {
+        const generation = this.statsGeneration;
+
         return Tauri.invoke<BroadcastStats | null>('broadcast_stats')
-            .then(stats => this.updateStats(stats))
+            .then(stats => {
+                if (generation === this.statsGeneration) {
+                    this.updateStats(stats);
+                }
+            })
             .catch((failure: unknown) => this.app.log('broadcast.stats.error', { message: Failure.message(failure) }));
     }
 
@@ -272,6 +295,8 @@ export class Sharing {
         this.statsTimer = null;
         this.lastStats = null;
         this.statsAt = 0;
+        this.statsGeneration += 1;
+        this.ceilingBitrate = 0;
         this.store.set({ line: null });
     }
 
@@ -284,6 +309,9 @@ export class Sharing {
         const previous = this.lastStats;
         const elapsed = this.statsAt ? Math.max(now - this.statsAt, 1) : 1000;
         const seconds = elapsed / 1000;
+        const target = Number.isFinite(stats.targetBitrate) && stats.targetBitrate! > 0 ? stats.targetBitrate! : null;
+
+        this.ceilingBitrate = Math.max(this.ceilingBitrate, target ?? 0);
 
         this.store.set({
             line: previous
@@ -292,6 +320,8 @@ export class Sharing {
                     mbps: (stats.sentBytes - previous.sentBytes) * 8 / seconds / 1e6,
                     dropped: stats.sendDropped,
                     encoder: stats.encoder ?? null,
+                    lossPercent: Number.isFinite(stats.lossPermille) ? stats.lossPermille! / 10 : null,
+                    reducedToMbps: target !== null && target < this.ceilingBitrate ? target / 1e6 : null,
                 }
                 : { starting: true },
         });
@@ -324,14 +354,26 @@ export class Sharing {
         this.statsAt = now;
     }
 
-    async died(detail: { source?: string } | null): Promise<void> {
+    async died(detail: { source?: string; reason?: string } | null): Promise<void> {
+        if (detail?.source !== 'screen' && detail?.source !== 'screenAudio') {
+            this.app.log('broadcast.dead.ignored', detail);
+
+            return;
+        }
+
         this.app.log('broadcast.dead', detail);
 
         if (! this.store.state.active) {
             return;
         }
 
-        if (detail?.source === 'screenAudio') {
+        if (detail.reason === 'revoked') {
+            await this.revoked();
+
+            return;
+        }
+
+        if (detail.source === 'screenAudio') {
             this.app.toast('o áudio do sistema não chegou ao servidor: a transmissão segue sem som', true);
 
             return;
@@ -352,6 +394,17 @@ export class Sharing {
         }
 
         this.app.fail('a transmissão não chegou ao servidor: nenhum pacote entrou em 30 s. A porta de RTP está bloqueada no caminho.');
+    }
+
+    async revoked(): Promise<void> {
+        if (! this.store.state.active) {
+            return;
+        }
+
+        this.app.log('broadcast.revoked');
+        this.store.set({ active: false });
+        await this.stop();
+        this.app.fail('você perdeu a permissão de transmitir neste canal: a transmissão foi encerrada.');
     }
 
     async stop(): Promise<void> {

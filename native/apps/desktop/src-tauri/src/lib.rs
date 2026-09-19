@@ -44,6 +44,10 @@ struct DisplayInfo {
     id: u32,
     width: u32,
     height: u32,
+    /// No Wayland quem lista telas e janelas é o seletor do próprio sistema, que abre no
+    /// `start_broadcast`: este item é o único, vem sem tamanho e sem miniatura, e a
+    /// interface o rotula como "escolher no sistema".
+    portal: bool,
 }
 
 #[derive(Serialize)]
@@ -74,6 +78,8 @@ fn list_cameras() -> Vec<CameraInfo> {
 /// no Tauri roda na thread do GTK — processo lento ali congela a janela inteira.
 #[tauri::command(async)]
 fn list_displays() -> Result<Vec<DisplayInfo>, String> {
+    let portal = capture::uses_system_picker();
+
     tokio::task::block_in_place(PlatformCapturer::displays)
         .map(|displays| {
             displays
@@ -82,6 +88,7 @@ fn list_displays() -> Result<Vec<DisplayInfo>, String> {
                     id: display.id,
                     width: display.width,
                     height: display.height,
+                    portal,
                 })
                 .collect()
         })
@@ -159,6 +166,28 @@ async fn start_broadcast(
     audio: bool,
     mute_calls: bool,
 ) -> Result<(), String> {
+    if state.0.lock().await.screen.is_some() {
+        return Err("a stream is already in progress".into());
+    }
+
+    let config = CaptureConfig {
+        quality: quality_from(&quality),
+        frame_rate: fps,
+        source: source_from(source.as_deref()),
+        capture_audio: audio,
+        mute_listed_apps: mute_calls,
+        ..CaptureConfig::default()
+    };
+
+    // No Wayland é aqui que o seletor de tela do sistema abre, e a pessoa leva o tempo que
+    // quiser para escolher. Por isso vem ANTES do cadeado da sessão: com ele na mão, mutar
+    // o microfone ou ligar a câmera ficariam parados esperando a escolha.
+    let _prepared = tokio::task::block_in_place(|| capture::prepare(&config)).map_err(|error| {
+        tracing::warn!(error = %error, "broadcast: a origem não foi escolhida");
+
+        error.to_string()
+    })?;
+
     let mut session = state.0.lock().await;
 
     if session.screen.is_some() {
@@ -180,18 +209,7 @@ async fn start_broadcast(
     // Abrir captura e encoder bloqueia (no Linux é um `gst-launch` a mais); o tokio é
     // avisado para não esperar esta thread enquanto isso.
     let started = tokio::task::block_in_place(|| {
-        session.start(
-            CaptureConfig {
-                quality: quality_from(&quality),
-                frame_rate: fps,
-                source: source_from(source.as_deref()),
-                capture_audio: audio,
-                mute_listed_apps: mute_calls,
-                ..CaptureConfig::default()
-            },
-            Some(Source::Screen),
-            audio.then_some(Source::ScreenAudio),
-        )
+        session.start(config, Some(Source::Screen), audio.then_some(Source::ScreenAudio))
     });
 
     match started {
@@ -710,6 +728,19 @@ fn check_capture() -> i32 {
     let frames = Arc::new(AtomicU64::new(0));
     let keyframes = Arc::new(AtomicU64::new(0));
     let audio = Arc::new(AtomicU64::new(0));
+    let capture_config =
+        capture::CaptureConfig { quality: Quality::Hd720, frame_rate: 30, ..capture::CaptureConfig::default() };
+
+    // No Wayland abre o seletor do sistema: é o mesmo caminho da transmissão, e é isso que
+    // este comando prova.
+    let _prepared = match capture::prepare(&capture_config) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            println!("unkvoid check-capture: origem: {error}");
+            return 1;
+        }
+    };
+
     let source = match PlatformCapturer::source_size(CaptureSource::PrimaryDisplay) {
         Ok(source) => source,
         Err(error) => {
@@ -731,11 +762,7 @@ fn check_capture() -> i32 {
         (Arc::clone(&frames), Arc::clone(&keyframes), Arc::clone(&audio));
 
     let capturer = PlatformCapturer::start(
-        &capture::CaptureConfig {
-            quality: Quality::Hd720,
-            frame_rate: 30,
-            ..capture::CaptureConfig::default()
-        },
+        &capture_config,
         move |event| match event {
             capture::CaptureEvent::Video(frame) => {
                 if let Some(surface) = frame.surface.as_ref()
