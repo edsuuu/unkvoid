@@ -14,10 +14,10 @@ import sys
 # tests/static/check-ui.py -> dois níveis até native/apps/desktop.
 BASE = pathlib.Path(__file__).resolve().parents[2] / 'ui'
 
-css = (BASE / 'style.css').read_text()
+css = (BASE / 'style.css').read_text(encoding='utf-8')
 typescript = sorted(path for pattern in ('*.ts', '*.tsx') for path in BASE.rglob(pattern))
 sources = sorted([*typescript, *BASE.rglob('*.html')])
-code = '\n'.join(path.read_text() for path in sources)
+code = '\n'.join(path.read_text(encoding='utf-8') for path in sources)
 
 errors = []
 
@@ -50,7 +50,7 @@ for path in sorted(BASE.rglob('*.tsx')):
     if path.name == 'main.tsx':
         continue
 
-    exported = re.findall(r'^export (?:function|const|class) (\w+)', path.read_text(), re.M)
+    exported = re.findall(r'^export (?:function|const|class) (\w+)', path.read_text(encoding='utf-8'), re.M)
 
     if exported != [path.stem]:
         errors.append(f"{path.relative_to(BASE)} exporta {exported}: um componente por arquivo, com o nome do arquivo")
@@ -61,7 +61,7 @@ for path in sorted(BASE.rglob('*.tsx')):
 LITERALS = re.compile(r"'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"|`(?:\\.|[^`\\])*`")
 
 for path in typescript:
-    blanked = LITERALS.sub(lambda match: re.sub(r'[^\n]', ' ', match.group()), path.read_text())
+    blanked = LITERALS.sub(lambda match: re.sub(r'[^\n]', ' ', match.group()), path.read_text(encoding='utf-8'))
 
     for number, line in enumerate(blanked.splitlines(), 1):
         if '//' in line or '/*' in line:
