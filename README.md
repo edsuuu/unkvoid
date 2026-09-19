@@ -215,7 +215,8 @@ cargo run -p media --example plain -- <ws> <sala>     # o SFU confirmando que re
 ## Documentos
 
 Para uma visão geral do fluxo e da estrutura de pastas, comece por [`doc.md`](doc.md). O
-resto está em [`docs/`](docs/):
+mapa de cada peça, dos fluxos, das portas e do deploy está em [ARQUITETURA.md](ARQUITETURA.md).
+O resto está em [`docs/`](docs/):
 
 | Arquivo | O que tem |
 |---|---|

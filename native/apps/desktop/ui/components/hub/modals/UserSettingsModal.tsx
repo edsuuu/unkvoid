@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Failure } from '../../../core/Failure.ts';
 import { Mic } from '../../../core/Mic.ts';
@@ -27,6 +27,8 @@ export function UserSettingsModal() {
     const { preferences, talkKeyRefused } = useStore(voice.store);
     const live = useStore(voice.mic.store);
     const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+    const picker = useRef<HTMLInputElement>(null);
+    const [avatarBusy, setAvatarBusy] = useState(false);
     const [level, setLevel] = useState(0);
     const [meterError, setMeterError] = useState('');
     const native = Platform.isLinux();
@@ -108,6 +110,16 @@ export function UserSettingsModal() {
     const chosen = Object.values(preferences.keybinds).filter(key => key.trim() !== '');
     const repeated = new Set(chosen).size !== chosen.length;
 
+    const chooseAvatar = async (file: File | undefined) => {
+        if (! file) {
+            return;
+        }
+
+        setAvatarBusy(true);
+        await hub.uploadAvatar(file);
+        setAvatarBusy(false);
+    };
+
     const toggle = (key: ToggleKey, label: string) => (
         <button
             className={`cursor-pointer rounded-[10px] border px-3.5 py-2 text-[12.5px] transition ${preferences[key] ? 'border-brand/50 bg-brand/20 text-ink-strong' : 'border-line-strong bg-row text-ink-icon hover:border-brand/40'}`}
@@ -124,7 +136,7 @@ export function UserSettingsModal() {
         <Modal
             title={user.name}
             subtitle="Online"
-            leading={<Avatar name={user.name} size={40} mine />}
+            leading={<Avatar name={user.name} url={user.avatar_url} size={40} mine />}
             width={460}
             onClose={() => hub.closeModal()}
             footer={(
@@ -136,6 +148,37 @@ export function UserSettingsModal() {
                 </>
             )}
         >
+            <p className="label-mono mb-2">Foto de perfil</p>
+            <div className="mb-6 flex items-center gap-3">
+                <button
+                    className="relative cursor-pointer rounded-full border-none bg-transparent p-0 disabled:cursor-default"
+                    type="button"
+                    title="Trocar a sua foto"
+                    disabled={avatarBusy}
+                    onClick={() => picker.current?.click()}
+                >
+                    <Avatar name={user.name} url={user.avatar_url} size={56} mine />
+                    <span className="absolute inset-0 flex items-center justify-center rounded-full bg-[rgba(6,5,10,0.55)] text-white opacity-0 transition hover:opacity-100">
+                        <Icon name="edit" size={16} />
+                    </span>
+                </button>
+
+                <input
+                    ref={picker}
+                    className="hidden"
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    onChange={event => { void chooseAvatar(event.target.files?.[0]); event.target.value = ''; }}
+                />
+
+                <span className="flex min-w-0 flex-1 flex-col gap-1">
+                    <span className="text-[12.5px] text-ink-soft">PNG, JPG ou WebP de até 2 MB.</span>
+                    {user.avatar_uploaded && (
+                        <button className="cursor-pointer self-start text-[11.5px] text-ink-dim hover:text-danger" type="button" onClick={() => void hub.removeAvatar()}>Remover a foto</button>
+                    )}
+                </span>
+            </div>
+
             <p className="label-mono mb-2">Microfone</p>
             {native
                 ? <p className="text-[12.5px] text-ink-soft">No Linux o microfone é o padrão do sistema (PulseAudio), escolhido nas configurações de som.</p>

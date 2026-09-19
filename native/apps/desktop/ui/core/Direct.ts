@@ -1,4 +1,5 @@
 import type { App } from './App.ts';
+import { Chat } from './Chat.ts';
 import { Failure } from './Failure.ts';
 import type { Hub } from './Hub.ts';
 import type { DirectConversation, DirectMessage, Person } from './Models.ts';
@@ -58,6 +59,21 @@ export class Direct {
 
         this.store.set({ messages, loading: false });
         this.clearUnread(person.id);
+    }
+
+    async catchUp(): Promise<void> {
+        const person = this.store.state.person;
+
+        if (! person) {
+            return;
+        }
+
+        const latest = await this.hub.api.get<DirectMessage[]>(`/api/dm/${person.id}`);
+
+        if (this.store.state.person?.id === person.id) {
+            this.store.set(state => ({ messages: Chat.mergeLatest(state.messages, latest) }));
+            this.clearUnread(person.id);
+        }
     }
 
     close(): void {

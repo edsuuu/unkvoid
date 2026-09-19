@@ -273,7 +273,6 @@ export class Sharing {
         this.lastStats = null;
         this.statsAt = 0;
         this.store.set({ line: null });
-        this.app.hub.voice.closeEmptyClipList();
     }
 
     updateStats(stats: BroadcastStats | null): void {

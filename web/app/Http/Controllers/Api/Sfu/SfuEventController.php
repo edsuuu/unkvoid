@@ -8,7 +8,6 @@ use App\Events\VoiceStateUpdated;
 use App\Http\Requests\Api\Servers\SfuEventRequest;
 use App\Models\Channel;
 use App\Models\ChannelAccess;
-use App\Models\Clip;
 use App\Models\Concerns\LogsFailedWrites;
 use App\Models\GuestAccess;
 use App\Models\User;
@@ -22,27 +21,14 @@ final class SfuEventController
     use LogsFailedWrites;
 
     /**
-     * O SFU avisa quem entrou e saiu da voz, e como terminou um clipe. O visitante da sala
-     * por código só vira linha de auditoria: não há conta nem canal para avisar.
+     * O SFU avisa quem entrou e saiu da voz. O visitante da sala por código só vira linha de
+     * auditoria: não há conta nem canal para avisar.
      *
      * @throws Throwable
      */
     public function __invoke(SfuEventRequest $request, SfuClient $sfu): Response
     {
         $event = $request->string('event')->toString();
-
-        if ($event === 'clip.ready') {
-            Clip::markReady($request->string('clipId')->toString(), $request->integer('durationMs'), $request->integer('sizeBytes'));
-
-            return response()->noContent();
-        }
-
-        if ($event === 'clip.failed') {
-            Clip::markFailed($request->string('clipId')->toString(), $request->string('reason')->toString());
-
-            return response()->noContent();
-        }
-
         $at = CarbonImmutable::createFromTimestamp($request->integer('at'));
         $sub = $request->string('sub')->toString();
 

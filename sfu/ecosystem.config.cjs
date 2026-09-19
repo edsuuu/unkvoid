@@ -57,10 +57,6 @@ module.exports = {
                 SFU_PLAIN_PORTS: '64',
                 // Para onde vai o aviso de quem entrou e saiu de um canal.
                 SFU_LARAVEL_URL: 'https://unkvoid.com',
-                // O anel dos clipes. /var/tmp e não a pasta do deploy: o rsync --delete
-                // apagaria a gravação de quem está no ar enquanto o install espera esvaziar.
-                SFU_FFMPEG: 'ffmpeg',
-                SFU_RECORDINGS_DIR: '/var/tmp',
                 ...doArquivo,
             },
         },

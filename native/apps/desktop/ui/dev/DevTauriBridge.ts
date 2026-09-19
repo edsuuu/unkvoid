@@ -65,11 +65,6 @@ export class DevTauriBridge {
             use_sfu: () => null,
             stop_watch: () => null,
             watch_mute: () => null,
-            open_url: ({ url }) => {
-                window.open(url, '_blank', 'noopener');
-
-                return null;
-            },
             google_login: () => {
                 throw new Error('sem o Tauri o Google não tem como voltar para o app');
             },

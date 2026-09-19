@@ -38,7 +38,7 @@ export function ServersHome() {
                 <button className="btn-ghost" type="button" onClick={() => hub.openModal({ type: 'server' })}>Tenho um convite</button>
             </form>
 
-            <div className="glass flex min-w-[260px] flex-[0_1_360px] animate-rise flex-col gap-3 p-5">
+            <div className="glass flex min-w-[260px] flex-[1_1_360px] animate-rise flex-col gap-3 p-5">
                 <p className="label-mono">Só compartilhar a tela</p>
                 <p className="text-[13px] text-ink-soft">Uma sala por código, sem servidor: quem tiver o código assiste.</p>
                 <button className="btn-primary text-[13.5px]" type="button" onClick={() => void hub.roomByCode()}>Criar ou entrar com código</button>

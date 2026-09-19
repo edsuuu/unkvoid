@@ -25,8 +25,8 @@ transmite não cresce com a plateia.
  app  ──────┼── HTTPS /api ──────► web/ (Laravel)  ── MySQL, MinIO │
  (native/)  │   wss Reverb  ◄────── chat, presença, eventos        │
             │                          │  ▲                        │
-            │                   assina │  │ webhook (entrou/saiu,  │
-            │                    token │  │ clipe pronto)          │
+            │                   assina │  │ webhook                │
+            │                    token │  │ (entrou/saiu)          │
             │                          ▼  │                        │
             └── wss /sfu + UDP ──► sfu/ (Node + mediasoup) ────────┘
                 RTP da tela/voz        replica para N espectadores
@@ -58,7 +58,7 @@ Isso é produto, não legado: mexer no modo com conta não pode piorar este.
 
 No molde do Discord: servidor, cargos com bits de permissão, canais de texto e voz,
 sobrescritas por cargo e por membro (é assim que se oculta canal), convite, expulsar,
-banir, chat, voz, câmera, amigos, mensagens diretas e clipes.
+banir, chat, voz, câmera, amigos e mensagens diretas.
 
 **Entrar num canal de voz:**
 
@@ -75,10 +75,6 @@ banir, chat, voz, câmera, amigos, mensagens diretas e clipes.
 
 **Chat:** mensagem vai por `POST` na API, o Laravel grava e transmite pelo Reverb
 (`MessageSent` em `private-channel.{ulid}`). O app escuta com `laravel-echo`.
-
-**Clipes:** o SFU guarda em anel os últimos 5 minutos de quem compartilha tela num canal de
-voz. Nada é salvo sem clique; clipar copia o anel para o MinIO como HLS + MP4, visível só
-para quem clipou, e expira em 7 dias.
 
 ## O caminho do quadro no app
 
@@ -114,7 +110,7 @@ crates/capture          crates/media                         SFU
 │   │   │   ├── core/            a lógica sem tela: ApiClient, SfuClient, Voice, Chat,
 │   │   │   │                    Hub, Permissions, Store, ponte com o Tauri…
 │   │   │   ├── components/      as telas: entry (entrada), room (sala por código),
-│   │   │   │                    hub (servidores, canais, chat), clips, layout, common
+│   │   │   │                    hub (servidores, canais, chat), layout, common
 │   │   │   └── dev/             ponte do Tauri fingida para rodar no navegador
 │   │   ├── tests/               static/ (checks de idioma e de comentário), unit/,
 │   │   │                        integration/ (Vitest)
@@ -128,28 +124,27 @@ crates/capture          crates/media                         SFU
 │   │   ├── Http/                rota → Request → Controller → Resource
 │   │   │                        (join, transport, producer, consumer, peer, leave)
 │   │   ├── Services/            Room, Peer, RoomRegistry, Signature (confere o token),
-│   │   │                        Webhook (avisa o Laravel), Recorder e Clip (o anel)
+│   │   │                        Webhook (avisa o Laravel)
 │   │   └── Enums/, Exceptions/
 │   ├── check.mjs                o contrato inteiro contra um servidor no ar
 │   ├── check-heartbeat.mjs      queda e volta de conexão
 │   └── deploy.sh, install.sh, ecosystem.config.cjs (pm2)
 │
-├── web/                         Laravel: site, API, painel
+├── web/                         Laravel: site e API
 │   ├── app/
 │   │   ├── Http/Controllers/Api/  um controller por recurso: Server, Channel, Role,
-│   │   │                          Member, Ban, Overwrite, Message, Voice, Clip,
+│   │   │                          Member, Ban, Overwrite, Message, Voice,
 │   │   │                          Friend, DirectMessage, Room, Release, Config…
 │   │   ├── Http/Controllers/Api/Sfu/  recebe o webhook do SFU
 │   │   ├── Http/Middleware/     VerifySfuSignature, VerifyReleaseSignature
 │   │   ├── Http/Requests/, Http/Resources/  validação de entrada e formato de saída
 │   │   ├── Models/              User, Server, ServerRole, ServerMember, Channel,
-│   │   │                        ChannelOverwrite, Message, Clip, Friendship, GuestAccess…
+│   │   │                        ChannelOverwrite, Message, Friendship, GuestAccess…
 │   │   ├── Enums/               PermissionEnum (os bits), tipos de canal e mensagem…
 │   │   ├── Events/              o que vai pelo Reverb (MessageSent, VoiceStateUpdated…)
 │   │   ├── Services/Sfu/        cliente assinado que fala com o SFU (kick, mute, presença)
 │   │   ├── Services/Storage/    bucket do MinIO
-│   │   └── Livewire/            páginas do site: home, login/cadastro, painel admin
-│   │                            (auditoria, erros, rede, releases)
+│   │   └── Livewire/            páginas do site: home, login/cadastro, senha
 │   ├── routes/                  api.php (o app), web.php (o site), channels.php (Reverb)
 │   ├── database/                migrations, seeders (cargos, admin), factory
 │   ├── resources/views/         blades do site, e-mails, componentes Flux

@@ -4,13 +4,9 @@ import type { WebSocket } from 'ws';
 import { PERMISSION_BY_SOURCE, type SourceName } from '../Enums/Source.js';
 import { ForbiddenException, NotFoundException } from '../Exceptions/ApiException.js';
 import type { ProducerDescription } from '../types.js';
-import type { Recorder } from './Recorder.js';
 
 export class Peer {
     public socket: WebSocket;
-
-    /** O anel dos clipes, enquanto esta pessoa compartilha tela num canal. */
-    public recorder: Recorder | null = null;
 
     /** Quando o socket caiu. Nulo enquanto a sinalização está viva. */
     public orphanedAt: number | null = null;
@@ -130,6 +126,7 @@ export class Peer {
             producerId: producer.id,
             kind: producer.kind,
             source: String(producer.appData.source),
+            paused: producer.paused,
         }));
     }
 
@@ -169,10 +166,6 @@ export class Peer {
     }
 
     public close(): void {
-        // A sala esvaziando fecha o router, e o consumer da gravação só recebe o
-        // `transportclose`, nunca o `producerclose`: sem isto o ffmpeg do anel ficava de pé.
-        this.recorder?.stop();
-
         for (const transport of [...this.transports.values(), ...this.plainTransports.values()]) {
             transport.close();
         }

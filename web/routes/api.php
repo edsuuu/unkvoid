@@ -5,7 +5,6 @@ declare(strict_types=1);
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BanController;
 use App\Http\Controllers\Api\ChannelController;
-use App\Http\Controllers\Api\ClipController;
 use App\Http\Controllers\Api\ConfigController;
 use App\Http\Controllers\Api\DirectMessageController;
 use App\Http\Controllers\Api\ErrorReportController;
@@ -31,10 +30,6 @@ Route::name('api.')->group(function (): void {
 
     Route::get('/config', ConfigController::class)->name('config');
 
-    // A playlist é pedida pelo tocador de vídeo, que não manda o token do app: quem
-    // autoriza aqui é a URL assinada, e por isso ela fica fora do `auth:sanctum`.
-    Route::get('/clips/{clip}/playlist.m3u8', [ClipController::class, 'playlist'])->middleware('signed')->name('clips.playlist');
-
     Route::post('/sfu/events', SfuEventController::class)->middleware('signed.sfu')->name('sfu.events');
     Route::post('/releases', ReleaseController::class)->middleware('signed.release')->name('releases.store');
 
@@ -47,6 +42,8 @@ Route::name('api.')->group(function (): void {
     Route::middleware('auth:sanctum')->group(function (): void {
         Route::get('/me', [MeController::class, 'show'])->name('me');
         Route::patch('/me', [MeController::class, 'update'])->middleware('throttle:20,1')->name('me.update');
+        Route::post('/me/avatar', [MeController::class, 'storeAvatar'])->middleware('throttle:20,1')->name('me.avatar.store');
+        Route::delete('/me/avatar', [MeController::class, 'destroyAvatar'])->name('me.avatar.destroy');
 
         Route::post('/rooms/{code}/token', [RoomController::class, 'token'])
             ->where('code', '[a-z0-9][a-z0-9-]{1,30}[a-z0-9]')
@@ -110,8 +107,6 @@ Route::name('api.')->group(function (): void {
                 Route::post('/token', [VoiceController::class, 'token'])->name('token');
                 Route::delete('/members/{user}', [VoiceController::class, 'disconnect'])->name('disconnect');
             });
-
-            Route::post('/clips', [ClipController::class, 'store'])->name('clips.store');
         });
 
         Route::prefix('messages/{message}')->name('messages.')->group(function (): void {
@@ -133,12 +128,6 @@ Route::name('api.')->group(function (): void {
             Route::post('/{user}', [DirectMessageController::class, 'store'])->middleware('throttle:60,1')->name('store');
             Route::patch('/{directMessage}', [DirectMessageController::class, 'update'])->name('update');
             Route::delete('/{directMessage}', [DirectMessageController::class, 'destroy'])->name('destroy');
-        });
-
-        Route::prefix('clips')->name('clips.')->group(function (): void {
-            Route::get('/', [ClipController::class, 'index'])->name('index');
-            Route::get('/{clip}', [ClipController::class, 'show'])->name('show');
-            Route::delete('/{clip}', [ClipController::class, 'destroy'])->name('destroy');
         });
     });
 });

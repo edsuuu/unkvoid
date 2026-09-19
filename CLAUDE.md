@@ -50,7 +50,7 @@ cargos, canal oculto, voz, auditoria) estão em `docs/SERVIDORES.md` e no agente
 ## Rodar tudo local
 
 ```bash
-# Laravel (API, site, painel) + Reverb (chat e presença)
+# Laravel (API e site) + Reverb (chat e presença)
 cd web && composer dev                 # :8000
 cd web && php artisan reverb:start     # :8080
 
@@ -58,8 +58,8 @@ cd web && php artisan reverb:start     # :8080
 cd sfu && pnpm run build
 cd sfu && SFU_SECRET=<o do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node dist/server.js
 
-# O bucket do MinIO (AWS_BUCKET): o primeiro clipe e a primeira versão publicada o criam
-# sozinhos; para criar antes, à mão
+# O bucket do MinIO (AWS_BUCKET): a primeira foto enviada e a primeira versão publicada o
+# criam sozinhas; para criar antes, à mão
 cd web && php artisan storage:bucket
 
 # App apontando para o Laravel local (SFU e Reverb vêm do GET /api/config)
@@ -79,7 +79,7 @@ Laravel com `--host=0.0.0.0`. No WSL2 a rede só alcança o UDP do SFU com
 ```bash
 cd web && composer check                 # phpstan max + pint + rector + pest em SQLite (rode 2x: rector estável)
 cd web && composer test:mysql            # a mesma suíte no MySQL: pega tipo de coluna e chave que o SQLite perdoa
-cd sfu && pnpm run check                 # eslint + check.mjs + check-heartbeat.mjs (precisa de um servidor no ar com o mesmo SFU_SECRET; o cenário de clipe só roda no Linux, porque o anel chama o ffmpeg por `setpriv`)
+cd sfu && pnpm run check                 # eslint + check.mjs + check-heartbeat.mjs (precisa de um servidor no ar com o mesmo SFU_SECRET)
 cd native/apps/desktop && npm run check && npm run build   # tests/static + tsc + eslint + Vitest (tests/unit)
 cd native/apps/desktop && npm run test:integration    # Vitest: os clientes do app contra a pilha local no ar
 cd native && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
@@ -125,6 +125,7 @@ Vale a skill `style-edsu` inteira, e o resumo que mais pega:
 
 | Arquivo | Para quê |
 |---|---|
+| [ARQUITETURA.md](ARQUITETURA.md) | o mapa: para que serve cada peça, como elas conversam e os fluxos principais |
 | [docs/SERVIDORES.md](docs/SERVIDORES.md) | o contrato entre as três peças, e como rodar local |
 | [docs/ESTADO.md](docs/ESTADO.md) | o que só foi escrito sem rodar em hardware, o que falta e as perguntas abertas |
 | [docs/DECISOES.md](docs/DECISOES.md) | o que foi decidido e **por quê** (ex.: por que o SFU é Node) |

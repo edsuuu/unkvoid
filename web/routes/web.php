@@ -31,13 +31,3 @@ Route::middleware('guest')->group(function (): void {
     Route::view('/esqueci-a-senha', 'auth.forgot-password')->name('password.request');
     Route::view('/redefinir-senha/{token}', 'auth.reset-password')->name('password.reset');
 });
-
-Route::middleware(['auth', 'role:Administrador'])->prefix('admin')->group(function (): void {
-    Route::view('/', 'admin.releases.index')->name('admin');
-
-    Route::name('admin.')->group(function (): void {
-        Route::view('/erros', 'admin.errors.index')->name('errors');
-        Route::view('/auditoria', 'admin.audit.index')->name('audit');
-        Route::view('/rede', 'admin.network.index')->name('network');
-    });
-});

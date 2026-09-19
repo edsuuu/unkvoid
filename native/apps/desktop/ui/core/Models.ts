@@ -3,6 +3,7 @@ export type User = {
     name: string;
     email: string;
     avatar_url: string | null;
+    avatar_uploaded: boolean;
     admin: boolean;
     nickname_confirmed: boolean;
 };
@@ -108,23 +109,6 @@ export type Message = {
     body: string;
     edited_at: string | null;
     created_at: string;
-};
-
-export type ClipStatus = 'processing' | 'ready' | 'failed';
-
-export type Clip = {
-    id: string;
-    status: ClipStatus;
-    streamer: { id: number | null; name: string };
-    server_name: string;
-    channel_name: string;
-    duration_ms: number | null;
-    size_bytes: number | null;
-    created_at: string;
-    expires_at: string;
-    thumbnail_url: string | null;
-    playlist_url: string | null;
-    download_url: string | null;
 };
 
 export type Config = {

@@ -7,8 +7,8 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
 /**
- * O ícone do servidor mora no mesmo bucket privado dos clipes, então a coluna guarda só
- * o caminho: a URL sai assinada e vencendo, nunca gravada.
+ * O ícone do servidor mora no bucket privado, o mesmo das fotos de perfil, então a
+ * coluna guarda só o caminho: a URL sai assinada e vencendo, nunca gravada.
  */
 return new class extends Migration
 {

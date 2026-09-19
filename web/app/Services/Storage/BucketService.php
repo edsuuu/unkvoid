@@ -14,8 +14,8 @@ final class BucketService
 {
     /**
      * Cria o bucket quando ele ainda não existe, privado como o padrão do S3: numa máquina nova
-     * o primeiro clipe e a primeira versão publicada não podem falhar por falta dele. Devolve
-     * se criou.
+     * a primeira foto, o primeiro ícone e a primeira versão publicada não podem falhar por falta
+     * dele. Devolve se criou.
      *
      * @throws S3Exception
      */

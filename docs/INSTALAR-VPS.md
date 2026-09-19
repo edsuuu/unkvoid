@@ -441,7 +441,7 @@ mensagem do chat pelo Livewire é uma, e cada uma paga os 116 ms de ida e volta 
 seção 1.4, o que faz o slot ficar ocupado mais tempo do que ficaria numa máquina
 perto de quem usa.
 
-E em `/etc/php/8.4/fpm/php.ini`, senão o envio do instalador de 200 MB pelo painel
+E em `/etc/php/8.4/fpm/php.ini`, senão o envio do instalador de 200 MB pelo `POST /api/releases`
 morre **depois** de subir o arquivo inteiro:
 
 ```ini

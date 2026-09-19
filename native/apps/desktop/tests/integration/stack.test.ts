@@ -235,8 +235,4 @@ describe('integração: os clientes do app contra o Laravel, o Reverb e o SFU no
         expect(thirdJoined.peers.some(peer => peer.name === 'Primeira'), 'com conta é a mesma sala').toBe(true);
         await expect(intruder.connect(config.sfu, { room: voice.id, name: 'Intrusa', installId: `install-4-${STAMP}` }), 'canal de voz sem token é recusado').rejects.toThrow();
     });
-
-    it('a lista de clipes de uma conta nova responde vazia', async () => {
-        expect(await ana.get('/api/clips')).toEqual([]);
-    });
 });

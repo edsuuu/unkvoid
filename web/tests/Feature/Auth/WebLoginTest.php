@@ -60,12 +60,12 @@ it('sai da conta', function (): void {
     $this->assertGuest();
 });
 
-it('só deixa o administrador abrir o painel', function (): void {
+it('só o e-mail do dono nasce administrador', function (): void {
     $this->seed(Seeder001Roles::class);
 
     $common = User::factory()->create();
-    $this->actingAs($common)->get(route('admin'))->assertForbidden();
+    $this->actingAs($common, 'sanctum')->getJson('/api/me')->assertOk()->assertJsonPath('data.admin', false);
 
     $admin = User::factory()->create(['email' => config('unkvoid.admin_email')]);
-    $this->actingAs($admin)->get(route('admin'))->assertOk();
+    $this->actingAs($admin, 'sanctum')->getJson('/api/me')->assertOk()->assertJsonPath('data.admin', true);
 });

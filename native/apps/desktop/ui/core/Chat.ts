@@ -17,6 +17,14 @@ export type ChatState = {
 
 export class Chat {
     static readonly MAX_ROWS = 500;
+    static readonly PAGE_SIZE = 50;
+
+    static mergeLatest<Item extends { id: number }>(known: Item[], latest: Item[]): Item[] {
+        const start = latest[0]?.id ?? 0;
+        const reachesKnown = latest.length === Chat.PAGE_SIZE && known.some(item => item.id >= start);
+
+        return [...(reachesKnown ? known.filter(item => item.id < start) : []), ...latest];
+    }
 
     readonly hub: Hub;
     channel: Channel | null = null;
@@ -67,6 +75,20 @@ export class Chat {
         const known = new Set(this.store.state.messages.map(message => message.id));
 
         this.store.set(state => ({ messages: [...history.filter(message => ! known.has(message.id)), ...state.messages] }));
+    }
+
+    async catchUp(): Promise<void> {
+        const channel = this.channel;
+
+        if (! channel) {
+            return;
+        }
+
+        const latest = await this.hub.api.get<Message[]>(`/api/channels/${channel.id}/messages`);
+
+        if (this.channel === channel) {
+            this.store.set(state => ({ messages: Chat.mergeLatest(state.messages, latest), exhausted: latest.length < Chat.PAGE_SIZE }));
+        }
     }
 
     close(): void {
