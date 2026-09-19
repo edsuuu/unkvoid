@@ -7,7 +7,6 @@ import { Spinner } from '../common/Spinner.tsx';
 import { ShareButton } from '../room/ShareButton.tsx';
 import { useApp } from '../useApp.ts';
 import { useStore } from '../useStore.ts';
-import { ClipButton } from './ClipButton.tsx';
 
 const MENU_ITEM = 'flex w-full cursor-pointer items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[12.5px] text-ink-icon hover:bg-row hover:text-ink-strong';
 
@@ -55,7 +54,6 @@ export function VoicePanel() {
                             <Icon name={voiceState.cameraOn ? 'camera' : 'cameraOff'} size={16} />
                         </button>
                         <ShareButton wide disabled={voiceState.joining || ! voiceState.can.includes('stream')} />
-                        <ClipButton wide />
                     </div>
                 </div>
             )}
@@ -94,7 +92,6 @@ export function VoicePanel() {
                             <p className="label-mono mt-0.5">{user ? 'conta conectada' : 'usando sem login'}</p>
                         </div>
                         {user && <button className={MENU_ITEM} type="button" onClick={() => choose(() => hub.openModal({ type: 'user' }))}><Icon name="gear" size={15} />Configurações da conta</button>}
-                        <button className={MENU_ITEM} type="button" onClick={() => choose(() => app.setTab('clips'))}><Icon name="scissors" size={15} />Clipes</button>
                         <button className={MENU_ITEM} type="button" onClick={() => choose(() => app.openLogs())}><Icon name="logs" size={15} />Logs</button>
                         {user && <button className={`${MENU_ITEM} text-periwinkle`} type="button" onClick={() => choose(() => hub.logout())}><Icon name="logout" size={15} />Sair da conta</button>}
                     </Popover>

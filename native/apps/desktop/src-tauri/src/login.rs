@@ -31,8 +31,8 @@ fn pending() -> std::sync::MutexGuard<'static, Option<(String, Sender<String>)>>
 
 #[tauri::command]
 pub async fn google_login(server: String) -> Result<String, String> {
-    // A mesma trava do `open_url`: o endereço vira URL no navegador do sistema, e no
-    // Windows um `file://` abriria um arquivo remoto.
+    // O endereço vira URL no navegador do sistema, e no Windows o `FileProtocolHandler`
+    // abriria um `file://` remoto ou um caminho local.
     if ! is_web_url(&server) {
         return Err("só endereços http e https".into());
     }
@@ -94,18 +94,6 @@ fn token_from_url(url: &Url, expected_state: Option<&str>) -> Option<String> {
     value("token").filter(|token| ! token.is_empty())
 }
 
-/// Abre um endereço no navegador do sistema: baixar clipe passa por aqui, porque a janela
-/// do Tauri não baixa com confiança um `<a download>` de outra origem. Só `http` e
-/// `https`: no Windows o `FileProtocolHandler` também abriria um caminho local.
-#[tauri::command]
-pub fn open_url(url: String) -> Result<(), String> {
-    if ! is_web_url(&url) {
-        return Err("só endereços http e https".into());
-    }
-
-    open_in_browser(&url).map_err(|error| error.to_string())
-}
-
 fn is_web_url(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|parsed| matches!(parsed.scheme(), "http" | "https"))
 }
@@ -158,8 +146,8 @@ mod tests {
 
     #[test]
     fn only_web_addresses_reach_the_browser() {
-        assert!(is_web_url("https://minio.example/clips/01j8/clip.mp4?X-Amz-Signature=abc&response-content-disposition=attachment"));
-        assert!(is_web_url("http://127.0.0.1:9000/clip.mp4"));
+        assert!(is_web_url("https://unkvoid.com"));
+        assert!(is_web_url("http://127.0.0.1:8000/"));
         assert!(! is_web_url("file:///C:/Windows/System32/calc.exe"));
         assert!(! is_web_url("C:\\Windows\\System32\\calc.exe"));
         assert!(! is_web_url("javascript:alert(1)"));

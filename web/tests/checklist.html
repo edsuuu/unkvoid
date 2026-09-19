@@ -42,7 +42,7 @@
   <label><input type="checkbox"><span>"Entrar com Google" abre a tela do Google e volta logado; conta nova recebe boas-vindas, conta existente recebe "Novo acesso"</span><i class="tag auto">Pest com Socialite dublado</i></label>
   <label><input type="checkbox"><span>Conta criada por senha e depois Google com o mesmo e-mail vira uma conta só</span><i class="tag auto">Pest</i></label>
   <label><input type="checkbox"><span>"Sair" no header encerra a sessão</span><i class="tag auto">Pest</i></label>
-  <label><input type="checkbox"><span>Quem entra com o e-mail do dono vê "Painel" e abre /admin; outra conta recebe 403</span><i class="tag auto">Pest</i></label>
+  <label><input type="checkbox"><span>Quem entra com o e-mail do dono vira administrador (admin: true no /api/me); outra conta vem com admin: false</span><i class="tag auto">Pest</i></label>
 
   <h2>Senha</h2>
   <label><input type="checkbox"><span>/esqueci-a-senha responde igual para e-mail existente e inexistente</span><i class="tag auto">Pest</i></label>
@@ -81,12 +81,12 @@
   <label><input type="checkbox"><span>POST /api/invites/{code} entra; banido dá 403; código inexistente dá 404; POST /servers/{id}/invite exige CREATE_INVITE e o invite_code some da árvore sem ela</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>Expulsar/banir/mutar/ensurdecer/desconectar só quem tem top position menor que o meu; dono nunca é alvo; cargo igual dá 403</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>Cargo novo nasce em top − 1 (mínimo 1; do dono vai para o topo); ninguém dá permissão que não tem; @everyone só muda permissions e não pode ser apagado (422)</span><i class="tag auto">pest</i></label>
-  <label><input type="checkbox"><span>Editar/apagar cargo só abaixo do meu top (posição ≥ top → 403, posição 0 → 422); dar cargo exige MANAGE_ROLES, cargo abaixo do meu e permissões que eu tenho (ninguém se faz administrador); a atribuição aparece em /admin/auditoria</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>Editar/apagar cargo só abaixo do meu top (posição ≥ top → 403, posição 0 → 422); dar cargo exige MANAGE_ROLES, cargo abaixo do meu e permissões que eu tenho (ninguém se faz administrador); a atribuição aparece em GET /api/servers/{id}/audits</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>Sobrescrita exige MANAGE_ROLES, só com bits que eu tenho no canal (403), só em cargo abaixo do meu (403), alvo fora do servidor → 422; apagar cargo, sair, expulsar e banir apagam as sobrescritas junto</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>Membro do servidor A recebe 403 em canal, cargo e membro do servidor B</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>Último canal de texto não pode ser apagado (422); canal exige MANAGE_CHANNELS; user_limit só em canal de voz</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>Mensagem: 1–2000 chars, SEND_MESSAGES para escrever, só o autor edita, autor ou MANAGE_MESSAGES apaga; GET ?before= pagina 50 em ordem crescente</span><i class="tag auto">pest</i></label>
-  <label><input type="checkbox"><span>Editar ou apagar mensagem fica em /admin/auditoria com quem fez e o corpo de antes (Message é Auditable)</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>Editar ou apagar mensagem fica na tabela audits com quem fez e o corpo de antes (Message é Auditable)</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>Ensurdecer no servidor (server_deaf) exige DEAFEN_MEMBERS e hierarquia, e nunca chama o SFU (ao contrário do mutar)</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>POST /channels/{id}/voice/token: 403 sem CONNECT, 403 em canal de texto, 403 com user_limit cheio; token verifica com o mesmo HMAC do SFU, exp = agora + 60, can sem speak quando server_mute</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>Webhook POST /api/sfu/events: sem assinatura, com outro segredo, fora da janela de 300 s, sem SFU_SECRET ou repetida → 401; joined fecha o acesso aberto e abre outro com sfu_ip; left fecha</span><i class="tag auto">pest</i></label>
@@ -97,21 +97,8 @@
   <label><input type="checkbox"><span>Eventos MessageSent/MessageUpdated/MessageDeleted, VoiceStateUpdated, ServerUpdated e MemberRemoved chegam no app via Reverb com o nome curto (.MessageSent) e o payload de docs/SERVIDORES.md</span><i class="tag auto">Event::fake</i></label>
   <label><input type="checkbox"><span>php artisan reverb:start rodando; o app conecta com o host/porta do /api/config e recebe a mensagem de outro usuário sem refazer o GET</span></label>
   <label><input type="checkbox"><span>SFU do lado de lá manda joined/left para SFU_LARAVEL_URL/api/sfu/events e a pessoa aparece em voice na árvore em até 3 s</span></label>
-  <label><input type="checkbox"><span>/admin/auditoria: aba Acessos lista quem entrou/saiu, usuário, servidor, canal, IP, IP do SFU e navegador, filtra por servidor, e-mail e datas (horário de São Paulo)</span><i class="tag auto">pest</i></label>
-  <label><input type="checkbox"><span>/admin/auditoria: aba Alterações mostra a tabela audits (quem, evento, modelo, antes/depois, IP) para servidor, cargo, canal, membro, sobrescrita e banimento; usuário da API aparece (guard sanctum)</span><i class="tag auto">pest</i></label>
-  <label><input type="checkbox"><span>/admin/auditoria: passou de 200 registros na aba, aparece "Carregar mais" e o clique traz mais 200 (some quando não bate mais no limite)</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>GET /api/servers traz last_accessed_at e vai do último acesso à voz (meu, de channel_accesses) para o mais antigo; nunca acessado fica no fim, pela data em que entrei</span><i class="tag auto">pest</i></label>
 
-  <h2>Clipes</h2>
-  <label><input type="checkbox"><span>POST /api/channels/{id}/clips: 202 processing; canal de texto 422; sem VIEW_CHANNEL, sem CONNECT ou de outro servidor 403 sem chamar o SFU</span><i class="tag auto">pest</i></label>
-  <label><input type="checkbox"><span>O SFU recebe POST /rooms/:code/clips assinado como o kick, com clipId, clipper, streamer e upload (política presa a starts-with $key clips/{id}/, sem key nos fields)</span><i class="tag auto">pest</i></label>
-  <label><input type="checkbox"><span>SFU responde 404 → 422, 403 → 403, 503 ou fora do ar → 503, e a linha do clipe não fica</span><i class="tag auto">pest</i></label>
-  <label><input type="checkbox"><span>GET /api/clips só os meus, mais novo primeiro; GET e DELETE de clipe de outra pessoa 404; DELETE apaga clips/{id}/ do bucket e a linha</span><i class="tag auto">pest</i></label>
-  <label><input type="checkbox"><span>Vencido (7 dias) some da lista, da API e da playlist; model:prune apaga objeto e linha (e a limpeza roda a cada clipe novo, porque a VPS não roda schedule:run)</span><i class="tag auto">pest</i></label>
-  <label><input type="checkbox"><span>Webhook clip.ready/clip.failed assinado atualiza e dispara ClipUpdated em private-user.{id}; clipe já apagado limpa o prefixo; assinatura errada 401</span><i class="tag auto">pest</i></label>
-  <label><input type="checkbox"><span>Nenhuma URL pública: miniatura, download (Content-Disposition: attachment) e segmentos pré-assinados de 2 h; playlist com assinatura do Laravel de 2 h, sem assinatura ou vencida 403; segmento com ../ vira só o nome</span><i class="tag auto">pest</i></label>
-  <label><input type="checkbox"><span>MinIO local: POST multipart com fields + key dentro de clips/{id}/ grava (204); key fora do prefixo é recusada (403); download assinado vem com Content-Disposition; GET sem assinatura 403</span><i class="tag auto">curl</i></label>
-  <label><input type="checkbox"><span>Ponta a ponta: clipar pelo app com alguém transmitindo; aparece processing e vira ready sem refazer o GET; Assistir toca pelo playlist_url; o download salva o mp4</span></label>
   <label><input type="checkbox"><span>Log das chamadas ao SFU em storage/logs/sfu-*.log com a assinatura mascarada; SFU fora do ar não derruba expulsão/banimento</span></label>
 
   <h2>Conversa direta, auditoria do servidor, ícone e aviso de chegada</h2>

@@ -26,18 +26,6 @@
             <a href="{{ route('home') }}" class="flex items-center gap-2 px-2 py-1 font-semibold" wire:navigate><img src="{{ asset('images/unkvoid-mark.png') }}" alt="Unkvoid" width="28" height="28"><span>Unkvoid</span></a>
 
             <flux:navlist variant="outline">
-                <flux:navlist.item icon="layout-grid" :href="route('admin')" :current="request()->routeIs('admin')" wire:navigate>
-                    {{ __('Painel') }}
-                </flux:navlist.item>
-                <flux:navlist.item icon="bug-ant" :href="route('admin.errors')" :current="request()->routeIs('admin.errors')" wire:navigate>
-                    {{ __('Erros dos apps') }}
-                </flux:navlist.item>
-                <flux:navlist.item icon="shield-check" :href="route('admin.audit')" :current="request()->routeIs('admin.audit')" wire:navigate>
-                    {{ __('Auditoria') }}
-                </flux:navlist.item>
-                <flux:navlist.item icon="signal" :href="route('admin.network')" :current="request()->routeIs('admin.network')" wire:navigate>
-                    {{ __('Rede do servidor') }}
-                </flux:navlist.item>
                 <flux:navlist.item icon="document-text" :href="route('log-viewer.index')" target="_blank">
                     {{ __('Logs') }}
                 </flux:navlist.item>

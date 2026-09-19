@@ -40,7 +40,7 @@ final class File extends Model
      */
     public static function put(User $owner, UploadedFile $upload, string $folder, BucketService $bucket): self
     {
-        // Numa máquina nova o bucket pode não existir, e o arquivo falharia igual ao clipe.
+        // Numa máquina nova o bucket pode não existir, e o arquivo falharia no upload.
         $bucket->ensure();
 
         $path = $upload->store($folder.'/'.$owner->id, 's3');
@@ -56,7 +56,7 @@ final class File extends Model
     }
 
     /**
-     * O bucket é privado: a URL sai assinada e vence, como a miniatura do clipe.
+     * O bucket é privado: a URL sai assinada e vence.
      */
     public function url(): string
     {

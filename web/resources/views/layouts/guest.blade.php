@@ -35,9 +35,6 @@
                         <a href="{{ route('home') }}#pipeline" class="lp-nav-link">Pipeline</a>
                         <a href="{{ route('home') }}#roadmap" class="lp-nav-link">Roadmap</a>
                         @auth
-                            @if (auth()->user()->isAdmin())
-                                <a href="{{ route('admin') }}" class="lp-nav-link">Painel</a>
-                            @endif
                             <form method="POST" action="{{ route('logout') }}" style="display:contents">
                                 @csrf
                                 <button type="submit" class="lp-nav-link" style="cursor:pointer;font-family:inherit">Sair</button>

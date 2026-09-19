@@ -115,8 +115,9 @@ o dono. O histórico das sessões saiu do repositório e continua no git.
 - **Criptografia ponta a ponta: não agora** (decisão do dono, 16/09/2026). O desenho proposto,
   para quando for a hora: E2E só em mensagem direta, chave por par (X25519 no cadastro, pública no
   `users`, privada guardada na máquina), corpo cifrado no `direct_messages.body` e o servidor
-  guardando opaco. Não vale para canal de servidor (a auditoria e a moderação precisam ler) nem
-  para mídia (o SFU precisa ver RTP para rotear; isso seria SFrame, outro projeto).
+  guardando opaco. Não vale para canal de servidor (a auditoria e a moderação precisam ler).
+  Mídia seria outro projeto: o SFU roteia sem ver a imagem (o cabeçalho RTP fica aberto, como
+  no DAVE do Discord), e com os clipes fora do código nada no servidor precisa mais decodificar.
 
 ## O laboratório de Linux
 
@@ -140,18 +141,13 @@ caminho até o SFU.
    - `server_deaf` já tem escrita;
    - apelido de outra pessoa exige `MANAGE_SERVER`;
    - o dono cria cargo no topo;
-   - clipe em canal de texto oculto dá 403, e não 422;
    - regenerar convite não emite `ServerUpdated`.
 4. **`MANAGE_CHANNELS`** renomeia e apaga canal que a pessoa não enxerga; cargo criado com topo
    ≤ 1 nasce na altura de quem criou; editar um cargo abaixo tira bits que quem edita não tem.
-5. **SFU:** a retomada da sessão (30 s) ignora o `can` do token novo; tela em VP8 não é gravada
-   (o contrato não diz que é só H.264).
-6. **Clipes:**
-   - `schedule:run` no cron da VPS, para os clipes vencidos serem apagados sem depender de um
-     clipe novo?
-   - limite de pedidos no `POST` de clipe, para proteger o `ffmpeg` do SFU?
-   - apagar do MinIO os clipes de uma conta apagada?
-   - carregar o hls.js só ao abrir o player?
+5. **SFU:** a retomada da sessão (30 s) ignora o `can` do token novo.
+6. **Clipes removidos** (18/09/2026): o código saiu das três peças, mas a tabela `clips`
+   continua (migration é decisão do dono), e o que já estava em `clips/` no MinIO e em
+   `/var/tmp` na VPS (o anel) não foi apagado. Dropar a tabela e limpar os dois?
 7. **Microfone negado** hoje tira a pessoa da voz. Deixar entrar só ouvindo?
 8. **Estado em dobro** no `Hub` e no `Voice` (campos da classe e `Store`): hoje não dessincroniza.
    Mexer agora ou na próxima vez que tocar ali?

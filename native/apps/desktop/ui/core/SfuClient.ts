@@ -31,6 +31,7 @@ export type PeerDescription = {
     peerId: string;
     userId: string;
     name: string;
+    reconnecting?: boolean;
     producers: ProducerInfo[];
 };
 
@@ -257,7 +258,8 @@ export class SfuClient extends EventTarget {
             return;
         }
 
-        const delay = Math.min(1000 * 2 ** this.reconnectAttempt, 10000);
+        const ceiling = Math.min(1000 * 2 ** this.reconnectAttempt, 10000);
+        const delay = ceiling / 2 + Math.random() * ceiling / 2;
 
         this.reconnectAttempt += 1;
         this.reconnectTimer = setTimeout(() => {
@@ -440,6 +442,8 @@ export class SfuClient extends EventTarget {
         this.resumeKey = joined.resumeKey;
 
         if (joined.resumed) {
+            this.catchUp(joined.peers);
+
             return joined;
         }
 
@@ -479,6 +483,66 @@ export class SfuClient extends EventTarget {
         this.recvTransport = await this.createTransport();
 
         return joined;
+    }
+
+    catchUp(listed: PeerDescription[]): void {
+        const current = new Map(listed.map(peer => [peer.peerId, peer]));
+
+        for (const [peerId, known] of [...this.peers]) {
+            if (known.self || current.has(peerId)) {
+                continue;
+            }
+
+            this.dropConsumersOf(known.producers.map(producer => producer.producerId));
+            this.replay('peerLeft', { peerId });
+        }
+
+        for (const peer of listed) {
+            const known = this.peers.get(peer.peerId);
+
+            if (! known) {
+                this.replay('peerJoined', { peerId: peer.peerId, userId: peer.userId, name: peer.name });
+            }
+
+            const knownProducers = this.peers.get(peer.peerId)?.producers ?? [];
+
+            for (const producer of knownProducers) {
+                if (! peer.producers.some(item => item.producerId === producer.producerId)) {
+                    this.dropConsumersOf([producer.producerId]);
+                    this.replay('producerClosed', { peerId: peer.peerId, ...producer });
+                }
+            }
+
+            for (const producer of peer.producers) {
+                const before = knownProducers.find(item => item.producerId === producer.producerId);
+
+                if (! before) {
+                    this.replay('newProducer', { peerId: peer.peerId, ...producer });
+                }
+
+                if (Boolean(before?.paused) !== Boolean(producer.paused)) {
+                    this.replay(producer.paused ? 'producerPaused' : 'producerResumed', { peerId: peer.peerId, producerId: producer.producerId });
+                }
+            }
+
+            if (Boolean(known?.reconnecting) !== Boolean(peer.reconnecting)) {
+                this.replay(peer.reconnecting ? 'peerConnectionLost' : 'peerReconnected', { peerId: peer.peerId });
+            }
+        }
+    }
+
+    replay(event: string, data: Partial<SfuEventData>): void {
+        this.handleMessage({ event, data: data as SfuEventData });
+    }
+
+    dropConsumersOf(producerIds: string[]): void {
+        for (const [consumerId, consumer] of [...this.consumers]) {
+            if (producerIds.includes(consumer.producerId)) {
+                consumer.close();
+                this.consumers.delete(consumerId);
+                this.consumerPeers.delete(consumerId);
+            }
+        }
     }
 
     closeMedia(): void {

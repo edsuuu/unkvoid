@@ -3,13 +3,9 @@
 declare(strict_types=1);
 
 use App\Enums\ReleasePlatformEnum;
-use App\Livewire\Admin\Releases\Index;
 use App\Models\Release;
-use App\Models\User;
-use Database\Seeders\Seeder001Roles;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
-use Livewire\Livewire;
 
 function signedHeaders(string $path, UploadedFile $file, ?string $secret = null): array
 {
@@ -87,27 +83,4 @@ it('a landing mostra a versão e os links das plataformas publicadas', function 
     Release::query()->create(['version' => '0.0.8', 'platform' => ReleasePlatformEnum::LinuxDeb, 'file_name' => 'a.deb', 'path' => 'releases/0.0.8/a.deb', 'size' => 1, 'signature' => null, 'published_at' => now()]);
 
     $this->get('/')->assertOk()->assertSee('v0.0.8')->assertSee(route('downloads.platform', 'linux'))->assertSee('Baixar o .deb');
-});
-
-it('o painel publica pelo formulário e apaga do bucket', function (): void {
-    $this->seed(Seeder001Roles::class);
-    $admin = User::factory()->create(['email' => config('unkvoid.admin_email')]);
-
-    $this->actingAs($admin)->get(route('admin'))->assertOk()->assertSee('Versões do app');
-
-    Livewire::actingAs($admin)->test(Index::class)
-        ->set('version', '0.0.9')
-        ->set('platform', 'windows-x86_64-nsis')
-        ->set('file', UploadedFile::fake()->create('Unkvoid_0.0.9_x64-setup.exe', 100))
-        ->set('signatureFile', UploadedFile::fake()->createWithContent('Unkvoid.exe.sig', "assinatura\n"))
-        ->call('publish')
-        ->assertHasNoErrors();
-
-    $release = Release::query()->firstOrFail();
-    expect($release->signature)->toBe('assinatura');
-    Storage::disk('s3')->assertExists($release->path);
-
-    Livewire::actingAs($admin)->test(Index::class)->call('remove', $release->id);
-    Storage::disk('s3')->assertMissing($release->path);
-    expect(Release::query()->count())->toBe(0);
 });

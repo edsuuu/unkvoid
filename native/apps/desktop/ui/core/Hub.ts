@@ -4,7 +4,6 @@ import Pusher from 'pusher-js';
 import { ApiClient } from './ApiClient.ts';
 import type { App } from './App.ts';
 import { Chat } from './Chat.ts';
-import { Clips } from './Clips.ts';
 import { Direct } from './Direct.ts';
 import { Failure } from './Failure.ts';
 import { Field } from './Field.ts';
@@ -13,7 +12,6 @@ import type {
     AuthToken,
     Channel,
     ChannelType,
-    Clip,
     Config,
     DirectMessage,
     Friendship,
@@ -122,13 +120,13 @@ export class Hub {
     online = new Set<number>();
     openTicket = 0;
     refreshTimer: number | null = null;
+    echoConnectedBefore = false;
     readonly voiceChannels = new Set<string>();
     readonly guardedSubscriptions = new WeakSet<object>();
     readonly store: Store<HubState>;
     readonly chat: Chat;
     readonly voice: Voice;
     readonly settings: ServerSettings;
-    readonly clips: Clips;
     readonly friends: Friends;
     readonly direct: Direct;
 
@@ -168,7 +166,6 @@ export class Hub {
         this.chat = new Chat(this);
         this.voice = new Voice(app, this);
         this.settings = new ServerSettings(this);
-        this.clips = new Clips(app, this);
         this.friends = new Friends(app, this);
         this.direct = new Direct(app, this);
     }
@@ -397,7 +394,6 @@ export class Hub {
 
         this.publish({ serversLoading: this.servers.length === 0 });
 
-        this.clips.refresh();
         this.voice.watchMicErrors();
         this.voice.listenShortcuts();
         await this.voice.applyShortcuts();
@@ -432,6 +428,7 @@ export class Hub {
         const { host, port, key, scheme } = this.config!.reverb;
 
         window.Pusher = Pusher;
+        this.echoConnectedBefore = false;
         this.echo = new Echo({
             broadcaster: 'reverb',
             Pusher,
@@ -447,11 +444,20 @@ export class Hub {
 
         this.echo.connector.pusher.connection.bind('state_change', ({ current }: { current: string }) => {
             this.store.set({ connected: current === 'connected' });
+
+            if (current !== 'connected') {
+                return;
+            }
+
+            if (this.echoConnectedBefore) {
+                void this.catchUp();
+            }
+
+            this.echoConnectedBefore = true;
         });
 
         const own = this.echo.private(`user.${this.user!.id}`);
 
-        this.listen<{ clip: Clip }>(own, 'ClipUpdated', ({ clip }) => this.clips.update(clip));
         this.listen<{ friendship: Friendship; removed: boolean }>(own, 'FriendshipUpdated', ({ friendship, removed }) => {
             if (removed) {
                 this.friends.store.set(state => ({ list: state.list.filter(item => item.id !== friendship.id) }));
@@ -493,12 +499,22 @@ export class Hub {
         });
     }
 
+    async catchUp(): Promise<void> {
+        this.app.log('echo.reconnected');
+
+        try {
+            await this.loadServers();
+            await Promise.all([this.friends.load(), this.direct.loadConversations(), this.direct.catchUp(), this.chat.catchUp()]);
+        } catch (failure) {
+            this.app.log('hub.catchup.error', { status: Failure.status(failure), message: Failure.message(failure) });
+        }
+    }
+
     async logout(): Promise<void> {
         await this.voice.leave();
         await this.closeServer();
         this.echo?.disconnect();
         this.echo = null;
-        this.clips.forget();
         this.friends.forget();
         this.direct.forget();
         this.api.setToken(null);
@@ -514,7 +530,6 @@ export class Hub {
     async roomByCode(): Promise<void> {
         await this.voice.leave();
         this.store.set({ modal: null });
-        this.app.setTab('broadcast');
         this.app.showEntry();
     }
 
@@ -732,8 +747,6 @@ export class Hub {
     }
 
     syncVoiceSources(): void {
-        this.voice.closeEmptyClipList();
-
         const channel = this.voice.channel;
         const peers = this.app.media.sfu?.peers;
         const tree = this.tree;

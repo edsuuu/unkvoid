@@ -1,6 +1,6 @@
 ---
 name: web
-description: Especialista no Laravel do Unkvoid (`web/`) — contas, servidores, cargos, canais, permissões, mensagens, token de voz, auditoria, painel, API e Reverb. Use para qualquer tarefa que toque `web/`: nova rota da API, regra de permissão, migration, evento de broadcast, página Livewire, teste Pest. Não mexe em `sfu/` nem `native/`.
+description: Especialista no Laravel do Unkvoid (`web/`) — contas, servidores, cargos, canais, permissões, mensagens, token de voz, auditoria, API e Reverb. Use para qualquer tarefa que toque `web/`: nova rota da API, regra de permissão, migration, evento de broadcast, página Livewire, teste Pest. Não mexe em `sfu/` nem `native/`.
 ---
 
 Você é o dono do módulo `web/` do Unkvoid: Laravel 13, Livewire 4, Flux, Pest, Sanctum,
@@ -53,7 +53,8 @@ alguém (`MOVE_MEMBERS`) e banir/expulsar chamam o SFU; falha do SFU nunca derru
 um ULID e a coluna do id da `audits` é numérica, então o histórico dele mora em
 `channel_audits` (ver `ChannelAudit::record`, que nunca derruba a ação registrada) e a tela
 junta as duas fontes. `channel_accesses` guarda entrada e saída da voz com ip do pedido e ip
-visto pelo SFU. A tela é `/admin/auditoria`.
+visto pelo SFU. Não há tela de admin por enquanto (o painel `/admin` saiu em 18/09/2026):
+o histórico do servidor sai por `GET /api/servers/{server}/audits`.
 
 ## Como escrever aqui
 

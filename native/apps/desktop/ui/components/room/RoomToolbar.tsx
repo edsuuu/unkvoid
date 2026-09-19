@@ -1,7 +1,6 @@
 import { Elapsed } from '../common/Elapsed.tsx';
 import { Icon } from '../common/Icon.tsx';
 import { ChannelsMenu } from '../hub/ChannelsMenu.tsx';
-import { ClipButton } from '../hub/ClipButton.tsx';
 import { useApp } from '../useApp.ts';
 import { useStore } from '../useStore.ts';
 import { PeopleMenu } from './PeopleMenu.tsx';
@@ -72,8 +71,6 @@ export function RoomToolbar({ mode, chatOpen = false, onToggleChat = null }: Roo
             </div>
 
             <div className="flex flex-none items-center gap-[7px]">
-                {inVoice && <ClipButton />}
-
                 {inVoice && voiceState.can.includes('video') && (
                     <button className={`btn-icon ${voiceState.cameraOn ? 'btn-icon-on' : ''}`} type="button" title={voiceState.cameraOn ? 'Desligar a câmera' : 'Ligar a câmera'} onClick={() => void voice.toggleCamera()}>
                         <Icon name={voiceState.cameraOn ? 'camera' : 'cameraOff'} size={17} />

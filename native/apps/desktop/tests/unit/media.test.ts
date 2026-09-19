@@ -109,14 +109,6 @@ describe('o palco: o que cada origem vira e o que custa decoder', () => {
         expect(media.store.state.paused).toEqual([]);
     });
 
-    it('com a aba Clipes na frente o palco atrás para de decodificar, e volta ao retornar', () => {
-        pausedCalls.length = 0;
-        app.setTab('clips');
-        app.setTab('broadcast');
-
-        expect(pausedCalls).toEqual(['ana:true:video', 'ana:false:video']);
-    });
-
     it('fechar a tela de alguém fecha a tela e o áudio dela, e nunca o microfone', async () => {
         await media.closeTile('ana');
 

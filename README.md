@@ -208,7 +208,8 @@ cargo run -p media --example plain -- <ws> <sala>     # o SFU confirmando que re
 
 ## Documentos
 
-Tudo em [`docs/`](docs/):
+O mapa de tudo (peças, fluxos, portas, deploy) está em [ARQUITETURA.md](ARQUITETURA.md). O
+detalhe de cada assunto, em [`docs/`](docs/):
 
 | Arquivo | O que tem |
 |---|---|

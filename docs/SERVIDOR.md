@@ -190,7 +190,7 @@ de RSS, então 32 filhos são ~2,5 GB de pico contra 24 GB; `dynamic` fica porqu
 idle são 5 filhos, ~400 MB. Os valores da coluna da direita estão no roteiro, seção
 6, que é onde eles se aplicam.
 
-Em `/etc/php/8.4/fpm/php.ini`, para o painel conseguir publicar o instalador que
+Em `/etc/php/8.4/fpm/php.ini`, para o `POST /api/releases` conseguir receber o instalador que
 o nginx já aceita em 200 MB (`upload_max_filesize = 2M` e `post_max_size = 8M`
 hoje matam o envio **depois** de subir o arquivo inteiro):
 
