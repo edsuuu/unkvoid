@@ -1,6 +1,10 @@
-# Os builds que a VPS não consegue fazer: o .dmg exige um Mac e o .msi exige o WiX no
-# Windows. Cada instalador vai direto para o site pela API assinada, que o guarda no
-# MinIO e monta o latest.json que o app lê. Ninguém se atualiza pelo GitHub.
+# Os instaladores do Windows e do macOS saem daqui, de um runner do GitHub, a partir do próprio
+# repositório — e não da máquina de ninguém. É o que a assinatura de código exige (a SignPath só
+# assina build automatizado e verificável), e é o que deixa qualquer pessoa conferir de onde veio
+# o que ela instalou. O Linux sai da VPS (build-linux.yml), porque o .deb vai para o APT de lá.
+#
+# Cada instalador vai para o site pela API assinada, que o guarda no MinIO e monta o latest.json
+# que o app lê. Ninguém se atualiza pelo GitHub.
 name: release
 
 on:
@@ -9,17 +13,26 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: 'Qual sistema publicar'
+        description: 'Qual sistema compilar'
         type: choice
-        default: macos
-        options: [macos, windows, ambos]
+        default: windows
+        options: [windows, macos, ambos]
+      publish:
+        description: 'Publicar no site (desligado: só compila e deixa os instaladores como artefato)'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
+# Duas releases ao mesmo tempo registrariam a mesma versão duas vezes no site.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   windows:
-    # Tag publica os dois; disparo à mão publica só o sistema escolhido. Publicar um
+    # Tag publica o Windows; disparo à mão compila só o sistema escolhido. Publicar um
     # instalador que ninguém compilou naquele sistema é o tipo de coisa que só aparece
     # na máquina de quem instalou.
     if: github.event_name == 'push' || inputs.platform != 'macos'
@@ -30,9 +43,22 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      # A tag é só o gatilho: a versão que o instalador carrega é a do tauri.conf.json. Tag
+      # v0.0.40 em cima de um conf 0.0.39 publicaria a 0.0.39 de novo, com cara de versão nova.
+      - if: github.event_name == 'push'
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::a tag é $GITHUB_REF_NAME e o tauri.conf.json diz $version"
+            exit 1
+          fi
+
       - run: npm ci
       - run: npm run check
       - run: npx tauri build --bundles nsis,msi
@@ -45,7 +71,21 @@ jobs:
       # `pubkey` do app, e quem descobre é quem instalou, na hora de atualizar.
       - run: node check-signature.mjs ../../target/release/bundle/msi/*.msi.sig ../../target/release/bundle/nsis/*-setup.exe.sig
 
-      - run: |
+      # Os instaladores ficam no próprio run: é daqui que a assinatura de código os pega (ela
+      # só aceita o que veio de um run verificável), e é o que sobra de um disparo sem publicar.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unkvoid-windows
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            native/target/release/bundle/msi/*.msi
+            native/target/release/bundle/msi/*.msi.sig
+            native/target/release/bundle/nsis/*-setup.exe
+            native/target/release/bundle/nsis/*-setup.exe.sig
+
+      - if: github.event_name == 'push' || inputs.publish
+        run: |
           for file in ../../target/release/bundle/msi/*.msi; do ./publish-release.sh windows-x86_64-msi "$file" "$file.sig"; done
           for file in ../../target/release/bundle/nsis/*-setup.exe; do ./publish-release.sh windows-x86_64-nsis "$file" "$file.sig"; done
         env:
@@ -59,6 +99,8 @@ jobs:
         working-directory: native/apps/desktop
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -70,7 +112,18 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       - run: node check-signature.mjs ../../target/release/bundle/macos/Unkvoid.app.tar.gz.sig
 
-      - run: |
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unkvoid-macos
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            native/target/release/bundle/macos/Unkvoid.app.tar.gz
+            native/target/release/bundle/macos/Unkvoid.app.tar.gz.sig
+            native/target/release/bundle/dmg/*.dmg
+
+      - if: inputs.publish
+        run: |
           ./publish-release.sh darwin-aarch64 ../../target/release/bundle/macos/Unkvoid.app.tar.gz ../../target/release/bundle/macos/Unkvoid.app.tar.gz.sig
           for file in ../../target/release/bundle/dmg/*.dmg; do ./publish-release.sh darwin-aarch64-dmg "$file"; done
         env:
