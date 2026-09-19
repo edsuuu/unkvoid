@@ -1,8 +1,8 @@
 # Arquitetura
 
 O mapa do Unkvoid: para que serve cada peça, como elas conversam e por onde passa cada
-coisa. O detalhe de cada assunto mora em `docs/`, e cada seção aponta para o arquivo certo.
-O contrato do que atravessa a rede é [docs/SERVIDORES.md](docs/SERVIDORES.md).
+coisa. O detalhe de cada assunto mora em esta pasta, e cada seção aponta para o arquivo certo.
+O contrato do que atravessa a rede é [docs/CONTRATO.md](CONTRATO.md).
 
 ## Para que o projeto existe
 
@@ -84,7 +84,7 @@ Fora das três:
 |---|---|
 | `infra/` | nginx, `docker-compose.yml` (MySQL, MinIO, e-mail), sysctl de UDP, `deploy-web.sh`, instalação do runner |
 | `.github/workflows/` | deploy do site e do SFU, build do Linux, release do Windows e do macOS |
-| `docs/` | o detalhe de cada assunto (tabela no fim) |
+| esta pasta | o detalhe de cada assunto (tabela no fim) |
 
 ## `native/`: o app
 
@@ -93,7 +93,7 @@ Fora das três:
 A **interface** é React na webview do sistema. O **núcleo** é Rust. A interface nunca fala
 com o sistema operacional: ela chama comandos do Tauri (`invoke`), e o Rust cuida do que
 muda de sistema para sistema. A lista de comandos está em
-[docs/SERVIDORES.md](docs/SERVIDORES.md#app--comandos-do-tauri).
+[docs/CONTRATO.md](CONTRATO.md#app--comandos-do-tauri).
 
 **Por que webview, e não interface nativa:** a interface é escrita uma vez para os três
 sistemas, o instalador fica pequeno (o motor já vem no sistema), e WebRTC, microfone com
@@ -117,7 +117,7 @@ nativo do Linux.
 | `apps/desktop/ui/core/` | a lógica da interface, sem React: uma classe por assunto (abaixo) |
 | `apps/desktop/ui/components/` | as telas em React, lendo o estado das classes de `ui/core` |
 | `apps/desktop/ui/dev/DevTauriBridge.ts` | finge o Rust, para rodar a interface num navegador comum |
-| `apps/desktop/tests/` | `static` (checks de idioma e de comentário), `unit` e `integration` (Vitest) |
+| `apps/desktop/tests/` | `static` (checks de idioma e de comentário), `unit` (um arquivo por área) e `integration` (os clientes do app contra a pilha local), em Vitest |
 | `tests/linux/` | contêiner Ubuntu com os cenários do Linux |
 
 As classes de `ui/core`:
@@ -125,11 +125,12 @@ As classes de `ui/core`:
 | Classe | Papel |
 |---|---|
 | `App` | raiz: escolhe a tela (`update`, `offline`, `entry`, `room`, `hub`), avisos, log, atualização e a sala por código |
-| `Hub` | o modo servidor: `ApiClient`, a conexão com o Reverb (Echo) e os filhos `Chat`, `Voice`, `ServerSettings`, `Friends`, `Direct`; ao reconectar no Reverb, busca de novo o que perdeu |
+| `Hub` | o modo servidor: `ApiClient`, a conexão com o Reverb (Echo) e os filhos `Chat` (um para o canal de texto aberto, outro para o chat da voz), `Voice`, `ServerSettings`, `Friends`, `Direct`; ao reconectar no Reverb, busca de novo o que perdeu |
 | `SfuClient` | o WebSocket do SFU e o `Device` do mediasoup-client; reconexão com espera sorteada, e retomada que compara a lista de pessoas e reproduz o que se perdeu |
 | `Media` | os cartões de quem transmite: consome por WebRTC ou pelo receptor nativo |
 | `Sharing`, `Broadcast` | o seletor de tela e a publicação da tela nativa no SFU |
-| `Voice`, `Mic` | entrar na voz com token, microfone, câmera, detecção de fala |
+| `Voice`, `Mic` | entrar na voz com token, microfone, câmera, detecção de fala (pelo `AnalyserNode`, ou pelo `voice:level` do Rust no Linux) |
+| `Chat`, `ImageShrinker` | mensagens do canal, e a redução da imagem para caber em 2 MB antes de enviar |
 | `ApiClient` | HTTP para o Laravel com o token do Sanctum |
 | `Permissions` | os bits de permissão, só para esconder botão |
 | `Store` | estado observável que os componentes assinam |
@@ -138,7 +139,7 @@ As classes de `ui/core`:
 
 | | macOS | Windows | Linux |
 |---|---|---|---|
-| Captura de tela | ScreenCaptureKit | Windows Graphics Capture (textura Direct3D 11) | `gst-launch-1.0` com `ximagesrc` (só X11) |
+| Captura de tela | ScreenCaptureKit | Windows Graphics Capture (textura Direct3D 11) | `gst-launch-1.0` com `ximagesrc` (X11) ou `pipewiresrc` pelo portal ScreenCast (Wayland) |
 | Som do sistema | ScreenCaptureKit, sem o som do próprio app | WASAPI por processo: só o jogo, sem o Discord e sem o app | monitor do PulseAudio/PipeWire |
 | Encoder | VideoToolbox | Media Foundation: NVENC, QuickSync, VCE; sem nenhum, software em 720p30 | `nvh264enc`, `vah264enc` ou `vaapih264enc`; sem nenhum, `x264enc` |
 | Microfone e câmera | `getUserMedia` da webview (WebRTC) | `getUserMedia` da webview (WebRTC) | Rust: `pulsesrc` e `v4l2src` → RTP puro |
@@ -155,7 +156,7 @@ As classes de `ui/core`:
 | Mídia | mover pacote de vídeo e áudio | workers do mediasoup: processos C++, um por núcleo |
 
 O Node não vê um único pacote de vídeo. Por que o SFU é Node, e não PHP, Java ou Rust:
-[docs/DECISOES.md](docs/DECISOES.md).
+[docs/DECISOES.md](DECISOES.md).
 
 ### Conceitos
 
@@ -180,7 +181,7 @@ O Node não vê um único pacote de vídeo. Por que o SFU é Node, e não PHP, J
 | `src/Services/Signature.ts` | confere o token HMAC e a assinatura do HTTP do Laravel |
 | `src/Services/Webhook.ts` | avisa o Laravel (`joined`, `left`) sem nunca segurar o `join` |
 | `src/config.ts` | tudo que vem do ambiente, os codecs e as portas |
-| `check.mjs`, `check-heartbeat.mjs` | o contrato inteiro contra um servidor no ar |
+| `check.mjs` | o contrato inteiro contra um servidor no ar, inclusive webhook e heartbeat |
 | `ecosystem.config.cjs` | o pm2 da VPS: o SFU e o Reverb |
 
 O WebSocket fala num envelope `{ id, action, data }`. As ações são `join`, `leave`,
@@ -232,7 +233,7 @@ contrato.
 `ADMINISTRATOR` pode tudo; senão `@everyone` mais os cargos, depois as sobrescritas do
 canal (`@everyone`, cargos, membro), e a hierarquia de cargos decide em quem se pode mexer.
 Canal sem `VIEW_CHANNEL` nem aparece. A regra completa está em
-[docs/SERVIDORES.md](docs/SERVIDORES.md#permissões-bits-ubigint).
+[docs/CONTRATO.md](CONTRATO.md#permissões-bits-ubigint).
 
 ## Como as peças conversam
 
@@ -288,7 +289,7 @@ O que protege: o teto de conexões novas por IP, e o `join` sem token recusar c�
 
 ```
 start_broadcast   captura → textura na GPU → encoder de hardware
-                  (H.264, sem B-frames, quadro-chave a cada 1 s)
+                  (H.264, sem B-frames, quadro-chave a cada 1 ou 2 s conforme o sistema)
 sfu_offer         o Rust escolhe SSRC, tipo de payload e chave SRTP
 producePlain      o SFU cria o transporte plain e devolve a porta e a chave dele
 use_sfu           o Rust empacota RTP (MTU 1200), cifra SRTP e manda por UDP
@@ -297,12 +298,17 @@ SFU               aprende o endereço no primeiro pacote e replica para cada con
 
 - O som da tela vai junto: Opus 48 kHz estéreo feito no Rust, no mesmo transporte, com
   SSRC próprio (um SSRC por origem).
-- Perda entre o app e o SFU não é retransmitida: o SFU pede quadro-chave (PLI por SRTCP) e
-  o app atende. Entre o SFU e quem assiste, o mediasoup retransmite.
+- Perda entre o app e o SFU: o SFU pede o pacote de volta (NACK por SRTCP) e o app reenvia do
+  histórico; se não der, pede quadro-chave (PLI) e o app atende. Entre o SFU e quem assiste, o
+  mediasoup retransmite.
+- A taxa acompanha a perda: muito NACK numa janela e o app baixa o alvo do encoder, até 35% da
+  taxa da qualidade; perda sumindo, sobe de novo. Por que não REMB:
+  [DECISOES.md](DECISOES.md#a-taxa-do-vídeo-acompanha-a-perda-e-não-o-remb).
 - Transmissão que passa 30 s sem pacote é derrubada, e o SFU avisa quem transmite
-  (`producerDead`).
+  (`producerDead`). O mesmo aviso, com `reason: 'revoked'`, sai quando a retomada de uma sessão
+  chega com um token que já não deixa transmitir.
 - Taxa por qualidade: 720p60 a 5 Mb/s, 1080p60 a 10, 1440p60 a 20. Os ajustes de buffer e
-  de encoder medidos estão em [docs/REDE.md](docs/REDE.md).
+  de encoder medidos estão em [docs/REDE.md](REDE.md).
 
 ### 4. Assistir
 
@@ -316,7 +322,8 @@ SFU               aprende o endereço no primeiro pacote e replica para cada con
 
 ### 5. Chat e tempo real
 
-1. `POST /api/channels/{id}/messages`: o Laravel confere `SEND_MESSAGES` e grava.
+1. `POST /api/channels/{id}/messages`: o Laravel confere `SEND_MESSAGES` e grava. Até 3 imagens
+   por mensagem, guardadas no bucket privado. Canal de voz também tem chat, pelas mesmas rotas.
 2. `MessageSent` vai para `private-channel.{ulid}`, e o Reverb só deixa assinar quem tem
    `VIEW_CHANNEL`.
 3. Mudou a estrutura do servidor (canal, cargo, membro): `ServerUpdated` no
@@ -353,7 +360,7 @@ ainda vale 60 s, então o `joined` de quem já não é membro dispara um `kick` 
 - Linux: `build-linux.yml` no runner da VPS gera o `.deb` e publica no repositório APT em
   `/apt`, assinado com GPG. Quem atualiza é o `apt`.
 
-As duas chaves e o que acontece se trocar uma: [docs/AUTO-UPDATE.md](docs/AUTO-UPDATE.md).
+As duas chaves e o que acontece se trocar uma: [docs/AUTO-UPDATE.md](AUTO-UPDATE.md).
 
 ## Onde roda
 
@@ -379,8 +386,8 @@ Portas que o firewall do painel precisa abrir:
 | 41000-42000 | UDP | RTP puro: quem transmite, e quem assiste no Linux |
 
 Porta fechada não dá erro: a transmissão "funciona" e ninguém vê nada. Por que a faixa é
-larga: [docs/UDP.md](docs/UDP.md). A máquina, as medições e o que desligar:
-[docs/SERVIDOR.md](docs/SERVIDOR.md). Levantar do zero: [docs/INSTALAR-VPS.md](docs/INSTALAR-VPS.md).
+larga: [docs/UDP.md](UDP.md). A máquina, as medições e o que desligar:
+[docs/SERVIDOR.md](SERVIDOR.md). Levantar do zero: [docs/INSTALAR-VPS.md](INSTALAR-VPS.md).
 
 ### Deploy
 
@@ -394,7 +401,7 @@ larga: [docs/UDP.md](docs/UDP.md). A máquina, as medições e o que desligar:
 ### Local
 
 Os comandos para subir as três peças e as verificações antes de entregar estão no
-[CLAUDE.md](CLAUDE.md) e no fim de [docs/SERVIDORES.md](docs/SERVIDORES.md).
+[CLAUDE.md](../CLAUDE.md) e no fim de [docs/CONTRATO.md](CONTRATO.md).
 
 ## Segurança, em uma linha por camada
 
@@ -407,7 +414,7 @@ Os comandos para subir as três peças e as verificações antes de entregar est
 | Atualização | assinatura minisign conferida pelo próprio app; APT assinado com GPG |
 | Imagens e instaladores | bucket privado, toda URL assinada e com prazo |
 
-O que não está protegido, e por quê: [docs/SEGURANCA.md](docs/SEGURANCA.md).
+O que não está protegido, e por quê: [docs/SEGURANCA.md](SEGURANCA.md).
 
 ## Glossário
 
@@ -428,11 +435,11 @@ O que não está protegido, e por quê: [docs/SEGURANCA.md](docs/SEGURANCA.md).
 
 | Arquivo | Para quê |
 |---|---|
-| [docs/SERVIDORES.md](docs/SERVIDORES.md) | o contrato: rotas, token, ações e eventos do SFU, webhook, Reverb, comandos do Tauri |
-| [docs/ESTADO.md](docs/ESTADO.md) | o que só foi escrito sem rodar em hardware, o que falta, as perguntas abertas |
-| [docs/DECISOES.md](docs/DECISOES.md) | o que foi decidido e por quê |
-| [docs/REDE.md](docs/REDE.md) | o caminho da imagem e cada ajuste medido |
-| [docs/UDP.md](docs/UDP.md) | as faixas de porta e o que quebra calado |
-| [docs/SEGURANCA.md](docs/SEGURANCA.md) | modelo de ameaça |
-| [docs/SERVIDOR.md](docs/SERVIDOR.md), [docs/INSTALAR-VPS.md](docs/INSTALAR-VPS.md) | a VPS que existe e como levantar outra |
-| [docs/AUTO-UPDATE.md](docs/AUTO-UPDATE.md) e `docs/BUILD-*.md` | publicar e buildar por sistema |
+| [docs/CONTRATO.md](CONTRATO.md) | o contrato: rotas, token, ações e eventos do SFU, webhook, Reverb, comandos do Tauri |
+| [docs/ESTADO.md](ESTADO.md) | o que só foi escrito sem rodar em hardware, o que falta, as perguntas abertas |
+| [docs/DECISOES.md](DECISOES.md) | o que foi decidido e por quê |
+| [docs/REDE.md](REDE.md) | o caminho da imagem e cada ajuste medido |
+| [docs/UDP.md](UDP.md) | as faixas de porta e o que quebra calado |
+| [docs/SEGURANCA.md](SEGURANCA.md) | modelo de ameaça |
+| [docs/SERVIDOR.md](SERVIDOR.md), [docs/INSTALAR-VPS.md](INSTALAR-VPS.md) | a VPS que existe e como levantar outra |
+| [docs/AUTO-UPDATE.md](AUTO-UPDATE.md) e `docs/BUILD-*.md` | publicar e buildar por sistema |

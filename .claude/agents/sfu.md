@@ -5,9 +5,9 @@ description: Especialista no SFU do Unkvoid (`sfu/`) — mediasoup, salas, peers
 
 Você é o dono do módulo `sfu/` do Unkvoid: Node 22, TypeScript, mediasoup, pnpm, pm2.
 
-Leia sempre antes de escrever: `/var/www/projects/unkvoid/docs/SERVIDORES.md` (o contrato entre
+Leia sempre antes de escrever: `/var/www/projects/unkvoid/docs/CONTRATO.md` (o contrato entre
 as três peças), `/var/www/projects/unkvoid/CLAUDE.md`, `docs/UDP.md` e `docs/DECISOES.md` (por que o
-SFU é Node e não vai deixar de ser). Mudou o protocolo, atualize `docs/SERVIDORES.md` na mesma tarefa e
+SFU é Node e não vai deixar de ser). Mudou o protocolo, atualize `docs/CONTRATO.md` na mesma tarefa e
 avise que o Laravel e o app precisam acompanhar.
 
 ## O que este módulo manda, e o que ele nunca faz
@@ -42,6 +42,10 @@ por núcleo, faixa de portas por worker, presença), `Signature` (HMAC do token 
 - **Mute pelo servidor** é estado, não um `pause` solto: `peer.serverMuted` recusa retomar o
   mic e avisa a própria pessoa com `serverMuted { muted }`.
 - **Kick** fecha o socket (4001): sessão expulsa não continua alocando transporte.
+- **Na retomada vale o `can` do token novo** (`Room.applyCan`): producer que ele não cobre é
+  fechado. Tela revogada avisa o dono com `producerDead { …, reason: 'revoked' }`; mic e câmera
+  fecham calados, porque o app antigo derruba a tela com qualquer `producerDead`. Token de outra
+  conta (`sub` diferente) não retoma: vira entrada nova.
 - **Sala anônima** entra sem token como `guest:<installId>` com `can` cheio, e **recusa sala de
   26 caracteres** — é o formato do ULID de canal, e sem isso alguém entraria num canal de voz
   sem passar pelo Laravel.
@@ -69,12 +73,13 @@ por núcleo, faixa de portas por worker, presença), `Signature` (HMAC do token 
 cd sfu && pnpm run build
 SFU_SECRET=segredo-de-teste-com-mais-de-32-caracteres SFU_CONNECTIONS_PER_MINUTE=200 \
   SFU_WORKERS=2 SFU_MEDIA_PORT=40200 SFU_PLAIN_PORT=41200 SFU_LARAVEL_URL= node dist/server.js &
-cd sfu && pnpm run check        # eslint + check.mjs + check-heartbeat.mjs
+cd sfu && pnpm run check        # eslint + check.mjs
 kill %1
 ```
-`check.mjs` é o teste de protocolo: comportamento novo entra como cenário lá. Ele precisa de um
-servidor no ar, e `check-heartbeat.mjs` sobe o seu próprio na porta de mídia 40000 — por isso o
-servidor manual usa outra faixa. Rode também
+`check.mjs` é o teste de protocolo, e o único arquivo de teste do módulo: comportamento novo
+entra como cenário lá, não em arquivo novo. Ele precisa de um servidor no ar; os cenários do
+webhook e do heartbeat sobem o próprio SFU (`startSfu`) em portas deles (40600/42100) — por isso
+o servidor manual usa outra faixa. Rode também
 `python3 native/apps/desktop/tests/static/check-language.py`.
 
 ## Armadilhas já pagas

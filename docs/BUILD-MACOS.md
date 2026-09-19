@@ -51,6 +51,9 @@ Na primeira execução, permita **Gravação de Tela** em:
 
 `Ajustes do Sistema > Privacidade e Segurança > Gravação de Tela`
 
+A permissão vai para o app que *lançou* o processo: rodando pelo terminal, é o terminal que
+aparece na lista, e não o Unkvoid.
+
 Teste nesta ordem:
 
 1. O app passa da tela “Sem conexão” e mostra a tela de entrada.
@@ -58,26 +61,9 @@ Teste nesta ordem:
 3. Abra o mesmo instalador em outro Mac ou Windows e entre com o código.
 4. Compartilhe a tela e confirme vídeo e áudio.
 
-## Atualização automática
+## Assinar e publicar
 
-A versão do desktop fica em `native/apps/desktop/src-tauri/tauri.conf.json`.
-Ela deve ser igual à versão publicada no SFU em `SFU_APP_VERSION`. O endpoint
-`https://discord.unkvoid.com/health` retorna essa versão em `appVersion`.
-
-Quando o app detectar que `appVersion` é diferente da própria versão, ele consulta
-o updater do Tauri e instala a release publicada em:
-
-```text
-https://github.com/edsuuu/unkvoid/releases/latest/download/latest.json
-```
-
-Depois de mudar a versão, faça o seguinte:
-
-1. Atualize `version` no `tauri.conf.json`.
-2. Gere o instalador assinado com `TAURI_SIGNING_PRIVATE_KEY` definido.
-3. Publique a release com `node release.mjs`.
-4. Atualize `SFU_APP_VERSION` no `sfu/ecosystem.config.cjs`.
-5. Rode `./deploy.sh vps` dentro de `sfu`.
-
-Sem assinatura (`.sig`) o instalador funciona, mas o updater automático não consegue
-validar e instalar a atualização.
+O `.dmg` é para quem instala pela primeira vez; quem já tem o app se atualiza pelo
+`.app.tar.gz` assinado. A chave, o comando de publicação e o que conferir quando alguém
+não atualiza estão em [AUTO-UPDATE.md](AUTO-UPDATE.md#macos). Sem o `.sig` o instalador
+funciona, mas não atualiza ninguém.
