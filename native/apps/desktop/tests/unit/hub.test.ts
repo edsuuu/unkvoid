@@ -1,5 +1,6 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { ApiClient } from '../../ui/core/ApiClient.ts';
 import { App } from '../../ui/core/App.ts';
 import { Chat } from '../../ui/core/Chat.ts';
 import type { Hub } from '../../ui/core/Hub.ts';
@@ -99,6 +100,35 @@ describe('modo servidor com a API de mentira', () => {
         voice: { [`voice-${id}`]: [{ user_id: 40, name: 'Fulano', sources: ['mic'] }] },
     });
     const tokenCalls = () => calls.filter(call => call.path.includes('/voice/token'));
+    const FULANO = { user_id: 40, name: 'Fulano', sources: ['mic'] };
+    const MINE = { user_id: 1, name: 'Edsu', sources: [], muted: false };
+    const OTHER_VOICE = { id: 'voice-outra', name: 'Outra', type: 'voice', topic: null, position: 3, permissions: EVERYONE };
+    const voiceList = (channelId: string) => hub.store.state.tree?.voice[channelId] ?? [];
+    const holdEntrance = () => {
+        const usual = app.media.enterRoom;
+        const doors: { open(): void; fail(reason: Error): void }[] = [];
+
+        hub.tree = { ...hub.tree!, channels: [...tree(2, 'Jogatina').channels, OTHER_VOICE], voice: { 'voice-2': [FULANO] } };
+        hub.publish();
+        app.media.enterRoom = (sfu, identity, alongside) => new Promise((resolve, reject) => doors.push({
+            open: () => resolve(usual(sfu, identity, (joined: unknown) => {
+                app.media.sfu.peers.set('me', { peerId: 'me', self: true, name: 'Edsu', producers: [] });
+                app.media.sfu.peers.set('bia', { peerId: 'bia', userId: 'user:7', name: 'Bia', producers: [{ producerId: 'bia-mic', source: 'mic', paused: true }] });
+
+                return alongside(joined);
+            })),
+            fail: reject,
+        }));
+
+        return {
+            doors,
+            reached: (count: number) => vi.waitFor(() => expect(doors.length).toBe(count)),
+            restore: async () => {
+                await voice.leave();
+                app.media.enterRoom = usual;
+            },
+        };
+    };
     const notFound = () => {
         throw Object.assign(new Error('Servidor não encontrado.'), { status: 404 });
     };
@@ -224,7 +254,10 @@ describe('modo servidor com a API de mentira', () => {
         expect(hub.store.state.tree).toBeNull();
     });
 
-    it('entrar na voz liga o mic mutado, e mutado antes de publicar', async () => {
+    it('com "Silenciar ao entrar" marcado, entrar na voz liga o mic mutado, e mutado antes de publicar', async () => {
+        expect(voice.store.state.preferences.muteOnJoin, 'o padrão é entrar com o microfone aberto').toBe(false);
+        await voice.setPreference('muteOnJoin', true);
+
         Object.defineProperty(window.navigator, 'mediaDevices', { value: { getUserMedia: async () => ({ getAudioTracks: () => [track] }) }, configurable: true });
         app.media.tearDown = async () => {
             app.media.sfu = null;
@@ -310,9 +343,7 @@ describe('modo servidor com a API de mentira', () => {
         responses.set('GET /api/channels/voice-2/messages', []);
     });
 
-    it('com "Silenciar ao entrar" desligado, a pessoa entra falando; a regra continua sendo o padrão', async () => {
-        expect(voice.store.state.preferences.muteOnJoin, 'o padrão é entrar mutado').toBe(true);
-
+    it('com "Silenciar ao entrar" desligado, que é o padrão, a pessoa entra falando', async () => {
         await voice.setPreference('muteOnJoin', false);
         micSteps.length = 0;
         track.enabled = true;
@@ -377,6 +408,169 @@ describe('modo servidor com a API de mentira', () => {
         expect(voice.micTrack).toBeNull();
 
         navigator.mediaDevices.getUserMedia = async () => ({ getAudioTracks: () => [track] });
+    });
+
+    it('o clique no canal de voz vale na hora: a voz, o palco e a própria pessoa na lista, antes de a conexão começar', async () => {
+        const { doors, reached, restore } = holdEntrance();
+
+        await voice.setPreference('muteOnJoin', false);
+
+        const entering = hub.openChannel(hub.tree!.channels[1]);
+
+        expect(voice.store.state.channel?.id, 'sem esperar token, SFU nem microfone').toBe('voice-2');
+        expect(voice.store.state.joining, 'a barra de voz mostra "Conectando…"').toBe(true);
+        expect(hub.store.state.stageOpen).toBe(true);
+        expect(voiceList('voice-2')).toEqual([MINE, FULANO]);
+        expect(doors.length, 'a conexão vem depois, por trás').toBe(0);
+
+        await reached(1);
+        doors[0].open();
+        await entering;
+
+        expect(voice.store.state.joining).toBe(false);
+        expect(voiceList('voice-2'), 'conectado, a lista passa a ser a do SFU').toEqual([MINE, { user_id: 7, name: 'Bia', sources: ['mic'], muted: true }]);
+
+        await voice.leave();
+
+        expect(voiceList('voice-2').some(person => person.user_id === 1), 'sair tira da lista na hora').toBe(false);
+
+        await restore();
+    });
+
+    it('o VoiceStateUpdated sobre mim não duplica a entrada otimista, e o left atrasado da sessão anterior não a apaga', async () => {
+        const { doors, reached, restore } = holdEntrance();
+        const entering = hub.openChannel(hub.tree!.channels[1]);
+        const voiceState = heard['channel.voice-2 .VoiceStateUpdated'];
+
+        await reached(1);
+        voiceState({ channel_id: 'voice-2', user_id: 1, name: 'Edsu', event: 'joined' });
+        expect(voiceList('voice-2')).toEqual([MINE, FULANO]);
+
+        voiceState({ channel_id: 'voice-2', user_id: 1, name: 'Edsu', event: 'left' });
+        expect(voiceList('voice-2'), 'estou entrando: o left é da sessão de antes').toEqual([MINE, FULANO]);
+
+        await restore();
+        doors[0].fail(new Error('entrada abandonada'));
+        await entering;
+
+        voiceState({ channel_id: 'voice-2', user_id: 1, name: 'Edsu', event: 'left' });
+        expect(voiceList('voice-2'), 'fora da voz o left vale').toEqual([FULANO]);
+    });
+
+    it('trocar de canal de voz tira a pessoa do antigo e põe no novo na hora, e a saída do antigo não apaga o estado do novo', async () => {
+        const { doors, reached, restore } = holdEntrance();
+        const entering = hub.openChannel(hub.tree!.channels[1]);
+
+        await reached(1);
+        doors[0].open();
+        await entering;
+        hub.setFocusedRoom(true);
+        voice.cameraProducerId = 'camera-1';
+        voice.publish();
+
+        const switching = hub.openChannel(OTHER_VOICE);
+
+        expect(voice.store.state.channel?.id).toBe('voice-outra');
+        expect(voice.store.state.joining).toBe(true);
+        expect(voiceList('voice-2').some(person => person.user_id === 1), 'some do canal antigo na hora').toBe(false);
+        expect(voiceList('voice-outra'), 'a lista do canal novo não herda quem estava no SFU do antigo').toEqual([MINE]);
+
+        await reached(2);
+
+        expect(voice.store.state.joining, 'a saída do canal antigo não desliga o "Conectando…" do novo').toBe(true);
+        expect(hub.store.state.stageOpen, 'nem fecha o palco').toBe(true);
+        expect(hub.store.state.focusedRoom, 'nem a sala focada').toBe(true);
+        expect(voice.store.state.cameraOn, 'mas a câmera que ficou no canal antigo apaga o botão').toBe(false);
+
+        doors[1].open();
+        await switching;
+
+        expect(voice.store.state.joining).toBe(false);
+        expect(voiceList('voice-outra').map(person => person.name)).toEqual(['Edsu', 'Bia']);
+
+        await restore();
+    });
+
+    it('a entrada que falha tira a pessoa da lista do canal', async () => {
+        const { doors, reached, restore } = holdEntrance();
+        const entering = hub.openChannel(hub.tree!.channels[1]);
+
+        await reached(1);
+        expect(voiceList('voice-2')).toEqual([MINE, FULANO]);
+
+        doors[0].fail(new Error('SFU fora do ar'));
+        await entering;
+
+        expect(toasts.at(-1)).toBe('não deu para entrar na voz: SFU fora do ar');
+        expect(voice.channel).toBeNull();
+        expect(voice.store.state.joining).toBe(false);
+        expect(voiceList('voice-2'), 'ninguém mandaria o left de quem nunca chegou ao SFU').toEqual([FULANO]);
+
+        await restore();
+    });
+
+    it('clicar em outro canal no meio da entrada não deixa fantasma no primeiro, e a recusa atrasada dele não derruba o segundo', async () => {
+        const { doors, reached, restore } = holdEntrance();
+        const abandoned = hub.openChannel(hub.tree!.channels[1]);
+
+        await reached(1);
+
+        const chosen = hub.openChannel(OTHER_VOICE);
+
+        expect(voiceList('voice-2')).toEqual([FULANO]);
+        expect(voiceList('voice-outra')).toEqual([MINE]);
+
+        responses.set('POST /api/channels/voice-2/voice/token', () => {
+            throw Object.assign(new Error('O canal está cheio.'), { status: 403 });
+        });
+        await expect(voice.identity(hub.tree!.channels[1])).rejects.toThrow();
+        responses.delete('POST /api/channels/voice-2/voice/token');
+        doors[0].fail(new Error('entrada abandonada'));
+        await abandoned;
+
+        expect(voice.channel?.id, 'a recusa do canal abandonado não tira a pessoa do canal escolhido').toBe('voice-outra');
+
+        await reached(2);
+        doors[1].open();
+        await chosen;
+
+        expect(voice.store.state.channel?.id).toBe('voice-outra');
+        expect(voice.store.state.joining).toBe(false);
+        expect(voiceList('voice-2')).toEqual([FULANO]);
+        expect(voiceList('voice-outra').map(person => person.name)).toEqual(['Edsu', 'Bia']);
+
+        await restore();
+    });
+
+    it('o ícone de mudo da própria pessoa na lista do canal segue o padrão da entrada, o botão e o mudo do servidor', async () => {
+        const { doors, reached, restore } = holdEntrance();
+        const mine = () => voiceList('voice-2').find(person => person.user_id === 1);
+
+        await voice.setPreference('muteOnJoin', true);
+
+        const entering = hub.openChannel(hub.tree!.channels[1]);
+
+        expect(mine()?.muted, 'com "Silenciar ao entrar", já aparece mutada no clique').toBe(true);
+
+        await reached(1);
+        doors[0].open();
+        await entering;
+        expect(mine()?.muted).toBe(true);
+
+        await voice.toggleMute();
+        expect(mine()?.muted, 'desmutei: o ícone some sem esperar ninguém').toBe(false);
+
+        await voice.toggleMute();
+        expect(mine()?.muted).toBe(true);
+
+        await voice.toggleMute();
+        await voice.applyServerMute(true);
+        expect(mine()?.muted, 'mudo do servidor').toBe(true);
+
+        await voice.applyServerMute(false);
+        expect(mine()?.muted).toBe(false);
+
+        await restore();
     });
 
     it('sem CONNECT no canal: aviso, e nada de pedir token', async () => {
@@ -765,6 +959,68 @@ describe('lista de membros: cargo mais alto manda, e quem está fora aparece por
 
         expect(groups.map(group => group.label)).toEqual(['Moderador']);
         expect(groups[0].members.map(item => Members.displayName(item))).toEqual(['Alfa', 'Ana']);
+    });
+});
+
+describe('cliente da API: um fetch sem prazo segurou a reconexão por quase três minutos', () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    const answered = { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ data: { token: 't' } }) };
+
+    afterEach(() => {
+        signals.length = 0;
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+    });
+
+    it('todo pedido leva prazo de 10 s, e o estouro vira aviso em português, não o TimeoutError cru', async () => {
+        const controller = new AbortController();
+        const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(controller.signal);
+
+        vi.stubGlobal('fetch', (_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(new DOMException('The operation timed out.', 'TimeoutError')));
+        }));
+
+        const token = new ApiClient('http://api').post('/api/rooms/sala/token');
+
+        controller.abort();
+
+        await expect(token).rejects.toThrow('o servidor não respondeu');
+        expect(timeout).toHaveBeenCalledWith(ApiClient.REQUEST_TIMEOUT_MS);
+        expect(ApiClient.REQUEST_TIMEOUT_MS).toBe(10_000);
+    });
+
+    it('recusa do servidor dentro do prazo continua chegando com o status e a mensagem dele', async () => {
+        vi.stubGlobal('fetch', async () => ({ ...answered, ok: false, status: 403, json: async () => ({ message: 'Você não pode entrar.' }) }));
+
+        await expect(new ApiClient('http://api').post('/api/rooms/sala/token')).rejects.toMatchObject({ status: 403, message: 'Você não pode entrar.' });
+    });
+
+    it('imagem vai sem prazo: em uplink lento o envio passa de 10 s e ainda está andando', async () => {
+        vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+            signals.push(init.signal ?? undefined);
+
+            return answered;
+        });
+
+        const api = new ApiClient('http://api');
+
+        await api.upload('/api/me/avatar', 'avatar', new File(['x'], 'foto.png'));
+        expect(await api.post('/api/rooms/sala/token')).toEqual({ token: 't' });
+
+        expect(signals[0], 'FormData sai sem prazo').toBeUndefined();
+        expect(signals[1], 'o resto leva o prazo').toBeInstanceOf(AbortSignal);
+    });
+
+    it('motor sem AbortSignal.timeout segue sem prazo em vez de quebrar', async () => {
+        vi.stubGlobal('AbortSignal', {});
+        vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+            signals.push(init.signal ?? undefined);
+
+            return answered;
+        });
+
+        expect(await new ApiClient('http://api').get('/api/me')).toEqual({ token: 't' });
+        expect(signals).toEqual([undefined]);
     });
 });
 

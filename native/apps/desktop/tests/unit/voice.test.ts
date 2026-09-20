@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { App } from '../../ui/core/App.ts';
 import { Mic } from '../../ui/core/Mic.ts';
 import type { SfuClient } from '../../ui/core/SfuClient.ts';
-import type { Voice } from '../../ui/core/Voice.ts';
+import { Voice } from '../../ui/core/Voice.ts';
 
 function tone(amplitude: number, size = Mic.FFT_SIZE): Float32Array {
     return Float32Array.from({ length: size }, (unused, index) => amplitude * Math.sin((2 * Math.PI * index) / 64));
@@ -359,5 +359,47 @@ describe('a voz quando o servidor fecha um producer por conta própria', () => {
         steps.length = 0;
         heard['voice:level']({ payload: { level: 0.2 } });
         expect(steps, 'nível que chega fora da voz não mexe em nada').toEqual([]);
+    });
+});
+
+describe('o microfone entra aberto por padrão, e quem já tinha preferências gravadas muda uma vez só', () => {
+    const stored = () => JSON.parse(localStorage.getItem(Voice.PREFERENCES_KEY) ?? 'null');
+
+    beforeEach(() => {
+        localStorage.clear();
+    });
+
+    afterAll(() => {
+        localStorage.clear();
+    });
+
+    it('sem nada gravado o padrão é aberto, e só o marcador vai para o disco', () => {
+        const voice = new App().hub.voice;
+
+        expect(Voice.DEFAULT_PREFERENCES.muteOnJoin).toBe(false);
+        expect(voice.store.state.preferences.muteOnJoin).toBe(false);
+        expect(stored()).toBeNull();
+        expect(localStorage.getItem(Voice.OPEN_MIC_KEY)).not.toBeNull();
+    });
+
+    it('quem só mexeu nas teclas tinha o "mutado" antigo gravado sem ter escolhido: ele sai, e o resto fica', () => {
+        const keybinds = { mute: 'KeyM', deafen: 'KeyD', talk: 'Mouse4' };
+
+        localStorage.setItem(Voice.PREFERENCES_KEY, JSON.stringify({ ...Voice.DEFAULT_PREFERENCES, muteOnJoin: true, sensitivity: 60, keybinds }));
+
+        const voice = new App().hub.voice;
+
+        expect(voice.store.state.preferences.muteOnJoin).toBe(false);
+        expect(voice.store.state.preferences.keybinds).toEqual(keybinds);
+        expect(stored()).toMatchObject({ muteOnJoin: false, sensitivity: 60, keybinds });
+    });
+
+    it('depois disso, quem marca "Silenciar ao entrar" continua entrando mutado nas próximas aberturas', async () => {
+        await new App().hub.voice.setPreference('muteOnJoin', true);
+
+        const voice = new App().hub.voice;
+
+        expect(voice.store.state.preferences.muteOnJoin).toBe(true);
+        expect(stored().muteOnJoin).toBe(true);
     });
 });

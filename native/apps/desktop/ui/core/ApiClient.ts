@@ -2,6 +2,7 @@ type LaravelBody = { message?: string; errors?: Record<string, string[]>; data?:
 
 export class ApiClient {
     static readonly TOKEN_KEY = 'unkvoid:token';
+    static readonly REQUEST_TIMEOUT_MS = 10_000;
 
     readonly server: string;
     token: string | null;
@@ -33,25 +34,32 @@ export class ApiClient {
             headers['Content-Type'] = 'application/json';
         }
 
-        const response = await fetch(`${this.server}${path}`, {
-            method,
-            headers,
-            body: body === undefined ? undefined : form ? body : JSON.stringify(body),
-        });
+        const deadline = form || typeof AbortSignal.timeout !== 'function' ? undefined : AbortSignal.timeout(ApiClient.REQUEST_TIMEOUT_MS);
 
-        const isJson = /json/i.test(response.headers.get('content-type') ?? '');
-        const data = (isJson ? await response.json() : null) as LaravelBody;
+        try {
+            const response = await fetch(`${this.server}${path}`, {
+                method,
+                headers,
+                body: body === undefined ? undefined : form ? body : JSON.stringify(body),
+                signal: deadline,
+            });
 
-        if (! response.ok) {
-            const firstFieldError = Object.values(data?.errors ?? {})[0]?.[0];
-            const message = firstFieldError ?? data?.message ?? `o servidor respondeu ${response.status}`;
+            const isJson = /json/i.test(response.headers.get('content-type') ?? '');
+            const data = (isJson ? await response.json() : null) as LaravelBody;
 
-            throw Object.assign(new Error(message), { status: response.status, errors: data?.errors ?? {} });
+            if (! response.ok) {
+                const firstFieldError = Object.values(data?.errors ?? {})[0]?.[0];
+                const message = firstFieldError ?? data?.message ?? `o servidor respondeu ${response.status}`;
+
+                throw Object.assign(new Error(message), { status: response.status, errors: data?.errors ?? {} });
+            }
+
+            const wrappedByResource = data !== null && typeof data === 'object' && Object.keys(data).length === 1 && 'data' in data;
+
+            return (wrappedByResource ? data.data : data) as Result;
+        } catch (failure) {
+            throw deadline?.aborted ? new Error('o servidor não respondeu') : failure;
         }
-
-        const wrappedByResource = data !== null && typeof data === 'object' && Object.keys(data).length === 1 && 'data' in data;
-
-        return (wrappedByResource ? data.data : data) as Result;
     }
 
     upload<Result = unknown>(path: string, field: string, file: File): Promise<Result> {

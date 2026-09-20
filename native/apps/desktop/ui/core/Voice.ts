@@ -47,12 +47,13 @@ export class Voice {
     static readonly MIC_OPTIONS = { codecOptions: { opusDtx: true, opusFec: true } };
     static readonly CAMERA_OPTIONS = { encodings: [{ maxBitrate: 1_200_000 }], codecOptions: { videoGoogleStartBitrate: 800 } };
     static readonly PREFERENCES_KEY = 'unkvoid:voice';
+    static readonly OPEN_MIC_KEY = 'unkvoid:voice:open-mic';
     static readonly DEFAULT_KEYBINDS: Keybinds = { mute: 'CmdOrCtrl+Shift+KeyM', deafen: 'CmdOrCtrl+Shift+KeyD', talk: '' };
     static readonly DEFAULT_PREFERENCES: VoicePreferences = {
         microphone: '',
         speaker: '',
         noiseSuppression: true,
-        muteOnJoin: true,
+        muteOnJoin: false,
         inputMode: 'voice',
         sensitivity: 35,
         keybinds: Voice.DEFAULT_KEYBINDS,
@@ -84,7 +85,19 @@ export class Voice {
         let preferences: VoicePreferences = { ...Voice.DEFAULT_PREFERENCES };
 
         try {
-            preferences = { ...preferences, ...(JSON.parse(localStorage.getItem(Voice.PREFERENCES_KEY) ?? '{}') as Partial<VoicePreferences>) };
+            const stored = localStorage.getItem(Voice.PREFERENCES_KEY);
+
+            preferences = { ...preferences, ...(JSON.parse(stored ?? '{}') as Partial<VoicePreferences>) };
+
+            if (! localStorage.getItem(Voice.OPEN_MIC_KEY)) {
+                preferences.muteOnJoin = false;
+
+                if (stored) {
+                    localStorage.setItem(Voice.PREFERENCES_KEY, JSON.stringify(preferences));
+                }
+
+                localStorage.setItem(Voice.OPEN_MIC_KEY, 'done');
+            }
         } catch (failure) {
             app.log('voice.preferences.error', { message: Failure.message(failure) });
         }
@@ -114,6 +127,7 @@ export class Voice {
             cameraOn: Boolean(this.cameraProducerId),
             ...extra,
         });
+        this.hub.syncVoiceSources();
     }
 
     native(): boolean {
@@ -207,23 +221,25 @@ export class Voice {
     }
 
     async join(channel: Channel): Promise<void> {
-        await this.leaving;
-
         if (this.channel?.id === channel.id) {
             return;
         }
 
-        if (this.channel) {
-            await this.leave();
-        }
-
+        const released = this.leave();
         const ticket = ++this.joinTicket;
 
         this.channel = channel;
         this.muted = this.store.state.preferences.muteOnJoin;
+        this.deafened = false;
         this.can = [];
         this.serverMuted = Boolean(this.hub.me()?.server_mute);
         this.publish({ joining: true });
+
+        await released;
+
+        if (ticket !== this.joinTicket) {
+            return;
+        }
 
         try {
             const sfu = new SfuClient();
@@ -248,7 +264,6 @@ export class Voice {
             if (ticket === this.joinTicket) {
                 this.app.sounds.joined();
                 this.publish({ joining: false });
-                this.hub.syncVoiceSources();
             }
         } catch (failure) {
             this.app.log('voice.join.error', { channel: channel.id, message: Failure.message(failure) });
@@ -268,8 +283,11 @@ export class Voice {
 
             if (status === 401 || status === 403) {
                 this.app.toast(status === 401 ? 'sua sessão expirou, entre de novo' : `não deu para entrar na voz: ${Failure.message(failure)}`, true);
-                this.app.media.sfu?.disconnect();
-                await this.leave();
+
+                if (this.channel?.id === channel.id) {
+                    this.app.media.sfu?.disconnect();
+                    await this.leave();
+                }
             }
 
             if (status === 401) {
@@ -295,7 +313,10 @@ export class Voice {
 
         this.channel = null;
         this.joinTicket += 1;
-        this.leaving = this.release(channel).catch((failure: unknown) => this.app.log('voice.leave.error', { channel: channel.id, message: Failure.message(failure) }));
+        this.hub.dropFromVoice(channel.id);
+        this.leaving = this.leaving
+            .then(() => this.release(channel))
+            .catch((failure: unknown) => this.app.log('voice.leave.error', { channel: channel.id, message: Failure.message(failure) }));
 
         return this.leaving;
     }
@@ -306,6 +327,13 @@ export class Voice {
         await this.stopCamera().catch((failure: unknown) => this.app.log('voice.camera.stop.error', { message: Failure.message(failure) }));
         await this.stopMic().catch((failure: unknown) => this.app.log('voice.mic.stop.error', { message: Failure.message(failure) }));
         await this.app.media.tearDown();
+
+        if (this.channel) {
+            this.publish();
+
+            return;
+        }
+
         this.can = [];
         this.deafened = false;
         this.serverMuted = false;

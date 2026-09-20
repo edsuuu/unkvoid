@@ -289,6 +289,52 @@ describe('o palco: o que cada origem vira e o que custa decoder', () => {
         app.onKeyDown({ key: 'Escape', defaultPrevented: false });
         expect(exits, 'o Esc seguinte sai').toEqual(['nina']);
     });
+
+    it('na lista de quem está na sala, quem transmite sou eu: o AO VIVO aparece na minha linha, sem botão de assistir a mim mesmo', () => {
+        const peersBefore = media.sfu.peers;
+
+        media.sfu.peers = new Map([
+            ['me', { peerId: 'me', name: 'Eu', self: true, sharing: false, producers: [] }],
+            ['ana', { peerId: 'ana', name: 'Ana', sharing: false, producers: [] }],
+        ]);
+
+        app.sharing.paint(true);
+
+        const mine = media.store.state.peers.find(peer => peer.self);
+
+        expect(mine?.sharing, 'o servidor não manda newProducer ao dono: quem sabe é a transmissão local').toBe(true);
+        expect(mine?.missing, 'ninguém assiste a si mesmo').toBe(false);
+        expect(media.store.state.peers.find(peer => peer.peerId === 'ana')?.sharing).toBe(false);
+        expect(media.store.state.pending).toBe(false);
+
+        app.sharing.paint(false);
+        expect(media.store.state.peers.find(peer => peer.self)?.sharing, 'parou de transmitir, some na hora').toBe(false);
+
+        media.sfu.peers = peersBefore;
+        media.refreshPeople();
+    });
+
+    it('o /health que falha depois de a sessão já ter voltado não derruba nada; ainda reconectando, derruba', async () => {
+        const dropped = vi.spyOn(app, 'dropConnection').mockResolvedValue();
+        const reachable = vi.spyOn(app, 'reachable').mockImplementation(async () => {
+            media.store.set({ reconnecting: false });
+
+            return false;
+        });
+
+        media.store.set({ reconnecting: true });
+        await media.dropIfOffline(media.sfu);
+        expect(dropped, 'a retomada chegou antes de o /health desistir').not.toHaveBeenCalled();
+
+        reachable.mockResolvedValue(false);
+        media.store.set({ reconnecting: true });
+        await media.dropIfOffline(media.sfu);
+        expect(dropped, 'sem retomada e sem servidor, a tela offline continua valendo').toHaveBeenCalledTimes(1);
+
+        media.store.set({ reconnecting: false });
+        dropped.mockRestore();
+        reachable.mockRestore();
+    });
 });
 
 describe('o som de cada pessoa, e por onde ele sai', () => {

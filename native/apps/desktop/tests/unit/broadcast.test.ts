@@ -156,6 +156,23 @@ describe('transmissão: a linha de números', () => {
         expect(Sharing.numbers(sharing.store.state.line), 'qualidade menor tem teto menor: não é internet apertada').not.toMatch(/apertada/);
     });
 
+    it('trocar a qualidade zera os contadores do Rust: a leitura seguinte recomeça, e não vira fps negativo', async () => {
+        const sharing = new App().sharing;
+
+        sharing.updateStats(reading(14_000));
+        sharing.updateStats(reading(14_060));
+
+        sharing.store.set({ active: true });
+        sharing.app.media.broadcast = { changeQuality: async () => undefined } as never;
+        await sharing.changeQuality('1080', '60');
+
+        sharing.updateStats(reading(3));
+        expect(sharing.store.state.line, 'a primeira leitura depois da troca é um recomeço').toEqual({ starting: true });
+
+        sharing.updateStats(reading(63));
+        expect(Sharing.numbers(sharing.store.state.line)).toMatch(/^\d+ fps/);
+    });
+
     it('Rust antigo e ponte fingida sem os dois campos: a linha sai como sempre, sem perda e sem aviso', () => {
         const sharing = new App().sharing;
 

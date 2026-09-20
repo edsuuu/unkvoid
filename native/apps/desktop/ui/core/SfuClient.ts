@@ -143,6 +143,7 @@ type PlayoutReceiver = NonNullable<Consumer['rtpReceiver']> & { jitterBufferTarg
 
 export class SfuClient extends EventTarget {
     static readonly REQUEST_TIMEOUT_MS = 10_000;
+    static readonly PING_INTERVAL_MS = 5_000;
 
     socket: WebSocket | null = null;
     device: Device | null = null;
@@ -164,6 +165,9 @@ export class SfuClient extends EventTarget {
     closedByUs = false;
     reconnectAttempt = 0;
     reconnectTimer: number | null = null;
+    pingTimer: number | null = null;
+    pingPending = false;
+    lastPingFailure: string | null = null;
     socketGeneration = 0;
     lastRttMs: number | null = null;
     transportRttMs: number | null = null;
@@ -190,12 +194,17 @@ export class SfuClient extends EventTarget {
         this.addEventListener(name, event => handler((event as CustomEvent<never>).detail));
     }
 
-    connect(url: string, identity: IdentitySource): Promise<JoinResponse> {
+    async connect(url: string, identity: IdentitySource): Promise<JoinResponse> {
         this.url = url;
         this.identity = identity;
         this.closedByUs = false;
 
-        return Promise.all([this.openSocket(), this.resolveIdentity()]).then(([, resolved]) => this.setup(resolved));
+        const [, resolved] = await Promise.all([this.openSocket(), this.resolveIdentity()]);
+        const joined = await this.setup(resolved);
+
+        this.startPing();
+
+        return joined;
     }
 
     resolveIdentity(): Promise<RoomIdentity> {
@@ -232,6 +241,7 @@ export class SfuClient extends EventTarget {
     }
 
     handleClose(): void {
+        this.stopPing();
         this.emit('diagnostic', { event: 'socket.close', data: { attempt: this.reconnectAttempt } });
         for (const waiting of this.pending.values()) {
             waiting.reject(new Error('connection dropped'));
@@ -269,16 +279,67 @@ export class SfuClient extends EventTarget {
     }
 
     async reconnect(): Promise<void> {
+        let opened: WebSocket | null = null;
+
         try {
             await this.openSocket();
+            opened = this.socket;
 
             const joined = await this.setup();
 
             this.reconnectAttempt = 0;
+            this.startPing();
             this.emit('reconnected', { resumed: joined.resumed, peers: joined.peers ?? [], can: joined.can ?? null });
         } catch (failure) {
             this.emit('reconnecting', { attempt: this.reconnectAttempt, error: Failure.message(failure) });
+
+            if (opened === this.socket) {
+                this.socketGeneration += 1;
+            }
+
+            opened?.close();
             this.scheduleReconnect();
+        }
+    }
+
+    startPing(): void {
+        this.stopPing();
+
+        if (this.closedByUs) {
+            return;
+        }
+
+        this.pingTimer = setInterval(() => void this.ping(), SfuClient.PING_INTERVAL_MS);
+    }
+
+    stopPing(): void {
+        clearInterval(this.pingTimer ?? undefined);
+        this.pingTimer = null;
+    }
+
+    async ping(): Promise<void> {
+        if (this.pingPending) {
+            return;
+        }
+
+        const generation = this.socketGeneration;
+
+        this.pingPending = true;
+
+        try {
+            await this.request('ping');
+        } catch (failure) {
+            if ((failure as { timedOut?: unknown } | null)?.timedOut === true && generation === this.socketGeneration) {
+                this.emit('diagnostic', { event: 'socket.silent', data: { waitedMs: SfuClient.REQUEST_TIMEOUT_MS } });
+                this.socketGeneration += 1;
+                this.socket?.close();
+                this.handleClose();
+            } else if (Failure.message(failure) !== this.lastPingFailure) {
+                this.lastPingFailure = Failure.message(failure);
+                this.emit('diagnostic', { event: 'sfu.ping.error', data: { message: this.lastPingFailure } });
+            }
+        } finally {
+            this.pingPending = false;
         }
     }
 
@@ -288,6 +349,7 @@ export class SfuClient extends EventTarget {
 
             if (message.event === 'replaced' || message.event === 'kicked') {
                 this.closedByUs = true;
+                this.stopPing();
             }
 
             if (message.event === 'peerLeft') {
@@ -410,7 +472,7 @@ export class SfuClient extends EventTarget {
         return new Promise<Result>((resolve, reject) => {
             const deadline = setTimeout(() => {
                 this.pending.delete(id);
-                reject(new Error(`o servidor não respondeu a "${action}"`));
+                reject(Object.assign(new Error(`o servidor não respondeu a "${action}"`), { timedOut: true }));
             }, SfuClient.REQUEST_TIMEOUT_MS);
 
             const settle = (finish: (value: never) => void) => (value: unknown) => {
@@ -757,6 +819,7 @@ export class SfuClient extends EventTarget {
 
     disconnect(): void {
         this.closedByUs = true;
+        this.stopPing();
         clearTimeout(this.reconnectTimer ?? undefined);
         this.reconnectTimer = null;
         this.socketGeneration += 1;
