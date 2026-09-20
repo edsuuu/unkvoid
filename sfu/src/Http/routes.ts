@@ -33,8 +33,9 @@ type Route = {
 };
 
 /**
- * As rotas da API do SFU. `guest: true` é a única ação aberta — todas as outras
- * exigem sessão, como faria um middleware de autenticação.
+ * As rotas da API do SFU. `guest: true` marca as ações abertas — o `join`, e o `ping`, que
+ * mede o socket e não a sala. Todas as outras exigem sessão, como faria um middleware de
+ * autenticação.
  */
 export const routes = (controllers: Controllers): Record<ActionName, Route> => ({
     [Action.Join]: {
@@ -49,6 +50,11 @@ export const routes = (controllers: Controllers): Record<ActionName, Route> => (
     [Action.RemovePeer]: {
         build: (data, session) => new RemovePeerRequest(data, session),
         handle: (request) => controllers.peer.remove(request),
+    },
+    [Action.Ping]: {
+        guest: true,
+        build: (data, session) => new Request(data, session),
+        handle: () => controllers.peer.ping(),
     },
     [Action.CreateTransport]: {
         build: (data, session) => new Request(data, session),

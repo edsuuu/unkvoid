@@ -262,6 +262,13 @@ export class Server {
             return;
         }
 
+        // A retomada com a sessão de pé troca o socket antes de o `close` do velho chegar
+        // aqui. A pessoa está viva no socket novo: abrir carência agora avisaria a sala de
+        // uma queda que não houve e destruiria a mídia dela 30 s depois.
+        if (session.peer.socket !== session.socket) {
+            return;
+        }
+
         // Não destrói na hora: a mídia continua viva e a pessoa tem uma janela para
         // reconectar a sinalização sem cair da chamada.
         session.room.orphanPeer(session.peer);

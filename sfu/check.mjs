@@ -259,6 +259,16 @@ test('a identidade nasce no servidor e o mesmo socket não entra duas vezes', as
     assert.equal(reply.status, 404, 'ação desconhecida deve dar 404');
 });
 
+test('o ping responde antes do join e depois dele', async () => {
+    // É por ele que o app descobre que o socket morreu, e o socket pode morrer antes de a
+    // pessoa entrar em sala nenhuma.
+    let reply = await visitante.call('ping');
+    assert.deepEqual([reply.ok, reply.data], [true, {}], `quem ainda não entrou já mede o socket: ${JSON.stringify(reply)}`);
+
+    reply = await dono.call('ping');
+    assert.deepEqual([reply.ok, reply.data], [true, {}], 'e quem já está na sala também');
+});
+
 test('createTransport passa e produce recusa transporte e parâmetros inválidos', async () => {
     let reply = await dono.call('createTransport', {});
     assert.equal(reply.ok, true, 'createTransport deve passar');
@@ -537,6 +547,75 @@ test('o token de outra conta não retoma a sessão, mesmo com a chave', async ()
     assert.equal(retomada.userId, '82', 'a identidade é a do token');
     volta.close();
     plateia.close();
+});
+
+test('a retomada com a sessão ainda de pé troca o socket e a mídia sobrevive', async () => {
+    // O app percebe a queda antes do heartbeat do servidor e volta com o socket velho ainda
+    // aberto do lado de cá. Isso virava entrada nova, que derrubava a antiga e a mídia junto.
+    const sala = 'checkroom004';
+    const tokenDaConta = () => token({ room: sala, sub: '91', name: 'Transmite', can: TUDO });
+
+    const espectador = await abrir();
+    await entrar(espectador, { token: token({ room: sala, sub: '90', name: 'Espectador', can: TUDO }) });
+
+    const primeiro = await abrir();
+    const chegada = await entrar(primeiro, { token: tokenDaConta() });
+    const tela = await primeiro.call('producePlain', videoPuro('screen', 0x911));
+    assert.equal(tela.ok, true, `a tela deveria subir: ${JSON.stringify(tela)}`);
+
+    const transporte = await espectador.call('createTransport');
+    const consumoDaTela = await espectador.call('consume', {
+        transportId: transporte.data.transportId,
+        producerId: tela.data.producerId,
+        rtpCapabilities: CAPACIDADES,
+    });
+    assert.equal(consumoDaTela.ok, true, `e ser consumível: ${JSON.stringify(consumoDaTela)}`);
+
+    espectador.events.length = 0;
+    const segundo = await abrir();
+    const retomada = await entrar(segundo, { token: tokenDaConta(), resumeKey: chegada.resumeKey, resume: true });
+
+    assert.equal(retomada.resumed, true, 'com o primeiro socket ainda aberto a sessão é retomada, e não substituída');
+    assert.equal(retomada.peerId, chegada.peerId, 'e é a mesma pessoa, com o mesmo id');
+
+    // Bem mais que o `close` do socket velho leva para chegar ao servidor: se ele abrisse
+    // a carência na pessoa que já está viva no socket novo, apareceria daqui para baixo.
+    await espera(1000);
+
+    assert.notEqual(primeiro.closeCode, null, 'o servidor fecha o socket velho');
+    assert.notEqual(primeiro.closeCode, 4002, 'na marra, e não como sessão substituída');
+    assert.ok(!primeiro.events.some(evento => evento.event === 'replaced'), 'sem `replaced`: a pessoa não entrou de outro lugar');
+
+    const quedas = espectador.events.filter(evento => ['peerLeft', 'peerConnectionLost', 'peerReconnected', 'peerJoined', 'producerClosed'].includes(evento.event));
+    assert.deepEqual(quedas, [], 'a sala não vê queda, volta, saída, entrada nem mídia fechando');
+
+    const novo = await abrir();
+    const lista = await entrar(novo, { token: token({ room: sala, sub: '92', name: 'Novo', can: TUDO }) });
+    const transmissor = lista.peers.find(peer => peer.peerId === chegada.peerId);
+
+    assert.equal(transmissor?.reconnecting, false, 'a pessoa segue na sala, e fora da carência');
+    assert.deepEqual(transmissor.producers.map(producer => producer.producerId), [tela.data.producerId], 'com a tela de antes da troca');
+
+    let reply = await segundo.call('pauseProducer', { producerId: tela.data.producerId });
+    assert.equal(reply.ok, true, 'o producer de antes da troca obedece o socket novo');
+
+    reply = await espectador.call('resumeConsumer', { consumerId: consumoDaTela.data.consumerId });
+    assert.equal(reply.ok, true, 'e o consumer de quem assistia continua de pé');
+
+    // A regra da conta não muda com a sessão de pé: token de outro `sub` é entrada nova.
+    const estranho = await abrir();
+    const intruso = await entrar(estranho, {
+        token: token({ room: sala, sub: '93', name: 'Estranho', can: TUDO }),
+        resumeKey: chegada.resumeKey,
+        resume: true,
+    });
+
+    assert.equal(intruso.resumed, false, 'token de outra conta não retoma, com a sessão caída ou de pé');
+    assert.notEqual(intruso.peerId, chegada.peerId, 'e não herda a sessão de ninguém');
+
+    for (const cliente of [espectador, segundo, novo, estranho]) {
+        cliente.close();
+    }
 });
 
 test('a mesma conta entrando de novo derruba a sessão antiga, nesta sala ou em outra', async () => {

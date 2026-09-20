@@ -1,5 +1,6 @@
 import { ValidationException } from '../../Exceptions/ApiException.js';
 import type { RemovePeerRequest } from '../Requests/RemovePeerRequest.js';
+import { PongResource } from '../Resources/PongResource.js';
 import { StatusResource } from '../Resources/StatusResource.js';
 
 export class PeerController {
@@ -24,5 +25,14 @@ export class PeerController {
         room.removePeer(target);
 
         return new StatusResource('removed');
+    }
+
+    /**
+     * A prova de vida que o app mede: o navegador responde sozinho ao ping do WebSocket e
+     * não conta a ninguém que o socket morreu. Vale sem sala, e não loga nada: chega um a
+     * cada 5 s por cliente.
+     */
+    public ping(): PongResource {
+        return new PongResource();
     }
 }
