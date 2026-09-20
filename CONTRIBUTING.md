@@ -117,6 +117,9 @@ Abra uma issue (ou pergunte no PR) **antes** de escrever quando a mudança for:
 
 ## Fluxo
 
+A `main` é protegida no GitHub: só entra por pull request, e não aceita force-push nem ser
+apagada. Vale para todo mundo, inclusive para quem mantém o projeto.
+
 1. Branch a partir da `main`, com nome que diz o que é (`volta-sala-sem-login`,
    `fix/login-google-windows`).
 2. Commits em português, no formato `tipo: o que mudou` (`feat`, `fix`, `docs`, `chore`), sem
