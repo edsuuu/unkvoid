@@ -12,6 +12,7 @@ e pelo [ESTADO.md](ESTADO.md) se quer saber o que falta.
 | entender por que algo foi feito assim (ex.: por que o SFU é Node) | [DECISOES.md](DECISOES.md) |
 | saber o que falta, o que nunca rodou em hardware e o que espera o dono | [ESTADO.md](ESTADO.md) |
 | saber o que é cifrado, o que está protegido e o que não está | [SEGURANCA.md](SEGURANCA.md) |
+| saber por que o Windows 10 mostra uma borda amarela ao transmitir, e o plano para tirá-la | [BORDA-AMARELA.md](BORDA-AMARELA.md) |
 
 ## Rede e servidor
 
