@@ -386,10 +386,10 @@ impl Broadcast {
                         // pessoa se cala, e só o nível subindo de novo o reabre.
                         level_callback.push(&block.samples);
 
-                        // Mutado sobe silêncio, não nada. Entrar na voz já mutado é o
-                        // padrão: sem pacote nenhum o `comedia` do servidor nunca aprende
-                        // de onde o mic vem, o relógio de 30 s sem pacote mata o producer
-                        // (`producerDead`), e desmutar dava 404. É o que a trilha
+                        // Mutado sobe silêncio, não nada. Quem marca "silenciar ao entrar"
+                        // entra na voz já mutado: sem pacote nenhum o `comedia` do servidor
+                        // nunca aprende de onde o mic vem, o relógio de 30 s sem pacote mata
+                        // o producer (`producerDead`), e desmutar dava 404. É o que a trilha
                         // desligada do WebRTC faz nos outros sistemas.
                         if muted {
                             block.samples.fill(0.0);
