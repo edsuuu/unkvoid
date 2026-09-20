@@ -148,6 +148,46 @@ instalado derruba a transmissão com qualquer `producerDead`, e um aviso de micr
 derrubaria uma tela que continua permitida. Token de outra conta não retoma a sessão, senão uma
 conta herdaria o `can` de outra pela `resumeKey`.
 
+## Quem mede a sinalização é o app, e a retomada não espera a carência
+
+**Decidido em 20/09/2026, depois de um congelamento em produção.** O TCP da sinalização de dois
+clientes da mesma operadora sumiu no caminho enquanto a mídia, por UDP, seguia a 55 fps. O
+heartbeat do SFU derrubou o WebSocket em 15–30 s, a carência de 30 s estourou e a mídia foi
+destruída — e o app só soube 3,5 min depois, porque o navegador responde sozinho ao ping do
+WebSocket e não conta a ninguém que o socket morreu. Na volta, o `fetch` do token, sem prazo,
+prendeu a reconexão por mais 2 min 49 s. Para quem usava, o app inteiro travou; o encoder e o
+envio nunca tiveram um erro.
+
+O que ficou: o app manda `ping` a cada 5 s e larga o socket depois de 10 s de silêncio, o
+`fetch` da API tem prazo de 10 s (menos upload), e o `join` com a `resumeKey` retoma a sessão
+**mesmo que o servidor ainda não a tenha visto cair**. Esta última é a que faz a primeira valer:
+o app passa a perceber a queda antes do servidor, e a regra antiga (só retoma sessão órfã)
+transformaria cada percepção rápida em entrada nova, que derruba a antiga e a mídia com ela. A
+`resumeKey` já era a prova de identidade; o que mudou foi só não exigir a carência aberta.
+
+Descartado: aumentar a carência (o app levou minutos para notar, carência nenhuma cobre isso) e
+manter a sessão viva enquanto chega mídia (muda o que "presente na sala" quer dizer, e o app
+continuaria sem sinalização, clicando no vazio).
+
+ponytail: quem não tem WebRTC no motor da janela (Linux) entra sem `resume`, e para ele a queda
+de sinalização continua sendo entrada nova, com a mídia refeita. A saída é o `resume` deixar de
+depender do `recvTransport`.
+
+## Microfone aberto ao entrar, e nenhuma bind engole tecla no Windows
+
+**Decidido pelo dono em 20/09/2026.** Entrar na voz passa a ligar o microfone **aberto**; o
+"Silenciar ao entrar" continua nas configurações para quem quer o contrário. Como as
+preferências são gravadas inteiras, quem mexeu em qualquer uma tinha o `muteOnJoin: true` do
+padrão antigo gravado sem nunca ter escolhido: uma migração de uma vez só (marcador
+`unkvoid:voice:open-mic`) abre o microfone de todo mundo, e depois dela vale o que a pessoa
+marcar.
+
+No Windows `mute` e `deafen` saíram do `RegisterHotKey`, que engole a tecla — a bind apertada
+sem querer no meio do jogo não chegava nele. Todas as ações vão pela consulta de 20 ms que a
+0.0.38 já usava no falar-apertando. O preço: atalho contido em outro (`Ctrl+M` e
+`Ctrl+Shift+M`) dispara junto, porque modificador a mais não impede — é a mesma regra que
+deixa mutar segurando Shift no jogo.
+
 ## Imagem no chat: 3 por mensagem, 2 MB cada, reduzida no app
 
 **Decidido em 19/09/2026.** O teto não é gosto: o PHP da VPS aceita 2 MB por arquivo e 8 MB por
