@@ -5,7 +5,7 @@ O que o projeto é e como instalar estão no [README](../README.md); o contrato 
 que ainda não foi feito: o que foi escrito sem rodar em hardware, o que falta construir e as
 perguntas que esperam o dono. O histórico das sessões saiu do repositório e continua no git.
 
-Última revisão: 19/09/2026 (versão 0.0.39).
+Última revisão: 20/09/2026 (versão 0.0.40).
 
 ## Escrito, mas nunca rodou em hardware
 
