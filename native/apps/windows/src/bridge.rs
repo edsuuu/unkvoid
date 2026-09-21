@@ -22,14 +22,15 @@ use storage::Storage;
 use tokio::runtime::Runtime;
 
 use crate::devices::{self, Device};
+use crate::sharing;
 use crate::{AppWindow, ChannelRow, DeviceRow, MemberRow, MessageRow, PeerRow, ServerRow, Ui};
 
 const DEFAULT_SERVER: &str = "https://unkvoid.com";
 
-/// ponytail: o app desenha a sala e fala com o SFU, mas ainda não captura nem toca mídia —
-/// `shared/capture` e `shared/media` não estão ligados aqui. Teto: tela, câmera e som só
-/// existem como botão. A saída é portar o `sending`/`streaming`/`watching` do `apps/linux`
-/// com o encoder do Windows, e aí estes três botões passam a chamar o que eles publicam.
+/// ponytail: a tela sobe, mas o app ainda não **assiste** ao que os outros mandam, e a
+/// câmera e o microfone continuam só como botão. Teto: quem transmite é visto, quem olha
+/// não vê. A saída é portar o `watching` do `apps/linux` e ligar `Source::Mic`/`Camera` ao
+/// mesmo `core_app::sharing` que a tela já usa.
 const NO_CAPTURE: &str = "A captura ainda não está ligada nesta versão do app.";
 
 pub struct Bridge {
@@ -40,6 +41,9 @@ pub struct Bridge {
     /// De onde sai o WebSocket: vem do `GET /api/config`, e até ele responder não há sala.
     sfu: Arc<Mutex<Option<String>>>,
     session: Arc<Mutex<Option<Arc<Session>>>>,
+    /// A sessão de mídia: um socket e uma chave SRTP para tudo o que sobe. É a mesma do
+    /// `core_app::sharing` que o app do Tauri usa, e por isso a captura aqui é a de lá.
+    media: Arc<core_app::sharing::ActiveSession>,
     /// O que a tela mostra por índice, e o que o servidor conhece por identificador.
     servers: Arc<Mutex<Vec<ServerSummary>>>,
     channels: Arc<Mutex<Vec<Channel>>>,
@@ -64,6 +68,7 @@ impl Bridge {
             window,
             sfu: Arc::default(),
             session: Arc::default(),
+            media: Arc::default(),
             servers: Arc::default(),
             channels: Arc::default(),
             reading: Arc::default(),
@@ -173,9 +178,9 @@ impl Bridge {
         });
 
         ui.on_toggle_share({
-            let window = self.window.clone();
+            let bridge = self.clone();
 
-            move || complain(&window, NO_CAPTURE)
+            move || bridge.toggle_share()
         });
 
         ui.on_toggle_camera({
@@ -560,6 +565,30 @@ impl Bridge {
                     paint(&window, move |app| app.global::<Ui>().set_peers(model(peers)));
                 }
             }
+        });
+    }
+
+    /// Liga ou desliga a transmissão da tela. O botão só reflete o que de fato subiu: a
+    /// tela vira violeta depois do `producePlain`, não no clique.
+    fn toggle_share(self: &Rc<Self>) {
+        let Some(session) = lock(&self.session).clone() else {
+            return;
+        };
+
+        let (media, window) = (self.media.clone(), self.window.clone());
+
+        self.spawn(async move {
+            let sharing = media.0.lock().await.screen.is_some();
+
+            if sharing {
+                sharing::stop_screen(&session, &media).await;
+            } else if let Err(failure) = sharing::share_screen(&session, &media).await {
+                complain(&window, &sharing::said(&failure));
+            }
+
+            let live = media.0.lock().await.screen.is_some();
+
+            paint(&window, move |app| app.global::<Ui>().set_sharing(live));
         });
     }
 

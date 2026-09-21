@@ -8,6 +8,7 @@
 
 mod bridge;
 mod devices;
+mod sharing;
 
 use slint::ComponentHandle;
 
