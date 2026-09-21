@@ -66,6 +66,29 @@ Um achado de caminho: o SFU cujos workers do mediasoup morrem continua responden
 `/health`, e todo `join` dá 500 (`Channel closed … WORKER_CREATE_ROUTER`). Foi o estado em que
 o SFU local estava duas vezes nesta sessão. O `/health` devia conferir os workers.
 
+## O que o macOS fez e o Linux e o Windows replicam
+
+Tudo abaixo o dono pediu olhando o app do Mac, em 21/09/2026. O que é regra já está no
+`shared/core` e chega de graça; o que é desenho cada interface repete. A referência de medida é
+sempre o `native/apps/desktop/ui/style.css` do React, não outro app nativo.
+
+| O quê | Onde está no Mac | O que replicar |
+|---|---|---|
+| Só as **3 últimas salas** por código | `shared/core/src/app.rs` (`MAX_RECENT`, corta também na leitura) | nada: é só usar `recent_rooms()` |
+| Erro de uma tela **não segue** a pessoa para outra | `AppModel.screen` (`didSet` → `forgetErrors()`) | limpar os erros ao trocar de tela |
+| Janela padrão **1280×800**, piso **940×600** | `App.swift` | são os números do `expand_window` do Tauri; com menos largura os cartões da Home quebram em outra ordem |
+| Cartões da Home nas três regras do flex do React | `Hub/Home/ServersHome.swift` + `FlexWrap.swift` | `0 1 360` (mín. 260), `1 1 360` (mín. 260), `1 1 0` (mín. 280), vão de 12 |
+| `.btn-ghost` nas medidas do CSS | `Components/Theme.swift` (`GhostButton`) | 12,5 px sem peso, respiro 8/12, raio 10, texto `ink-icon`, fundo branco a 5%, linha `line-strong`; só o "Entrar" da tela de entrada é 13,5 médio com 16 de lado |
+| `label-mono` do "dono/membro" com **9,5** | `labelMono(size:)` | o React sobrescreve o tamanho nessa linha |
+| Engrenagem abre as configurações **direto**, no molde do Discord | `Hub/Modals/UserSettingsModal.swift`, `Hub/UserBar.swift` | painel que toma quase a janela toda (24 de margem), seções agrupadas à esquerda ("Configurações de usuário", "Configurações do app", Logs, Sair da conta), a seção aberta à direita com o título grande, "X / ESC" no canto, Esc fecha; o menuzinho da engrenagem deixou de existir |
+| Clique fora fecha **qualquer** modal ou menu | `Components/Chrome.swift` (`ModalFrame`, `ClosesOnOutsideClick`) | o clique no próprio botão que abriu continua sendo do botão, senão fecha e reabre |
+| Clicar no canal de voz põe a pessoa **embaixo do nome**, na hora | `Hub/ChannelColumn.swift` (`VoiceChannelRow`) | já feito no Windows e no Linux; fica aqui pela lista |
+| Sessão `replaced`/`kicked` **não reconecta** | `shared/core/src/session.rs`, `room.rs` | nada no núcleo; a interface mostra o motivo e volta para a Home |
+
+O ping da barra da sala ficou com o nome que o Linux e o Windows já usavam
+(`local::PING_MEASURED`, o número puro em `data`); a `Room` do núcleo o repassa para a ABI como
+`room.ping` com `{ "ms": … }`.
+
 ## O buraco que atrasou tudo, e o que já foi tapado
 
 Os três agentes chegaram, sozinhos, à mesma conclusão: o `shared/core` era só um cano de
