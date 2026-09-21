@@ -10,6 +10,9 @@ export struct ServerRow {
 }
 
 export struct ChannelRow {
+    /// A posição na lista inteira do servidor: é ela que volta em `open-channel`, porque a
+    /// tela mostra texto e voz em duas colunas mas o núcleo só conhece uma.
+    index: int,
     name: string,
     voice: bool,
     current: bool,
@@ -40,6 +43,25 @@ export struct DeviceRow {
     current: bool,
 }
 
+/// Uma conversa direta na coluna: com quem, a última frase e quantas faltam ler.
+export struct ConversationRow {
+    user-id: int,
+    name: string,
+    initial: string,
+    last: string,
+    unread: int,
+}
+
+/// Uma amizade. `state` já vem decidido pelo Rust — a tela não calcula quem pediu a quem.
+export struct FriendRow {
+    id: int,
+    user-id: int,
+    name: string,
+    initial: string,
+    // "accepted", "incoming", "waiting" ou "blocked".
+    state: string,
+}
+
 export global Ui {
     // Qual das cinco telas está valendo. Quem escolhe é o núcleo.
     in property <string> screen: "updating";
@@ -63,9 +85,25 @@ export global Ui {
     in property <string> server-name: "Servidores";
     in property <string> channel-name;
     in property <[ServerRow]> servers;
-    in property <[ChannelRow]> channels;
+    in property <[ChannelRow]> text-channels;
+    in property <[ChannelRow]> voice-channels;
     in property <[MemberRow]> members;
     in property <[MessageRow]> messages;
+    /// O convite do servidor aberto. Só quem pode convidar recebe.
+    in property <string> invite-code;
+    /// A Home ou o servidor aberto: as duas nunca aparecem juntas.
+    in property <bool> in-server;
+    /// "servers", "friends" ou "direct" — os três miolos da Home.
+    in-out property <string> home-tab: "servers";
+    in property <[ConversationRow]> conversations;
+    in property <[FriendRow]> friends;
+    /// Quantos pedidos de amizade chegaram e esperam resposta.
+    in property <int> pending-count;
+    /// A conversa aberta.
+    in property <string> talking-name;
+    in property <[MessageRow]> direct-messages;
+    /// As últimas salas por código, que a Home lista.
+    in property <[string]> recent-rooms;
 
     in property <string> room-code;
     in property <[PeerRow]> peers;
@@ -93,7 +131,22 @@ export global Ui {
 
     callback open-server(int);
     callback open-channel(int);
+    /// O nome e se é de voz. Quem não pode criar canal recebe a recusa do Laravel.
+    callback create-channel(string, bool);
     callback send-message(string);
+    callback create-server(string);
+    callback join-invite(string);
+    /// Volta para a Home e recarrega o que ela mostra.
+    callback show-hub-home();
+    callback load-friends();
+    callback add-friend(string);
+    callback answer-friend(int, bool);
+    /// O índice da conversa na coluna, não o identificador da pessoa.
+    callback open-conversation(int);
+    callback send-direct(string);
+    /// O índice do amigo na lista: abre a conversa com ele.
+    callback talk-to-friend(int);
+    callback open-recent-room(string);
 
     callback leave-room();
     callback toggle-share();

@@ -1,93 +1,506 @@
 import { ScrollView } from "std-widgets.slint";
 import { Icons, Skin } from "skin.slint";
-import { Ui } from "state.slint";
-import { Avatar, Danger, Field, GhostButton, Glass, Glyph, LabelMono, Muted, RowItem, Title } from "widgets.slint";
+import { ChannelRow, Ui } from "state.slint";
+import { Avatar, Danger, Field, GhostButton, Glass, Glyph, IconButton, LabelMono, Muted, PrimaryButton, RowItem, Title } from "widgets.slint";
 import { UserBar } from "userbar.slint";
 
-// A tela de quem tem conta: servidores, canais, chat e membros.
+// A tela de quem tem conta: servidores, canais, chat, amigos e mensagens diretas.
 //
 // Quem autoriza é o Laravel. Aqui só se esconde botão — e quando o servidor responde 403, a
 // frase dele é que aparece.
-component Column inherits Glass {
-    in property <string> heading;
+//
+// O desenho é o do `apps/desktop/ui/components/hub`: a trilha dos servidores à esquerda, e
+// ao lado dela ou a **Home** (conversas, amigos, criar sala) ou o **servidor aberto**
+// (canais, chat, membros).
+component Panel inherits Glass {
     border-radius: 16px;
     @children
 }
 
-export component HubScreen inherits Rectangle {
+// A linha larga de clicar: o desenho num quadrado e o nome ao lado — o `row-item` do React.
+component WideRow inherits Rectangle {
+    in property <string> commands;
+    in property <string> label;
+    in property <bool> on;
+    in property <int> count;
+    callback clicked();
+
+    height: 38px;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: root.on ? #8a7cf552 : #ffffff14;
+    background: root.on ? #8a7cf51f : (touch.has-hover ? #ffffff0f : transparent);
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 10px;
+
+        Glyph {
+            commands: root.commands;
+            size: 16px;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            text: root.label;
+            color: Skin.ink-body;
+            font-family: Skin.sans;
+            font-size: 13px;
+            horizontal-stretch: 1;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+
+        Rectangle {
+            visible: root.count > 0;
+            width: root.count > 0 ? 22px : 0px;
+            height: 18px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 9px;
+            background: Skin.danger;
+
+            Text {
+                text: root.count;
+                color: Skin.ink-strong;
+                font-family: Skin.sans;
+                font-size: 10px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Uma fala do chat ou da conversa direta.
+component Said inherits HorizontalLayout {
+    in property <string> author;
+    in property <string> initial;
+    in property <string> body;
+    in property <string> at;
+
+    spacing: 9px;
+
+    Avatar {
+        letter: root.initial;
+        size: 30px;
+    }
+
     VerticalLayout {
-        padding: 14px;
-        spacing: 12px;
+        spacing: 2px;
 
         HorizontalLayout {
-            spacing: 10px;
+            spacing: 7px;
+            alignment: start;
 
-            Title {
-                text: Ui.server-name;
+            Text {
+                text: root.author;
+                color: Skin.ink-strong;
+                font-family: Skin.sans;
+                font-size: 13px;
+                font-weight: 600;
+            }
+
+            Text {
+                text: root.at;
+                color: Skin.ink-faint;
+                font-family: Skin.sans;
+                font-size: 11px;
                 vertical-alignment: center;
-            }
-
-            Rectangle { horizontal-stretch: 1; }
-
-            Danger {
-                text: Ui.complaint;
-                vertical-alignment: center;
-            }
-
-            GhostButton {
-                text: "Sala por código";
-                clicked => { Ui.show-entry(); }
-            }
-
-            GhostButton {
-                text: "Sair da conta";
-                clicked => { Ui.sign-out(); }
             }
         }
 
-        HorizontalLayout {
-            spacing: 12px;
-            vertical-stretch: 1;
+        Text {
+            text: root.body;
+            color: Skin.ink-body;
+            font-family: Skin.sans;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+    }
+}
 
-            Column {
-                width: 200px;
+// Uma linha de canal. O `#` do React é a mesma monoespaçada do código da sala.
+component ChannelItem inherits RowItem {
+    in property <ChannelRow> item;
+
+    on: root.item.current;
+    clicked => { Ui.open-channel(root.item.index); }
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 8px;
+
+        Glyph {
+            commands: root.item.voice ? Icons.speaker : Icons.hash;
+            tint: root.item.current ? Skin.lilac-2 : Skin.ink-dim;
+            size: 15px;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            text: root.item.name;
+            color: root.item.current ? Skin.ink-strong : Skin.ink-icon;
+            font-family: Skin.sans;
+            font-size: 13px;
+            font-weight: root.item.current ? 500 : 400;
+            horizontal-stretch: 1;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component HubScreen inherits Rectangle {
+    // O campo de cima da Home serve aos dois: nome da sala nova ou código do convite. O
+    // React abre um modal no "Tenho um convite"; aqui o mesmo botão troca o campo.
+    property <bool> joining;
+    // Qual das duas seções de canal está com o campo de nome aberto: "text", "voice" ou
+    // nenhuma. O React abre um modal; aqui o campo nasce onde o "+" foi clicado.
+    property <string> naming;
+    property <string> fresh;
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 10px;
+
+        // ---- a trilha dos servidores ----
+        Panel {
+            width: 182px;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+
+                WideRow {
+                    commands: Icons.home;
+                    label: "Home";
+                    on: !Ui.in-server;
+                    clicked => { Ui.show-hub-home(); }
+                }
+
+                Rectangle { height: 1px; background: Skin.line-strong; }
+
+                ScrollView {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        for server[index] in Ui.servers : Rectangle {
+                            height: 44px;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: server.current && Ui.in-server ? #8a7cf552 : #ffffff14;
+                            background: server.current && Ui.in-server ? #8a7cf51f : transparent;
+
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 11px;
+                                spacing: 10px;
+
+                                Avatar {
+                                    letter: server.initial;
+                                    size: 30px;
+                                    mine: server.current && Ui.in-server;
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                Text {
+                                    text: server.name;
+                                    color: Skin.ink-body;
+                                    font-family: Skin.sans;
+                                    font-size: 13px;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { Ui.open-server(index); }
+                            }
+                        }
+                    }
+                }
+
+                WideRow {
+                    commands: Icons.plus;
+                    label: "Criar servidor";
+                    clicked => {
+                        Ui.show-hub-home();
+                        Ui.home-tab = "servers";
+                    }
+                }
+            }
+        }
+
+        // ---- a Home ----
+        HorizontalLayout {
+            visible: !Ui.in-server;
+            horizontal-stretch: Ui.in-server ? 0 : 1;
+            spacing: 10px;
+
+            // a coluna das abas e das conversas
+            VerticalLayout {
+                width: Ui.in-server ? 0px : 260px;
+                spacing: 10px;
+
+                Panel {
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        WideRow {
+                            commands: Icons.home;
+                            label: "Salas";
+                            on: Ui.home-tab == "servers";
+                            clicked => { Ui.home-tab = "servers"; }
+                        }
+
+                        WideRow {
+                            commands: Icons.users;
+                            label: "Amigos";
+                            on: Ui.home-tab == "friends";
+                            count: Ui.pending-count;
+                            clicked => {
+                                Ui.home-tab = "friends";
+                                Ui.load-friends();
+                            }
+                        }
+                    }
+                }
+
+                Panel {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        LabelMono { text: "MENSAGENS DIRETAS"; }
+
+                        ScrollView {
+                            vertical-stretch: 1;
+
+                            VerticalLayout {
+                                spacing: 6px;
+                                alignment: start;
+
+                                if Ui.conversations.length == 0 : Muted {
+                                    text: "Nenhuma conversa ainda.";
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
+                                }
+
+                                for conversation[index] in Ui.conversations : Rectangle {
+                                    height: 48px;
+                                    border-radius: 12px;
+                                    border-width: 1px;
+                                    border-color: #ffffff14;
+                                    background: talk.has-hover ? #ffffff0f : transparent;
+
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        spacing: 10px;
+
+                                        Avatar {
+                                            letter: conversation.initial;
+                                            size: 28px;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+
+                                        VerticalLayout {
+                                            spacing: 2px;
+                                            alignment: center;
+
+                                            Text {
+                                                text: conversation.name;
+                                                color: Skin.ink-body;
+                                                font-family: Skin.sans;
+                                                font-size: 13px;
+                                                overflow: elide;
+                                            }
+
+                                            Text {
+                                                text: conversation.last;
+                                                color: Skin.ink-dim;
+                                                font-family: Skin.sans;
+                                                font-size: 11.5px;
+                                                overflow: elide;
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            visible: conversation.unread > 0;
+                                            width: conversation.unread > 0 ? 22px : 0px;
+                                            height: 18px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 9px;
+                                            background: Skin.danger;
+
+                                            Text {
+                                                text: conversation.unread;
+                                                color: Skin.ink-strong;
+                                                font-family: Skin.sans;
+                                                font-size: 10px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    talk := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { Ui.open-conversation(index); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                UserBar { }
+            }
+
+            // o miolo da Home: salas, amigos ou a conversa aberta
+            ScrollView {
+                horizontal-stretch: 1;
 
                 VerticalLayout {
-                    padding: 12px;
-                    spacing: 8px;
+                    spacing: 10px;
+                    alignment: start;
 
-                    LabelMono { text: "SERVIDORES"; }
+                    // A recusa do Laravel também aparece na Home: sem isto, um convite
+                    // errado ou um pedido repetido limpa o campo e não diz nada.
+                    if Ui.complaint != "" : Danger {
+                        text: Ui.complaint;
+                    }
 
-                    ScrollView {
-                        VerticalLayout {
-                            spacing: 4px;
-                            alignment: start;
+                    // ---- salas ----
+                    Panel {
+                        visible: Ui.home-tab == "servers";
+                        height: Ui.home-tab == "servers" ? greeting.preferred-height : 0px;
+
+                        greeting := VerticalLayout {
+                            padding: 16px;
+                            spacing: 10px;
+
+                            LabelMono { text: "HOME"; }
+
+                            Text {
+                                text: "Oi, " + Ui.user-name + ".";
+                                color: Skin.ink-strong;
+                                font-family: Skin.sans;
+                                font-size: 17px;
+                                font-weight: 600;
+                            }
+
+                            Muted {
+                                text: "Uma sala nova já vem com um canal de texto e um de voz. Depois é só mandar o convite.";
+                            }
+
+                            name := Field {
+                                placeholder: joining ? "Código do convite" : "Nome da sala";
+                                accepted => {
+                                    if (joining) { Ui.join-invite(name.text); } else { Ui.create-server(name.text); }
+                                    name.text = "";
+                                }
+                            }
+
+                            PrimaryButton {
+                                text: joining ? "Entrar com o convite" : "Criar sala";
+                                clicked => {
+                                    if (joining) { Ui.join-invite(name.text); } else { Ui.create-server(name.text); }
+                                    name.text = "";
+                                }
+                            }
+
+                            GhostButton {
+                                text: joining ? "Quero criar uma sala" : "Tenho um convite";
+                                clicked => {
+                                    joining = !joining;
+                                    name.text = "";
+                                }
+                            }
+                        }
+                    }
+
+                    Panel {
+                        visible: Ui.home-tab == "servers";
+                        height: Ui.home-tab == "servers" ? codes.preferred-height : 0px;
+
+                        codes := VerticalLayout {
+                            padding: 16px;
+                            spacing: 10px;
+
+                            LabelMono { text: "SÓ COMPARTILHAR A TELA"; }
+                            Muted { text: "Uma sala por código, sem servidor: quem tiver o código assiste."; }
+
+                            PrimaryButton {
+                                text: "Criar ou entrar com código";
+                                clicked => { Ui.show-entry(); }
+                            }
+
+                            LabelMono {
+                                visible: Ui.recent-rooms.length > 0;
+                                text: "ÚLTIMAS SALAS ACESSADAS";
+                            }
+
+                            for code in Ui.recent-rooms : GhostButton {
+                                text: code;
+                                clicked => { Ui.open-recent-room(code); }
+                            }
+                        }
+                    }
+
+                    Panel {
+                        visible: Ui.home-tab == "servers";
+                        height: Ui.home-tab == "servers" ? rooms.preferred-height : 0px;
+
+                        rooms := VerticalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+
+                            LabelMono { text: "ÚLTIMAS SALAS"; }
 
                             if Ui.servers.length == 0 : Muted {
-                                text: "Nenhum servidor ainda.";
-                                font-size: 12.5px;
+                                text: "Nenhuma ainda. Crie uma ao lado ou entre com um convite.";
+                                horizontal-alignment: center;
                             }
 
                             for server[index] in Ui.servers : RowItem {
-                                on: server.current;
+                                height: 48px;
                                 clicked => { Ui.open-server(index); }
 
                                 HorizontalLayout {
                                     padding-left: 8px;
                                     padding-right: 11px;
-                                    spacing: 8px;
+                                    spacing: 10px;
 
                                     Avatar {
                                         letter: server.initial;
-                                        size: 24px;
+                                        size: 32px;
                                         y: (parent.height - self.height) / 2;
                                     }
 
                                     Text {
                                         text: server.name;
                                         color: Skin.ink-body;
-                                        font-size: 13px;
-                                        horizontal-alignment: left;
+                                        font-family: Skin.sans;
+                                        font-size: 13.5px;
+                                        font-weight: 600;
                                         horizontal-stretch: 1;
                                         overflow: elide;
                                         vertical-alignment: center;
@@ -96,129 +509,341 @@ export component HubScreen inherits Rectangle {
                             }
                         }
                     }
-                }
-            }
 
-            Column {
-                width: 220px;
+                    // ---- amigos ----
+                    Panel {
+                        visible: Ui.home-tab == "friends";
+                        height: Ui.home-tab == "friends" ? mates.preferred-height : 0px;
 
-                VerticalLayout {
-                    padding: 12px;
-                    spacing: 8px;
+                        mates := VerticalLayout {
+                            padding: 16px;
+                            spacing: 10px;
 
-                    LabelMono { text: "CANAIS"; }
+                            LabelMono { text: "AMIGOS"; }
+                            Muted { text: "Adicione pela conta: o e-mail é o que o servidor conhece."; }
 
-                    ScrollView {
-                        VerticalLayout {
-                            spacing: 4px;
-                            alignment: start;
+                            mate := Field {
+                                placeholder: "e-mail de quem você quer adicionar";
+                                accepted => {
+                                    Ui.add-friend(mate.text);
+                                    mate.text = "";
+                                }
+                            }
 
-                            for channel[index] in Ui.channels : RowItem {
-                                on: channel.current;
-                                clicked => { Ui.open-channel(index); }
+                            if Ui.friends.length == 0 : Muted {
+                                text: "Nenhum amigo ainda.";
+                                horizontal-alignment: center;
+                            }
+
+                            for friend[index] in Ui.friends : Rectangle {
+                                height: 46px;
+                                border-radius: 10px;
+                                background: #ffffff08;
 
                                 HorizontalLayout {
-                                    padding-left: 11px;
-                                    padding-right: 11px;
-                                    spacing: 8px;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 10px;
 
-                                    Glyph {
-                                        commands: channel.voice ? Icons.speaker : Icons.hash;
-                                        tint: Skin.ink-dim;
-                                        size: 15px;
+                                    Avatar {
+                                        letter: friend.initial;
+                                        size: 28px;
                                         y: (parent.height - self.height) / 2;
                                     }
 
                                     Text {
-                                        text: channel.name;
+                                        text: friend.name;
                                         color: Skin.ink-body;
+                                        font-family: Skin.sans;
                                         font-size: 13px;
-                                        horizontal-alignment: left;
                                         horizontal-stretch: 1;
-                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+
+                                    GhostButton {
+                                        visible: friend.state == "accepted";
+                                        width: friend.state == "accepted" ? 96px : 0px;
+                                        text: "Conversar";
+                                        y: (parent.height - self.height) / 2;
+                                        clicked => { Ui.talk-to-friend(index); }
+                                    }
+
+                                    PrimaryButton {
+                                        visible: friend.state == "incoming";
+                                        width: friend.state == "incoming" ? 88px : 0px;
+                                        height: 30px;
+                                        text: "Aceitar";
+                                        y: (parent.height - self.height) / 2;
+                                        clicked => { Ui.answer-friend(friend.id, true); }
+                                    }
+
+                                    GhostButton {
+                                        visible: friend.state == "incoming";
+                                        width: friend.state == "incoming" ? 88px : 0px;
+                                        text: "Recusar";
+                                        y: (parent.height - self.height) / 2;
+                                        clicked => { Ui.answer-friend(friend.id, false); }
+                                    }
+
+                                    Text {
+                                        visible: friend.state == "waiting" || friend.state == "blocked";
+                                        text: friend.state == "waiting" ? "aguardando" : "bloqueado";
+                                        color: Skin.ink-dim;
+                                        font-family: Skin.sans;
+                                        font-size: 12px;
                                         vertical-alignment: center;
                                     }
                                 }
                             }
                         }
                     }
+
+                    // ---- a conversa aberta ----
+                    Panel {
+                        visible: Ui.home-tab == "direct";
+                        height: Ui.home-tab == "direct" ? 520px : 0px;
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 10px;
+
+                            Text {
+                                text: Ui.talking-name;
+                                color: Skin.ink-strong;
+                                font-family: Skin.sans;
+                                font-size: 14px;
+                                font-weight: 600;
+                            }
+
+                            ScrollView {
+                                vertical-stretch: 1;
+
+                                VerticalLayout {
+                                    spacing: 10px;
+                                    alignment: start;
+
+                                    for said in Ui.direct-messages : Said {
+                                        author: said.author;
+                                        initial: said.initial;
+                                        body: said.body;
+                                        at: said.at;
+                                    }
+                                }
+                            }
+
+                            talking := Field {
+                                placeholder: "Escreva uma mensagem";
+                                accepted => {
+                                    Ui.send-direct(talking.text);
+                                    talking.text = "";
+                                }
+                            }
+                        }
+                    }
                 }
             }
+        }
 
-            Column {
-                horizontal-stretch: 1;
+        // ---- o servidor aberto ----
+        HorizontalLayout {
+            visible: Ui.in-server;
+            horizontal-stretch: Ui.in-server ? 1 : 0;
+            spacing: 10px;
+
+            Panel {
+                width: Ui.in-server ? 240px : 0px;
 
                 VerticalLayout {
                     padding: 12px;
                     spacing: 8px;
 
-                    LabelMono { text: Ui.channel-name == "" ? "CHAT" : Ui.channel-name; }
+                    Title { text: Ui.server-name; }
 
                     ScrollView {
                         vertical-stretch: 1;
 
                         VerticalLayout {
-                            spacing: 10px;
+                            spacing: 14px;
                             alignment: start;
 
-                            if Ui.messages.length == 0 : Muted {
-                                text: "Escolha um canal de texto para ler as mensagens.";
-                                font-size: 12.5px;
-                            }
+                            VerticalLayout {
+                                spacing: 8px;
 
-                            for message in Ui.messages : HorizontalLayout {
-                                spacing: 9px;
+                                HorizontalLayout {
+                                    spacing: 8px;
 
-                                Avatar {
-                                    letter: message.initial;
-                                    size: 30px;
-                                }
-
-                                VerticalLayout {
-                                    spacing: 2px;
-
-                                    HorizontalLayout {
-                                        spacing: 7px;
-                                        alignment: start;
-
-                                        Text {
-                                            text: message.author;
-                                            color: Skin.ink-strong;
-                                            font-size: 13px;
-                                            font-weight: 600;
-                                        }
-
-                                        Text {
-                                            text: message.at;
-                                            color: Skin.ink-faint;
-                                            font-size: 11px;
-                                            vertical-alignment: center;
-                                        }
+                                    LabelMono {
+                                        text: "CANAIS DE TEXTO";
+                                        horizontal-stretch: 1;
+                                        vertical-alignment: center;
                                     }
 
-                                    Text {
-                                        text: message.body;
-                                        color: Skin.ink-body;
-                                        font-size: 13px;
-                                        wrap: word-wrap;
+                                    IconButton {
+                                        commands: Icons.plus;
+                                        size: 20px;
+                                        glyph-size: 12px;
+                                        clicked => {
+                                            naming = naming == "text" ? "" : "text";
+                                            fresh = "";
+                                        }
+                                    }
+                                }
+
+                                for channel in Ui.text-channels : ChannelItem {
+                                    item: channel;
+                                }
+
+                                if Ui.text-channels.length == 0 && naming != "text" : GhostButton {
+                                    text: "Criar canal de texto";
+                                    clicked => { naming = "text"; fresh = ""; }
+                                }
+
+                                if naming == "text" : Field {
+                                    placeholder: "Nome do canal";
+                                    text <=> fresh;
+                                    accepted => {
+                                        Ui.create-channel(fresh, false);
+                                        fresh = "";
+                                        naming = "";
                                     }
                                 }
                             }
-                        }
-                    }
 
-                    composer := Field {
-                        placeholder: "Escreva uma mensagem";
-                            accepted => {
-                            Ui.send-message(composer.text);
-                            composer.text = "";
+                            VerticalLayout {
+                                spacing: 8px;
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+
+                                    LabelMono {
+                                        text: "CANAIS DE VOZ";
+                                        horizontal-stretch: 1;
+                                        vertical-alignment: center;
+                                    }
+
+                                    IconButton {
+                                        commands: Icons.plus;
+                                        size: 20px;
+                                        glyph-size: 12px;
+                                        clicked => {
+                                            naming = naming == "voice" ? "" : "voice";
+                                            fresh = "";
+                                        }
+                                    }
+                                }
+
+                                for channel in Ui.voice-channels : ChannelItem {
+                                    item: channel;
+                                }
+
+                                if Ui.voice-channels.length == 0 && naming != "voice" : GhostButton {
+                                    text: "Criar canal de voz";
+                                    clicked => { naming = "voice"; fresh = ""; }
+                                }
+
+                                if naming == "voice" : Field {
+                                    placeholder: "Nome do canal";
+                                    text <=> fresh;
+                                    accepted => {
+                                        Ui.create-channel(fresh, true);
+                                        fresh = "";
+                                        naming = "";
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            Column {
-                width: 220px;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 10px;
+
+                // A faixa do convite, acima do chat — como no `ServerView`.
+                Panel {
+                    visible: Ui.invite-code != "";
+                    height: Ui.invite-code == "" ? 0px : 46px;
+
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        spacing: 10px;
+
+                        Muted {
+                            text: "Convite da sala";
+                            vertical-alignment: center;
+                        }
+
+                        Rectangle {
+                            width: invite.preferred-width + 16px;
+                            height: 24px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 7px;
+                            background: #8a7cf529;
+
+                            invite := Text {
+                                text: Ui.invite-code;
+                                color: Skin.lilac-2;
+                                font-family: Skin.mono;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                }
+
+                Panel {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        LabelMono { text: Ui.channel-name == "" ? "CHAT" : Ui.channel-name; }
+
+                        ScrollView {
+                            vertical-stretch: 1;
+
+                            VerticalLayout {
+                                spacing: 10px;
+                                alignment: start;
+
+                                if Ui.messages.length == 0 : Muted {
+                                    text: "Escolha um canal de texto para ler as mensagens.";
+                                    font-size: 12.5px;
+                                }
+
+                                for message in Ui.messages : Said {
+                                    author: message.author;
+                                    initial: message.initial;
+                                    body: message.body;
+                                    at: message.at;
+                                }
+                            }
+                        }
+
+                        composer := Field {
+                            placeholder: "Escreva uma mensagem";
+                            accepted => {
+                                Ui.send-message(composer.text);
+                                composer.text = "";
+                            }
+                        }
+                    }
+                }
+
+                Danger {
+                    text: Ui.complaint;
+                    height: 18px;
+                }
+            }
+
+            Panel {
+                width: Ui.in-server ? 240px : 0px;
 
                 VerticalLayout {
                     padding: 12px;
@@ -227,6 +852,8 @@ export component HubScreen inherits Rectangle {
                     LabelMono { text: "MEMBROS"; }
 
                     ScrollView {
+                        vertical-stretch: 1;
+
                         VerticalLayout {
                             spacing: 4px;
                             alignment: start;
@@ -246,8 +873,8 @@ export component HubScreen inherits Rectangle {
                                     Text {
                                         text: member.name;
                                         color: Skin.ink-body;
+                                        font-family: Skin.sans;
                                         font-size: 13px;
-                                        horizontal-alignment: left;
                                         horizontal-stretch: 1;
                                         overflow: elide;
                                         vertical-alignment: center;
@@ -256,6 +883,7 @@ export component HubScreen inherits Rectangle {
                                     Text {
                                         text: member.note;
                                         color: Skin.ink-faint;
+                                        font-family: Skin.sans;
                                         font-size: 11px;
                                         vertical-alignment: center;
                                     }
@@ -266,7 +894,5 @@ export component HubScreen inherits Rectangle {
                 }
             }
         }
-
-        UserBar { }
     }
 }

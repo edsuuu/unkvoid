@@ -12,18 +12,23 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use core_app::api::{Api, HttpError};
 use core_app::app::EntryRefusal;
-use core_app::models::{Channel, ChannelKind, RoomIdentity, ServerSummary, User};
+use core_app::models::{
+    Channel, ChannelKind, Conversation, DirectMessage, Friendship, FriendshipStatus, Person, RoomIdentity,
+    ServerSummary, User,
+};
 use core_app::protocol::local;
 use core_app::reconnect::Backoff;
 use core_app::session::Session;
 use core_app::{App, Failure, Screen};
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel, Weak};
 use storage::Storage;
 use tokio::runtime::Runtime;
 
 use crate::devices::{self, Device};
 use crate::sharing;
-use crate::{AppWindow, ChannelRow, DeviceRow, MemberRow, MessageRow, PeerRow, ServerRow, Ui};
+use crate::{
+    AppWindow, ChannelRow, ConversationRow, DeviceRow, FriendRow, MemberRow, MessageRow, PeerRow, ServerRow, Ui,
+};
 
 const DEFAULT_SERVER: &str = "https://unkvoid.com";
 
@@ -48,6 +53,15 @@ pub struct Bridge {
     servers: Arc<Mutex<Vec<ServerSummary>>>,
     channels: Arc<Mutex<Vec<Channel>>>,
     reading: Arc<Mutex<Option<String>>>,
+    /// Qual servidor está aberto: é nele que um canal novo nasce.
+    opened: Arc<Mutex<Option<i64>>>,
+    /// A Home: as conversas e as amizades que a tela mostra por índice, e com quem se está
+    /// falando agora.
+    conversations: Arc<Mutex<Vec<Conversation>>>,
+    friends: Arc<Mutex<Vec<Friendship>>>,
+    talking: Arc<Mutex<Option<Person>>>,
+    /// Quem sou eu para o servidor. É o que decide se um pedido de amizade chegou ou saiu.
+    me: Arc<Mutex<Option<i64>>>,
     /// O que o popover mostrou por último, para o índice clicado virar um aparelho.
     microphones: Arc<Mutex<Vec<Device>>>,
     speakers: Arc<Mutex<Vec<Device>>>,
@@ -72,6 +86,11 @@ impl Bridge {
             servers: Arc::default(),
             channels: Arc::default(),
             reading: Arc::default(),
+            opened: Arc::default(),
+            conversations: Arc::default(),
+            friends: Arc::default(),
+            talking: Arc::default(),
+            me: Arc::default(),
             microphones: Arc::default(),
             speakers: Arc::default(),
             chosen: Arc::default(),
@@ -159,6 +178,12 @@ impl Bridge {
             move |index| bridge.open_server(index)
         });
 
+        ui.on_create_channel({
+            let bridge = self.clone();
+
+            move |name, voice| bridge.create_channel(&name, voice)
+        });
+
         ui.on_open_channel({
             let bridge = self.clone();
 
@@ -169,6 +194,66 @@ impl Bridge {
             let bridge = self.clone();
 
             move |body| bridge.send_message(&body)
+        });
+
+        ui.on_show_hub_home({
+            let bridge = self.clone();
+
+            move || bridge.show_hub_home()
+        });
+
+        ui.on_create_server({
+            let bridge = self.clone();
+
+            move |name| bridge.create_server(&name)
+        });
+
+        ui.on_join_invite({
+            let bridge = self.clone();
+
+            move |code| bridge.join_invite(&code)
+        });
+
+        ui.on_load_friends({
+            let bridge = self.clone();
+
+            move || bridge.load_friends()
+        });
+
+        ui.on_add_friend({
+            let bridge = self.clone();
+
+            move |email| bridge.add_friend(&email)
+        });
+
+        ui.on_answer_friend({
+            let bridge = self.clone();
+
+            move |friendship, accept| bridge.answer_friend(friendship, accept)
+        });
+
+        ui.on_open_conversation({
+            let bridge = self.clone();
+
+            move |index| bridge.open_conversation(index)
+        });
+
+        ui.on_talk_to_friend({
+            let bridge = self.clone();
+
+            move |index| bridge.talk_to_friend(index)
+        });
+
+        ui.on_send_direct({
+            let bridge = self.clone();
+
+            move |body| bridge.send_direct(&body)
+        });
+
+        ui.on_open_recent_room({
+            let bridge = self.clone();
+
+            move |code| bridge.enter(bridge.core.join_room("", &code), None)
         });
 
         ui.on_leave_room({
@@ -243,6 +328,7 @@ impl Bridge {
     pub fn start(self: &Rc<Self>) {
         let (core, api, window) = (self.core.clone(), self.api.clone(), self.window.clone());
         let (sfu, servers) = (self.sfu.clone(), self.servers.clone());
+        let (me, conversations) = (self.me.clone(), self.conversations.clone());
 
         self.spawn(async move {
             let mut backoff = Backoff::default();
@@ -289,7 +375,7 @@ impl Bridge {
                 None => None,
             };
 
-            landed(&core, &api, &window, &servers, user).await;
+            landed(&core, &api, &window, &servers, &me, &conversations, user).await;
         });
     }
 
@@ -297,6 +383,7 @@ impl Bridge {
         let (core, api, window) = (self.core.clone(), self.api.clone(), self.window.clone());
         let (email, password) = (email.to_owned(), password.to_owned());
         let servers = self.servers.clone();
+        let (me, conversations) = (self.me.clone(), self.conversations.clone());
 
         paint(&self.window, |app| app.global::<Ui>().set_login_busy(true));
 
@@ -319,7 +406,7 @@ impl Bridge {
                         None => api.me().await.ok(),
                     };
 
-                    landed(&core, &api, &window, &servers, user).await;
+                    landed(&core, &api, &window, &servers, &me, &conversations, user).await;
                 }
                 Err(failure) => refuse_login(&window, &failure),
             }
@@ -342,7 +429,8 @@ impl Bridge {
             ui.set_user_name(SharedString::new());
             ui.set_user_initial(SharedString::new());
             ui.set_servers(ModelRc::default());
-            ui.set_channels(ModelRc::default());
+            ui.set_text_channels(ModelRc::default());
+            ui.set_voice_channels(ModelRc::default());
             ui.set_members(ModelRc::default());
             ui.set_messages(ModelRc::default());
             ui.set_screen(named(landing).into());
@@ -357,6 +445,184 @@ impl Bridge {
         paint(&self.window, move |app| app.global::<Ui>().set_screen(named(screen).into()));
     }
 
+    /// Volta para a Home e recarrega o que ela mostra.
+    fn show_hub_home(self: &Rc<Self>) {
+        paint(&self.window, |app| app.global::<Ui>().set_in_server(false));
+
+        let (api, window) = (self.api.clone(), self.window.clone());
+        let (known, held) = (self.servers.clone(), self.conversations.clone());
+
+        self.spawn(async move {
+            refresh_servers(&api, &window, &known).await;
+
+            if let Ok(open) = api.conversations().await {
+                show_conversations(&window, &held, open);
+            }
+        });
+    }
+
+    fn create_server(self: &Rc<Self>, name: &str) {
+        let name = name.trim().to_owned();
+
+        if name.is_empty() {
+            return;
+        }
+
+        let (api, window) = (self.api.clone(), self.window.clone());
+        let known = self.servers.clone();
+
+        self.spawn(async move {
+            match api.create_server(&name).await {
+                Ok(_) => refresh_servers(&api, &window, &known).await,
+                Err(failure) => complain(&window, said(&failure)),
+            }
+        });
+    }
+
+    fn join_invite(self: &Rc<Self>, code: &str) {
+        let code = code.trim().to_owned();
+
+        if code.is_empty() {
+            return;
+        }
+
+        let (api, window) = (self.api.clone(), self.window.clone());
+        let known = self.servers.clone();
+
+        self.spawn(async move {
+            match api.join_invite(&code).await {
+                Ok(_) => refresh_servers(&api, &window, &known).await,
+                Err(failure) => complain(&window, said(&failure)),
+            }
+        });
+    }
+
+    fn load_friends(self: &Rc<Self>) {
+        let (api, window) = (self.api.clone(), self.window.clone());
+        let (held, me) = (self.friends.clone(), self.me.clone());
+
+        self.spawn(async move {
+            match api.friends().await {
+                Ok(friends) => show_friends(&window, &held, &me, friends),
+                Err(failure) => complain(&window, said(&failure)),
+            }
+        });
+    }
+
+    fn add_friend(self: &Rc<Self>, email: &str) {
+        let email = email.trim().to_owned();
+
+        if email.is_empty() {
+            return;
+        }
+
+        let (api, window) = (self.api.clone(), self.window.clone());
+        let (held, me) = (self.friends.clone(), self.me.clone());
+
+        self.spawn(async move {
+            if let Err(failure) = api.add_friend(&email).await {
+                complain(&window, said(&failure));
+
+                return;
+            }
+
+            if let Ok(friends) = api.friends().await {
+                show_friends(&window, &held, &me, friends);
+            }
+        });
+    }
+
+    fn answer_friend(self: &Rc<Self>, friendship: i32, accept: bool) {
+        let (api, window) = (self.api.clone(), self.window.clone());
+        let (held, me) = (self.friends.clone(), self.me.clone());
+
+        self.spawn(async move {
+            if let Err(failure) = api.answer_friend(i64::from(friendship), accept).await {
+                complain(&window, said(&failure));
+
+                return;
+            }
+
+            if let Ok(friends) = api.friends().await {
+                show_friends(&window, &held, &me, friends);
+            }
+        });
+    }
+
+
+    fn open_conversation(self: &Rc<Self>, index: i32) {
+        let Some(conversation) = at(&self.conversations, index) else {
+            return;
+        };
+
+        self.talk_with(conversation.user);
+    }
+
+    fn talk_to_friend(self: &Rc<Self>, index: i32) {
+        let Some(friend) = at(&self.friends, index) else {
+            return;
+        };
+
+        let me = *lock(&self.me);
+        let other = if Some(friend.requester.id) == me { friend.addressee } else { friend.requester };
+
+        self.talk_with(other);
+    }
+
+    /// Abre a conversa com alguém e a marca como lida: o contador só zera assim.
+    fn talk_with(self: &Rc<Self>, person: Person) {
+        let (api, window) = (self.api.clone(), self.window.clone());
+        let (talking, held) = (self.talking.clone(), self.conversations.clone());
+
+        *lock(&talking) = Some(person.clone());
+
+        self.spawn(async move {
+            match api.direct_messages(person.id).await {
+                Ok(messages) => {
+                    let _ = api.read_conversation(person.id).await;
+
+                    show_direct(&window, &person, messages);
+
+                    if let Ok(conversations) = api.conversations().await {
+                        show_conversations(&window, &held, conversations);
+                    }
+                }
+                Err(failure) => complain(&window, said(&failure)),
+            }
+        });
+    }
+
+    fn send_direct(self: &Rc<Self>, written: &str) {
+        let Some(person) = lock(&self.talking).clone() else {
+            return;
+        };
+
+        let written = written.trim().to_owned();
+
+        if written.is_empty() {
+            return;
+        }
+
+        let (api, window) = (self.api.clone(), self.window.clone());
+        let held = self.conversations.clone();
+
+        self.spawn(async move {
+            if let Err(failure) = api.send_direct(person.id, &written).await {
+                complain(&window, said(&failure));
+
+                return;
+            }
+
+            if let Ok(messages) = api.direct_messages(person.id).await {
+                show_direct(&window, &person, messages);
+            }
+
+            if let Ok(conversations) = api.conversations().await {
+                show_conversations(&window, &held, conversations);
+            }
+        });
+    }
+
     fn open_server(self: &Rc<Self>, index: i32) {
         let Some(server) = at(&self.servers, index) else {
             return;
@@ -367,52 +633,33 @@ impl Bridge {
         let known = self.servers.clone();
         let id = server.id;
 
+        *lock(&self.opened) = Some(id);
+
         self.spawn(async move {
-            match api.tree(id).await {
-                Ok(tree) => {
-                    let ordered = tree.ordered_channels();
-                    let members: Vec<MemberRow> = tree
-                        .members
-                        .iter()
-                        .map(|member| {
-                            let name =
-                                member.nickname.clone().unwrap_or_else(|| member.name.clone());
+            show_tree(&api, &window, &channels, &reading, &known, id).await;
+        });
+    }
 
-                            MemberRow {
-                                initial: initial(&name),
-                                name: name.into(),
-                                note: if member.is_owner { "dono" } else { "" }.into(),
-                            }
-                        })
-                        .collect();
+    fn create_channel(self: &Rc<Self>, name: &str, voice: bool) {
+        let Some(server) = *lock(&self.opened) else {
+            return;
+        };
 
-                    let rows: Vec<ChannelRow> = ordered
-                        .iter()
-                        .map(|channel| ChannelRow {
-                            name: channel.name.clone().into(),
-                            voice: channel.kind == ChannelKind::Voice,
-                            current: false,
-                        })
-                        .collect();
+        let name = name.trim().to_owned();
 
-                    *lock(&channels) = ordered;
-                    *lock(&reading) = None;
+        if name.is_empty() {
+            return;
+        }
 
-                    let chosen = lock(&known).iter().position(|known| known.id == id);
-                    let servers = rows_of(&lock(&known), chosen);
-                    let name = tree.name.clone();
+        let kind = if voice { ChannelKind::Voice } else { ChannelKind::Text };
+        let (api, window) = (self.api.clone(), self.window.clone());
+        let (channels, reading) = (self.channels.clone(), self.reading.clone());
+        let known = self.servers.clone();
 
-                    paint(&window, move |app| {
-                        let ui = app.global::<Ui>();
-
-                        ui.set_server_name(name.into());
-                        ui.set_servers(model(servers));
-                        ui.set_channels(model(rows));
-                        ui.set_members(model(members));
-                        ui.set_messages(ModelRc::default());
-                        ui.set_channel_name(SharedString::new());
-                    });
-                }
+        self.spawn(async move {
+            match api.create_channel(server, &name, kind).await {
+                // A árvore volta inteira: é ela que diz a posição do canal novo entre os outros.
+                Ok(()) => show_tree(&api, &window, &channels, &reading, &known, server).await,
                 Err(failure) => complain(&window, said(&failure)),
             }
         });
@@ -437,20 +684,13 @@ impl Bridge {
         let (id, name) = (channel.id.clone(), channel.name.clone());
         let chosen = index as usize;
 
+        let (text, voice) = split_channels(&lock(&self.channels), Some(chosen));
+
         paint(&window, move |app| {
             let ui = app.global::<Ui>();
-            let rows: Vec<ChannelRow> = ui
-                .get_channels()
-                .iter()
-                .enumerate()
-                .map(|(position, mut row)| {
-                    row.current = position == chosen;
 
-                    row
-                })
-                .collect();
-
-            ui.set_channels(model(rows));
+            ui.set_text_channels(model(text));
+            ui.set_voice_channels(model(voice));
             ui.set_channel_name(format!("# {name}").into());
         });
 
@@ -583,7 +823,7 @@ impl Bridge {
             if sharing {
                 sharing::stop_screen(&session, &media).await;
             } else if let Err(failure) = sharing::share_screen(&session, &media).await {
-                complain(&window, &sharing::said(&failure));
+                complain(&window, sharing::said(&failure));
             }
 
             let live = media.0.lock().await.screen.is_some();
@@ -717,6 +957,124 @@ fn lock<T>(cell: &Arc<Mutex<T>>) -> MutexGuard<'_, T> {
     cell.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Servidor recém-criado ou recém-entrado: a lista muda e a Home a mostra.
+async fn refresh_servers(api: &Arc<Api>, window: &Weak<AppWindow>, known: &Arc<Mutex<Vec<ServerSummary>>>) {
+    match api.servers().await {
+        Ok(servers) => {
+            *lock(known) = servers.clone();
+
+            let rows = rows_of(&servers, None);
+
+            paint(window, move |app| {
+                let ui = app.global::<Ui>();
+
+                ui.set_servers(model(rows));
+                ui.set_in_server(false);
+            });
+        }
+        Err(failure) => complain(window, said(&failure)),
+    }
+}
+
+/// As amizades, já decididas: quem pediu a quem é conta do Rust, não da tela.
+fn show_friends(
+    window: &Weak<AppWindow>,
+    held: &Arc<Mutex<Vec<Friendship>>>,
+    me: &Arc<Mutex<Option<i64>>>,
+    friends: Vec<Friendship>,
+) {
+    let mine = *lock(me);
+
+    *lock(held) = friends.clone();
+
+    let waiting = friends
+        .iter()
+        .filter(|friend| friend.status == FriendshipStatus::Pending && Some(friend.addressee.id) == mine)
+        .count();
+
+    let rows: Vec<FriendRow> = friends
+        .iter()
+        .map(|friend| {
+            let other = if Some(friend.requester.id) == mine { &friend.addressee } else { &friend.requester };
+            let state = match friend.status {
+                FriendshipStatus::Accepted => "accepted",
+                FriendshipStatus::Blocked => "blocked",
+                FriendshipStatus::Pending if Some(friend.addressee.id) == mine => "incoming",
+                FriendshipStatus::Pending => "waiting",
+            };
+
+            FriendRow {
+                id: friend.id as i32,
+                #[allow(clippy::cast_possible_truncation)]
+                user_id: other.id as i32,
+                initial: initial(&other.name),
+                name: other.name.clone().into(),
+                state: state.into(),
+            }
+        })
+        .collect();
+
+    paint(window, move |app| {
+        let ui = app.global::<Ui>();
+
+        ui.set_friends(model(rows));
+        ui.set_pending_count(waiting as i32);
+    });
+}
+
+fn show_conversations(
+    window: &Weak<AppWindow>,
+    held: &Arc<Mutex<Vec<Conversation>>>,
+    conversations: Vec<Conversation>,
+) {
+    *lock(held) = conversations.clone();
+
+    let rows: Vec<ConversationRow> = conversations
+        .iter()
+        .map(|conversation| ConversationRow {
+            user_id: conversation.user.id as i32,
+            initial: initial(&conversation.user.name),
+            name: conversation.user.name.clone().into(),
+            last: if conversation.last.mine {
+                format!("você: {}", conversation.last.body).into()
+            } else {
+                conversation.last.body.clone().into()
+            },
+            unread: conversation.unread as i32,
+        })
+        .collect();
+
+    paint(window, move |app| app.global::<Ui>().set_conversations(model(rows)));
+}
+
+fn show_direct(window: &Weak<AppWindow>, person: &Person, messages: Vec<DirectMessage>) {
+    let rows: Vec<MessageRow> = messages
+        .iter()
+        .map(|message| MessageRow {
+            initial: initial(&message.sender.name),
+            author: message.sender.name.clone().into(),
+            body: message.body.clone().into(),
+            at: at_of(&message.created_at),
+        })
+        .collect();
+
+    let name: SharedString = person.name.clone().into();
+
+    paint(window, move |app| {
+        let ui = app.global::<Ui>();
+
+        ui.set_talking_name(name);
+        ui.set_direct_messages(model(rows));
+        ui.set_in_server(false);
+        ui.set_home_tab("direct".into());
+    });
+}
+
+/// A hora que a linha mostra: o `HH:MM` do carimbo ISO, sem data e sem fuso.
+fn at_of(stamp: &str) -> SharedString {
+    stamp.split('T').nth(1).map(|time| &time[..5.min(time.len())]).unwrap_or_default().into()
+}
+
 fn at<T: Clone>(cell: &Arc<Mutex<Vec<T>>>, index: i32) -> Option<T> {
     usize::try_from(index).ok().and_then(|index| lock(cell).get(index).cloned())
 }
@@ -751,12 +1109,18 @@ async fn landed(
     api: &Arc<Api>,
     window: &Weak<AppWindow>,
     known: &Arc<Mutex<Vec<ServerSummary>>>,
+    me: &Arc<Mutex<Option<i64>>>,
+    conversations: &Arc<Mutex<Vec<Conversation>>>,
     user: Option<User>,
 ) {
     let landing = core.home();
     let name = user.as_ref().map(|user| user.name.clone()).unwrap_or_default();
     let signed_in = user.is_some();
     let saved = core.state().name;
+
+    // Quem sou eu decide se um pedido de amizade chegou ou saiu — e isso é lido em toda
+    // lista de amigos daqui para a frente.
+    *lock(me) = user.as_ref().map(|user| user.id);
 
     core.show(landing);
 
@@ -782,6 +1146,14 @@ async fn landed(
             }
             Err(failure) => complain(window, said(&failure)),
         }
+
+        if let Ok(open) = api.conversations().await {
+            show_conversations(window, conversations, open);
+        }
+
+        let recent: Vec<SharedString> = core.recent_rooms().into_iter().map(Into::into).collect();
+
+        paint(window, move |app| app.global::<Ui>().set_recent_rooms(model(recent)));
     }
 }
 
@@ -814,6 +1186,84 @@ fn rows_of(servers: &[ServerSummary], chosen: Option<usize>) -> Vec<ServerRow> {
             current: Some(index) == chosen,
         })
         .collect()
+}
+
+/// A tela mostra texto e voz em duas seções, como o React; o núcleo só conhece uma lista.
+/// Cada linha leva a posição dela na lista inteira, que é o que volta no clique.
+/// Abre o servidor na tela: os canais, quem está dentro e o convite, tudo da mesma árvore.
+async fn show_tree(
+    api: &Arc<Api>,
+    window: &Weak<AppWindow>,
+    channels: &Arc<Mutex<Vec<Channel>>>,
+    reading: &Arc<Mutex<Option<String>>>,
+    known: &Arc<Mutex<Vec<ServerSummary>>>,
+    id: i64,
+) {
+    let tree = match api.tree(id).await {
+        Ok(tree) => tree,
+        Err(failure) => return complain(window, said(&failure)),
+    };
+
+    let ordered = tree.ordered_channels();
+    let members: Vec<MemberRow> = tree
+        .members
+        .iter()
+        .map(|member| {
+            let name = member.nickname.clone().unwrap_or_else(|| member.name.clone());
+
+            MemberRow {
+                initial: initial(&name),
+                name: name.into(),
+                note: if member.is_owner { "dono" } else { "" }.into(),
+            }
+        })
+        .collect();
+
+    let (text, voice) = split_channels(&ordered, None);
+
+    *lock(channels) = ordered;
+    *lock(reading) = None;
+
+    let chosen = lock(known).iter().position(|server| server.id == id);
+    let servers = rows_of(&lock(known), chosen);
+    let name = tree.name.clone();
+    let invite = tree.invite_code.clone().unwrap_or_default();
+
+    paint(window, move |app| {
+        let ui = app.global::<Ui>();
+
+        ui.set_server_name(name.into());
+        ui.set_servers(model(servers));
+        ui.set_text_channels(model(text));
+        ui.set_voice_channels(model(voice));
+        ui.set_members(model(members));
+        ui.set_messages(ModelRc::default());
+        ui.set_channel_name(SharedString::new());
+        ui.set_invite_code(invite.into());
+        ui.set_in_server(true);
+    });
+}
+
+fn split_channels(ordered: &[Channel], chosen: Option<usize>) -> (Vec<ChannelRow>, Vec<ChannelRow>) {
+    let mut text = Vec::new();
+    let mut voice = Vec::new();
+
+    for (index, channel) in ordered.iter().enumerate() {
+        let row = ChannelRow {
+            index: index as i32,
+            name: channel.name.clone().into(),
+            voice: channel.kind == ChannelKind::Voice,
+            current: Some(index) == chosen,
+        };
+
+        if row.voice {
+            voice.push(row);
+        } else {
+            text.push(row);
+        }
+    }
+
+    (text, voice)
 }
 
 fn peer_rows(session: &Arc<Session>) -> Vec<PeerRow> {
