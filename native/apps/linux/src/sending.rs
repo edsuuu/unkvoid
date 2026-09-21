@@ -80,6 +80,16 @@ impl Sending {
         Ok(())
     }
 
+    /// Quantos bytes já subiram e quantos envios falharam. É o que prova, de fora, que a
+    /// captura virou pacote — e o que o teste vivo mede.
+    pub fn sent_bytes(&self) -> u64 {
+        target(&self.sender).as_ref().map_or(0, PlainSender::sent_bytes)
+    }
+
+    pub fn errors(&self) -> u64 {
+        self.errors.load(Ordering::Relaxed)
+    }
+
     pub fn is_live(&self, source: Source) -> bool {
         self.live.contains_key(&source)
     }
@@ -305,5 +315,51 @@ fn count(errors: &Arc<AtomicU64>, failure: Option<impl std::fmt::Display>) {
 
     if errors.fetch_add(1, Ordering::Relaxed) == 0 {
         tracing::warn!(error = %failure, "transmissão: não saiu (as próximas só contam)");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Prova que a captura e o encoder do Linux abrem, comprimem e que o quadro sai pelo
+    /// socket. O endereço não precisa de ninguém escutando — o que se mede aqui é o envio,
+    /// não a entrega.
+    ///
+    /// `#[ignore]` porque precisa de uma tela de verdade — roda com
+    /// `UNKVOID_CAPTURE=x11 cargo test -p unkvoid-linux -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn the_screen_capture_leaves_through_the_socket() {
+        // Alguém tem de estar escutando: no Linux um socket UDP ligado a uma porta fechada
+        // recebe o ICMP de volta e falha no envio seguinte, o que contaria como erro nosso.
+        let listening = std::net::UdpSocket::bind("127.0.0.1:41999").expect("a porta abriu");
+        let mut sending = Sending::default();
+
+        sending.use_sfu("127.0.0.1:41999", None).expect("o remetente abriu");
+
+        let config = CaptureConfig {
+            source: CaptureSource::PrimaryDisplay,
+            capture_audio: false,
+            quality: capture::Quality::Hd720,
+            frame_rate: 30,
+            ..CaptureConfig::default()
+        };
+
+        sending
+            .start(Source::Screen, config, Some(Source::Screen), None, vec!["prova".to_owned()])
+            .expect("a captura abriu");
+
+        std::thread::sleep(std::time::Duration::from_secs(3));
+
+        let sent = sending.sent_bytes();
+        let errors = sending.errors();
+
+        println!("subiram {sent} bytes, {errors} erros");
+        sending.stop_all();
+        drop(listening);
+
+        assert!(sent > 0, "nada saiu pelo socket em 3 s");
+        assert_eq!(errors, 0, "o envio deu erro");
     }
 }
