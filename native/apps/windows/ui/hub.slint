@@ -126,7 +126,7 @@ component Said inherits HorizontalLayout {
     }
 }
 
-// Uma linha de canal. O `#` do React é a mesma monoespaçada do código da sala.
+// Uma linha de canal de texto: o `#` do React na mesma monoespaçada do código da sala.
 component ChannelItem inherits RowItem {
     in property <ChannelRow> item;
 
@@ -139,7 +139,7 @@ component ChannelItem inherits RowItem {
         spacing: 8px;
 
         Glyph {
-            commands: root.item.voice ? Icons.speaker : Icons.hash;
+            commands: Icons.hash;
             tint: root.item.current ? Skin.lilac-2 : Skin.ink-dim;
             size: 15px;
             y: (parent.height - self.height) / 2;
@@ -154,6 +154,274 @@ component ChannelItem inherits RowItem {
             horizontal-stretch: 1;
             overflow: elide;
             vertical-alignment: center;
+        }
+    }
+}
+
+// Um canal de voz. Clicar entra na voz **sem trocar de tela**, e quem está dentro aparece
+// logo abaixo do nome — é o `VoiceChannelItem` do React, que é o jeito do Discord.
+component VoiceItem inherits Rectangle {
+    in property <ChannelRow> item;
+    property <bool> here: Ui.voice-channel == root.item.id && root.item.id != "";
+
+    height: inside.preferred-height;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: root.here ? #8a7cf54d : (touch.has-hover ? Skin.line-strong : #ffffff14);
+    background: root.here ? #8a7cf51a : (touch.has-hover ? Skin.row : transparent);
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Ui.open-channel(root.item.index); }
+    }
+
+    inside := VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            spacing: 8px;
+
+            Glyph {
+                commands: Icons.speaker;
+                tint: root.here ? Skin.lilac-2 : Skin.ink-dim;
+                size: 14px;
+                y: (parent.height - self.height) / 2;
+            }
+
+            Text {
+                text: root.item.name;
+                color: root.here ? Skin.ink-body : Skin.ink-icon;
+                font-family: Skin.sans;
+                font-size: 13px;
+                font-weight: root.here ? 500 : 400;
+                horizontal-stretch: 1;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+
+            if root.here : Text {
+                text: Ui.elapsed;
+                color: Skin.ink-dim;
+                font-family: Skin.mono;
+                font-size: 9.5px;
+                vertical-alignment: center;
+            }
+        }
+
+        if root.here : VerticalLayout {
+            padding-left: 20px;
+            spacing: 6px;
+
+            for peer in Ui.peers : HorizontalLayout {
+                spacing: 8px;
+
+                Avatar {
+                    letter: peer.initial;
+                    size: 22px;
+                    mine: peer.mine;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                Text {
+                    text: peer.name;
+                    color: peer.mine ? Skin.ink-body : Skin.ink-icon;
+                    font-family: Skin.sans;
+                    font-size: 12.5px;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+
+                if peer.note != "" : Text {
+                    text: peer.note;
+                    color: Skin.ink-dim;
+                    font-family: Skin.mono;
+                    font-size: 9.5px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+// O cartão de criar sala: o campo de cima serve aos dois, nome da sala nova ou código do
+// convite. O React abre um modal no "Tenho um convite"; aqui o mesmo botão troca o campo.
+component HomeCreate inherits Panel {
+    property <bool> joining;
+
+    horizontal-stretch: 1;
+    min-width: 260px;
+    height: inside.preferred-height;
+
+    inside := VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+
+        LabelMono { text: "HOME"; }
+
+        Text {
+            text: "Oi, " + Ui.user-name + ".";
+            color: Skin.ink-strong;
+            font-family: Skin.sans;
+            font-size: 17px;
+            font-weight: 600;
+            overflow: elide;
+        }
+
+        Muted {
+            text: "Uma sala nova já vem com um canal de texto e um de voz. Depois é só mandar o convite.";
+        }
+
+        name := Field {
+            placeholder: root.joining ? "Código do convite" : "Nome da sala";
+            accepted => {
+                if (root.joining) { Ui.join-invite(name.text); } else { Ui.create-server(name.text); }
+                name.text = "";
+            }
+        }
+
+        PrimaryButton {
+            text: root.joining ? "Entrar com o convite" : "Criar sala";
+            clicked => {
+                if (root.joining) { Ui.join-invite(name.text); } else { Ui.create-server(name.text); }
+                name.text = "";
+            }
+        }
+
+        GhostButton {
+            text: root.joining ? "Quero criar uma sala" : "Tenho um convite";
+            clicked => {
+                root.joining = !root.joining;
+                name.text = "";
+            }
+        }
+    }
+}
+
+// Uma pastilha de código: o `btn-ghost` estreito do React, na monoespaçada.
+component CodeChip inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+
+    height: 30px;
+    width: label.preferred-width + 24px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: touch.has-hover ? #8a7cf580 : Skin.line-strong;
+    background: touch.has-hover ? Skin.row : #ffffff0a;
+
+    label := Text {
+        text: root.text;
+        color: Skin.ink-icon;
+        font-family: Skin.mono;
+        font-size: 12.5px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// O cartão da sala por código, e as últimas que se abriu — pastilhas, como no React.
+component HomeCodes inherits Panel {
+    horizontal-stretch: 1;
+    min-width: 260px;
+    height: inside.preferred-height;
+
+    inside := VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+
+        LabelMono { text: "SÓ COMPARTILHAR A TELA"; }
+        Muted { text: "Uma sala por código, sem servidor: quem tiver o código assiste."; }
+
+        PrimaryButton {
+            text: "Criar ou entrar com código";
+            clicked => { Ui.show-entry(); }
+        }
+
+        if Ui.recent-rooms.length > 0 : LabelMono {
+            text: "ÚLTIMAS SALAS ACESSADAS";
+        }
+
+        for line in Ui.recent-rooms : HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+
+            for code in line : CodeChip {
+                text: code;
+                clicked => { Ui.open-recent-room(code); }
+            }
+        }
+    }
+}
+
+// O cartão das salas com conta: nome, se você é dono, e quando entrou pela última vez.
+component HomeRooms inherits Panel {
+    height: inside.preferred-height;
+
+    inside := VerticalLayout {
+        padding: 20px;
+        spacing: 8px;
+
+        LabelMono { text: "ÚLTIMAS SALAS"; }
+
+        if Ui.servers.length == 0 : Muted {
+            text: "Nenhuma ainda. Crie uma ao lado ou entre com um convite.";
+            horizontal-alignment: center;
+        }
+
+        for server[index] in Ui.servers : RowItem {
+            height: 48px;
+            clicked => { Ui.open-server(index); }
+
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 11px;
+                spacing: 10px;
+
+                Avatar {
+                    letter: server.initial;
+                    size: 32px;
+                    square: true;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    horizontal-stretch: 1;
+
+                    Text {
+                        text: server.name;
+                        color: Skin.ink-body;
+                        font-family: Skin.sans;
+                        font-size: 13.5px;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+
+                    LabelMono {
+                        text: server.note;
+                        font-size: 9.5px;
+                    }
+                }
+
+                Text {
+                    text: server.at;
+                    color: Skin.ink-dim;
+                    font-family: Skin.mono;
+                    font-size: 10.5px;
+                    vertical-alignment: center;
+                }
+            }
         }
     }
 }
@@ -245,14 +513,16 @@ export component HubScreen inherits Rectangle {
         }
 
         // ---- a Home ----
-        HorizontalLayout {
-            visible: !Ui.in-server;
-            horizontal-stretch: Ui.in-server ? 0 : 1;
+        //
+        // `if` e não `visible`: escondido no Slint ainda ocupa lugar, e a Home ficava
+        // espremida pela largura que o servidor fechado continuava reservando.
+        if !Ui.in-server : HorizontalLayout {
+            horizontal-stretch: 1;
             spacing: 10px;
 
             // a coluna das abas e das conversas
             VerticalLayout {
-                width: Ui.in-server ? 0px : 260px;
+                width: 260px;
                 spacing: 10px;
 
                 Panel {
@@ -389,126 +659,18 @@ export component HubScreen inherits Rectangle {
                     }
 
                     // ---- salas ----
-                    Panel {
-                        visible: Ui.home-tab == "servers";
-                        height: Ui.home-tab == "servers" ? greeting.preferred-height : 0px;
+                    //
+                    // No React os três cartões são um `flex-wrap`: os dois primeiros cabem
+                    // lado a lado e o terceiro desce. O Slint não embrulha sozinho, então a
+                    // mesma divisão está escrita à mão.
+                    if Ui.home-tab == "servers" : HorizontalLayout {
+                        spacing: 12px;
 
-                        greeting := VerticalLayout {
-                            padding: 16px;
-                            spacing: 10px;
-
-                            LabelMono { text: "HOME"; }
-
-                            Text {
-                                text: "Oi, " + Ui.user-name + ".";
-                                color: Skin.ink-strong;
-                                font-family: Skin.sans;
-                                font-size: 17px;
-                                font-weight: 600;
-                            }
-
-                            Muted {
-                                text: "Uma sala nova já vem com um canal de texto e um de voz. Depois é só mandar o convite.";
-                            }
-
-                            name := Field {
-                                placeholder: joining ? "Código do convite" : "Nome da sala";
-                                accepted => {
-                                    if (joining) { Ui.join-invite(name.text); } else { Ui.create-server(name.text); }
-                                    name.text = "";
-                                }
-                            }
-
-                            PrimaryButton {
-                                text: joining ? "Entrar com o convite" : "Criar sala";
-                                clicked => {
-                                    if (joining) { Ui.join-invite(name.text); } else { Ui.create-server(name.text); }
-                                    name.text = "";
-                                }
-                            }
-
-                            GhostButton {
-                                text: joining ? "Quero criar uma sala" : "Tenho um convite";
-                                clicked => {
-                                    joining = !joining;
-                                    name.text = "";
-                                }
-                            }
-                        }
+                        HomeCreate { }
+                        HomeCodes { }
                     }
 
-                    Panel {
-                        visible: Ui.home-tab == "servers";
-                        height: Ui.home-tab == "servers" ? codes.preferred-height : 0px;
-
-                        codes := VerticalLayout {
-                            padding: 16px;
-                            spacing: 10px;
-
-                            LabelMono { text: "SÓ COMPARTILHAR A TELA"; }
-                            Muted { text: "Uma sala por código, sem servidor: quem tiver o código assiste."; }
-
-                            PrimaryButton {
-                                text: "Criar ou entrar com código";
-                                clicked => { Ui.show-entry(); }
-                            }
-
-                            LabelMono {
-                                visible: Ui.recent-rooms.length > 0;
-                                text: "ÚLTIMAS SALAS ACESSADAS";
-                            }
-
-                            for code in Ui.recent-rooms : GhostButton {
-                                text: code;
-                                clicked => { Ui.open-recent-room(code); }
-                            }
-                        }
-                    }
-
-                    Panel {
-                        visible: Ui.home-tab == "servers";
-                        height: Ui.home-tab == "servers" ? rooms.preferred-height : 0px;
-
-                        rooms := VerticalLayout {
-                            padding: 16px;
-                            spacing: 8px;
-
-                            LabelMono { text: "ÚLTIMAS SALAS"; }
-
-                            if Ui.servers.length == 0 : Muted {
-                                text: "Nenhuma ainda. Crie uma ao lado ou entre com um convite.";
-                                horizontal-alignment: center;
-                            }
-
-                            for server[index] in Ui.servers : RowItem {
-                                height: 48px;
-                                clicked => { Ui.open-server(index); }
-
-                                HorizontalLayout {
-                                    padding-left: 8px;
-                                    padding-right: 11px;
-                                    spacing: 10px;
-
-                                    Avatar {
-                                        letter: server.initial;
-                                        size: 32px;
-                                        y: (parent.height - self.height) / 2;
-                                    }
-
-                                    Text {
-                                        text: server.name;
-                                        color: Skin.ink-body;
-                                        font-family: Skin.sans;
-                                        font-size: 13.5px;
-                                        font-weight: 600;
-                                        horizontal-stretch: 1;
-                                        overflow: elide;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    if Ui.home-tab == "servers" : HomeRooms { }
 
                     // ---- amigos ----
                     Panel {
@@ -645,19 +807,33 @@ export component HubScreen inherits Rectangle {
         }
 
         // ---- o servidor aberto ----
-        HorizontalLayout {
-            visible: Ui.in-server;
-            horizontal-stretch: Ui.in-server ? 1 : 0;
+        if Ui.in-server : HorizontalLayout {
+            horizontal-stretch: 1;
             spacing: 10px;
 
-            Panel {
-                width: Ui.in-server ? 240px : 0px;
+            // A coluna dos canais: o nome do servidor num cartão, os canais noutro e a
+            // barra de baixo — o `ChannelColumn` do React, que termina no `VoicePanel`.
+            VerticalLayout {
+                width: 300px;
+                spacing: 10px;
 
-                VerticalLayout {
-                    padding: 12px;
-                    spacing: 8px;
+                Panel {
+                    VerticalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        padding-top: 14px;
+                        padding-bottom: 14px;
 
-                    Title { text: Ui.server-name; }
+                        Title { text: Ui.server-name; }
+                    }
+                }
+
+                Panel {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 8px;
 
                     ScrollView {
                         vertical-stretch: 1;
@@ -732,7 +908,7 @@ export component HubScreen inherits Rectangle {
                                     }
                                 }
 
-                                for channel in Ui.voice-channels : ChannelItem {
+                                for channel in Ui.voice-channels : VoiceItem {
                                     item: channel;
                                 }
 
@@ -753,7 +929,10 @@ export component HubScreen inherits Rectangle {
                             }
                         }
                     }
+                    }
                 }
+
+                UserBar { }
             }
 
             VerticalLayout {
@@ -843,7 +1022,7 @@ export component HubScreen inherits Rectangle {
             }
 
             Panel {
-                width: Ui.in-server ? 240px : 0px;
+                width: 240px;
 
                 VerticalLayout {
                     padding: 12px;

@@ -7,12 +7,18 @@ export struct ServerRow {
     name: string,
     initial: string,
     current: bool,
+    /// "dono" ou "membro" — quem decide é o núcleo, comparando o dono com quem está logado.
+    note: string,
+    /// A data do último acesso, já escrita em pt-BR. Vazia quando nunca se entrou.
+    at: string,
 }
 
 export struct ChannelRow {
     /// A posição na lista inteira do servidor: é ela que volta em `open-channel`, porque a
     /// tela mostra texto e voz em duas colunas mas o núcleo só conhece uma.
     index: int,
+    /// O identificador do canal, que é o que diz se a voz aberta é esta.
+    id: string,
     name: string,
     voice: bool,
     current: bool,
@@ -102,8 +108,14 @@ export global Ui {
     /// A conversa aberta.
     in property <string> talking-name;
     in property <[MessageRow]> direct-messages;
-    /// As últimas salas por código, que a Home lista.
-    in property <[string]> recent-rooms;
+    /// As últimas salas por código, já quebradas em linhas: o Slint não embrulha sozinho,
+    /// e no React elas são pastilhas que descem de linha quando não cabem.
+    in property <[[string]]> recent-rooms;
+
+    /// O canal de voz em que se está, e o nome dele. Vazio quer dizer fora da voz — e é
+    /// dentro do hub que isso aparece, como no React: não se troca de tela para falar.
+    in property <string> voice-channel;
+    in property <string> voice-name;
 
     in property <string> room-code;
     in property <[PeerRow]> peers;
@@ -149,6 +161,7 @@ export global Ui {
     callback open-recent-room(string);
 
     callback leave-room();
+    callback leave-voice();
     callback toggle-share();
     callback toggle-camera();
 

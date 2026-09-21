@@ -282,10 +282,12 @@ export component Avatar inherits Rectangle {
     in property <length> size: 32px;
     // Quem não é você não ganha o violeta: ele marca o que é seu na tela.
     in property <bool> mine;
+    // O ícone de um servidor é quadrado de canto mole, não redondo — como no React.
+    in property <bool> square;
 
     width: root.size;
     height: root.size;
-    border-radius: root.size / 2;
+    border-radius: root.square ? root.size * 0.3 : root.size / 2;
     background: root.mine
         ? @linear-gradient(180deg, Skin.brand 0%, Skin.brand-dark 100%)
         : #ffffff14;

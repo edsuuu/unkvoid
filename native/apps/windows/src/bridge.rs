@@ -46,6 +46,10 @@ pub struct Bridge {
     /// De onde sai o WebSocket: vem do `GET /api/config`, e até ele responder não há sala.
     sfu: Arc<Mutex<Option<String>>>,
     session: Arc<Mutex<Option<Arc<Session>>>>,
+    /// Desde quando se está na sala. O relógio da barra conta a partir daqui.
+    since: Arc<Mutex<Option<std::time::Instant>>>,
+    /// O tique de um segundo que escreve esse relógio. Vive enquanto a janela viver.
+    clock: slint::Timer,
     /// A sessão de mídia: um socket e uma chave SRTP para tudo o que sobe. É a mesma do
     /// `core_app::sharing` que o app do Tauri usa, e por isso a captura aqui é a de lá.
     media: Arc<core_app::sharing::ActiveSession>,
@@ -82,6 +86,8 @@ impl Bridge {
             window,
             sfu: Arc::default(),
             session: Arc::default(),
+            since: Arc::default(),
+            clock: slint::Timer::default(),
             media: Arc::default(),
             servers: Arc::default(),
             channels: Arc::default(),
@@ -103,6 +109,23 @@ impl Bridge {
         let ui = window.global::<Ui>();
 
         ui.set_saved_name(self.core.state().name.into());
+
+        self.clock.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(1), {
+            let (window, since) = (self.window.clone(), self.since.clone());
+
+            move || {
+                let Some(started) = *lock(&since) else {
+                    return;
+                };
+
+                let seconds = started.elapsed().as_secs();
+                let face = format!("{}:{:02}:{:02}", seconds / 3600, (seconds / 60) % 60, seconds % 60);
+
+                if let Some(app) = window.upgrade() {
+                    app.global::<Ui>().set_elapsed(face.into());
+                }
+            }
+        });
 
         ui.on_create_room({
             let bridge = self.clone();
@@ -194,6 +217,12 @@ impl Bridge {
             let bridge = self.clone();
 
             move |body| bridge.send_message(&body)
+        });
+
+        ui.on_leave_voice({
+            let bridge = self.clone();
+
+            move || bridge.leave_voice()
         });
 
         ui.on_show_hub_home({
@@ -451,9 +480,10 @@ impl Bridge {
 
         let (api, window) = (self.api.clone(), self.window.clone());
         let (known, held) = (self.servers.clone(), self.conversations.clone());
+        let mine = self.me.clone();
 
         self.spawn(async move {
-            refresh_servers(&api, &window, &known).await;
+            refresh_servers(&api, &window, &known, &mine).await;
 
             if let Ok(open) = api.conversations().await {
                 show_conversations(&window, &held, open);
@@ -470,10 +500,11 @@ impl Bridge {
 
         let (api, window) = (self.api.clone(), self.window.clone());
         let known = self.servers.clone();
+        let mine = self.me.clone();
 
         self.spawn(async move {
             match api.create_server(&name).await {
-                Ok(_) => refresh_servers(&api, &window, &known).await,
+                Ok(_) => refresh_servers(&api, &window, &known, &mine).await,
                 Err(failure) => complain(&window, said(&failure)),
             }
         });
@@ -488,10 +519,11 @@ impl Bridge {
 
         let (api, window) = (self.api.clone(), self.window.clone());
         let known = self.servers.clone();
+        let mine = self.me.clone();
 
         self.spawn(async move {
             match api.join_invite(&code).await {
-                Ok(_) => refresh_servers(&api, &window, &known).await,
+                Ok(_) => refresh_servers(&api, &window, &known, &mine).await,
                 Err(failure) => complain(&window, said(&failure)),
             }
         });
@@ -631,12 +663,12 @@ impl Bridge {
         let (api, window) = (self.api.clone(), self.window.clone());
         let (channels, reading) = (self.channels.clone(), self.reading.clone());
         let known = self.servers.clone();
-        let id = server.id;
+        let (id, mine) = (server.id, *lock(&self.me));
 
         *lock(&self.opened) = Some(id);
 
         self.spawn(async move {
-            show_tree(&api, &window, &channels, &reading, &known, id).await;
+            show_tree(&api, &window, &channels, &reading, &known, mine, id).await;
         });
     }
 
@@ -655,11 +687,12 @@ impl Bridge {
         let (api, window) = (self.api.clone(), self.window.clone());
         let (channels, reading) = (self.channels.clone(), self.reading.clone());
         let known = self.servers.clone();
+        let mine = *lock(&self.me);
 
         self.spawn(async move {
             match api.create_channel(server, &name, kind).await {
                 // A árvore volta inteira: é ela que diz a posição do canal novo entre os outros.
-                Ok(()) => show_tree(&api, &window, &channels, &reading, &known, server).await,
+                Ok(()) => show_tree(&api, &window, &channels, &reading, &known, mine, server).await,
                 Err(failure) => complain(&window, said(&failure)),
             }
         });
@@ -673,7 +706,11 @@ impl Bridge {
         // Compartilhar tela só existe dentro de um canal de voz, e entrar nele é a mesma
         // sala do código — com o token de 60 s no lugar do nome.
         if channel.kind == ChannelKind::Voice {
-            self.enter(Ok(channel.id.clone()), Some(channel.id.clone()));
+            if lock(&self.session).is_some() {
+                self.leave_voice();
+            }
+
+            self.join_voice(&channel);
 
             return;
         }
@@ -726,6 +763,49 @@ impl Bridge {
     }
 
     fn enter(self: &Rc<Self>, opened: Result<String, EntryRefusal>, voice: Option<String>) {
+        self.connect(opened, voice, None);
+    }
+
+    /// Entrar num canal de voz **sem sair do hub**: é o que o React faz, e o que o Discord
+    /// fez antes dele. Quem está dentro aparece embaixo do nome do canal, e a tela continua
+    /// sendo a do servidor.
+    fn join_voice(self: &Rc<Self>, channel: &Channel) {
+        self.connect(Ok(channel.id.clone()), Some(channel.id.clone()), Some(channel.name.clone()));
+    }
+
+    /// Sai da voz e continua no servidor. É o fone cortado da barra de baixo.
+    fn leave_voice(self: &Rc<Self>) {
+        let window = self.window.clone();
+        let held = lock(&self.session).take();
+
+        *lock(&self.since) = None;
+
+        paint(&window, |app| {
+            let ui = app.global::<Ui>();
+
+            ui.set_voice_channel(SharedString::new());
+            ui.set_voice_name(SharedString::new());
+            ui.set_peers(ModelRc::default());
+            ui.set_elapsed("0:00:00".into());
+            ui.set_ping("-- ms".into());
+            ui.set_sharing(false);
+        });
+
+        self.spawn(async move {
+            if let Some(session) = held
+                && let Err(failure) = session.leave().await
+            {
+                tracing::warn!(%failure, "a saída da voz não foi confirmada");
+            }
+        });
+    }
+
+    fn connect(
+        self: &Rc<Self>,
+        opened: Result<String, EntryRefusal>,
+        voice: Option<String>,
+        staying: Option<String>,
+    ) {
         let room = match opened {
             Ok(room) => room,
             Err(refusal) => {
@@ -743,6 +823,7 @@ impl Bridge {
 
         let window = self.window.clone();
         let held = self.session.clone();
+        let started = self.since.clone();
         let identity = self.identity(&room, voice);
 
         paint(&window, |app| app.global::<Ui>().set_entry_busy(true));
@@ -764,6 +845,7 @@ impl Bridge {
             };
 
             *lock(&held) = Some(session.clone());
+            *lock(&started) = Some(std::time::Instant::now());
 
             let (code, can_speak) = (room.clone(), session.can("speak"));
             let peers = peer_rows(&session);
@@ -772,10 +854,20 @@ impl Bridge {
                 let ui = app.global::<Ui>();
 
                 ui.set_complaint(SharedString::new());
-                ui.set_room_code(code.into());
                 ui.set_can_speak(can_speak);
                 ui.set_peers(model(peers));
-                ui.set_screen("room".into());
+
+                match staying {
+                    // Canal de voz: o hub continua na tela, e o canal aberto se marca.
+                    Some(name) => {
+                        ui.set_voice_channel(code.clone().into());
+                        ui.set_voice_name(name.into());
+                    }
+                    None => {
+                        ui.set_room_code(code.into());
+                        ui.set_screen("room".into());
+                    }
+                }
             });
 
             // O socket fechado encerra a fila, e é aí que este laço termina.
@@ -864,6 +956,10 @@ impl Bridge {
 
         let (window, landing) = (self.window.clone(), self.core.home());
         let held = lock(&self.session).take();
+
+        *lock(&self.since) = None;
+
+        paint(&window, |app| app.global::<Ui>().set_elapsed("0:00:00".into()));
 
         self.spawn(async move {
             if let Some(session) = held
@@ -958,12 +1054,17 @@ fn lock<T>(cell: &Arc<Mutex<T>>) -> MutexGuard<'_, T> {
 }
 
 /// Servidor recém-criado ou recém-entrado: a lista muda e a Home a mostra.
-async fn refresh_servers(api: &Arc<Api>, window: &Weak<AppWindow>, known: &Arc<Mutex<Vec<ServerSummary>>>) {
+async fn refresh_servers(
+    api: &Arc<Api>,
+    window: &Weak<AppWindow>,
+    known: &Arc<Mutex<Vec<ServerSummary>>>,
+    me: &Arc<Mutex<Option<i64>>>,
+) {
     match api.servers().await {
         Ok(servers) => {
             *lock(known) = servers.clone();
 
-            let rows = rows_of(&servers, None);
+            let rows = rows_of(&servers, None, *lock(me));
 
             paint(window, move |app| {
                 let ui = app.global::<Ui>();
@@ -1120,7 +1221,9 @@ async fn landed(
 
     // Quem sou eu decide se um pedido de amizade chegou ou saiu — e isso é lido em toda
     // lista de amigos daqui para a frente.
-    *lock(me) = user.as_ref().map(|user| user.id);
+    let mine = user.as_ref().map(|user| user.id);
+
+    *lock(me) = mine;
 
     core.show(landing);
 
@@ -1138,7 +1241,7 @@ async fn landed(
     if landing == Screen::Hub {
         match api.servers().await {
             Ok(servers) => {
-                let rows = rows_of(&servers, None);
+                let rows = rows_of(&servers, None, mine);
 
                 *lock(known) = servers;
 
@@ -1151,9 +1254,9 @@ async fn landed(
             show_conversations(window, conversations, open);
         }
 
-        let recent: Vec<SharedString> = core.recent_rooms().into_iter().map(Into::into).collect();
+        let recent: Vec<Vec<String>> = core.recent_rooms().chunks(2).map(<[String]>::to_vec).collect();
 
-        paint(window, move |app| app.global::<Ui>().set_recent_rooms(model(recent)));
+        paint(window, move |app| app.global::<Ui>().set_recent_rooms(model(code_lines(recent))));
     }
 }
 
@@ -1176,7 +1279,7 @@ async fn read_channel(api: &Arc<Api>, window: &Weak<AppWindow>, channel: &str) {
     }
 }
 
-fn rows_of(servers: &[ServerSummary], chosen: Option<usize>) -> Vec<ServerRow> {
+fn rows_of(servers: &[ServerSummary], chosen: Option<usize>, me: Option<i64>) -> Vec<ServerRow> {
     servers
         .iter()
         .enumerate()
@@ -1184,7 +1287,34 @@ fn rows_of(servers: &[ServerSummary], chosen: Option<usize>) -> Vec<ServerRow> {
             initial: initial(&server.name),
             name: server.name.clone().into(),
             current: Some(index) == chosen,
+            note: if Some(server.owner_id) == me { "dono" } else { "membro" }.into(),
+            at: server.last_accessed_at.as_deref().map(day).unwrap_or_default().into(),
         })
+        .collect()
+}
+
+/// A data que a linha mostra, no formato que o React escreve com `toLocaleDateString('pt-BR')`.
+/// O que chega é ISO, e só o dia interessa.
+fn day(stamp: &str) -> String {
+    let Some((date, _)) = stamp.split_once('T') else {
+        return String::new();
+    };
+
+    let parts: Vec<&str> = date.split('-').collect();
+
+    match parts.as_slice() {
+        [year, month, day] => format!("{day}/{month}/{year}"),
+        _ => String::new(),
+    }
+}
+
+/// As últimas salas por código, quebradas em linhas de três: o Slint não embrulha sozinho, e
+/// no React elas descem de linha quando não cabem. O `ModelRc` não atravessa thread, então
+/// quem monta os modelos é a própria pintura.
+fn code_lines(codes: Vec<Vec<String>>) -> Vec<ModelRc<SharedString>> {
+    codes
+        .into_iter()
+        .map(|line| model(line.into_iter().map(SharedString::from).collect()))
         .collect()
 }
 
@@ -1197,6 +1327,7 @@ async fn show_tree(
     channels: &Arc<Mutex<Vec<Channel>>>,
     reading: &Arc<Mutex<Option<String>>>,
     known: &Arc<Mutex<Vec<ServerSummary>>>,
+    me: Option<i64>,
     id: i64,
 ) {
     let tree = match api.tree(id).await {
@@ -1225,7 +1356,7 @@ async fn show_tree(
     *lock(reading) = None;
 
     let chosen = lock(known).iter().position(|server| server.id == id);
-    let servers = rows_of(&lock(known), chosen);
+    let servers = rows_of(&lock(known), chosen, me);
     let name = tree.name.clone();
     let invite = tree.invite_code.clone().unwrap_or_default();
 
@@ -1251,6 +1382,7 @@ fn split_channels(ordered: &[Channel], chosen: Option<usize>) -> (Vec<ChannelRow
     for (index, channel) in ordered.iter().enumerate() {
         let row = ChannelRow {
             index: index as i32,
+            id: channel.id.clone().into(),
             name: channel.name.clone().into(),
             voice: channel.kind == ChannelKind::Voice,
             current: Some(index) == chosen,
