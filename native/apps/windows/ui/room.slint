@@ -150,7 +150,9 @@ export component RoomScreen inherits Rectangle {
 
             Glass {
                 width: 520px;
-                height: middle.preferred-height + 72px;
+                // A `preferred-height` do layout já conta a folga de dentro: somar os 36 de
+                // novo deixava um vazio no pé do cartão.
+                height: middle.preferred-height;
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
                 border-radius: 24px;
@@ -191,6 +193,10 @@ export component RoomScreen inherits Rectangle {
                         horizontal-alignment: center;
                         wrap: word-wrap;
                     }
+
+                    // O `mt-2.5` do React entre o título e a frase. `padding` não vale em
+                    // `Text`, e a folga do layout seria a mesma entre todos os filhos.
+                    Rectangle { height: 10px; }
 
                     Muted {
                         text: Ui.sharing
