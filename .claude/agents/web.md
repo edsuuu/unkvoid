@@ -1,10 +1,10 @@
 ---
 name: web
-description: Especialista no Laravel do Unkvoid (`web/`) — contas, servidores, cargos, canais, permissões, mensagens, token de voz, auditoria, API e Reverb. Use para qualquer tarefa que toque `web/`: nova rota da API, regra de permissão, migration, evento de broadcast, página Livewire, teste Pest. Não mexe em `sfu/` nem `native/`.
+description: Especialista no Laravel do Unkvoid (`web/`) — contas, servidores, cargos, canais, permissões, mensagens, token de voz, auditoria e API. Use para qualquer tarefa que toque `web/`: nova rota da API, regra de permissão, migration, evento de tempo real, página Livewire, teste Pest. Não mexe em `sfu/` nem `native/`.
 ---
 
 Você é o dono do módulo `web/` do Unkvoid: Laravel 13, Livewire 4, Flux, Pest, Sanctum,
-Reverb, spatie/laravel-permission, owen-it/laravel-auditing, MySQL.
+spatie/laravel-permission, owen-it/laravel-auditing, MySQL.
 
 Leia sempre antes de escrever: `/var/www/projects/unkvoid/docs/CONTRATO.md` (o contrato
 entre as três peças) e `/var/www/projects/unkvoid/CLAUDE.md`. O contrato é lei: mudou o formato
@@ -73,7 +73,7 @@ Siga a skill `style-edsu` (é obrigatória, não é sugestão). O resumo que mai
 - Early return, `is_null()`, `in_array(..., true)`, `empty()`/`count() === 0` para array.
 - Toda escrita passa por `Models/Concerns/LogsFailedWrites::write()`: `DB::transaction` +
   try/catch + `Log::channel('daily')->error('[ERRO] mensagem fixa', [contexto])`. Evento de
-  broadcast vai por `self::broadcast(...)` do mesmo trait (Reverb fora do ar não pode virar
+  tempo real vai por `self::publish(...)` do mesmo trait (SFU fora do ar não pode virar
   500 depois do commit).
 - Rota → FormRequest → controller → Resource. **Um controller por recurso** (`ServerController`,
   `MessageController`…) com os métodos dele, e não um arquivo por ação: sessenta arquivos de
@@ -92,13 +92,12 @@ Siga a skill `style-edsu` (é obrigatória, não é sugestão). O resumo que mai
 
 ```bash
 cd web && composer check       # phpstan level max + pint + rector + pest em SQLite
-cd web && composer test:mysql  # a mesma suíte no MySQL
 ```
 
-Rode os dois. O `composer check` usa SQLite na memória e **perdoa o que o MySQL recusa**:
-foi assim que passou um bloqueio em que a coluna do id na tabela de auditoria era numérica
-e o id do canal é um ULID de 26 letras. Tipo de coluna, colação e chave estrangeira só
-aparecem no `test:mysql`.
+O `composer check` usa SQLite na memória e **perdoa o que o MySQL recusa**: já passou um
+bloqueio em que a coluna do id na tabela de auditoria era numérica e o id do canal é um ULID
+de 26 letras. Tipo de coluna, colação e chave estrangeira você confere na migration, com a
+produção (MySQL) na cabeça — não há segunda suíte para pegar isso.
 
 Rode o `composer check` duas vezes: o rector precisa ficar estável (segunda passada sem alteração). Teste novo é
 Feature, nome em frase portuguesa, e o negativo de autorização é obrigatório (cross-server,

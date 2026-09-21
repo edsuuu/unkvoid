@@ -163,9 +163,9 @@ Cada arquivo versionado e onde ele entra:
 | Arquivo do repositório | Vai para | O que muda |
 |---|---|---|
 | `infra/nginx.conf` | `/etc/nginx/nginx.conf` | `worker_rlimit_nofile` (novo), `worker_connections` 768 → 4096, `gzip_types`, `keepalive_timeout` |
-| `infra/nginx-unkvoid.conf` | `/etc/nginx/sites-available/unkvoid` | o Reverb em `/app`, cache do `/build/`, `limit_rate` no download |
+| `infra/nginx-unkvoid.conf` | `/etc/nginx/sites-available/unkvoid` | cache do `/build/`, `limit_rate` no download |
 | `infra/sysctl-unkvoid.conf` | `/etc/sysctl.d/99-unkvoid.conf` | buffer UDP de **envio**, backlog, e as portas do SFU fora do sorteio do kernel |
-| `sfu/ecosystem.config.cjs` | `/var/www/projects/sfu/` | o Reverb no pm2, com `watch` desligado |
+| `sfu/ecosystem.config.cjs` | `/var/www/projects/sfu/` | o SFU no pm2, com `watch` desligado |
 
 Ao aplicar o sysctl, apague os dois arquivos que ele substitui:
 `99-unkvoid-udp.conf` (virou este) e `99-livekit.conf` (sobrou de um teste de
@@ -213,7 +213,7 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
 **MySQL e MinIO não mudam.** O banco `unkvoid` tem 0,6 MB: o `innodb_buffer_pool_size`
 de 128 MB já cabe o banco duzentas vezes, e `max_connections` de 151 é cinco vezes
-o que 32 filhos do php-fpm mais o Reverb somam. O gatilho para mexer é o banco
+o que 32 filhos do php-fpm somam. O gatilho para mexer é o banco
 passar de 200 MB — aí `innodb_buffer_pool_size=512M` no `command:` do
 `infra/docker-compose.yml`.
 
@@ -224,7 +224,7 @@ Medido com `ps`, `docker stats` e `ss`: tudo abaixo está ligado e não serve ma
 | O quê | Ganho | Por que sai |
 |---|---|---|
 | ~~`filebrowser.service`~~ | 25 MB e **a porta 8080** | **Feito em 16/09/2026** (`stop` + `disable`): era um gerenciador de arquivos de uma pasta de Minecraft, e ocupava a porta que o Reverb do Unkvoid precisava. |
-| ~~`pm2 delete reverb`~~ | 61 MB | **Feito em 16/09/2026**: o processo `reverb` do pm2 agora é o do Unkvoid (`/var/www/projects/unkvoid-web/current`, na 8080). O do projeto `discord` saiu junto. |
+| ~~`pm2 delete reverb`~~ | 61 MB | **Feito em 16/09/2026**: o processo `reverb` do pm2 passou a ser o do Unkvoid, e o do projeto `discord` saiu junto. O Reverb foi aposentado depois — o tempo real passou para o SFU — então hoje não há processo nenhum na 8080. |
 | `systemctl disable --now php8.3-fpm` | 50 MB | Nenhum site aponta para `php8.3-fpm.sock`; o `retro` usa o socket do 8.4. |
 | `systemctl disable --now mysql` (o do sistema, na 3306) | 395 MB | Só tem `discord`, `discord_dev` e `retro_friends`. O Unkvoid usa o MySQL do docker, na 3307. Faça o dump antes. |
 | `ENABLE_AMAVIS=0` no `mailserver` | 176 MB | O rspamd já filtra; o amavis é a segunda passada, e a caixa faz 0,1 mensagem por segundo. |
@@ -233,8 +233,8 @@ Medido com `ps`, `docker stats` e `ss`: tudo abaixo está ligado e não serve ma
 | `docker stop teamspeak-server` | 28 MB e 2,7% de CPU | Só se ninguém mais usa o TeamSpeak — é decisão do dono, não da infra. |
 | `/var/www/projects/discord` | 78 MB de disco | Projeto morto. |
 
-São ~1,1 GB de RAM sem tocar em nada do Unkvoid, e a porta 8080 liberada para o
-Reverb. O `target/` do Rust em `/var/www/projects/unkvoid/native` (9,4 GB) **fica**:
+São ~1,1 GB de RAM sem tocar em nada do Unkvoid. A porta 8080 era do Reverb e hoje não
+serve a ninguém. O `target/` do Rust em `/var/www/projects/unkvoid/native` (9,4 GB) **fica**:
 é o cache que faz o build do `.deb` não levar quarenta minutos.
 
 ### Quando esta máquina não bastar
@@ -278,7 +278,6 @@ existe:
 | O quê | Como roda | Portas | Ainda serve? |
 |---|---|---|---|
 | MySQL do sistema | `mysql.service` (8.0) | 127.0.0.1:3306 | Não — só `discord`, `discord_dev`, `retro_friends` |
-| Reverb do Unkvoid | pm2, `php8.4`, em `/var/www/projects/unkvoid-web/current` | 127.0.0.1:8080 | Sim — é o chat, publicado pelo nginx em `/app/` e `/apps/` desde 16/09/2026 |
 | ~~filebrowser~~ | `filebrowser.service`, desligado em 16/09/2026 | — | Não — saiu para liberar a 8080 |
 | php8.3-fpm | `php8.3-fpm.service` | socket | Não — nenhum site usa o socket dele |
 | TeamSpeak 6 | docker, `teamspeaksystems/teamspeak6-server` | 9987/udp, 30033/tcp | Decisão do dono |
@@ -286,7 +285,7 @@ existe:
 | Outros sites | nginx: `files`, `ia.unkvoid.com`, `retro` | 443, 8443 | Não — os três devolvem 404 ou apontam para um root que não existe |
 
 O ganho de desligar cada um está na tabela da seção 4. O Unkvoid em si é o nginx,
-o php8.4-fpm, o `sfu` e o `reverb` no pm2, e os contêineres `unkvoid-mysql`,
+o php8.4-fpm, o `sfu` no pm2, e os contêineres `unkvoid-mysql`,
 `unkvoid-minio` e `unkvoid-mail`.
 
 ## 6. Quando alguma coisa não responde

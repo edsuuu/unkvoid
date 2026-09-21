@@ -73,7 +73,6 @@ Rodar as três peças local, o que verificar antes de um PR e as regras de códi
 
 ```bash
 cd web && composer setup && composer dev                 # Laravel em :8000
-cd web && php artisan reverb:start                       # Reverb em :8080
 cd sfu && pnpm install && pnpm run build && SFU_SECRET=<o do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node dist/server.js
 cd native/apps/desktop && npm ci && VITE_SERVER=http://127.0.0.1:8000 npm run dev:app
 ```
@@ -89,7 +88,7 @@ O índice está em [docs/README.md](docs/README.md). Os que mais se abre:
 | Arquivo | O que tem |
 |---|---|
 | [docs/ARQUITETURA.md](docs/ARQUITETURA.md) | o mapa: cada peça, como conversam, os fluxos, onde roda |
-| [docs/CONTRATO.md](docs/CONTRATO.md) | o contrato entre as três peças: API, token, SFU, Reverb, comandos do Tauri |
+| [docs/CONTRATO.md](docs/CONTRATO.md) | o contrato entre as três peças: API, token, SFU, comandos do Tauri |
 | [docs/ESTADO.md](docs/ESTADO.md) | o que falta, o que nunca rodou em hardware e as perguntas abertas |
 | [docs/DECISOES.md](docs/DECISOES.md) | o que foi decidido e por quê |
 | [docs/SEGURANCA.md](docs/SEGURANCA.md) | o que é cifrado, o que está protegido e o que não está |

@@ -110,7 +110,7 @@ final class Server extends Model implements Auditable
             }
         }
 
-        self::broadcast(new ServerUpdated($server->id));
+        self::publish(new ServerUpdated($server->id));
 
         return $server;
     }
@@ -267,7 +267,7 @@ final class Server extends Model implements Auditable
 
         $this->forgetIcon($previous);
 
-        self::broadcast(new ServerUpdated($this->id));
+        self::publish(new ServerUpdated($this->id));
     }
 
     /**
@@ -283,7 +283,7 @@ final class Server extends Model implements Auditable
 
         $this->forgetIcon($previous);
 
-        self::broadcast(new ServerUpdated($this->id));
+        self::publish(new ServerUpdated($this->id));
     }
 
     /**
@@ -295,7 +295,7 @@ final class Server extends Model implements Auditable
 
         self::write('falha ao renomear o servidor', fn () => $this->update(['name' => $name]), ['server_id' => $this->id]);
 
-        self::broadcast(new ServerUpdated($this->id));
+        self::publish(new ServerUpdated($this->id));
     }
 
     /**
@@ -308,7 +308,7 @@ final class Server extends Model implements Auditable
         self::write('falha ao apagar o servidor', fn () => $this->delete(), ['server_id' => $this->id]);
 
         // Quem está com ele aberto recarrega a árvore, recebe 404 e volta para a Home.
-        self::broadcast(new ServerUpdated($this->id));
+        self::publish(new ServerUpdated($this->id));
     }
 
     /**
@@ -341,7 +341,7 @@ final class Server extends Model implements Auditable
 
         $this->dropFromVoice($user, $sfu);
 
-        self::broadcast(new ServerUpdated($this->id));
+        self::publish(new ServerUpdated($this->id));
     }
 
     /**
@@ -362,8 +362,8 @@ final class Server extends Model implements Auditable
 
         $this->dropFromVoice($target, $sfu);
 
-        self::broadcast(new MemberRemoved($this->id, $target->id, 'kicked'));
-        self::broadcast(new ServerUpdated($this->id));
+        self::publish(new MemberRemoved($this->id, $target->id, 'kicked'));
+        self::publish(new ServerUpdated($this->id));
     }
 
     /**
@@ -390,8 +390,8 @@ final class Server extends Model implements Auditable
 
         $this->dropFromVoice($target, $sfu);
 
-        self::broadcast(new MemberRemoved($this->id, $target->id, 'banned'));
-        self::broadcast(new ServerUpdated($this->id));
+        self::publish(new MemberRemoved($this->id, $target->id, 'banned'));
+        self::publish(new ServerUpdated($this->id));
 
         return $ban->load('user');
     }
@@ -405,7 +405,7 @@ final class Server extends Model implements Auditable
 
         self::write('falha ao remover o banimento', fn () => $this->bans()->where('user_id', $target->id)->delete(), ['server_id' => $this->id, 'user_id' => $target->id]);
 
-        self::broadcast(new ServerUpdated($this->id));
+        self::publish(new ServerUpdated($this->id));
     }
 
     /**
@@ -467,7 +467,7 @@ final class Server extends Model implements Auditable
             }
         }
 
-        self::broadcast(new ServerUpdated($this->id));
+        self::publish(new ServerUpdated($this->id));
 
         return $other->refresh();
     }
@@ -493,7 +493,7 @@ final class Server extends Model implements Auditable
             'permissions' => $permissions,
         ]), ['server_id' => $this->id]);
 
-        self::broadcast(new ServerUpdated($this->id));
+        self::publish(new ServerUpdated($this->id));
 
         return $role;
     }
@@ -517,7 +517,7 @@ final class Server extends Model implements Auditable
             'position' => $this->nextPosition($this->channels),
         ]), ['server_id' => $this->id]);
 
-        self::broadcast(new ServerUpdated($this->id));
+        self::publish(new ServerUpdated($this->id));
 
         return $channel;
     }

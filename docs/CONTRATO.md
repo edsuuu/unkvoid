@@ -154,6 +154,7 @@ sobre `ts\nMÉTODO\ncaminho\ncorpo`, janela de 300 s — como o `kick` de hoje):
 | rota | corpo | resposta |
 |---|---|---|
 | `POST /rooms/:code/kick` (já existe) | `{ "userId": "user:12" }` | `{ kicked: n }` |
+| `POST /broadcast` | `{ channel, event, data }` — o tempo real do Laravel | `{ delivered: n }` (quantos sockets inscritos receberam) |
 | `POST /rooms/:code/mute` | `{ "userId": "user:12", "muted": true }` — pausa/retoma o producer `mic` daquela conta | `{ muted: n }` |
 | `GET /presence` | corpo vazio | `{ rooms: { "<room>": [ { sub, name, sources: ["mic","screen"] } ] } }` |
 
@@ -193,7 +194,7 @@ Tudo devolve `Resource`. Erro de permissão é 403 com `{ "message": "…" }`; v
 
 `GET /api/config` (público):
 ```json
-{ "sfu": "ws://127.0.0.1:3000/sfu", "reverb": { "host": "127.0.0.1", "port": 8080, "key": "…", "scheme": "http" } }
+{ "sfu": "ws://127.0.0.1:3000/sfu" }
 ```
 
 Conta:
@@ -336,6 +337,13 @@ Webhook (assinado, sem Sanctum): `POST /api/sfu/events` — corpo acima. `joined
 qualquer acesso aberto do mesmo usuário no mesmo canal e abre um novo (com `sfu_ip`);
 `left` fecha o aberto. Os dois retransmitem `VoiceStateUpdated`.
 
+Tempo real (as duas rotas que fazem o chat e a presença andarem sem o Reverb):
+
+| rota | corpo | resposta |
+|---|---|---|
+| `POST /api/sfu/authorize` (assinada, sem Sanctum) | `{ sub: "user:12", channel: "channel.01j7…", at }` | `{ allowed, name }` **sem o `data`** — é o único JSON da API que sai cru, porque quem lê é o SFU |
+| `POST /api/sfu/session` (`auth:sanctum`) | — | `{ token, url, expires_in: 60 }` — o token do `identify`, no mesmo formato do de voz, mas com as claims `{ sub, name, exp }` e **sem `room` nem `can`** |
+
 ## Amigos
 
 Uma linha por par, na direção em que o pedido foi feito, com `status` `pending`,
@@ -380,21 +388,35 @@ desfez, e o par bloqueado some também da lista de conversas.
 é o mesmo para os dois lados, então ele **não leva `mine`** e leva `recipient`: quem recebe
 faz `mine = message.sender.id === euId` e `pessoa = mine ? recipient : message.sender`.
 
-## Reverb (tempo real)
+## Tempo real (pelo SFU)
 
-Auth: `POST /broadcasting/auth` com `Authorization: Bearer <sanctum>`; o app usa
-`laravel-echo` + `pusher-js` com `authEndpoint` apontando para `{SERVER}/broadcasting/auth`.
+O mesmo WebSocket da mídia (`{SFU}` do `GET /api/config`) carrega o chat e a presença: não
+há mais Reverb, nem `/broadcasting/auth`, nem `laravel-echo`. Depois de conectar, o app:
 
-O protocolo do Pusher não reentrega o que se perdeu durante uma queda, e todo deploy do site
-reinicia o Reverb. Por isso, ao reconectar, o app busca de novo pela API os servidores, a
-árvore aberta, amigos, a lista de conversas, e as 50 mensagens mais recentes do canal e da
-conversa abertos, emendando com o que já estava na tela.
+1. `POST /api/sfu/session` no Laravel e manda a ação `identify` com o `{ token }` que voltou —
+   o socket passa a ter dono (`sub`, `name`), e o token vale 60 s (com 30 s de folga);
+2. `subscribe` com `{ channel }` para cada canal que quer ouvir, e `unsubscribe` para largar.
+   A cada `subscribe` o SFU pergunta ao Laravel (`POST /api/sfu/authorize`) se aquela conta
+   pode ouvir aquele canal; recusa vira erro de permissão e o socket não entra.
+
+O `subscribe` devolve a presença do canal, e o SFU emite `presence.joining { id, name }` e
+`presence.leaving { id }` para os outros inscritos na primeira e na última conexão de cada
+pessoa naquele canal.
+
+O que o Laravel publica sai por `POST /broadcast` assinado, um pedido por canal. Falha do
+SFU não desfaz nada: a escrita já está no banco, a resposta HTTP sai normal e o erro fica no
+log do canal `sfu`. Como nada é reentregue depois de uma queda, ao reconectar o app busca de
+novo pela API os servidores, a árvore aberta, amigos, a lista de conversas, e as 50 mensagens
+mais recentes do canal e da conversa abertos, emendando com o que já estava na tela.
 
 | canal | quem entra | eventos |
 |---|---|---|
-| `private-channel.{ulid}` | `VIEW_CHANNEL` | texto: `MessageSent { message }`, `MessageUpdated { message }`, `MessageDeleted { id, channel_id }` · voz: `VoiceStateUpdated { channel_id, user_id, name, event: joined\|left }` (no canal privado da própria voz, para canal oculto não vazar quem está nele; o app assina o canal privado de cada voz que enxerga) |
-| `presence-server.{id}` | membro | (presença: `{ id, name, avatar_url }`) · `ServerUpdated { server_id }` (qualquer mudança de estrutura: o app refaz o `GET`) |
-| `private-user.{id}` | o próprio | `FriendshipUpdated { friendship, removed }` (`FriendResource`, nos canais dos **dois** lados) · `MemberRemoved { server_id, reason: kicked\|banned }` · `DirectMessageCreated { message, recipient }`, `DirectMessageUpdated { message, recipient }`, `DirectMessageDeleted { id }` (nos canais dos **dois** lados da conversa; `message` é o `DirectMessageResource` sem o `mine`) |
+| `channel.{ulid}` | `VIEW_CHANNEL` | texto: `MessageSent { message }`, `MessageUpdated { message }`, `MessageDeleted { id, channel_id }` · voz: `VoiceStateUpdated { channel_id, user_id, name, event: joined\|left }` (no canal da própria voz, para canal oculto não vazar quem está nele; o app assina o canal de cada voz que enxerga) |
+| `server.{id}` | membro | `ServerUpdated { server_id }` (qualquer mudança de estrutura: o app refaz o `GET`) |
+| `user.{id}` | o próprio | `FriendshipUpdated { friendship, removed }` (`FriendResource`, nos canais dos **dois** lados) · `MemberRemoved { server_id, reason: kicked\|banned }` · `DirectMessageCreated { message, recipient }`, `DirectMessageUpdated { message, recipient }`, `DirectMessageDeleted { id }` (nos canais dos **dois** lados da conversa; `message` é o `DirectMessageResource` sem o `mine`) |
+
+O nome do canal perdeu os prefixos `private-` e `presence-` do Pusher: é `channel.`, `server.`
+e `user.`, o mesmo nome dos dois lados.
 
 ### Expulsar e banir cortam a pessoa de tudo
 
@@ -403,11 +425,10 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 - **Voz:** o Laravel chama o `kick` do SFU procurando a pessoa na presença fresca (sem o cache
   de 3 s). O token de voz de antes do kick vale 60 s: o webhook `joined` de quem já não é
   membro chama o `kick` na hora, sem abrir acesso nem emitir `VoiceStateUpdated`.
-- **Tempo real:** `MemberRemoved` no `private-user.{id}` faz o app sair dos canais do servidor,
-  e assinar de novo é recusado pela autorização do canal. **Limite:** o Reverb 1.11 não derruba
-  a assinatura de quem já estava inscrito (não tem `pusher:signin`, então o
-  `terminate_connections` não acha a conexão). Um cliente modificado que ignore o
-  `MemberRemoved` continua recebendo os eventos dos canais que já assinava até reconectar.
+- **Tempo real:** `MemberRemoved` no `user.{id}` faz o app sair dos canais do servidor, e
+  assinar de novo é recusado pelo `POST /api/sfu/authorize`. **Limite:** quem já estava
+  inscrito continua inscrito — o SFU não refaz a pergunta sozinho. Um cliente modificado que
+  ignore o `MemberRemoved` recebe os eventos dos canais que já assinava até reconectar.
 
 ## App — o que aparece
 
@@ -445,6 +466,46 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 - Variáveis de ambiente do app, para calibrar e diagnosticar: `UNKVOID_ENCODER=cpu` (pula o
   encoder da placa), `UNKVOID_ABR=off` (taxa fixa, sem acompanhar a perda),
   `UNKVOID_CAPTURE=x11|portal` (força a captura do Linux).
+
+## App — a ABI do núcleo (interfaces nativas)
+
+Swift e C# falam com o `native/shared/core` por uma ABI C de seis funções
+(`shared/core/src/ffi.rs`); o header está em
+`native/apps/macos/Sources/UnkvoidCore/include/unkvoid_core.h`. O app Linux não passa por
+ela: GTK é Rust e usa o `core` como crate.
+
+| Função | Devolve |
+|---|---|
+| `unkvoid_core_new()` | o ponteiro do núcleo, ou nulo |
+| `unkvoid_connect(h, url)` | `true` se o socket do SFU abriu |
+| `unkvoid_call(h, ação, json)` | a resposta do SFU. **Bloqueia** |
+| `unkvoid_app(h, ação, json)` | as decisões do app. **Bloqueia** no que fala com o servidor |
+| `unkvoid_next_event(h)` | o próximo evento, ou nulo. Não bloqueia |
+| `unkvoid_string_free(texto)` | devolve o que o núcleo alocou — uma vez só |
+
+As ações de `unkvoid_app`:
+
+| Ação | Entra | Sai |
+|---|---|---|
+| `state` | — | `{screen, name, room, signedIn}` |
+| `createRoom` | `{name, code}` | `{ok, room}` ou `{refused}` |
+| `joinRoom` | `{name, code}` | idem |
+| `leaveRoom`, `recentRooms` | — | `{ok}` / `{rooms}` |
+| `useServer` | `{url}` | `{ok}` |
+| `login`, `register` | `{email, password, device}` | `{ok, user}` |
+| `signOut` | — | `{ok}` |
+| `servers` | — | `{servers}` |
+| `server` | `{id}` | `{server}` |
+| `messages` | `{channel}` | `{messages}` |
+| `sendMessage` | `{channel, body}` | `{ok, message}` |
+
+`screen` é `entry`, `hub`, `room`, `offline` ou `updating`.
+
+**Falha nunca atravessa com detalhe técnico.** Vem `{failed: "<motivo>"}` — `unreachable`,
+`signedOut`, `notAllowed`, `gone`, `invalid`, `serverBroke`, `tooFast` — e a interface
+escreve a frase em português. A exceção é validação: `{invalid: "<texto>"}`, que o Laravel
+já devolve em português e sobre o campo digitado. Caminho, endereço e código de status ficam
+no log.
 
 ## App — comandos do Tauri
 
@@ -486,19 +547,18 @@ Tauri converte para o snake_case do Rust. Mudou um comando, mude aqui e em `ui/c
 Três processos e o app, todos na mesma máquina ou na mesma rede:
 
 ```bash
-# 1. Laravel (API e site) + Reverb (chat e presença)
+# 1. Laravel (API e site). O chat e a presença saem pelo SFU, não há mais Reverb
 cd web && composer dev            # serve em :8000, fila, logs, vite
-cd web && php artisan reverb:start   # :8080
 
 # 2. SFU (mídia). O segredo tem de ser o mesmo SFU_SECRET do web/.env
 cd sfu && pnpm run build && SFU_SECRET=<o mesmo do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node dist/server.js
 
-# 3. App apontando para o Laravel local (o SFU e o Reverb vêm do GET /api/config)
+# 3. App apontando para o Laravel local (o SFU vem do GET /api/config)
 cd native/apps/desktop && VITE_SERVER=http://127.0.0.1:8000 npm run dev:app
 ```
 
 Duas máquinas na mesma rede: troque `127.0.0.1` pelo IP da máquina que roda os
-servidores em `APP_URL`, `SFU_PUBLIC_URL`, `REVERB_HOST` (`web/.env`), suba o SFU com
+servidores em `APP_URL` e `SFU_PUBLIC_URL` (`web/.env`), suba o SFU com
 `SFU_HOST=0.0.0.0 SFU_ANNOUNCED_ADDRESS=<IP>`, e o Laravel com
 `php artisan serve --host=0.0.0.0`. No WSL2 a rede só enxerga o UDP do SFU com
 `networkingMode=mirrored` no `.wslconfig`.

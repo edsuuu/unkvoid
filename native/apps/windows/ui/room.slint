@@ -1,0 +1,132 @@
+import { ScrollView } from "std-widgets.slint";
+import { Skin } from "skin.slint";
+import { Ui } from "state.slint";
+import { Avatar, CodeChip, Danger, GhostButton, Glass, LabelMono, Muted, PrimaryButton, RowItem } from "widgets.slint";
+import { UserBar } from "userbar.slint";
+
+// A sala: o código para mandar a alguém, quem está dentro, e o que está sendo transmitido.
+export component RoomScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 14px;
+        spacing: 12px;
+
+        HorizontalLayout {
+            spacing: 10px;
+
+            LabelMono {
+                text: "SALA";
+                vertical-alignment: center;
+            }
+
+            CodeChip {
+                text: Ui.room-code;
+                y: (parent.height - self.height) / 2;
+            }
+
+            Muted {
+                text: Ui.peers.length == 1 ? "1 pessoa" : Ui.peers.length + " pessoas";
+                font-size: 12.5px;
+                vertical-alignment: center;
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            PrimaryButton {
+                text: Ui.sharing ? "Parar de compartilhar" : "Compartilhar tela";
+                width: 190px;
+                height: 34px;
+                clicked => { Ui.toggle-share(); }
+            }
+
+            GhostButton {
+                text: "Câmera";
+                clicked => { Ui.toggle-camera(); }
+            }
+
+            GhostButton {
+                text: "Sair da sala";
+                clicked => { Ui.leave-room(); }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            vertical-stretch: 1;
+
+            Glass {
+                horizontal-stretch: 1;
+                border-radius: 16px;
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 8px;
+
+                    Muted {
+                        text: Ui.peers.length > 1
+                            ? "Ninguém está transmitindo agora."
+                            : "Mande o código para alguém entrar.";
+                        horizontal-alignment: center;
+                    }
+
+                    Danger {
+                        text: Ui.complaint;
+                        min-height: 20px;
+                    }
+                }
+            }
+
+            Glass {
+                width: 260px;
+                border-radius: 16px;
+
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    LabelMono { text: "NA SALA"; }
+
+                    ScrollView {
+                        VerticalLayout {
+                            spacing: 4px;
+                            alignment: start;
+
+                            for peer in Ui.peers : RowItem {
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 11px;
+                                    spacing: 8px;
+
+                                    Avatar {
+                                        letter: peer.initial;
+                                        size: 24px;
+                                        mine: peer.mine;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+
+                                    Text {
+                                        text: peer.name;
+                                        color: Skin.ink-body;
+                                        font-size: 13px;
+                                        horizontal-alignment: left;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Text {
+                                        text: peer.note;
+                                        color: Skin.ink-faint;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        UserBar { }
+    }
+}

@@ -63,7 +63,7 @@ final class ServerRole extends Model implements Auditable
 
         self::write('falha ao alterar o cargo', fn () => $this->update($changes), ['role_id' => $this->id]);
 
-        self::broadcast(new ServerUpdated($this->server_id));
+        self::publish(new ServerUpdated($this->server_id));
     }
 
     /**
@@ -88,7 +88,7 @@ final class ServerRole extends Model implements Auditable
             $this->delete();
         }, ['role_id' => $this->id]);
 
-        self::broadcast(new ServerUpdated($this->server_id));
+        self::publish(new ServerUpdated($this->server_id));
     }
 
     /**

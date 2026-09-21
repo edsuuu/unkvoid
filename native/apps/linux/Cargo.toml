@@ -1,0 +1,27 @@
+[package]
+name = "unkvoid-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "unkvoid"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# Sem ponte: o núcleo entra como crate, e o que ele decide chega tipado.
+core-app = { path = "../../shared/core" }
+storage = { path = "../../shared/storage" }
+capture = { path = "../../shared/capture" }
+media = { path = "../../shared/media" }
+# A chave SRTP atravessa o `producePlain` em base64, e volta assim do servidor.
+base64 = "0.22"
+gtk = { version = "0.9", package = "gtk4" }
+
+[dev-dependencies]
+tempfile = "3"

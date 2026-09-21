@@ -97,7 +97,7 @@ final class Friendship extends Model implements Auditable
             'status' => FriendshipStatusEnum::Pending,
         ]), ['requester_id' => $actor->id, 'addressee_id' => $target->id]);
 
-        self::broadcast(new FriendshipUpdated($friendship->load(['requester', 'addressee'])));
+        self::publish(new FriendshipUpdated($friendship->load(['requester', 'addressee'])));
 
         return $friendship;
     }
@@ -152,7 +152,7 @@ final class Friendship extends Model implements Auditable
             'responded_at' => now(),
         ]), ['friendship_id' => $this->id]);
 
-        self::broadcast(new FriendshipUpdated($this->load(['requester', 'addressee'])));
+        self::publish(new FriendshipUpdated($this->load(['requester', 'addressee'])));
     }
 
     /**
@@ -174,7 +174,7 @@ final class Friendship extends Model implements Auditable
 
         self::write('falha ao desfazer a amizade', fn () => $this->delete(), ['friendship_id' => $this->id]);
 
-        self::broadcast(new FriendshipUpdated($this->load(['requester', 'addressee']), removed: true));
+        self::publish(new FriendshipUpdated($this->load(['requester', 'addressee']), removed: true));
     }
 
     /**
@@ -191,7 +191,7 @@ final class Friendship extends Model implements Auditable
             'responded_at' => now(),
         ]), ['friendship_id' => $this->id]);
 
-        self::broadcast(new FriendshipUpdated($this->load(['requester', 'addressee'])));
+        self::publish(new FriendshipUpdated($this->load(['requester', 'addressee'])));
     }
 
     public function other(User $user): User

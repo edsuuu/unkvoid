@@ -6,34 +6,27 @@ namespace App\Events;
 
 use App\Http\Resources\Api\DirectMessageResource;
 use App\Models\DirectMessage;
-use Illuminate\Broadcasting\InteractsWithSockets;
-use Illuminate\Broadcasting\PrivateChannel;
-use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 
 /**
  * Vai para os dois lados: quem mandou vê a mensagem chegar nas outras janelas dele, e
  * quem recebeu vê sem recarregar.
  */
-final class DirectMessageCreated implements ShouldBroadcastNow
+final readonly class DirectMessageCreated implements SfuEvent
 {
     use Dispatchable;
-    use InteractsWithSockets;
 
-    public function __construct(public readonly DirectMessage $message) {}
+    public function __construct(public DirectMessage $message) {}
 
     /**
-     * @return array<int, PrivateChannel>
+     * @return array<int, string>
      */
-    public function broadcastOn(): array
+    public function channels(): array
     {
-        return [
-            new PrivateChannel('user.'.$this->message->sender_id),
-            new PrivateChannel('user.'.$this->message->recipient_id),
-        ];
+        return ['user.'.$this->message->sender_id, 'user.'.$this->message->recipient_id];
     }
 
-    public function broadcastAs(): string
+    public function eventName(): string
     {
         return 'DirectMessageCreated';
     }
@@ -45,7 +38,7 @@ final class DirectMessageCreated implements ShouldBroadcastNow
      *
      * @return array<string, mixed>
      */
-    public function broadcastWith(): array
+    public function payload(): array
     {
         $message = new DirectMessageResource($this->message)->resolve();
         unset($message['mine']);

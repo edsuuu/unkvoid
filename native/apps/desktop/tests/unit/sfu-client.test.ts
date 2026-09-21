@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { Realtime } from '../../ui/core/Realtime.ts';
 import { SfuClient } from '../../ui/core/SfuClient.ts';
 
 type RequestData = { consumerId?: string; producerId?: string; source?: string; token?: string };
@@ -500,5 +501,95 @@ describe('WebRTC ausente: no WebKitGTK citar o que não existe derruba o app', (
 
     it('a forma segura devolve nulo em vez de levantar', () => {
         expect(globalThis.RTCRtpReceiver?.getCapabilities?.('video')?.codecs ?? null).toBeNull();
+    });
+});
+
+describe('tempo real pelo SFU: o chat fica mudo se a reconexão não se identificar de novo', () => {
+    type Sent = { id: number; action: string; data: { channel?: string; token?: string } };
+
+    class ChannelSocket {
+        static opened: ChannelSocket[] = [];
+
+        sent: Sent[] = [];
+        onopen: (() => void) | null = null;
+        onmessage: ((message: { data: string }) => void) | null = null;
+        onclose: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+
+        constructor() {
+            ChannelSocket.opened.push(this);
+            void Promise.resolve().then(() => this.onopen?.());
+        }
+
+        send(text: string): void {
+            const message = JSON.parse(text) as Sent;
+
+            this.sent.push(message);
+            this.reply({ id: message.id, ok: true, data: { channel: message.data.channel, members: [{ id: 'user:7', name: 'Bia' }] } });
+        }
+
+        reply(message: object): void {
+            this.onmessage?.({ data: JSON.stringify(message) });
+        }
+
+        emit(channel: string, event: string, data: unknown): void {
+            this.onmessage?.({ data: JSON.stringify({ event, channel, data }) });
+        }
+
+        close(): void {}
+
+        actions(): string[] {
+            return this.sent.filter(message => message.action !== 'ping').map(message => `${message.action}:${message.data.channel ?? message.data.token ?? ''}`);
+        }
+    }
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.stubGlobal('WebSocket', ChannelSocket);
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+        ChannelSocket.opened.length = 0;
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+    });
+
+    it('o socket que caiu volta identificado com token novo e reinscrito em tudo o que ouvia', async () => {
+        const failures: string[] = [];
+        const heard: string[] = [];
+        const realtime = new Realtime(channel => failures.push(channel));
+        let tokens = 0;
+
+        await realtime.connect('ws://sfu', async () => ({ token: `token-${++tokens}` }));
+        await realtime.subscribe('user.1', { MemberRemoved: () => heard.push('kicked') });
+        await realtime.subscribe('channel.text-2', {
+            'presence.here': ({ members }: { members: { name: string }[] }) => heard.push(`here:${members.map(member => member.name).join()}`),
+            MessageSent: ({ message }: { message: { id: number } }) => heard.push(`message:${message.id}`),
+        });
+
+        const first = ChannelSocket.opened[0];
+
+        expect(first.actions()).toEqual(['identify:token-1', 'subscribe:user.1', 'subscribe:channel.text-2']);
+
+        first.emit('channel.text-2', 'MessageSent', { message: { id: 9 } });
+        first.emit('user.1', 'MessageSent', { message: { id: 10 } });
+        expect(heard, 'cada canal só entrega ao dono dele').toEqual(['here:Bia', 'message:9']);
+
+        first.onclose?.();
+        await vi.advanceTimersByTimeAsync(1_000);
+
+        const second = ChannelSocket.opened[1];
+
+        expect(second.actions(), 'token novo antes de tudo, e os dois canais de volta').toEqual(['identify:token-2', 'subscribe:user.1', 'subscribe:channel.text-2']);
+
+        second.emit('channel.text-2', 'MessageSent', { message: { id: 11 } });
+        expect(heard.at(-1), 'a mensagem de depois da queda chega').toBe('message:11');
+        expect(failures).toEqual([]);
+
+        realtime.unsubscribe('channel.text-2', [...realtime.listeners.get('channel.text-2')!][0]);
+        expect(second.actions().at(-1), 'sem ninguém ouvindo, o canal é largado').toBe('unsubscribe:channel.text-2');
+        realtime.disconnect();
     });
 });

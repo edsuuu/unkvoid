@@ -1,9 +1,9 @@
 import * as mediasoup from 'mediasoup';
 import type { WebRtcServer, Worker } from 'mediasoup/types';
 
-import { config } from '../config.js';
 import type { Peer } from './Peer.js';
 import { Room } from './Room.js';
+import { config } from '../Config/index.js';
 
 type WorkerSlot = { worker: Worker; webRtcServer: WebRtcServer; rooms: number };
 
@@ -14,15 +14,6 @@ export class RoomRegistry {
 
     private readonly slotByRoom = new Map<string, WorkerSlot>();
 
-    /**
-     * Um worker do mediasoup é um PROCESSO C++ separado e de uma thread só — ele satura
-     * um núcleo e para por ali. Threads do Node não ajudariam: mídia nunca passa pelo
-     * JavaScript, só a sinalização passa. Escalar aqui é um worker por núcleo e
-     * distribuir as salas entre eles.
-     *
-     * Cada worker precisa da própria porta de mídia porque o WebRtcServer não é
-     * compartilhado entre processos.
-     */
     public async boot(): Promise<void> {
         for (let index = 0; index < config.workerCount; index += 1) {
             const rtcMinPort = config.plainPortBase + index * config.plainPortsPerWorker;
@@ -68,7 +59,6 @@ export class RoomRegistry {
         );
     }
 
-    /** Sala nova vai para o worker com menos salas. */
     private leastLoadedSlot(): WorkerSlot {
         return this.slots.reduce((smallest, slot) =>
             slot.rooms < smallest.rooms ? slot : smallest,
@@ -102,14 +92,6 @@ export class RoomRegistry {
         return room;
     }
 
-    /**
-     * Uma conta, uma sessão no servidor inteiro, como no Discord: entrar de novo derruba a
-     * anterior, na mesma sala ou em outra. É o que impede a pessoa duplicada quando o app
-     * não conseguiu fechar a conexão velha.
-     *
-     * Visitante fica de fora: o `guest:` vem de um `installId` que o próprio app escolhe e
-     * que a sala inteira recebe no `peerJoined`, então aceitá-lo derrubaria qualquer um.
-     */
     public replaceAccount(peer: Peer): void {
         if (peer.userId.startsWith('guest:')) {
             return;
@@ -140,7 +122,6 @@ export class RoomRegistry {
         this.rooms.delete(room.id);
     }
 
-    /** Quem está em cada sala, para o Laravel desenhar a lista de voz. */
     public presence(): Record<string, { sub: string; name: string; sources: string[] }[]> {
         return Object.fromEntries(
             [...this.rooms.values()].map((room) => [

@@ -6,34 +6,27 @@ namespace App\Events;
 
 use App\Http\Resources\Api\FriendResource;
 use App\Models\Friendship;
-use Illuminate\Broadcasting\InteractsWithSockets;
-use Illuminate\Broadcasting\PrivateChannel;
-use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 
 /**
  * Vai para os dois lados: quem pediu precisa ver "aceito" na hora, e quem recebeu precisa
  * ver o pedido chegar sem recarregar.
  */
-final class FriendshipUpdated implements ShouldBroadcastNow
+final readonly class FriendshipUpdated implements SfuEvent
 {
     use Dispatchable;
-    use InteractsWithSockets;
 
-    public function __construct(public readonly Friendship $friendship, public readonly bool $removed = false) {}
+    public function __construct(public Friendship $friendship, public bool $removed = false) {}
 
     /**
-     * @return array<int, PrivateChannel>
+     * @return array<int, string>
      */
-    public function broadcastOn(): array
+    public function channels(): array
     {
-        return [
-            new PrivateChannel('user.'.$this->friendship->requester_id),
-            new PrivateChannel('user.'.$this->friendship->addressee_id),
-        ];
+        return ['user.'.$this->friendship->requester_id, 'user.'.$this->friendship->addressee_id];
     }
 
-    public function broadcastAs(): string
+    public function eventName(): string
     {
         return 'FriendshipUpdated';
     }
@@ -41,7 +34,7 @@ final class FriendshipUpdated implements ShouldBroadcastNow
     /**
      * @return array<string, mixed>
      */
-    public function broadcastWith(): array
+    public function payload(): array
     {
         return [
             'friendship' => new FriendResource($this->friendship)->resolve(),

@@ -8,6 +8,7 @@ e pelo [ESTADO.md](ESTADO.md) se quer saber o que falta.
 | Quero… | Vá em |
 |---|---|
 | o mapa: cada peça, como conversam, os fluxos, onde roda | [ARQUITETURA.md](ARQUITETURA.md) |
+| as interfaces nativas: o desenho, o que já é nativo, por onde começar | [APP-NATIVO.md](APP-NATIVO.md) |
 | ver uma rota, um evento, o formato do token, um comando do Tauri | [CONTRATO.md](CONTRATO.md) |
 | entender por que algo foi feito assim (ex.: por que o SFU é Node) | [DECISOES.md](DECISOES.md) |
 | saber o que falta, o que nunca rodou em hardware e o que espera o dono | [ESTADO.md](ESTADO.md) |

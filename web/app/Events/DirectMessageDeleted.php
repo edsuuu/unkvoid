@@ -4,30 +4,23 @@ declare(strict_types=1);
 
 namespace App\Events;
 
-use Illuminate\Broadcasting\InteractsWithSockets;
-use Illuminate\Broadcasting\PrivateChannel;
-use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 
-final class DirectMessageDeleted implements ShouldBroadcastNow
+final readonly class DirectMessageDeleted implements SfuEvent
 {
     use Dispatchable;
-    use InteractsWithSockets;
 
-    public function __construct(public readonly int $id, public readonly int $senderId, public readonly int $recipientId) {}
+    public function __construct(public int $id, public int $senderId, public int $recipientId) {}
 
     /**
-     * @return array<int, PrivateChannel>
+     * @return array<int, string>
      */
-    public function broadcastOn(): array
+    public function channels(): array
     {
-        return [
-            new PrivateChannel('user.'.$this->senderId),
-            new PrivateChannel('user.'.$this->recipientId),
-        ];
+        return ['user.'.$this->senderId, 'user.'.$this->recipientId];
     }
 
-    public function broadcastAs(): string
+    public function eventName(): string
     {
         return 'DirectMessageDeleted';
     }
@@ -35,7 +28,7 @@ final class DirectMessageDeleted implements ShouldBroadcastNow
     /**
      * @return array<string, mixed>
      */
-    public function broadcastWith(): array
+    public function payload(): array
     {
         return ['id' => $this->id];
     }

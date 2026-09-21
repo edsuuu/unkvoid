@@ -1,0 +1,43 @@
+[package]
+name = "media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hardware video encoding and plain RTP transport"
+
+[dependencies]
+anyhow.workspace = true
+base64 = "0.22"
+bytes = "1"
+capture = { path = "../capture" }
+opus = "0.4"
+rand = "0.8"
+rtc = "0.20"
+socket2 = "0.6"
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+
+# Só o exemplo `plain` fala WebSocket — o app não, e não deve carregar isso no binário.
+[dev-dependencies]
+futures-util = "0.3.34"
+tokio-tungstenite = "0.30.0"
+# O exemplo `encoder` mostra o que o MFT disse: a recusa de um ajuste só sai pelo log.
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+videotoolbox = "0.19"
+apple-cf = { version = "0.9", features = ["cv"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+] }

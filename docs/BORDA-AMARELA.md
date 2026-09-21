@@ -6,7 +6,7 @@ levantado em 20/09/2026, **nada disto está implementado**.
 
 ## Por que ela aparece
 
-A captura do Windows é o Windows Graphics Capture (`crates/capture/src/windows.rs`, pela crate
+A captura do Windows é o Windows Graphics Capture (`shared/capture/src/windows.rs`, pela crate
 `windows-capture`). É o sistema que desenha a borda, como aviso de privacidade, e não o app.
 
 O app já pede para desligá-la: `supported_settings` escolhe `DrawBorderSettings::WithoutBorder`

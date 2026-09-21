@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Enums\PermissionEnum;
 use App\Exceptions\ForbiddenException;
 use App\Models\Concerns\LogsFailedWrites;
+use App\Notifications\NewLoginNotification;
 use App\Notifications\ResetPasswordNotification;
 use App\Services\Storage\BucketService;
 use Database\Factories\UserFactory;
@@ -18,6 +20,7 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Notifications\Notification;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -43,6 +46,9 @@ final class User extends Authenticatable implements Auditable
     use \OwenIt\Auditing\Auditable;
 
     public const string ROLE_ADMIN = 'Administrador';
+
+    /** Depois disto o lugar volta a ser desconhecido, e o aviso sai de novo. */
+    private const int KNOWN_LOGIN_DAYS = 60;
 
     /**
      * A foto vem sempre junto: o avatar aparece em toda lista de membro, mensagem, amigo e
@@ -166,9 +172,66 @@ final class User extends Authenticatable implements Auditable
     }
 
     /**
+     * Quem pode ouvir o quê no tempo real, que o SFU pergunta a cada inscrição. Canal
+     * oculto é sobrescrita, não flag: sem `VIEW_CHANNEL` não se ouve nem o chat.
+     */
+    public function canSubscribe(string $channel): bool
+    {
+        [$type, $id] = array_pad(explode('.', $channel, 2), 2, '');
+
+        if ($type === 'user') {
+            return $this->id === (int) $id;
+        }
+
+        if ($type === 'server') {
+            $server = Server::query()->find((int) $id);
+
+            return ! is_null($server) && ! is_null($server->memberOf($this));
+        }
+
+        if ($type !== 'channel') {
+            return false;
+        }
+
+        $target = Channel::query()->find($id);
+
+        if (is_null($target)) {
+            return false;
+        }
+
+        $member = $target->server->memberOf($this);
+
+        return ! is_null($member) && $member->can(PermissionEnum::ViewChannel, $target);
+    }
+
+    /**
      * E-mail nunca derruba um login ou um cadastro: se o servidor de e-mail estiver fora,
      * a pessoa entra do mesmo jeito e o problema fica no log.
      */
+    /**
+     * Avisa por e-mail que entraram na conta — mas só quando a entrada vem de um lugar que
+     * ainda não conhecemos.
+     *
+     * Antes saía um e-mail a cada login, inclusive do mesmo computador e do mesmo IP de
+     * sempre. Aviso que chega toda hora deixa de ser aviso: a pessoa passa a apagar sem ler,
+     * e o dia em que alguém entrar de verdade vai passar batido junto.
+     *
+     * O que se guarda é o hash de IP + navegador, no cache, por 60 dias — não o IP. Assim
+     * não é preciso coluna nova, e o que fica gravado não diz de onde ninguém acessou.
+     */
+    public function notifyNewLoginIfUnknown(string $source, string $ip, string $agent): void
+    {
+        $known = 'login:'.$this->id.':'.hash('sha256', $ip.'|'.$agent);
+
+        // `add` grava e devolve `false` se a chave já existia: a pergunta e a marcação são
+        // a mesma operação, e dois logins ao mesmo tempo não mandam dois e-mails.
+        if (! Cache::add($known, true, self::KNOWN_LOGIN_DAYS * 86400)) {
+            return;
+        }
+
+        $this->notifyQuietly(new NewLoginNotification($source, $ip, $agent));
+    }
+
     public function notifyQuietly(Notification $notification): void
     {
         try {

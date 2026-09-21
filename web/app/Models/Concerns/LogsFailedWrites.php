@@ -4,8 +4,9 @@ declare(strict_types=1);
 
 namespace App\Models\Concerns;
 
+use App\Events\SfuEvent;
+use App\Services\Sfu\SfuClient;
 use Closure;
-use Illuminate\Broadcasting\BroadcastException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -40,19 +41,19 @@ trait LogsFailedWrites
     }
 
     /**
-     * O Reverb fora do ar não desfaz o que já foi gravado: quem chamou recebe a resposta
-     * normal, e a falha fica no log.
+     * O tempo real sai pelo SFU. O evento continua sendo despachado dentro do Laravel: é
+     * por ele que se observa o que foi publicado. O SFU fora do ar não desfaz o que já foi
+     * gravado — o `publish()` engole a falha e a deixa no log do canal `sfu`.
      */
-    protected static function broadcast(object $event): void
+    protected static function publish(SfuEvent $event): void
     {
-        try {
-            event($event);
-        } catch (BroadcastException $exception) {
-            Log::channel('daily')->error('[ERRO] o Reverb não respondeu', [
-                'exception' => $exception,
-                'message' => $exception->getMessage(),
-                'event' => $event::class,
-            ]);
+        event($event);
+
+        $sfu = resolve(SfuClient::class);
+        $payload = $event->payload();
+
+        foreach ($event->channels() as $channel) {
+            $sfu->publish($channel, $event->eventName(), $payload);
         }
     }
 }

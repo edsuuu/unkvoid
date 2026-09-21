@@ -39,7 +39,7 @@ final readonly class SfuClient
      */
     public function token(Channel $channel, User $user, array $can): string
     {
-        return $this->sign($channel->id, $user, $can);
+        return $this->sign(['room' => $channel->id, ...$this->identity($user), 'can' => $can]);
     }
 
     /**
@@ -50,7 +50,29 @@ final readonly class SfuClient
      */
     public function roomToken(string $code, User $user): string
     {
-        return $this->sign($code, $user, ['speak', 'stream', 'video']);
+        return $this->sign(['room' => $code, ...$this->identity($user), 'can' => ['speak', 'stream', 'video']]);
+    }
+
+    /**
+     * O token do `identify`: sem sala, porque a sessão de tempo real não é de um canal só —
+     * quem diz o que a pessoa pode ouvir é o `POST /api/sfu/authorize`, a cada inscrição.
+     *
+     * @throws JsonException
+     */
+    public function sessionToken(User $user): string
+    {
+        return $this->sign($this->identity($user));
+    }
+
+    /**
+     * O tempo real do Laravel: o SFU entrega a quem está inscrito no canal. Falha dele não
+     * desfaz o que já foi gravado — `send()` engole o erro e deixa rastro no log.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    public function publish(string $channel, string $event, array $data): void
+    {
+        $this->post('/broadcast', ['channel' => $channel, 'event' => $event, 'data' => $data]);
     }
 
     public function kick(Channel $channel, string $subject): int
@@ -97,21 +119,21 @@ final readonly class SfuClient
     }
 
     /**
-     * @param  array<int, string>  $can
+     * @return array{sub: string, name: string, exp: int}
+     */
+    private function identity(User $user): array
+    {
+        return ['sub' => $user->subject(), 'name' => $user->name, 'exp' => time() + self::TOKEN_SECONDS];
+    }
+
+    /**
+     * @param  array<string, mixed>  $claims
      *
      * @throws JsonException
      */
-    private function sign(string $room, User $user, array $can): string
+    private function sign(array $claims): string
     {
-        $claims = json_encode([
-            'room' => $room,
-            'sub' => $user->subject(),
-            'name' => $user->name,
-            'exp' => time() + self::TOKEN_SECONDS,
-            'can' => $can,
-        ], JSON_THROW_ON_ERROR);
-
-        $body = mb_rtrim(strtr(base64_encode($claims), '+/', '-_'), '=');
+        $body = mb_rtrim(strtr(base64_encode(json_encode($claims, JSON_THROW_ON_ERROR)), '+/', '-_'), '=');
 
         return $body.'.'.hash_hmac('sha256', $body, $this->secret);
     }
@@ -170,7 +192,7 @@ final readonly class SfuClient
                 'method' => $method,
                 'path' => $path,
                 'headers' => [...$headers, 'X-Unkvoid-Signature' => '***'],
-                'body' => $body,
+                'body' => $this->loggableBody($path, $body),
                 'status' => $response->status(),
                 'response' => $response->body(),
             ]);
@@ -190,7 +212,7 @@ final readonly class SfuClient
                 'message' => $exception->getMessage(),
                 'method' => $method,
                 'path' => $path,
-                'body' => $body,
+                'body' => $this->loggableBody($path, $body),
             ]);
 
             return null;
@@ -216,5 +238,28 @@ final readonly class SfuClient
         }
 
         return $request->withBody($body, 'application/json');
+    }
+
+    /**
+     * O corpo do `/broadcast` carrega a mensagem que a pessoa acabou de escrever. No log
+     * interessa para onde foi e o que era, nunca a conversa: um `storage/logs` com o chat
+     * de todo mundo dentro é um vazamento esperando acontecer, e ainda cresce sem limite.
+     */
+    private function loggableBody(string $path, string $body): string
+    {
+        if ($path !== '/broadcast') {
+            return $body;
+        }
+
+        $decoded = json_decode($body, true);
+
+        if (! is_array($decoded)) {
+            return '{}';
+        }
+
+        return (string) json_encode([
+            'channel' => $decoded['channel'] ?? null,
+            'event' => $decoded['event'] ?? null,
+        ]);
     }
 }

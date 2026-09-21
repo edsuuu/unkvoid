@@ -4,24 +4,23 @@ declare(strict_types=1);
 
 namespace App\Events;
 
-use Illuminate\Broadcasting\InteractsWithSockets;
-use Illuminate\Broadcasting\PrivateChannel;
-use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 
-final class MessageDeleted implements ShouldBroadcastNow
+final readonly class MessageDeleted implements SfuEvent
 {
     use Dispatchable;
-    use InteractsWithSockets;
 
-    public function __construct(public readonly int $id, public readonly string $channelId) {}
+    public function __construct(public int $id, public string $channelId) {}
 
-    public function broadcastOn(): PrivateChannel
+    /**
+     * @return array<int, string>
+     */
+    public function channels(): array
     {
-        return new PrivateChannel('channel.'.$this->channelId);
+        return ['channel.'.$this->channelId];
     }
 
-    public function broadcastAs(): string
+    public function eventName(): string
     {
         return 'MessageDeleted';
     }
@@ -29,7 +28,7 @@ final class MessageDeleted implements ShouldBroadcastNow
     /**
      * @return array<string, mixed>
      */
-    public function broadcastWith(): array
+    public function payload(): array
     {
         return ['id' => $this->id, 'channel_id' => $this->channelId];
     }

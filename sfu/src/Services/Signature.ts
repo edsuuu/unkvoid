@@ -1,32 +1,27 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-import { config } from '../config.js';
+import { config } from '../Config/index.js';
 import { UnauthorizedException, ValidationException } from '../Exceptions/ApiException.js';
 
-/** O que o Laravel afirma sobre quem está entrando. Ele decide; o SFU só confere a assinatura. */
 export type JoinClaims = {
     room: string;
     sub: string;
     name: string;
     exp: number;
-    /** `speak`, `stream`, `video`: o que a pessoa pode produzir. */
+
     can: string[];
 };
 
-/** Quanto o relógio de quem chama pode discordar do nosso antes de a assinatura ser recusada. */
 const HEADER_WINDOW_S = 300;
 
-/** Folga no vencimento do token: o relógio do app e o do site nunca batem exatamente. */
 const EXP_LEEWAY_S = 30;
 
-/**
- * Tudo o que é assinado entre o Laravel e o SFU passa por aqui, com o mesmo segredo dos
- * dois lados. Duas formas: o token que o cliente apresenta no `join`, e o cabeçalho das
- * chamadas HTTP que o Laravel faz direto ao SFU.
- *
- * HMAC e não JWT de propósito: são dois processos nossos com um segredo compartilhado,
- * e a biblioteca de JWT só traria algoritmos a mais para acertar `none`.
- */
+export type SessionClaims = {
+    sub: string;
+    name: string;
+    exp: number;
+};
+
 export class Signature {
     public static token(claims: JoinClaims): string {
         const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
@@ -72,9 +67,49 @@ export class Signature {
     }
 
     /**
-     * O cabeçalho cobre método, caminho, hora e corpo: mudar qualquer um invalida a
-     * assinatura, e a hora fecha a janela de repetição.
+     * O token do chat, que não é de sala nenhuma: identifica o socket que fica aberto
+     * enquanto o app está logado, para receber mensagem, DM e presença.
      */
+    public static sessionClaims(token: string): SessionClaims {
+        const claims = Signature.decode<Partial<SessionClaims>>(token);
+
+        if (
+            typeof claims.sub !== 'string' ||
+            typeof claims.name !== 'string' ||
+            typeof claims.exp !== 'number'
+        ) {
+            throw new ValidationException('field token is missing claims');
+        }
+
+        Signature.ensureFresh(claims.exp);
+
+        return claims as SessionClaims;
+    }
+
+    private static decode<T>(token: string): T {
+        const [body, signature] = token.split('.');
+
+        if (!body || !signature) {
+            throw new ValidationException('field token is malformed');
+        }
+
+        if (!Signature.equal(signature, Signature.hmac(body))) {
+            throw new UnauthorizedException('invalid token signature');
+        }
+
+        try {
+            return JSON.parse(Buffer.from(body, 'base64url').toString()) as T;
+        } catch {
+            throw new ValidationException('field token is malformed');
+        }
+    }
+
+    private static ensureFresh(exp: number): void {
+        if ((exp + EXP_LEEWAY_S) * 1000 < Date.now()) {
+            throw new UnauthorizedException('token expired');
+        }
+    }
+
     public static header(timestamp: string, method: string, path: string, body: string): string {
         return Signature.hmac(`${timestamp}\n${method.toUpperCase()}\n${path}\n${body}`);
     }

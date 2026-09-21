@@ -1,6 +1,5 @@
-# O SFU vai para o ar a cada push na main que toque nele. O install.sh espera a sala
-# esvaziar antes de reiniciar, então um deploy pode levar até meia hora — e é por isso
-# que o timeout é folgado.
+# O SFU vai para o ar a cada push na main que toque nele. O restart derruba quem estiver
+# em chamada por alguns segundos, e isso é aceito: o deploy sai na hora.
 name: deploy-sfu
 
 on:
@@ -20,40 +19,19 @@ jobs:
   deploy:
     if: github.repository == 'edsuuu/unkvoid' && github.actor == 'edsuuu'
     runs-on: [self-hosted, Linux, X64, unkvoid]
-    timeout-minutes: 50
+    timeout-minutes: 10
     defaults:
       run:
-        working-directory: sfu
+        working-directory: /var/www/projects/unkvoid/sfu
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+      # Sem checkout e sem rsync: o deploy roda no proprio clone da VPS, que e de onde o
+      # pm2 tira o SFU (`cwd: __dirname` no ecosystem). Um diretorio so, nada de copia.
+      - run: |
+          git fetch --prune origin main
+          git reset --hard origin/main
+        working-directory: /var/www/projects/unkvoid
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
       - run: pnpm run lint
-
-      - run: |
-          rsync -a --delete --exclude node_modules --exclude .env \
-            ./dist ./check.mjs ./install.sh ./.env.example \
-            ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ./ecosystem.config.cjs \
-            /var/www/projects/sfu/
-      # O install roda SOLTO do runner, e não como filho deste passo.
-      #
-      # Ele espera a sala esvaziar por até trinta minutos, e nesse tempo o processo do
-      # passo levava um SIGTERM e morria com código 143 — quatro das cinco execuções de
-      # 11/09/2026. O `dist` novo já estava no disco e o pm2 seguia com a versão velha:
-      # o deploy falhava no único ponto que importa, depois de tudo ter dado certo.
-      #
-      # Com `setsid` o install sobrevive à morte do job e termina sozinho. O laço abaixo
-      # existe só para este passo dizer o que aconteceu; ele não segura mais o deploy.
-      - run: |
-          cd /var/www/projects/sfu
-          rm -f /tmp/sfu-install.done /tmp/sfu-install.log
-          setsid bash -c './install.sh > /tmp/sfu-install.log 2>&1; echo $? > /tmp/sfu-install.done' < /dev/null &
-          for _ in $(seq 1 160); do
-            if [ -f /tmp/sfu-install.done ]; then break; fi
-            sleep 15
-          done
-          tail -n 30 /tmp/sfu-install.log || true
-          exit "$(cat /tmp/sfu-install.done 2>/dev/null || echo 1)"
+      - run: ./install.sh

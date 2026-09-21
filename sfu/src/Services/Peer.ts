@@ -3,23 +3,23 @@ import type { WebSocket } from 'ws';
 
 import { PERMISSION_BY_SOURCE, type SourceName } from '../Enums/Source.js';
 import { ForbiddenException, NotFoundException } from '../Exceptions/ApiException.js';
-import type { ProducerDescription } from '../types.js';
+
+export type ProducerDescription = {
+    producerId: string;
+    kind: string;
+    source: string;
+    paused: boolean;
+};
 
 export class Peer {
     public socket: WebSocket;
 
-    /** Quando o socket caiu. Nulo enquanto a sinalização está viva. */
     public orphanedAt: number | null = null;
 
-    /**
-     * Silenciado pelo servidor (Laravel). Pausar o producer não bastava: o cliente
-     * chamava `resumeProducer` no clique seguinte e a voz voltava.
-     */
     public serverMuted = false;
 
     public readonly transports = new Map<string, WebRtcTransport>();
 
-    /** O ingest de RTP puro do app nativo. Mapa separado: não tem DTLS a conectar. */
     public readonly plainTransports = new Map<string, PlainTransport>();
 
     public readonly producers = new Map<string, Producer>();
@@ -30,28 +30,17 @@ export class Peer {
         public readonly id: string,
         public readonly name: string,
         socket: WebSocket,
-        /** Segredo desta sessão: quem o apresenta de volta é a mesma pessoa, e mais ninguém. */
+
         public readonly resumeKey: string,
-        /**
-         * A conta, vinda do token que o Laravel assinou. É o que sobrevive a reconectar e
-         * a fechar o app, e é por ela que alguém é expulso: o `id` é sorteado a cada
-         * conexão.
-         */
+
         public readonly userId: string,
-        /**
-         * Decidido pelo Laravel, contra o banco. O SFU só confere na hora de produzir, e
-         * troca pelo do token novo quando a sessão é retomada.
-         */
+
         public can: readonly string[],
         public readonly ip: string,
     ) {
         this.socket = socket;
     }
 
-    /**
-     * Troca a sinalização sem tocar na mídia: transports, producers e consumers seguem
-     * vivos, então a tela de quem assiste não pisca.
-     */
     public attachSocket(socket: WebSocket): void {
         this.socket = socket;
         this.orphanedAt = null;
@@ -151,9 +140,6 @@ export class Peer {
     }
 
     public closePlainTransports(): void {
-        // Um plain transport de envio existe só para carregar uma transmissão: deixá-lo
-        // aberto seguraria uma porta UDP de uma faixa estreita pelo resto da vida do
-        // processo. O de recepção fica: os consumers de quem ainda fala moram nele.
         for (const transport of this.plainTransports.values()) {
             if (transport.appData.receive === true) {
                 continue;

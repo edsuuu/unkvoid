@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 /// Uma tecla que a pessoa escolheu e o que ela faz.
@@ -49,7 +49,7 @@ pub fn set_shortcuts(app: AppHandle, bindings: Vec<Binding>) -> Result<Registere
     let bindings = bindings.into_iter().filter(|binding| !binding.accelerator.trim().is_empty());
     let mut result = Registered::default();
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         let mut watched = Vec::new();
 
@@ -69,7 +69,7 @@ pub fn set_shortcuts(app: AppHandle, bindings: Vec<Binding>) -> Result<Registere
         polling::watch(&app, watched)?;
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     {
         let manager = app.global_shortcut();
 
@@ -100,14 +100,18 @@ pub fn set_shortcuts(app: AppHandle, bindings: Vec<Binding>) -> Result<Registere
 ///
 /// ponytail: com o jogo rodando como administrador o Windows esconde o estado das teclas de
 /// um processo sem elevação, e os atalhos param de responder enquanto o jogo está na
-/// frente (o Discord tem o mesmo limite). A saída é rodar o app elevado.
-#[cfg(any(target_os = "windows", test))]
+/// frente (os apps de chamada têm o mesmo limite). A saída é rodar o app elevado.
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 mod polling {
+    #[cfg(not(target_os = "macos"))]
     const SHIFT: &[u16] = &[0x10];
+    #[cfg(not(target_os = "macos"))]
     const CONTROL: &[u16] = &[0x11];
+    #[cfg(not(target_os = "macos"))]
     const ALT: &[u16] = &[0x12];
 
     /// A tecla Windows não tem código que valha pelas duas, como os outros têm.
+    #[cfg(not(target_os = "macos"))]
     const SUPER: &[u16] = &[0x5B, 0x5C];
 
     /// O que tem de estar para baixo, em virtual-keys do Windows. Cada modificador é uma
@@ -121,6 +125,20 @@ mod polling {
     /// `Control+Shift+KeyV`, `KeyV`, `Mouse4`: modificadores, e a tecla por último. `None`
     /// para o que não tem virtual-key conhecida — a ação vai em `failed`, e se for a de
     /// falar a interface deixa o microfone aberto.
+    #[cfg(target_os = "macos")]
+    pub fn parse(accelerator: &str) -> Option<Keys> {
+        let split = core_app::keymap::split(accelerator)?;
+        let key = core_app::keymap::macos_key(split.key)?;
+        let modifiers = split
+            .modifiers
+            .into_iter()
+            .map(core_app::keymap::macos_modifier)
+            .collect::<Option<_>>()?;
+
+        Some(Keys { key, modifiers })
+    }
+
+    #[cfg(not(target_os = "macos"))]
     pub fn parse(accelerator: &str) -> Option<Keys> {
         let mut parts: Vec<&str> = accelerator.split('+').map(str::trim).collect();
         let key = virtual_key(parts.pop()?)?;
@@ -142,6 +160,7 @@ mod polling {
     /// O `KeyboardEvent.code` que a interface manda, na mesma tabela (a do teclado
     /// americano) que o plugin usa no macOS e no Linux: a tecla que vale é a que tem
     /// aquela letra, igual nos três sistemas.
+    #[cfg(not(target_os = "macos"))]
     fn virtual_key(code: &str) -> Option<u16> {
         let numbered = |prefix: &str| code.strip_prefix(prefix)?.parse::<u16>().ok();
 
@@ -225,10 +244,10 @@ mod polling {
         changed
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     pub use watcher::watch;
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     mod watcher {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::{Arc, Mutex, PoisonError};
@@ -236,6 +255,7 @@ mod polling {
         use std::time::Duration;
 
         use tauri::AppHandle;
+        #[cfg(target_os = "windows")]
         use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
         use super::super::fire;
@@ -279,7 +299,26 @@ mod polling {
                 .name("unkvoid-shortcut-keys".into())
                 .spawn(move || {
                     // O bit alto é "para baixo agora", e num `i16` ele é o sinal.
+                    #[cfg(target_os = "windows")]
                     let down = |key: u16| unsafe { GetAsyncKeyState(i32::from(key)) } < 0;
+
+                    // Lê o estado da tecla no HID, sem interceptar nada: o jogo na frente
+                    // continua recebendo a tecla. É a diferença entre ler e registrar.
+                    //
+                    // Declarada à mão porque a crate `core-graphics` não expõe esta: ela
+                    // cobre criar e mandar eventos, não consultar o teclado.
+                    #[cfg(target_os = "macos")]
+                    let down = |key: u16| {
+                        /// 1 é `kCGEventSourceStateHIDSystemState`: o teclado de verdade,
+                        /// e não os eventos que algum programa injetou.
+                        const HID_SYSTEM_STATE: u32 = 1;
+
+                        unsafe extern "C" {
+                            fn CGEventSourceKeyState(state: u32, key: u16) -> bool;
+                        }
+
+                        unsafe { CGEventSourceKeyState(HID_SYSTEM_STATE, key) }
+                    };
                     let mut pressed = vec![false; watched.len()];
 
                     // O que já está para baixo quando a vigia começa não é aperto: a interface
@@ -311,12 +350,17 @@ mod polling {
 
     #[cfg(test)]
     mod tests {
-        use super::{Keys, edges, held, parse};
+        use super::{Keys, edges, held};
 
-        fn watching(bindings: &[(&str, &str)]) -> Vec<(String, Keys)> {
+        /// As teclas montadas à mão, e não pelo `parse`: `edges` e `held` não sabem de
+        /// tabela de sistema nenhuma, e amarrá-los à do Windows faria o teste falhar no
+        /// macOS por um motivo que não é o que ele verifica.
+        fn watching(bindings: &[(&str, u16, &[&'static [u16]])]) -> Vec<(String, Keys)> {
             bindings
                 .iter()
-                .map(|&(action, accelerator)| (action.to_owned(), parse(accelerator).expect("atalho válido")))
+                .map(|&(action, key, modifiers)| {
+                    (action.to_owned(), Keys { key, modifiers: modifiers.to_vec() })
+                })
                 .collect()
         }
 
@@ -324,6 +368,7 @@ mod polling {
             move |key| down.contains(&key)
         }
 
+        #[cfg(not(target_os = "macos"))]
         #[test]
         fn the_accelerator_becomes_the_keys_to_watch() {
             let bare = |key| Some(Keys { key, modifiers: vec![] });
@@ -353,7 +398,10 @@ mod polling {
 
         #[test]
         fn held_needs_the_key_and_every_asked_modifier_and_ignores_the_extra_ones() {
-            let keys = parse("Control+Super+Mouse4").expect("atalho válido");
+            const CONTROL_KEYS: &[u16] = &[0x11];
+            const SUPER_KEYS: &[u16] = &[0x5B, 0x5C];
+
+            let keys = Keys { key: 0x05, modifiers: vec![CONTROL_KEYS, SUPER_KEYS] };
 
             assert!(held(&keys, with(&[0x05, 0x11, 0x5B])));
             assert!(held(&keys, with(&[0x05, 0x11, 0x5C])), "a tecla Windows da direita também vale");
@@ -363,14 +411,17 @@ mod polling {
             assert!(!held(&keys, with(&[0x11, 0x5B])), "faltou o botão");
             assert!(!held(&keys, with(&[])));
 
-            let bare = parse("KeyV").expect("atalho válido");
+            let bare = Keys { key: 0x56, modifiers: vec![] };
 
             assert!(held(&bare, with(&[0x56, 0x10, 0x11])), "tecla solta com o jogo segurando Shift e Ctrl");
         }
 
         #[test]
         fn each_action_fires_on_its_own_edges_and_a_held_key_does_not_repeat() {
-            let watched = watching(&[("mute", "Control+Shift+KeyM"), ("talk", "Mouse4")]);
+            const CONTROL_KEYS: &[u16] = &[0x11];
+            const SHIFT_KEYS: &[u16] = &[0x10];
+
+            let watched = watching(&[("mute", 0x4D, &[CONTROL_KEYS, SHIFT_KEYS]), ("talk", 0x05, &[])]);
             let mut pressed = vec![false; watched.len()];
 
             assert!(edges(&watched, &mut pressed, with(&[])).is_empty(), "nada apertado, nada a dizer");
@@ -392,7 +443,13 @@ mod polling {
         /// É com esta leitura que a vigia para: o que estava apertado sobe, o resto fica quieto.
         #[test]
         fn a_reading_with_nothing_down_releases_only_what_was_pressed() {
-            let watched = watching(&[("mute", "Control+KeyM"), ("deafen", "Control+KeyD"), ("talk", "KeyV")]);
+            const CONTROL_KEYS: &[u16] = &[0x11];
+
+            let watched = watching(&[
+                ("mute", 0x4D, &[CONTROL_KEYS]),
+                ("deafen", 0x44, &[CONTROL_KEYS]),
+                ("talk", 0x56, &[]),
+            ]);
             let mut pressed = vec![false; watched.len()];
 
             assert_eq!(edges(&watched, &mut pressed, with(&[0x11, 0x4D, 0x56])), [("mute", true), ("talk", true)]);
@@ -406,7 +463,13 @@ mod polling {
         /// que não se contêm.
         #[test]
         fn a_binding_contained_in_another_fires_along_with_it() {
-            let watched = watching(&[("mute", "Control+KeyM"), ("deafen", "Control+Shift+KeyM")]);
+            const CONTROL_KEYS: &[u16] = &[0x11];
+            const SHIFT_KEYS: &[u16] = &[0x10];
+
+            let watched = watching(&[
+                ("mute", 0x4D, &[CONTROL_KEYS]),
+                ("deafen", 0x4D, &[CONTROL_KEYS, SHIFT_KEYS]),
+            ]);
             let mut pressed = vec![false; watched.len()];
 
             assert_eq!(edges(&watched, &mut pressed, with(&[0x11, 0x4D])), [("mute", true)], "o menor sozinho");
@@ -426,6 +489,7 @@ mod polling {
 
         /// A tabela é número escrito à mão; aqui ela é conferida com os nomes da Microsoft.
         #[cfg(target_os = "windows")]
+        #[cfg(not(target_os = "macos"))]
         #[test]
         fn the_table_matches_the_names_windows_gives() {
             use windows::Win32::UI::Input::KeyboardAndMouse::{

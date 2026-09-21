@@ -35,7 +35,7 @@ O comentário do código afirmava que buffer cheio significa uplink saturado.
 Medindo o upload durante a própria transmissão deu 78 Mb/s para 5 Mb/s em uso.
 Não era o uplink.
 
-**Correção:** `SO_SNDBUF` de 4 MB, em `crates/media/src/plain.rs`. É teto e não
+**Correção:** `SO_SNDBUF` de 4 MB, em `shared/media/src/plain.rs`. É teto e não
 reserva. Vale para os três sistemas, porque o padrão do macOS é igualmente
 pequeno.
 

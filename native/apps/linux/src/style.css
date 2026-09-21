@@ -1,0 +1,158 @@
+/* O escuro do app, nas classes que as telas pedem. Cor aqui, nunca no Rust. */
+
+window {
+    background: #0b0d12;
+    color: #e6e9f0;
+}
+
+.title {
+    font-size: 17px;
+    font-weight: 700;
+}
+
+.strong {
+    font-weight: 600;
+}
+
+.muted {
+    color: #9aa3b5;
+    font-size: 12px;
+}
+
+.danger {
+    color: #ff6b6b;
+    font-size: 12px;
+}
+
+.card {
+    background: #131722;
+    border: 1px solid #1f2637;
+    border-radius: 16px;
+    min-width: 340px;
+}
+
+.toolbar {
+    background: #131722;
+    border: 1px solid #1f2637;
+    border-radius: 14px;
+    padding: 8px 12px;
+}
+
+.stage {
+    background: #0e121b;
+    border: 1px solid #1f2637;
+    border-radius: 16px;
+    padding: 24px;
+}
+
+.list {
+    background: transparent;
+}
+
+.list row {
+    border-radius: 10px;
+}
+
+.list row:selected {
+    background: #1d2536;
+}
+
+button.primary {
+    background: #4c6ef5;
+    color: #ffffff;
+    border-radius: 10px;
+    padding: 8px 14px;
+    font-weight: 600;
+}
+
+button.ghost {
+    background: #1a2030;
+    color: #e6e9f0;
+    border-radius: 10px;
+    padding: 8px 14px;
+}
+
+button.danger {
+    background: #c92a2a;
+    color: #ffffff;
+    border-radius: 10px;
+    padding: 8px 14px;
+}
+
+button.link {
+    background: transparent;
+    color: #9aa3b5;
+    padding: 4px;
+}
+
+button.chip {
+    background: #1a2030;
+    color: #c8cfdd;
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-family: monospace;
+}
+
+.badge {
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.badge.live {
+    background: #c92a2a;
+    color: #ffffff;
+}
+
+.badge.warn {
+    background: #33261a;
+    color: #ffa94d;
+}
+
+.badge.mine {
+    background: #1d3a2a;
+    color: #69db7c;
+}
+
+entry,
+passwordentry {
+    background: #0e121b;
+    border: 1px solid #263048;
+    border-radius: 10px;
+    padding: 8px 10px;
+    color: #e6e9f0;
+}
+
+.userbar {
+    background: #131722;
+    border: 1px solid #1f2637;
+    border-radius: 14px;
+    padding: 6px 10px;
+}
+
+button.icon {
+    background: #1a2030;
+    color: #e6e9f0;
+    border-radius: 10px;
+    padding: 6px 10px;
+    min-width: 28px;
+}
+
+button.arrow {
+    background: transparent;
+    color: #9aa3b5;
+    padding: 2px 4px;
+    min-width: 18px;
+}
+
+button.off {
+    color: #ff6b6b;
+}
+
+.tile {
+    background: #0b0d12;
+    border: 1px solid #1f2637;
+    border-radius: 12px;
+    padding: 6px;
+}

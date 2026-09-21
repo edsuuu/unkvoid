@@ -45,16 +45,15 @@ o código das peças.
 ## Rodar tudo local
 
 ```bash
-# Laravel (API e site) + Reverb (chat e presença)
+# Laravel: API, site e o resto do que precisa de banco
 cd web && composer setup               # primeira vez: .env, chave, dependências
 cd web && composer dev                 # :8000
-cd web && php artisan reverb:start     # :8080
 
 # SFU — o segredo tem de ser o mesmo SFU_SECRET do web/.env (32 caracteres ou mais)
 cd sfu && pnpm install && pnpm run build
 cd sfu && SFU_SECRET=<o do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node dist/server.js
 
-# App apontando para o Laravel local (SFU e Reverb vêm do GET /api/config)
+# App apontando para o Laravel local (a URL do SFU vem do GET /api/config)
 cd native/apps/desktop && npm ci
 cd native/apps/desktop && VITE_SERVER=http://127.0.0.1:8000 npm run dev:app
 
@@ -72,7 +71,6 @@ deploy do site e do SFU sozinho e publica o `.deb` do Linux.
 
 ```bash
 cd web && composer check          # phpstan max + pint + rector + pest em SQLite (rode 2x: o rector tem de ficar estável)
-cd web && composer test:mysql     # a mesma suíte no MySQL: pega tipo de coluna e chave que o SQLite perdoa
 
 cd sfu && pnpm run check          # eslint + check.mjs (precisa de um servidor no ar com o mesmo SFU_SECRET)
 

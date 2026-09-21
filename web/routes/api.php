@@ -17,7 +17,7 @@ use App\Http\Controllers\Api\ReleaseController;
 use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\RoomController;
 use App\Http\Controllers\Api\ServerController;
-use App\Http\Controllers\Api\Sfu\SfuEventController;
+use App\Http\Controllers\Api\Sfu\SfuController;
 use App\Http\Controllers\Api\VoiceController;
 use Illuminate\Support\Facades\Route;
 
@@ -30,7 +30,12 @@ Route::name('api.')->group(function (): void {
 
     Route::get('/config', ConfigController::class)->name('config');
 
-    Route::post('/sfu/events', SfuEventController::class)->middleware('signed.sfu')->name('sfu.events');
+    Route::prefix('sfu')->name('sfu.')->group(function (): void {
+        Route::post('/events', [SfuController::class, 'events'])->middleware('signed.sfu')->name('events');
+        Route::post('/authorize', [SfuController::class, 'authorize'])->middleware('signed.sfu:repeatable')->name('authorize');
+        Route::post('/session', [SfuController::class, 'session'])->middleware('auth:sanctum')->name('session');
+    });
+
     Route::post('/releases', ReleaseController::class)->middleware('signed.release')->name('releases.store');
 
     // Sem assinatura, de propósito: quem chama é o app instalado na máquina de qualquer

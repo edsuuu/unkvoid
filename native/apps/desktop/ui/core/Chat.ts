@@ -1,10 +1,9 @@
-import type { Channel as EchoChannel } from 'laravel-echo';
-
 import { Failure } from './Failure.ts';
 import type { Hub } from './Hub.ts';
 import { ImageShrinker } from './ImageShrinker.ts';
 import type { Channel, Message } from './Models.ts';
 import { Permissions } from './Permissions.ts';
+import type { ChannelListener } from './Realtime.ts';
 import { Store } from './Store.ts';
 
 export type ChatState = {
@@ -32,7 +31,6 @@ export class Chat {
     static readonly PAGE_SIZE = 50;
     static readonly MAX_IMAGES = 3;
     static readonly RENEW_EVERY_MS = 10 * 60_000;
-    static readonly EVENTS = ['MessageSent', 'MessageUpdated', 'MessageDeleted'];
     static readonly EMPTY: ChatState = { channel: null, messages: [], loading: false, loadingOlder: false, exhausted: false, failed: false, replyTo: null, newFrom: null, images: [], sending: false, unread: 0 };
 
     static mergeLatest<Item extends { id: number }>(known: Item[], latest: Item[]): Item[] {
@@ -44,7 +42,7 @@ export class Chat {
 
     readonly hub: Hub;
     channel: Channel | null = null;
-    subscription: EchoChannel | null = null;
+    listener: ChannelListener | null = null;
     watched = true;
     imageSerial = 0;
     renewing = false;
@@ -61,26 +59,26 @@ export class Chat {
         this.channel = channel;
         this.store.replace({ ...Chat.EMPTY, channel, loading: true });
 
-        const subscription = this.hub.echo!.private(`channel.${channel.id}`);
+        this.listener = {
+            MessageSent: ({ message }: { message: Message }) => {
+                if (message.user.id !== this.hub.user?.id) {
+                    this.hub.app.sounds.message();
 
-        this.subscription = subscription;
-        this.hub.listen<{ message: Message }>(subscription, 'MessageSent', ({ message }) => {
-            if (message.user.id !== this.hub.user?.id) {
-                this.hub.app.sounds.message();
-
-                if (! this.watched) {
-                    this.store.set(state => ({ unread: state.unread + 1 }));
+                    if (! this.watched) {
+                        this.store.set(state => ({ unread: state.unread + 1 }));
+                    }
                 }
-            }
 
-            this.append(message);
-        });
-        this.hub.listen<{ message: Message }>(subscription, 'MessageUpdated', ({ message }) => this.append(message));
-        this.hub.listen<{ id: number }>(subscription, 'MessageDeleted', ({ id }) => this.remove(id));
+                this.append(message);
+            },
+            MessageUpdated: ({ message }: { message: Message }) => this.append(message),
+            MessageDeleted: ({ id }: { id: number }) => this.remove(id),
+        };
 
         let history: Message[] = [];
 
         try {
+            await this.hub.realtime!.subscribe(`channel.${channel.id}`, this.listener);
             history = await this.hub.api.get<Message[]>(`/api/channels/${channel.id}/messages`);
         } catch (failure) {
             if (this.channel === channel) {
@@ -118,12 +116,8 @@ export class Chat {
     }
 
     close(): void {
-        if (this.channel?.type === 'voice') {
-            for (const name of Chat.EVENTS) {
-                this.subscription?.stopListening(`.${name}`).stopListening(name);
-            }
-        } else if (this.channel) {
-            this.hub.echo?.leave(`channel.${this.channel.id}`);
+        if (this.channel && this.listener) {
+            this.hub.realtime?.unsubscribe(`channel.${this.channel.id}`, this.listener);
         }
 
         for (const image of this.store.state.images) {
@@ -131,7 +125,7 @@ export class Chat {
         }
 
         this.channel = null;
-        this.subscription = null;
+        this.listener = null;
         this.renewedAt.clear();
         this.store.replace(Chat.EMPTY);
     }

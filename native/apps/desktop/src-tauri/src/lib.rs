@@ -179,9 +179,6 @@ async fn start_broadcast(
         ..CaptureConfig::default()
     };
 
-    // No Wayland é aqui que o seletor de tela do sistema abre, e a pessoa leva o tempo que
-    // quiser para escolher. Por isso vem ANTES do cadeado da sessão: com ele na mão, mutar
-    // o microfone ou ligar a câmera ficariam parados esperando a escolha.
     let _prepared = tokio::task::block_in_place(|| capture::prepare(&config)).map_err(|error| {
         tracing::warn!(error = %error, "broadcast: a origem não foi escolhida");
 
@@ -206,8 +203,6 @@ async fn start_broadcast(
         "broadcast: ligando captura e encoder"
     );
 
-    // Abrir captura e encoder bloqueia (no Linux é um `gst-launch` a mais); o tokio é
-    // avisado para não esperar esta thread enquanto isso.
     let started = tokio::task::block_in_place(|| {
         session.start(config, Some(Source::Screen), audio.then_some(Source::ScreenAudio))
     });
@@ -401,7 +396,7 @@ async fn broadcast_stats(state: State<'_, ActiveSession>) -> Result<serde_json::
         .unwrap_or_else(|| serde_json::json!({ "active": false })))
 }
 
-/// Procura, baixa e instala a atualização antes de abrir o app, como o Discord faz.
+/// Procura, baixa e instala a atualização antes de abrir o app, como os apps de chamada fazem.
 /// Falha de rede não impede a abertura: sem servidor a pessoa não usa o app de todo
 /// jeito, mas travar na tela de atualização seria pior do que avisar.
 ///
@@ -423,9 +418,6 @@ async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
 
     let version = update.version.clone();
 
-    // O progresso vai para a tela. Um download de 12 MB numa conexão ruim leva minutos,
-    // e sem número nenhum a tela de atualização é indistinguível de um app travado —
-    // que foi exatamente a primeira reclamação que este app recebeu.
     let handle = app.clone();
     let mut baixado = 0_usize;
 
@@ -502,8 +494,6 @@ fn center_on_monitor(window: &tauri::Window, size: (f64, f64)) {
     use tauri::PhysicalPosition;
 
     let (Ok(Some(monitor)), Ok(scale)) = (window.primary_monitor(), window.scale_factor()) else {
-        // Sem monitor legível não dá para calcular; o `center` do sistema ainda é
-        // melhor do que deixar onde está.
         let _ = window.center();
 
         return;
@@ -581,12 +571,6 @@ fn enable_webrtc(app: &tauri::AppHandle) {
         return;
     };
 
-    // O `with_webview` enfileira a closure no laço do GTK, que só começa a rodar
-    // depois do `setup`. Ou seja: isto acontece DEPOIS de a página já ter nascido, e a
-    // página que nasceu sem WebRTC continua sem ele — a configuração vale para a
-    // próxima carga. Por isso a interface recarrega uma vez quando não acha o
-    // `RTCPeerConnection`, e por isso estas linhas de log existem: sem elas não há como
-    // saber, de fora, se o problema foi a ordem ou o WebKit da distro.
     let outcome = window.with_webview(|webview| match WebViewExt::settings(&webview.inner()) {
         Some(settings) => {
             settings.set_enable_webrtc(true);
@@ -667,9 +651,6 @@ fn report_check(app: tauri::AppHandle, webrtc: bool, receiver: Vec<String>, send
     println!("  envia:  {}", if sender.is_empty() { "-".to_string() } else { sender.join(", ") });
     println!("  motor:  {user_agent}");
 
-    // `AppHandle::exit` deixa o laço do GTK encerrar e o código se perde no caminho:
-    // o processo saía com 0 mesmo sem H.264. O código de saída é o contrato deste
-    // comando, então ele sai daqui, direto.
     let _ = app;
     use std::io::Write;
     let _ = std::io::stdout().flush();
@@ -742,8 +723,6 @@ fn check_capture() -> i32 {
     let capture_config =
         capture::CaptureConfig { quality: Quality::Hd720, frame_rate: 30, ..capture::CaptureConfig::default() };
 
-    // No Wayland abre o seletor do sistema: é o mesmo caminho da transmissão, e é isso que
-    // este comando prova.
     let _prepared = match capture::prepare(&capture_config) {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -832,8 +811,6 @@ pub fn run() {
         return;
     }
 
-    // Captura e codificação de vídeo, sem sala nem janela: é o que prova, numa distro
-    // limpa, que compartilhar a tela funciona antes de alguém apresentar com ela.
     if let Some(at) = arguments.iter().position(|argument| argument == "--check-capture") {
         std::process::exit(match arguments.get(at + 1).map(String::as_str) {
             Some("mic") => check_native(true),
@@ -950,9 +927,6 @@ pub fn run() {
         .on_window_event(|window, event| {
             use tauri::Manager;
 
-            // Fechar esconde, porque matar o processo derrubaria a transmissão junto —
-            // mas só quando existe bandeja para trazer a janela de volta. Sem ela,
-            // esconder deixava um processo invisível que só morria no `kill`.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if ! window.state::<HasTray>().0.load(Ordering::Relaxed) {
                     return;
@@ -978,18 +952,11 @@ pub fn run() {
         .run(|app, event| {
             use tauri::Manager;
 
-            // Nenhum `gst-launch` sobrevive ao app: no Linux cada transmissão e cada
-            // cartão assistido é um processo à parte, e a janela sumir não os mata.
             if let tauri::RunEvent::Exit = event {
                 if let Ok(mut watches) = app.state::<NativeWatches>().0.lock() {
                     watches.stop(None);
                 }
 
-                // Espera um pouco a operação em curso largar a sessão, nunca para sempre: um
-                // comando que precise da thread principal enquanto a segura travava o fechar.
-                //
-                // Espera na mão, sem tokio: na saída esta thread não tem reator, e o
-                // `timeout` derrubava o app com pânico em vez de fechar.
                 let active = app.state::<ActiveSession>();
                 let deadline = Instant::now() + Duration::from_secs(2);
 

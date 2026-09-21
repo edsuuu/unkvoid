@@ -1,6 +1,3 @@
-import Echo, { type Channel as EchoChannel } from 'laravel-echo';
-import Pusher from 'pusher-js';
-
 import { ApiClient } from './ApiClient.ts';
 import type { App } from './App.ts';
 import { Chat } from './Chat.ts';
@@ -24,16 +21,11 @@ import type {
     VoicePerson,
 } from './Models.ts';
 import { Permissions } from './Permissions.ts';
+import { Realtime, type ChannelListener, type PresenceMember } from './Realtime.ts';
 import { ServerSettings } from './ServerSettings.ts';
 import { Store } from './Store.ts';
 import { Tauri } from './Tauri.ts';
 import { Voice } from './Voice.ts';
-
-declare global {
-    interface Window {
-        Pusher: typeof Pusher;
-    }
-}
 
 export type HubModal =
     | { type: 'server' }
@@ -100,8 +92,6 @@ export type MemberPatch = {
 
 type BroadcastDirectMessage = { message: Omit<DirectMessage, 'mine'>; recipient: Person };
 
-type OnlineUser = { id: number };
-
 type VoiceStateEvent = { channel_id: string; user_id: number; name: string; event: 'joined' | 'left' };
 
 export class Hub {
@@ -111,21 +101,24 @@ export class Hub {
 
     static readonly AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 
+    static personId(identity: string): number {
+        return Number(identity.slice(identity.indexOf(':') + 1));
+    }
+
     readonly app: App;
     readonly server: string;
     readonly api: ApiClient;
     user: User | null = null;
     config: Config | null = null;
-    echo: Echo<'reverb'> | null = null;
+    realtime: Realtime | null = null;
     servers: ServerSummary[] = [];
     tree: ServerTree | null = null;
     channel: Channel | null = null;
     online = new Set<number>();
     openTicket = 0;
     refreshTimer: number | null = null;
-    echoConnectedBefore = false;
-    readonly voiceChannels = new Set<string>();
-    readonly guardedSubscriptions = new WeakSet<object>();
+    presenceListener: ChannelListener | null = null;
+    readonly voiceChannels = new Map<string, ChannelListener>();
     readonly store: Store<HubState>;
     readonly chat: Chat;
     readonly voiceChat: Chat;
@@ -244,16 +237,9 @@ export class Hub {
         this.app.toast(status === 403 ? `sem permissão: ${Failure.message(failure)}` : Failure.message(failure), true);
     }
 
-    listen<Payload>(subscription: EchoChannel, name: string, handler: (payload: Payload) => void): void {
-        if (! this.guardedSubscriptions.has(subscription)) {
-            this.guardedSubscriptions.add(subscription);
-            subscription.error?.((status: unknown) => {
-                this.app.log('echo.subscription.error', { status: (status as { status?: unknown } | null)?.status ?? status ?? null });
-                this.app.toast('o tempo real falhou num canal: mensagens e presença podem não chegar sozinhas', true);
-            });
-        }
-
-        subscription.listen(`.${name}`, handler).listen(name, handler);
+    channelFailed(channel: string, failure: unknown): void {
+        this.app.log('realtime.channel.error', { channel, message: Failure.message(failure) });
+        this.app.toast('o tempo real falhou num canal: mensagens e presença podem não chegar sozinhas', true);
     }
 
     async restore(): Promise<boolean> {
@@ -439,13 +425,12 @@ export class Hub {
             return;
         }
 
-        if (! this.echo && ! await this.attempt(async () => {
-            this.connectEcho();
+        if (! this.realtime && ! await this.attempt(async () => {
+            await this.connectRealtime();
 
             return true;
         })) {
-            (this.echo as Echo<'reverb'> | null)?.disconnect();
-            this.echo = null;
+            this.dropRealtime();
             this.store.set({ serversLoading: false });
 
             return;
@@ -456,83 +441,73 @@ export class Hub {
         await Promise.all([this.friends.load(), this.direct.loadConversations()]);
     }
 
-    connectEcho(): void {
-        const { host, port, key, scheme } = this.config!.reverb;
+    dropRealtime(): void {
+        this.realtime?.disconnect();
+        this.realtime = null;
+    }
 
-        window.Pusher = Pusher;
-        this.echoConnectedBefore = false;
-        this.echo = new Echo({
-            broadcaster: 'reverb',
-            Pusher,
-            key,
-            wsHost: host,
-            wsPort: port,
-            wssPort: port,
-            forceTLS: scheme === 'https',
-            enabledTransports: ['ws', 'wss'],
-            authEndpoint: `${this.server}/broadcasting/auth`,
-            auth: { headers: { Authorization: `Bearer ${this.api.token}` } },
+    async connectRealtime(): Promise<void> {
+        const realtime = new Realtime((channel, failure) => this.channelFailed(channel, failure));
+
+        this.realtime = realtime;
+        realtime.on('diagnostic', detail => this.app.log(detail.event, detail.data));
+        realtime.on('reconnecting', () => this.store.set({ connected: false }));
+        realtime.on('reconnected', () => {
+            this.store.set({ connected: true });
+            void this.catchUp();
+        });
+        realtime.on('closed', () => {
+            this.app.log('realtime.closed');
+            this.app.toast('o tempo real desistiu de voltar: reabra o app para o chat e a presença voltarem', true);
+            this.store.set({ connected: false });
         });
 
-        this.echo.connector.pusher.connection.bind('state_change', ({ current }: { current: string }) => {
-            this.store.set({ connected: current === 'connected' });
+        await realtime.connect(this.app.socketUrl(), () => this.api.post<{ token: string }>('/api/sfu/session'));
+        await realtime.subscribe(`user.${this.user!.id}`, {
+            FriendshipUpdated: ({ friendship, removed }: { friendship: Friendship; removed: boolean }) => {
+                if (removed) {
+                    this.friends.store.set(state => ({ list: state.list.filter(item => item.id !== friendship.id) }));
 
-            if (current !== 'connected') {
-                return;
-            }
+                    return;
+                }
 
-            if (this.echoConnectedBefore) {
-                void this.catchUp();
-            }
+                const known = this.friends.store.state.list.some(item => item.id === friendship.id);
 
-            this.echoConnectedBefore = true;
-        });
+                this.friends.update(friendship);
 
-        const own = this.echo.private(`user.${this.user!.id}`);
+                if (! known && friendship.status === 'pending' && friendship.addressee.id === this.user?.id) {
+                    this.app.toast(`${friendship.requester.name} quer ser seu amigo`);
+                }
+            },
+            DirectMessageCreated: (payload: BroadcastDirectMessage) => {
+                const { message, person, mine } = this.readDirectMessage(payload);
 
-        this.listen<{ friendship: Friendship; removed: boolean }>(own, 'FriendshipUpdated', ({ friendship, removed }) => {
-            if (removed) {
-                this.friends.store.set(state => ({ list: state.list.filter(item => item.id !== friendship.id) }));
+                this.direct.receive(message, person);
 
-                return;
-            }
+                if (! mine) {
+                    this.app.sounds.message();
+                }
 
-            const known = this.friends.store.state.list.some(item => item.id === friendship.id);
+                if (! mine && this.direct.store.state.person?.id !== person.id) {
+                    this.app.toast(`${message.sender.name}: ${message.body.slice(0, 60)}`);
+                }
+            },
+            DirectMessageUpdated: (payload: BroadcastDirectMessage) => this.direct.updateMessage(this.readDirectMessage(payload).message),
+            DirectMessageDeleted: ({ id }: { id: number }) => this.direct.removeMessage(id),
+            MemberRemoved: ({ server_id: serverId, reason }: { server_id: number; reason: string }) => {
+                this.app.toast(reason === 'banned' ? 'você foi banido deste servidor' : 'você foi expulso deste servidor', true);
 
-            this.friends.update(friendship);
+                if (this.tree?.id === serverId) {
+                    void this.closeServer();
+                }
 
-            if (! known && friendship.status === 'pending' && friendship.addressee.id === this.user?.id) {
-                this.app.toast(`${friendship.requester.name} quer ser seu amigo`);
-            }
-        });
-        this.listen<BroadcastDirectMessage>(own, 'DirectMessageCreated', payload => {
-            const { message, person, mine } = this.readDirectMessage(payload);
-
-            this.direct.receive(message, person);
-
-            if (! mine) {
-                this.app.sounds.message();
-            }
-
-            if (! mine && this.direct.store.state.person?.id !== person.id) {
-                this.app.toast(`${message.sender.name}: ${message.body.slice(0, 60)}`);
-            }
-        });
-        this.listen<BroadcastDirectMessage>(own, 'DirectMessageUpdated', payload => this.direct.updateMessage(this.readDirectMessage(payload).message));
-        this.listen<{ id: number }>(own, 'DirectMessageDeleted', ({ id }) => this.direct.removeMessage(id));
-        this.listen<{ server_id: number; reason: string }>(own, 'MemberRemoved', ({ server_id: serverId, reason }) => {
-            this.app.toast(reason === 'banned' ? 'você foi banido deste servidor' : 'você foi expulso deste servidor', true);
-
-            if (this.tree?.id === serverId) {
-                void this.closeServer();
-            }
-
-            void this.attempt(() => this.loadServers());
+                void this.attempt(() => this.loadServers());
+            },
         });
     }
 
     async catchUp(): Promise<void> {
-        this.app.log('echo.reconnected');
+        this.app.log('realtime.reconnected');
 
         try {
             await this.loadServers();
@@ -545,8 +520,7 @@ export class Hub {
     async logout(): Promise<void> {
         await this.voice.leave();
         await this.closeServer();
-        this.echo?.disconnect();
-        this.echo = null;
+        this.dropRealtime();
         this.friends.forget();
         this.direct.forget();
         this.api.setToken(null);
@@ -659,10 +633,10 @@ export class Hub {
         this.publish({ treeLoading: false });
 
         if (switching) {
-            this.joinPresence();
+            await this.joinPresence();
         }
 
-        this.subscribeVoiceStates();
+        await this.subscribeVoiceStates();
 
         const voiceChannel = this.voice.channel;
 
@@ -691,12 +665,14 @@ export class Hub {
         this.openTicket += 1;
         clearTimeout(this.refreshTimer ?? undefined);
 
-        if (this.tree) {
-            this.echo?.leave(`server.${this.tree.id}`);
+        if (this.tree && this.presenceListener) {
+            this.realtime?.unsubscribe(`server.${this.tree.id}`, this.presenceListener);
         }
 
-        for (const channelId of this.voiceChannels) {
-            this.echo?.leave(`channel.${channelId}`);
+        this.presenceListener = null;
+
+        for (const [channelId, listener] of this.voiceChannels) {
+            this.realtime?.unsubscribe(`channel.${channelId}`, listener);
         }
 
         this.voiceChannels.clear();
@@ -714,68 +690,73 @@ export class Hub {
         this.publish({ inviteBanner: false, stageOpen: false, focusedRoom: false, modal: null, roleEditor: null, memberMenu: null, ...next });
     }
 
-    joinPresence(): void {
-        const presence = this.echo!.join(`server.${this.tree!.id}`);
-
-        presence
-            .here((users: OnlineUser[]) => {
-                this.online = new Set(users.map(user => user.id));
+    joinPresence(): Promise<void> {
+        const channel = `server.${this.tree!.id}`;
+        const listener: ChannelListener = {
+            'presence.here': ({ members }: { members: PresenceMember[] }) => {
+                this.online = new Set(members.map(member => Hub.personId(member.id)));
                 this.publish();
-            })
-            .joining((user: OnlineUser) => {
-                this.online = new Set([...this.online, user.id]);
+            },
+            'presence.joining': ({ id }: PresenceMember) => {
+                this.online = new Set([...this.online, Hub.personId(id)]);
                 this.publish();
-            })
-            .leaving((user: OnlineUser) => {
-                this.online = new Set([...this.online].filter(id => id !== user.id));
+            },
+            'presence.leaving': ({ id }: { id: string }) => {
+                this.online = new Set([...this.online].filter(known => known !== Hub.personId(id)));
                 this.publish();
-            });
+            },
+            ServerUpdated: () => {
+                clearTimeout(this.refreshTimer ?? undefined);
+                this.refreshTimer = setTimeout(() => {
+                    const tree = this.tree;
 
-        this.listen(presence, 'ServerUpdated', () => {
-            clearTimeout(this.refreshTimer ?? undefined);
-            this.refreshTimer = setTimeout(() => {
-                const tree = this.tree;
+                    if (tree) {
+                        void this.attempt(() => this.openServer(tree.id));
+                    }
+                }, Hub.REFRESH_DEBOUNCE_MS);
+            },
+        };
 
-                if (tree) {
-                    void this.attempt(() => this.openServer(tree.id));
-                }
-            }, Hub.REFRESH_DEBOUNCE_MS);
-        });
+        this.presenceListener = listener;
+
+        return this.realtime!.subscribe(channel, listener).catch((failure: unknown) => this.channelFailed(channel, failure));
     }
 
-    subscribeVoiceStates(): void {
+    async subscribeVoiceStates(): Promise<void> {
         const visible = new Set(this.tree!.channels.filter(channel => channel.type === 'voice').map(channel => channel.id));
 
-        for (const channelId of [...this.voiceChannels]) {
+        for (const [channelId, listener] of [...this.voiceChannels]) {
             if (! visible.has(channelId)) {
-                this.echo!.leave(`channel.${channelId}`);
+                this.realtime?.unsubscribe(`channel.${channelId}`, listener);
                 this.voiceChannels.delete(channelId);
             }
         }
 
-        for (const channelId of visible) {
-            if (this.voiceChannels.has(channelId)) {
-                continue;
-            }
+        await Promise.all([...visible].filter(channelId => ! this.voiceChannels.has(channelId)).map(channelId => {
+            const listener: ChannelListener = {
+                VoiceStateUpdated: ({ channel_id: id, user_id: userId, name, event }: VoiceStateEvent) => {
+                    const tree = this.tree;
 
-            this.voiceChannels.add(channelId);
-            this.listen<VoiceStateEvent>(this.echo!.private(`channel.${channelId}`), 'VoiceStateUpdated', ({ channel_id: id, user_id: userId, name, event }) => {
-                const tree = this.tree;
+                    if (! tree?.channels.some(channel => channel.id === id)) {
+                        return;
+                    }
 
-                if (! tree?.channels.some(channel => channel.id === id)) {
-                    return;
-                }
+                    const people = (tree.voice?.[id] ?? []).filter(person => person.user_id !== userId);
 
-                const people = (tree.voice?.[id] ?? []).filter(person => person.user_id !== userId);
+                    this.tree = { ...tree, voice: { ...tree.voice, [id]: event === 'joined' ? [...people, { user_id: userId, name, sources: [] }] : people } };
+                    this.publish();
 
-                this.tree = { ...tree, voice: { ...tree.voice, [id]: event === 'joined' ? [...people, { user_id: userId, name, sources: [] }] : people } };
-                this.publish();
+                    if (this.voice.channel?.id === id) {
+                        this.syncVoiceSources();
+                    }
+                },
+            };
 
-                if (this.voice.channel?.id === id) {
-                    this.syncVoiceSources();
-                }
-            });
-        }
+            this.voiceChannels.set(channelId, listener);
+
+            return this.realtime!.subscribe(`channel.${channelId}`, listener)
+                .catch((failure: unknown) => this.channelFailed(`channel.${channelId}`, failure));
+        }));
     }
 
     syncVoiceSources(): void {
@@ -801,7 +782,7 @@ export class Hub {
             }
 
             people.push({
-                user_id: peer.self ? user.id : Number(peer.userId!.slice('user:'.length)),
+                user_id: peer.self ? user.id : Hub.personId(peer.userId!),
                 name: peer.self ? user.name : peer.name,
                 sources: peer.producers.map(producer => producer.source),
                 muted: peer.self ? muted : peer.producers.some(producer => producer.source === 'mic' && producer.paused),

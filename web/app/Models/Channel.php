@@ -103,7 +103,7 @@ final class Channel extends Model
 
         self::write('falha ao alterar o canal', fn () => $this->update($changes), ['channel_id' => $this->id]);
 
-        self::broadcast(new ServerUpdated($this->server_id));
+        self::publish(new ServerUpdated($this->server_id));
     }
 
     /**
@@ -119,7 +119,7 @@ final class Channel extends Model
 
         self::write('falha ao apagar o canal', fn () => $this->delete(), ['channel_id' => $this->id]);
 
-        self::broadcast(new ServerUpdated($this->server_id));
+        self::publish(new ServerUpdated($this->server_id));
     }
 
     /**
@@ -146,7 +146,7 @@ final class Channel extends Model
             ['allow' => $allow, 'deny' => $deny],
         ), ['channel_id' => $this->id]);
 
-        self::broadcast(new ServerUpdated($this->server_id));
+        self::publish(new ServerUpdated($this->server_id));
 
         return $overwrite;
     }
@@ -167,7 +167,7 @@ final class Channel extends Model
 
         self::write('falha ao apagar a sobrescrita', fn () => $this->overwrites()->where('target_type', $type)->where('target_id', $targetId)->delete(), ['channel_id' => $this->id]);
 
-        self::broadcast(new ServerUpdated($this->server_id));
+        self::publish(new ServerUpdated($this->server_id));
     }
 
     /**
@@ -250,7 +250,7 @@ final class Channel extends Model
         $message->setRelation('replyTo', $replyTo);
         $message->setRelation('files', new Collection($files));
 
-        self::broadcast(new MessageSent($message));
+        self::publish(new MessageSent($message));
 
         return $message;
     }
@@ -274,7 +274,7 @@ final class Channel extends Model
         $message->setRelation('user', $user);
         $message->setRelation('files', new Collection());
 
-        self::broadcast(new MessageSent($message));
+        self::publish(new MessageSent($message));
     }
 
     /**

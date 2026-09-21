@@ -1,0 +1,313 @@
+import { Icons, Skin } from "skin.slint";
+
+// O vocabulário do desenho. Cada um destes existe porque o CSS já o tinha como classe, e
+// repetir a cadeia de propriedades em cada tela é como as telas começam a divergir.
+//
+// O `backdrop-filter` do `.glass` não tem par no Slint: o que sobra é o fundo translúcido
+// sobre o halo, que é de onde vem quase toda a aparência.
+export component Glass inherits Rectangle {
+    background: Skin.glass;
+    border-color: Skin.line;
+    border-width: 1px;
+    border-radius: 20px;
+}
+
+export component Title inherits Text {
+    color: Skin.ink-strong;
+    font-family: Skin.sans;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+export component Body inherits Text {
+    color: Skin.ink-body;
+    font-family: Skin.sans;
+    font-size: 13px;
+    wrap: word-wrap;
+}
+
+export component Muted inherits Text {
+    color: Skin.ink-soft;
+    font-family: Skin.sans;
+    font-size: 13px;
+    wrap: word-wrap;
+}
+
+export component Danger inherits Text {
+    color: Skin.danger;
+    font-family: Skin.sans;
+    font-size: 12.5px;
+    horizontal-alignment: center;
+    wrap: word-wrap;
+}
+
+// `.label-mono`: o nome ficou, a monoespaçada saiu. Hoje é `font-sans`, 10.5px, 600.
+export component LabelMono inherits Text {
+    color: Skin.ink-dim;
+    font-family: Skin.sans;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.84px;
+}
+
+export component DividerOr inherits HorizontalLayout {
+    spacing: 12px;
+    Rectangle {
+        Rectangle { y: parent.height / 2; background: Skin.line; height: 1px; }
+    }
+    LabelMono { text: "OU"; vertical-alignment: center; }
+    Rectangle {
+        Rectangle { y: parent.height / 2; background: Skin.line; height: 1px; }
+    }
+}
+
+export component PrimaryButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 41px;
+    border-radius: 12px;
+    background: @linear-gradient(180deg, Skin.brand 0%, Skin.brand-dark 100%);
+    opacity: root.enabled ? (touch.pressed ? 0.9 : 1.0) : 0.45;
+
+    Text {
+        text: root.text;
+        color: Skin.ink-strong;
+        font-family: Skin.sans;
+        font-size: 14.5px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component GhostButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 34px;
+    min-width: 72px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: touch.has-hover ? #8a7cf580 : Skin.line-strong;
+    background: #ffffff0d;
+    opacity: root.enabled ? 1.0 : 0.45;
+
+    Text {
+        text: root.text;
+        color: touch.has-hover ? Skin.ink-strong : Skin.ink-icon;
+        font-family: Skin.sans;
+        font-size: 12.5px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component Glyph inherits Rectangle {
+    in property <string> commands;
+    in property <brush> tint: Skin.ink-icon;
+    in property <length> size: 17px;
+
+    width: root.size;
+    height: root.size;
+
+    Path {
+        commands: root.commands;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        stroke: root.tint;
+        stroke-width: 1.8px;
+        fill: transparent;
+    }
+}
+
+// `.btn-icon`: 34x34, raio 11. `on` é o estado ligado — uma cor só, posta e tirada, porque
+// duas cores na mesma regra se resolvem pela ordem do estilo e não pela ordem escrita.
+export component IconButton inherits Rectangle {
+    in property <string> commands;
+    in property <bool> on: true;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 34px;
+    height: 34px;
+    border-radius: 11px;
+    border-width: 1px;
+    border-color: Skin.line-strong;
+    background: #ffffff0d;
+    opacity: root.enabled ? 1.0 : 0.45;
+
+    Glyph {
+        commands: root.commands;
+        tint: root.on ? Skin.ink-icon : Skin.danger;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component LinkButton inherits Text {
+    in property <string> label;
+    callback clicked();
+
+    text: root.label;
+    color: Skin.lilac;
+    font-family: Skin.sans;
+    font-size: 12.5px;
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// `.field`: raio 12, 14px, padding 11/13. O erro de validação mora aqui embaixo e pinta a
+// borda: o dono não quer a frase numa linha solta no rodapé, longe do campo que a causou.
+export component Field inherits VerticalLayout {
+    in property <string> placeholder;
+    in property <string> error;
+    in property <bool> mono;
+    in property <bool> password;
+    in property <bool> enabled: true;
+    in-out property <string> text <=> input.text;
+    callback accepted();
+    callback edited();
+
+    spacing: 6px;
+    // `focus()` no campo é o `focus()` do que se digita nele.
+    forward-focus: input;
+
+    Rectangle {
+        height: 40px;
+        background: #ffffff08;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: root.error != ""
+            ? Skin.danger
+            : (input.has-focus ? #8a7cf580 : #ffffff1a);
+        opacity: root.enabled ? 1.0 : 0.55;
+
+        HorizontalLayout {
+            padding-left: 13px;
+            padding-right: 13px;
+
+            input := TextInput {
+                color: Skin.ink-strong;
+                font-family: root.mono ? Skin.mono : Skin.sans;
+                font-size: 14px;
+                single-line: true;
+                enabled: root.enabled;
+                vertical-alignment: center;
+                input-type: root.password ? InputType.password : InputType.text;
+                accepted => { root.accepted(); }
+                edited => { root.edited(); }
+            }
+        }
+
+        Text {
+            x: 13px;
+            text: root.placeholder;
+            visible: input.text == "";
+            color: Skin.ink-faint;
+            font-family: Skin.sans;
+            font-size: 14px;
+            vertical-alignment: center;
+        }
+    }
+
+    if root.error != "" : Text {
+        text: root.error;
+        color: Skin.danger;
+        font-family: Skin.sans;
+        font-size: 11.5px;
+        wrap: word-wrap;
+    }
+}
+
+// A inicial vem pronta: o Slint não recorta string, e quem sabe recortar é o Rust.
+export component Avatar inherits Rectangle {
+    in property <string> letter;
+    in property <length> size: 32px;
+    // Quem não é você não ganha o violeta: ele marca o que é seu na tela.
+    in property <bool> mine;
+
+    width: root.size;
+    height: root.size;
+    border-radius: root.size / 2;
+    background: root.mine
+        ? @linear-gradient(180deg, Skin.brand 0%, Skin.brand-dark 100%)
+        : #ffffff14;
+
+    Text {
+        text: root.letter == "" ? "?" : root.letter;
+        color: root.mine ? Skin.ink-strong : Skin.ink-icon;
+        font-family: Skin.sans;
+        font-size: root.size * 0.42;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// `.row-item`: a linha de lista do app (canal, membro, servidor, aparelho).
+export component RowItem inherits Rectangle {
+    in property <bool> on;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 38px;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: root.on ? #8a7cf552 : #ffffff14;
+    background: root.on ? #8a7cf51f : (touch.has-hover ? Skin.row : transparent);
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    @children
+}
+
+// `.code-chip`: a única coisa da tela feita para copiar, e por isso um campo de leitura —
+// o Ctrl+C é o do próprio Slint, sem área de transferência de terceiros no meio.
+export component CodeChip inherits Rectangle {
+    in property <string> text;
+
+    height: 26px;
+    width: code.preferred-width + 16px;
+    border-radius: 7px;
+    background: #8a7cf529;
+
+    code := TextInput {
+        x: 8px;
+        text: root.text;
+        read-only: true;
+        single-line: true;
+        color: Skin.lilac-2;
+        font-family: Skin.mono;
+        font-size: 13px;
+        vertical-alignment: center;
+        height: parent.height;
+    }
+}

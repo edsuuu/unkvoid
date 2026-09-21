@@ -17,11 +17,13 @@ return [
     |
     */
 
-    'paths' => ['api/*', 'sanctum/csrf-cookie', 'broadcasting/auth'],
+    'paths' => ['api/*', 'health', 'sanctum/csrf-cookie'],
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => ['*'],
+    // Sem CORS_URL vale '*', como antes: o app instalado na máquina de quem usa não tem
+    // uma origem fixa que dê para listar. Defina a variável só se souber quais são.
+    'allowed_origins' => array_map(trim(...), explode(',', (string) env('CORS_URL', '*'))),
 
     'allowed_origins_patterns' => [],
 

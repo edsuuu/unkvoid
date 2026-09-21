@@ -138,7 +138,7 @@ final class DirectMessage extends Model
         $message->setRelation('sender', $sender);
         $message->setRelation('recipient', $recipient);
 
-        self::broadcast(new DirectMessageCreated($message));
+        self::publish(new DirectMessageCreated($message));
 
         return $message;
     }
@@ -173,7 +173,7 @@ final class DirectMessage extends Model
 
         self::write('falha ao editar a mensagem direta', fn () => $this->update(['body' => $body, 'edited_at' => now()]), ['direct_message_id' => $this->id]);
 
-        self::broadcast(new DirectMessageUpdated($this->load(['sender', 'recipient'])));
+        self::publish(new DirectMessageUpdated($this->load(['sender', 'recipient'])));
     }
 
     /**
@@ -185,7 +185,7 @@ final class DirectMessage extends Model
 
         self::write('falha ao apagar a mensagem direta', fn () => $this->delete(), ['direct_message_id' => $this->id]);
 
-        self::broadcast(new DirectMessageDeleted($this->id, $this->sender_id, $this->recipient_id));
+        self::publish(new DirectMessageDeleted($this->id, $this->sender_id, $this->recipient_id));
     }
 
     /**

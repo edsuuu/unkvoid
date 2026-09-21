@@ -14,7 +14,7 @@ quem quer as portas e o motivo de cada faixa, o [UDP.md](UDP.md).
 |---|---|
 | Máquina | Contabo **Cloud VPS 8**: 8 vCPU, 24 GB de RAM, 300 GB de SSD, porta de 600 Mbit/s, tráfego ilimitado (uso justo), 3 snapshots, Ubuntu 24.04 |
 | Região | **Estados Unidos (Leste)** — leia a seção 1.4 antes de confirmar: é a decisão de qualidade de voz mais importante do projeto |
-| O que roda | nginx, php8.4-fpm, pm2 (`sfu` + `reverb`), docker (`unkvoid-mysql`, `unkvoid-minio`, `unkvoid-mail`), runner do GitHub |
+| O que roda | nginx, php8.4-fpm, pm2 (`sfu`), docker (`unkvoid-mysql` e `unkvoid-minio` em `/opt/unkvoid`, `unkvoid-mail` em `/opt/unkvoid-mail`), runner do GitHub |
 | O que **não** roda | TeamSpeak, filebrowser, php8.3, MySQL do sistema, os sites `files`/`ia`/`retro`/`tarkas`, o projeto `discord` |
 
 ## A ordem, e por que ela é essa
@@ -23,7 +23,7 @@ quem quer as portas e o motivo de cada faixa, o [UDP.md](UDP.md).
 2. **Firewall do painel** — é o firewall da Contabo que descarta, não o da máquina; sem ele nada do resto responde
 3. **Sistema base, usuário, chave SSH, ufw**
 4. **Swap e sysctl** — antes de qualquer coisa que consuma RAM ou UDP
-5. **Docker: MySQL, MinIO, e-mail** — o banco e o bucket precisam existir antes do deploy
+5. **Docker: MySQL e MinIO** — o banco e o bucket precisam existir antes do deploy
 6. **Node, pnpm, pm2, runner**
 7. **nginx e TLS**
 8. **Deploy do site e do SFU**, com os dados que vêm da máquina velha
@@ -327,7 +327,7 @@ aleatório.
 
 ---
 
-## 5. Docker, com MySQL, MinIO e e-mail
+## 5. Docker, com MySQL e MinIO
 
 ```bash
 curl -fsSL https://get.docker.com | sudo sh
@@ -341,7 +341,6 @@ apaga release antiga, e senha de banco não mora em pasta que o deploy varre:
 sudo mkdir -p /opt/unkvoid && sudo chown ubuntu:ubuntu /opt/unkvoid
 cp /var/www/projects/unkvoid/infra/docker-compose.yml /opt/unkvoid/
 cp /var/www/projects/unkvoid/infra/docker.env.example /opt/unkvoid/.env
-mkdir -p /opt/unkvoid/mail
 chmod 600 /opt/unkvoid/.env
 ```
 
@@ -360,14 +359,17 @@ O que cada um é, e por que a porta é essa:
 |---|---|---|
 | `unkvoid-mysql` | `127.0.0.1:3307` | 3307 e não 3306 por herança da máquina velha, onde o MySQL do sistema ocupava a 3306. Aqui não há MySQL do sistema, mas o `.env` do site e os dumps já dizem 3307 — trocar agora só criaria um jeito novo de errar |
 | `unkvoid-minio` | `127.0.0.1:9000-9001` | quem fala com o mundo é o nginx em `s3.unkvoid.com`, que precisa repassar o `Host` intacto: a assinatura da URL foi calculada com ele |
-| `unkvoid-mail` | `0.0.0.0` nas 25/465/587/993 | é o único que recebe da internet direto, porque SMTP não passa por proxy reverso |
+
+O servidor de e-mail **não está mais neste compose**: é outro projeto, em
+`/opt/unkvoid-mail`, e a seção 11 é o passo a passo dele. É o único contêiner que
+recebe da internet direto (25/465/587/993), porque SMTP não passa por proxy reverso.
 
 `innodb_buffer_pool_size` **fica em 128M** e não há `command:` para mudar: o banco
 `unkvoid` tem 0,6 MB, e 128 MB já o cabem duzentas vezes. Ter 24 GB de RAM não é
 motivo para reservar mais — buffer pool maior que o banco é RAM parada. O gatilho
 para `512M` é o banco passar de 200 MB — aí sim, no `command:` do
 `infra/docker-compose.yml`. `max_connections` de 151 também fica: é quatro vezes o
-que 32 filhos do php-fpm mais o Reverb somam.
+que 32 filhos do php-fpm somam.
 
 O MinIO precisa dos dois buckets, e o do APT precisa ser público para leitura —
 é o `apt` de cada máquina instalada que lê de lá, sem credencial:
@@ -622,7 +624,7 @@ Ele copia para uma release nova, instala, compila os assets, migra, aponta o
 `current` e recarrega o php-fpm. Termina batendo em `/up` pelo próprio nginx, então
 um deploy que imprime `site respondeu 200` é um deploy que subiu de verdade.
 
-### 8.3 O SFU e o Reverb
+### 8.3 O SFU
 
 ```bash
 # no notebook
@@ -638,18 +640,9 @@ que satura um núcleo e para; a sala é fixada num worker e a voz é presa a um
 núcleo, então 7 workers são 7 canais de voz pesados em paralelo. Deixar 8 faria a
 oitava sala disputar núcleo com o que responde o site.
 
-O Reverb é um processo separado no mesmo pm2, e sobe uma vez só, à mão:
-
-```bash
-cd /var/www/projects/sfu && pm2 startOrRestart ecosystem.config.cjs --only reverb
-```
-
-**Um** processo de Reverb, e não um por núcleo: dois só compartilham quem está
-escutando o quê através do Redis (`REVERB_SCALING_ENABLED`), que esta máquina não
-tem. Sem ele, a mensagem publicada no processo A não chega a ninguém conectado no
-B — metade do chat desaparece em silêncio. E `watch: false`, porque o padrão do
-pm2 é vigiar o diretório: o Laravel escreve em `storage/logs` a cada erro, e cada
-escrita viraria um restart que derruba todo WebSocket aberto.
+E `watch: false` no pm2, porque o padrão dele é vigiar o diretório: o Laravel
+escreve em `storage/logs` a cada erro, e cada escrita viraria um restart que
+derruba todo WebSocket aberto — a sinalização e o chat de quem está no ar.
 
 Para o pm2 voltar sozinho depois de um reboot — sem isto, um reboot leva a mídia e
 o chat e nada avisa:
@@ -696,14 +689,12 @@ velha.
 | `UNKVOID_ADMIN_EMAIL` | quem entra com este e-mail vira administrador na primeira vez |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | as credenciais do MinIO |
 | `MAIL_USERNAME`, `MAIL_PASSWORD` | a caixa `no-reply@unkvoid.com` |
-| `REVERB_APP_ID`, `REVERB_APP_KEY`, `REVERB_APP_SECRET` | **ausentes no `.env` da máquina velha.** Sem os três o chat não sobe; gere com `openssl rand -hex 16` |
 | `SFU_PUBLIC_URL` | **ausente no `.env` da máquina velha.** É o endereço que o app recebe em `GET /api/config`; na VPS é `wss://unkvoid.com/sfu` |
 
 E os valores de produção que não são segredo mas são por máquina:
 `APP_ENV=production`, `APP_DEBUG=false`, `APP_URL=https://unkvoid.com`,
 `DB_PORT=3307`, `SESSION_SECURE_COOKIE=true`, `DEBUGBAR_ENABLED=false`,
-`AWS_ENDPOINT=http://127.0.0.1:9000`, `REVERB_SERVER_HOST=127.0.0.1`,
-`REVERB_HOST=unkvoid.com`, `REVERB_PORT=443`, `REVERB_SCHEME=https`,
+`AWS_ENDPOINT=http://127.0.0.1:9000`,
 `UNKVOID_APT_URL=https://unkvoid.com/apt`.
 
 **Nos secrets do GitHub não muda nada.** O deploy roda no runner que mora na
@@ -1047,8 +1038,8 @@ seguinte, então rode na ordem.
 | 9 | O SFU responde | `curl -s https://unkvoid.com/health` | `{"ok":true,...,"workers":[0,0,0,0,0,0,0]}` — **sete** zeros |
 | 10 | O SFU abriu as faixas certas | `pm2 logs sfu --lines 40 --nostream \| grep 'media workers'` | `7 media workers on ports 40000-40006 · plain RTP on 41000-41447` |
 | 11 | O ambiente do SFU é o do repositório, e não um deploy velho | `pm2 env 0 \| grep -E 'SFU_(WORKERS\|PLAIN_PORTS\|CONNECTIONS_PER_MINUTE\|ANNOUNCED)'` | `7`, `64`, `120`, e o **IP novo** |
-| 12 | O chat está no ar | `pm2 list` e `curl -sI https://unkvoid.com/app/test` | `reverb` em `online`, e não 404 |
-| 13 | O app recebe a configuração certa | `curl -s https://unkvoid.com/api/config` | `SFU_PUBLIC_URL` em `wss://unkvoid.com/sfu` e os campos do Reverb |
+| 12 | O chat está no ar | `curl -s https://unkvoid.com/health` | responde `ok`: o chat vai pelo mesmo SFU |
+| 13 | O app recebe a configuração certa | `curl -s https://unkvoid.com/api/config` | `SFU_PUBLIC_URL` em `wss://unkvoid.com/sfu` |
 | 14 | O manifesto de atualização existe | `curl -s https://unkvoid.com/downloads/latest.json` | JSON com as plataformas; 404 aqui significa que ninguém se atualiza |
 | 15 | O APT fecha a assinatura, de uma máquina limpa | `gpg --verify <(curl -s https://unkvoid.com/apt/InRelease)` | `Good signature from "Unkvoid APT..."` |
 | 16 | As portas TCP passam o firewall do painel | `for p in 22 25 80 443 587 993 40000 40006; do nc -z -w4 unkvoid.com $p && echo "$p ok"; done` | as oito com `ok` |
@@ -1060,7 +1051,7 @@ seguinte, então rode na ordem.
 | 22 | O IMAP tem o certificado do nome certo | `openssl s_client -connect mail.unkvoid.com:993 -servername mail.unkvoid.com` | cadeia válida para `mail.unkvoid.com` |
 | 23 | O backup existe e foi restaurado uma vez | `systemctl list-timers unkvoid-dump` (caminho B) ou o painel (caminho A) | o timer com próxima execução, ou o backup ativo no painel |
 | 24 | O runner está online e é só um | painel do GitHub, ou `sudo ./svc.sh status` em `~/actions-runner-unkvoid` | `active (running)`, e nenhum runner velho na lista |
-| 25 | O pm2 volta depois do reboot | `sudo reboot`, e depois `pm2 list` | `sfu` e `reverb` em `online` sem ninguém subir à mão |
+| 25 | O pm2 volta depois do reboot | `sudo reboot`, e depois `pm2 list` | `sfu` em `online` sem ninguém subir à mão |
 | 26 | Não sobrou erro de buffer | `grep ^Udp: /proc/net/snmp` | `SndbufErrors` e `RcvbufErrors` em zero — na máquina velha eram 30 094 e 19 267 |
 | 27 | A latência é a esperada, e não pior | `ping -c 20 unkvoid.com` do Brasil | ~116 ms de média; acima de 150 ms, a região não é a que se pediu |
 | 28 | Uma transmissão de verdade, de ponta a ponta | abrir o app, criar sala, compartilhar a tela, assistir de outra máquina | imagem aparecendo, e `A=$(awk '/eth0/{print $10}' /proc/net/dev); sleep 10; B=$(awk '/eth0/{print $10}' /proc/net/dev); echo $(( (B-A)*8/10/1000000 ))` dando a taxa esperada em Mb/s |
@@ -1079,7 +1070,7 @@ instalar.
 | O quê | Como roda hoje | Por que não vai |
 |---|---|---|
 | MySQL do sistema (`mysql.service`, 3306) | 395 MB de RAM | Só tem `discord`, `discord_dev` e `retro_friends`. O Unkvoid usa o MySQL do docker na 3307. Faça o dump antes de desligar a velha, por segurança |
-| ~~Reverb do projeto `discord` (pm2, 8081)~~ | 61 MB | **Já saiu em 16/09/2026**: o `reverb` do pm2 agora é o do Unkvoid, na 8080 |
+| ~~Reverb do projeto `discord` (pm2, 8081)~~ | 61 MB | **Já saiu em 16/09/2026**. O Reverb do Unkvoid, que herdou a 8080, foi aposentado depois: o tempo real passou para o SFU |
 | ~~`filebrowser.service` (8080)~~ | 25 MB | **Já saiu em 16/09/2026**: desligado para liberar a 8080 para o Reverb do Unkvoid |
 | `php8.3-fpm` | 50 MB | Nenhum site aponta para o socket dele. A nova instala só o 8.4 |
 | TeamSpeak 6 (docker, 9987/udp, 30033/tcp) | 28 MB e 2,7% de CPU | Não é o e-mail nem o Unkvoid, e as duas portas saem do firewall |

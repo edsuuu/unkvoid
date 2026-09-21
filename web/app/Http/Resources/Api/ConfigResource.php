@@ -9,7 +9,8 @@ use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Facades\Config;
 
 /**
- * O que o app precisa saber antes de logar: onde está o SFU e onde está o Reverb.
+ * O que o app precisa saber antes de logar: onde está o SFU. O tempo real sai por ele
+ * também, no mesmo WebSocket.
  */
 final class ConfigResource extends JsonResource
 {
@@ -25,12 +26,6 @@ final class ConfigResource extends JsonResource
     {
         return [
             'sfu' => Config::string('services.sfu.public_url'),
-            'reverb' => [
-                'host' => Config::string('broadcasting.connections.reverb.options.host'),
-                'port' => Config::integer('broadcasting.connections.reverb.options.port'),
-                'key' => Config::string('broadcasting.connections.reverb.key'),
-                'scheme' => Config::string('broadcasting.connections.reverb.options.scheme'),
-            ],
         ];
     }
 }

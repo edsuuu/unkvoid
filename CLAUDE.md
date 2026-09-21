@@ -14,7 +14,7 @@ vez** e sobe **uma vez**. Mudança que quebre uma dessas três coisas está desf
 
 | Pasta | O quê | Onde roda | Agente |
 |---|---|---|---|
-| `native/` | o app: captura, encoder, interface (Rust + Tauri + React em TypeScript) | máquina de quem usa | `app` |
+| `native/` | o app: captura, encoder, interface nativa por sistema (Rust; SwiftUI, Slint, GTK4) | máquina de quem usa | `app` |
 | `sfu/` | o relé de mídia (Node 22 + mediasoup) | VPS | `sfu` |
 | `web/` | site, contas, servidores, canais, chat, auditoria (Laravel 13 + Livewire 4 + Flux) | VPS | `web` |
 
@@ -22,7 +22,7 @@ Há um agente especialista por módulo em `.claude/agents/`. Tarefa que toca um 
 para o agente dele; tarefa que atravessa os três começa pelo contrato.
 
 **O contrato é [docs/CONTRATO.md](docs/CONTRATO.md)**: rotas da API, formato do token de voz, ações e
-eventos do SFU, webhook, canais do Reverb, comandos do Tauri. Mudou o que atravessa a rede,
+eventos do SFU, webhook, canais do tempo real, comandos do Tauri. Mudou o que atravessa a rede,
 atualize esse arquivo na mesma tarefa — as três peças o leem como lei.
 
 ## Os dois modos, e por que os dois existem
@@ -50,9 +50,8 @@ cargos, canal oculto, voz, auditoria) estão em `docs/CONTRATO.md` e no agente d
 ## Rodar tudo local
 
 ```bash
-# Laravel (API e site) + Reverb (chat e presença)
+# Laravel: API, site e o resto do que precisa de banco
 cd web && composer dev                 # :8000
-cd web && php artisan reverb:start     # :8080
 
 # SFU — o segredo tem de ser o mesmo SFU_SECRET do web/.env
 cd sfu && pnpm run build
@@ -62,15 +61,15 @@ cd sfu && SFU_SECRET=<o do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node 
 # criam sozinhas; para criar antes, à mão
 cd web && php artisan storage:bucket
 
-# App apontando para o Laravel local (SFU e Reverb vêm do GET /api/config)
+# App apontando para o Laravel local (a URL do SFU vem do GET /api/config)
 cd native/apps/desktop && VITE_SERVER=http://127.0.0.1:8000 npm run dev:app
 
 # Só a interface, num navegador comum: o Vite faz o papel do nginx e a ponte do Tauri é fingida
 cd native/apps/desktop && VITE_SERVER=http://localhost:1420 npm run dev
 ```
 
-Duas máquinas na mesma rede: troque `127.0.0.1` pelo IP em `APP_URL`, `SFU_PUBLIC_URL` e
-`REVERB_HOST` (`web/.env`), suba o SFU com `SFU_HOST=0.0.0.0 SFU_ANNOUNCED_ADDRESS=<IP>` e o
+Duas máquinas na mesma rede: troque `127.0.0.1` pelo IP em `APP_URL` e `SFU_PUBLIC_URL`
+(`web/.env`), suba o SFU com `SFU_HOST=0.0.0.0 SFU_ANNOUNCED_ADDRESS=<IP>` e o
 Laravel com `--host=0.0.0.0`. No WSL2 a rede só alcança o UDP do SFU com
 `networkingMode=mirrored` no `.wslconfig`.
 
@@ -78,7 +77,6 @@ Laravel com `--host=0.0.0.0`. No WSL2 a rede só alcança o UDP do SFU com
 
 ```bash
 cd web && composer check                 # phpstan max + pint + rector + pest em SQLite (rode 2x: rector estável)
-cd web && composer test:mysql            # a mesma suíte no MySQL: pega tipo de coluna e chave que o SQLite perdoa
 cd sfu && pnpm run check                 # eslint + check.mjs (precisa de um servidor no ar com o mesmo SFU_SECRET)
 cd native/apps/desktop && npm run check && npm run build   # tests/static + tsc + eslint + Vitest (tests/unit)
 cd native/apps/desktop && npm run test:integration    # Vitest: os clientes do app contra a pilha local no ar
@@ -119,6 +117,14 @@ Vale a skill `style-edsu` inteira, e o resumo que mais pega:
   app moram em `native/apps/desktop/tests/` (Vitest).
 - Rust: clippy sem aviso, `cfg(target_os)` correto nas três plataformas, nada de trabalho por
   quadro na thread da captura.
+- **Regra de negócio não mora em pasta de sistema.** `native/shared/core` decide; `apps/macos`,
+  `apps/windows` e `apps/linux` desenham. O teste: "o Windows vai precisar disto igual?" Se
+  sim, sobe para o `core` — senão a mesma regra é escrita três vezes e diverge no primeiro
+  ajuste.
+- **Erro que a pessoa lê nunca tem caminho, URL nem código de status.** O núcleo devolve um
+  motivo (`shared/core/src/failure.rs`) e cada interface escreve a frase em português; o
+  detalhe vai para o log. A exceção é validação, que o Laravel já manda em português e sobre
+  o campo digitado.
 - Atalho deliberado ganha comentário `ponytail:` com o teto e o caminho de saída.
 - **Teste novo entra no arquivo do assunto** (um arquivo por área: conta, servidores, mensagens,
   voz…), não num arquivo novo por função. Nenhum teste some numa reorganização: a contagem de
@@ -135,6 +141,7 @@ Vale a skill `style-edsu` inteira, e o resumo que mais pega:
 |---|---|
 | [docs/README.md](docs/README.md) | o índice da documentação: um arquivo por pergunta |
 | [docs/ARQUITETURA.md](docs/ARQUITETURA.md) | o mapa: para que serve cada peça, como elas conversam e os fluxos principais |
+| [docs/APP-NATIVO.md](docs/APP-NATIVO.md) | as interfaces nativas: o desenho, a ABI, e onde vai cada coisa |
 | [docs/CONTRATO.md](docs/CONTRATO.md) | o contrato entre as três peças, e como rodar local |
 | [docs/ESTADO.md](docs/ESTADO.md) | o que só foi escrito sem rodar em hardware, o que falta e as perguntas abertas |
 | [docs/DECISOES.md](docs/DECISOES.md) | o que foi decidido e **por quê** (ex.: por que o SFU é Node) |

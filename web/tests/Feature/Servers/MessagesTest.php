@@ -24,6 +24,7 @@ use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use OwenIt\Auditing\Models\Audit;
 
@@ -49,7 +50,7 @@ it('manda, edita e apaga mensagem com as regras do Discord', function (): void {
         ->assertJsonPath('data.channel_id', $channel->id)
         ->json('data.id');
 
-    Event::assertDispatched(MessageSent::class, fn (MessageSent $event): bool => $event->message->id === $messageId && $event->broadcastOn()->name === "private-channel.{$channel->id}");
+    Event::assertDispatched(MessageSent::class, fn (MessageSent $event): bool => $event->message->id === $messageId && $event->channels() === ["channel.{$channel->id}"]);
 
     $this->actingAs($author, 'sanctum')->postJson("/api/channels/{$channel->id}/messages", ['body' => ''])->assertUnprocessable();
     $this->actingAs($author, 'sanctum')->postJson("/api/channels/{$channel->id}/messages", ['body' => str_repeat('a', 2001)])->assertUnprocessable();
@@ -193,7 +194,7 @@ it('entrar por convite avisa no primeiro canal de texto, uma vez só', function 
         // O corpo é para o app antigo, que não conhece `type`: sem ele, balão vazio.
         ->and($notice->body)->toBe('chegou no servidor!');
 
-    Event::assertDispatched(MessageSent::class, fn (MessageSent $event): bool => $event->message->id === $notice->id && $event->broadcastOn()->name === "private-channel.{$channel->id}");
+    Event::assertDispatched(MessageSent::class, fn (MessageSent $event): bool => $event->message->id === $notice->id && $event->channels() === ["channel.{$channel->id}"]);
 
     $this->actingAs($guest, 'sanctum')->postJson("/api/invites/{$server->invite_code}")->assertOk();
 
@@ -265,7 +266,7 @@ it('manda texto e imagens por multipart, e as imagens vão para `files`, para a 
     Storage::disk('s3')->assertExists([$files[0]->path, $files[1]->path]);
 
     Event::assertDispatched(MessageSent::class, function (MessageSent $event) use ($files): bool {
-        $sent = $event->broadcastWith()['message']['files'];
+        $sent = $event->payload()['message']['files'];
 
         return count($sent) === 2 && $sent[0]['id'] === $files[0]->id && $sent[1]['id'] === $files[1]->id && array_keys($sent[0]) === ['id', 'url', 'mime_type', 'size'];
     });
@@ -434,7 +435,7 @@ it('editar para corpo vazio só vale em mensagem com imagem, e o MessageUpdated 
         ->assertJsonCount(1, 'data.files')
         ->assertJsonPath('data.files.0.id', $withImage['files'][0]['id']);
 
-    Event::assertDispatched(MessageUpdated::class, fn (MessageUpdated $event): bool => $event->broadcastWith()['message']['files'][0]['id'] === $withImage['files'][0]['id']);
+    Event::assertDispatched(MessageUpdated::class, fn (MessageUpdated $event): bool => $event->payload()['message']['files'][0]['id'] === $withImage['files'][0]['id']);
 
     expect(Message::query()->findOrFail($textOnly)->body)->toBe('só texto')
         ->and(File::query()->count())->toBe(1);
@@ -496,6 +497,11 @@ it('o bucket fora do ar não segura a exclusão da mensagem, e a mensagem que n�
 
     $logged = [];
     Event::listen(function (MessageLogged $event) use (&$logged): void {
+        // O tempo real registra cada chamada ao SFU: aqui só interessa o que deu errado.
+        if (str_starts_with($event->message, '[INFO]')) {
+            return;
+        }
+
         $logged[] = $event->message;
     });
 
@@ -542,7 +548,7 @@ it('canal de voz também tem chat, com as mesmas permissões do de texto', funct
         ->assertJsonCount(1, 'data.files')
         ->json('data.id');
 
-    Event::assertDispatched(MessageSent::class, fn (MessageSent $event): bool => $event->broadcastOn()->name === "private-channel.{$voice->id}");
+    Event::assertDispatched(MessageSent::class, fn (MessageSent $event): bool => $event->channels() === ["channel.{$voice->id}"]);
 
     $this->actingAs($muted, 'sanctum')->postJson("/api/channels/{$voice->id}/messages", ['body' => 'eu não'])->assertForbidden();
     $this->actingAs($outsider, 'sanctum')->postJson("/api/channels/{$voice->id}/messages", ['body' => 'nem eu'])->assertForbidden();
@@ -567,4 +573,35 @@ it('canal de voz também tem chat, com as mesmas permissões do de texto', funct
     Event::assertDispatched(MessageDeleted::class, fn (MessageDeleted $event): bool => $event->channelId === $voice->id);
 
     expect(File::query()->count())->toBe(0);
+});
+
+it('o log do tempo real não guarda a conversa: só o canal e o evento', function (): void {
+    $owner = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    $channel = $server->channels()->where('type', 'text')->firstOrFail();
+    $segredo = 'minha senha do banco e 1234';
+
+    $registrados = [];
+
+    Log::shouldReceive('channel')->andReturnSelf();
+    Log::shouldReceive('error')->andReturnNull();
+    Log::shouldReceive('info')->andReturnUsing(function (string $message, array $context) use (&$registrados): null {
+        $registrados[] = $context;
+
+        return null;
+    });
+
+    $this->actingAs($owner)
+        ->postJson("/api/channels/{$channel->id}/messages", ['body' => $segredo])
+        ->assertCreated();
+
+    $publicacoes = array_values(array_filter($registrados, fn (array $context): bool => ($context['path'] ?? null) === '/broadcast'));
+
+    // Sem esta linha o teste passaria mesmo se nada fosse registrado.
+    expect($publicacoes)->not->toBeEmpty('a publicação no SFU não passou pelo log');
+
+    foreach ($publicacoes as $context) {
+        expect(json_encode($context))->not->toContain($segredo);
+        expect($context['body'])->toContain('MessageSent');
+    }
 });

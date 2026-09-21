@@ -1,19 +1,10 @@
-# O que roda em contêiner na VPS além do TeamSpeak, que tem o compose dele em
-# /opt/teamspeak e não é tocado por este arquivo: projeto separado, rede separada.
-#
-# Fica em /opt/unkvoid/docker-compose.yml, com o .env ao lado (senhas). Subir:
-#   cd /opt/unkvoid && docker compose up -d
-#
-# Tudo escuta só em 127.0.0.1, menos o e-mail, que precisa receber da internet. O MinIO
-# fala com o mundo pelo nginx em s3.unkvoid.com.
 services:
   mysql:
     image: mysql:8.4
     container_name: unkvoid-mysql
     restart: unless-stopped
-    # 3307 e não 3306: o MySQL do sistema já ocupa a 3306 com os outros projetos.
     ports:
-      - "127.0.0.1:3307:3306"
+      - "127.0.0.1:3306:3306"
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: unkvoid
@@ -32,53 +23,11 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      # As URLs assinadas carregam este host. O Laravel gera a assinatura contra ele e o
-      # nginx repassa o Host sem mexer, senão a assinatura não fecha.
       MINIO_SERVER_URL: https://s3.unkvoid.com
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data
 
-  # Postfix, Dovecot, rspamd e fail2ban num contêiner só. Recebe em 25, envia autenticado
-  # em 587, e entrega as caixas por IMAP em 993. O certificado é o do host, emitido pelo
-  # certbot para mail.unkvoid.com.
-  mailserver:
-    image: ghcr.io/docker-mailserver/docker-mailserver:15
-    container_name: unkvoid-mail
-    hostname: mail.unkvoid.com
-    restart: unless-stopped
-    stop_grace_period: 1m
-    ports:
-      - "25:25"
-      - "465:465"
-      - "587:587"
-      - "993:993"
-    environment:
-      ENABLE_RSPAMD: 1
-      ENABLE_CLAMAV: 0
-      # O rspamd acima já filtra. O amavis é a segunda passada, custa 176 MB medidos, e
-      # a caixa faz 0,1 mensagem por segundo — não há fila para uma segunda passada ver.
-      ENABLE_AMAVIS: 0
-      ENABLE_FAIL2BAN: 1
-      ENABLE_OPENDKIM: 0
-      ENABLE_OPENDMARC: 0
-      ENABLE_POLICYD_SPF: 0
-      SSL_TYPE: letsencrypt
-      SPOOF_PROTECTION: 1
-      PERMIT_DOCKER: none
-      POSTMASTER_ADDRESS: contato@unkvoid.com
-    volumes:
-      - mail-data:/var/mail
-      - mail-state:/var/mail-state
-      - mail-logs:/var/log/mail
-      - ./mail:/tmp/docker-mailserver
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-    cap_add:
-      - NET_ADMIN
-
 volumes:
   mysql-data:
   minio-data:
-  mail-data:
-  mail-state:
-  mail-logs:

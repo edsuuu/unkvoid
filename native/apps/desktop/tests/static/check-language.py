@@ -42,7 +42,7 @@ PORTUGUES = {
 
 # Onde procurar, e como reconhecer o começo de um comentário em cada linguagem.
 FONTES = [
-    ('native/crates', '*.rs', '//'),
+    ('native/shared', '*.rs', '//'),
     ('native/apps/desktop/src-tauri/src', '*.rs', '//'),
     ('native/apps/desktop/ui', '*.ts', '//'),
     ('native/apps/desktop/ui', '*.tsx', '//'),

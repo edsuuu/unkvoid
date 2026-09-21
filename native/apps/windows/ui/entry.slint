@@ -1,0 +1,269 @@
+import { Skin } from "skin.slint";
+import { Ui } from "state.slint";
+import { Avatar, Danger, DividerOr, Field, Glass, GhostButton, LabelMono, LinkButton, Muted, PrimaryButton, Title } from "widgets.slint";
+
+// A tela sem conta, do lado da tela com conta. É o caminho que não passa por banco nenhum,
+// e ele não pode piorar por causa do outro: as duas colunas têm o mesmo peso e a mesma
+// altura, como no React.
+component RoomCard inherits Glass {
+    // O nome mora no cartão, e não no campo: com conta o campo some da tela, e o que ele
+    // guardava ainda tem de chegar ao núcleo.
+    property <string> chosen-name: Ui.signed-in ? Ui.user-name : Ui.saved-name;
+
+    width: Skin.card;
+    border-radius: 22px;
+
+    VerticalLayout {
+        padding: 32px;
+        spacing: 0px;
+
+        Title {
+            text: "Criar uma sala";
+            horizontal-alignment: center;
+        }
+
+        Rectangle { height: 6px; }
+
+        Muted {
+            text: "Compartilhe sua tela com quem você quiser.";
+            horizontal-alignment: center;
+        }
+
+        Rectangle { height: 24px; }
+
+        if Ui.signed-in : VerticalLayout {
+            spacing: 10px;
+
+            HorizontalLayout {
+                alignment: center;
+
+                Avatar {
+                    letter: Ui.user-initial;
+                    size: 54px;
+                    mine: true;
+                }
+            }
+
+            Text {
+                text: Ui.user-name;
+                color: Skin.ink-strong;
+                font-family: Skin.sans;
+                font-size: 15px;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+        }
+
+        if !Ui.signed-in : VerticalLayout {
+            spacing: 8px;
+
+            LabelMono { text: "SEU NOME"; }
+
+            Field {
+                placeholder: "Como aparecer para os outros";
+                text <=> root.chosen-name;
+                init => { self.focus(); }
+                accepted => { Ui.create-room(root.chosen-name, code.text); }
+            }
+        }
+
+        Rectangle { height: 20px; }
+
+        PrimaryButton {
+            text: Ui.signed-in ? "Criar uma sala" : "Criar uma sala sem login";
+            enabled: !Ui.entry-busy;
+            clicked => { Ui.create-room(root.chosen-name, code.text); }
+        }
+
+        Rectangle { height: 16px; }
+
+        DividerOr { height: 16px; }
+
+        Rectangle { height: 16px; }
+
+        HorizontalLayout {
+            spacing: 8px;
+
+            code := Field {
+                placeholder: "Código da sala";
+                mono: true;
+                accepted => { Ui.join-room(root.chosen-name, code.text); }
+            }
+
+            GhostButton {
+                text: "Entrar";
+                // A mesma altura do campo ao lado: no CSS quem iguala os dois é o flex.
+                height: 40px;
+                enabled: !Ui.entry-busy;
+                clicked => { Ui.join-room(root.chosen-name, code.text); }
+            }
+        }
+
+        Rectangle { height: 12px; }
+
+        Danger {
+            text: Ui.complaint;
+            min-height: 20px;
+        }
+
+        if Ui.signed-in : VerticalLayout {
+            padding-top: 16px;
+            alignment: end;
+
+            GhostButton {
+                text: "Voltar aos servidores";
+                clicked => { Ui.show-home(); }
+            }
+        }
+    }
+}
+
+component AuthCard inherits Glass {
+    property <bool> registering;
+
+    width: Skin.card;
+    border-radius: 22px;
+
+    VerticalLayout {
+        padding: 32px;
+        spacing: 0px;
+        alignment: center;
+
+        Text {
+            text: root.registering ? "Criar conta" : "Entrar";
+            color: Skin.ink-strong;
+            font-family: Skin.sans;
+            font-size: 16px;
+            font-weight: 600;
+            horizontal-alignment: center;
+        }
+
+        Rectangle { height: 6px; }
+
+        Muted {
+            text: root.registering
+                ? "Para ter servidores, voz e chat."
+                : "Sem conta dá para compartilhar a tela. Servidores, voz e chat pedem login.";
+            horizontal-alignment: center;
+            font-size: 12.5px;
+        }
+
+        Rectangle { height: 20px; }
+
+        Rectangle {
+            height: 42px;
+            border-radius: 12px;
+            background: google.pressed ? #e8e8e8 : #ffffff;
+
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: center;
+
+                Text {
+                    text: "G";
+                    color: #4285f4;
+                    font-family: Skin.sans;
+                    font-size: 17px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: root.registering ? "Criar conta com Google" : "Entrar com Google";
+                    color: #1f1f1f;
+                    font-family: Skin.sans;
+                    font-size: 14px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+
+            google := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { Ui.google-sign-in(); }
+            }
+        }
+
+        Rectangle { height: 16px; }
+
+        DividerOr { height: 16px; }
+
+        Rectangle { height: 16px; }
+
+        LabelMono { text: "E-MAIL"; }
+
+        Rectangle { height: 8px; }
+
+        email := Field {
+            placeholder: "voce@email.com";
+            error: Ui.login-email-error;
+            edited => { Ui.clear-login-error("email"); }
+            accepted => { password.focus(); }
+        }
+
+        Rectangle { height: 14px; }
+
+        LabelMono { text: "SENHA"; }
+
+        Rectangle { height: 8px; }
+
+        password := Field {
+            placeholder: root.registering ? "8 ou mais" : "••••••••";
+            password: true;
+            error: Ui.login-password-error;
+            edited => { Ui.clear-login-error("password"); }
+            accepted => { Ui.sign-in(email.text, password.text, root.registering); }
+        }
+
+        Rectangle { height: 16px; }
+
+        PrimaryButton {
+            text: root.registering ? "Criar conta" : "Entrar";
+            enabled: !Ui.login-busy;
+            clicked => { Ui.sign-in(email.text, password.text, root.registering); }
+        }
+
+        Rectangle { height: 12px; }
+
+        Danger {
+            text: Ui.login-error;
+            min-height: 20px;
+        }
+
+        Rectangle { height: 10px; }
+
+        HorizontalLayout {
+            spacing: 5px;
+            alignment: center;
+
+            Text {
+                text: root.registering ? "Já tem conta?" : "Não tem conta?";
+                color: Skin.ink-dim;
+                font-family: Skin.sans;
+                font-size: 12.5px;
+            }
+
+            LinkButton {
+                label: root.registering ? "Entrar" : "Criar conta";
+                clicked => { root.registering = !root.registering; }
+            }
+        }
+    }
+}
+
+export component EntryScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 24px;
+        padding-top: 76px;
+        alignment: start;
+
+        HorizontalLayout {
+            spacing: 20px;
+            alignment: center;
+
+            RoomCard { }
+
+            if !Ui.signed-in : AuthCard { }
+        }
+    }
+}

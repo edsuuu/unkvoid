@@ -1,0 +1,272 @@
+import { ScrollView } from "std-widgets.slint";
+import { Icons, Skin } from "skin.slint";
+import { Ui } from "state.slint";
+import { Avatar, Danger, Field, GhostButton, Glass, Glyph, LabelMono, Muted, RowItem, Title } from "widgets.slint";
+import { UserBar } from "userbar.slint";
+
+// A tela de quem tem conta: servidores, canais, chat e membros.
+//
+// Quem autoriza é o Laravel. Aqui só se esconde botão — e quando o servidor responde 403, a
+// frase dele é que aparece.
+component Column inherits Glass {
+    in property <string> heading;
+    border-radius: 16px;
+    @children
+}
+
+export component HubScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 14px;
+        spacing: 12px;
+
+        HorizontalLayout {
+            spacing: 10px;
+
+            Title {
+                text: Ui.server-name;
+                vertical-alignment: center;
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            Danger {
+                text: Ui.complaint;
+                vertical-alignment: center;
+            }
+
+            GhostButton {
+                text: "Sala por código";
+                clicked => { Ui.show-entry(); }
+            }
+
+            GhostButton {
+                text: "Sair da conta";
+                clicked => { Ui.sign-out(); }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            vertical-stretch: 1;
+
+            Column {
+                width: 200px;
+
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    LabelMono { text: "SERVIDORES"; }
+
+                    ScrollView {
+                        VerticalLayout {
+                            spacing: 4px;
+                            alignment: start;
+
+                            if Ui.servers.length == 0 : Muted {
+                                text: "Nenhum servidor ainda.";
+                                font-size: 12.5px;
+                            }
+
+                            for server[index] in Ui.servers : RowItem {
+                                on: server.current;
+                                clicked => { Ui.open-server(index); }
+
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 11px;
+                                    spacing: 8px;
+
+                                    Avatar {
+                                        letter: server.initial;
+                                        size: 24px;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+
+                                    Text {
+                                        text: server.name;
+                                        color: Skin.ink-body;
+                                        font-size: 13px;
+                                        horizontal-alignment: left;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Column {
+                width: 220px;
+
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    LabelMono { text: "CANAIS"; }
+
+                    ScrollView {
+                        VerticalLayout {
+                            spacing: 4px;
+                            alignment: start;
+
+                            for channel[index] in Ui.channels : RowItem {
+                                on: channel.current;
+                                clicked => { Ui.open-channel(index); }
+
+                                HorizontalLayout {
+                                    padding-left: 11px;
+                                    padding-right: 11px;
+                                    spacing: 8px;
+
+                                    Glyph {
+                                        commands: channel.voice ? Icons.speaker : Icons.hash;
+                                        tint: Skin.ink-dim;
+                                        size: 15px;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+
+                                    Text {
+                                        text: channel.name;
+                                        color: Skin.ink-body;
+                                        font-size: 13px;
+                                        horizontal-alignment: left;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Column {
+                horizontal-stretch: 1;
+
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    LabelMono { text: Ui.channel-name == "" ? "CHAT" : Ui.channel-name; }
+
+                    ScrollView {
+                        vertical-stretch: 1;
+
+                        VerticalLayout {
+                            spacing: 10px;
+                            alignment: start;
+
+                            if Ui.messages.length == 0 : Muted {
+                                text: "Escolha um canal de texto para ler as mensagens.";
+                                font-size: 12.5px;
+                            }
+
+                            for message in Ui.messages : HorizontalLayout {
+                                spacing: 9px;
+
+                                Avatar {
+                                    letter: message.initial;
+                                    size: 30px;
+                                }
+
+                                VerticalLayout {
+                                    spacing: 2px;
+
+                                    HorizontalLayout {
+                                        spacing: 7px;
+                                        alignment: start;
+
+                                        Text {
+                                            text: message.author;
+                                            color: Skin.ink-strong;
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                        }
+
+                                        Text {
+                                            text: message.at;
+                                            color: Skin.ink-faint;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: message.body;
+                                        color: Skin.ink-body;
+                                        font-size: 13px;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    composer := Field {
+                        placeholder: "Escreva uma mensagem";
+                            accepted => {
+                            Ui.send-message(composer.text);
+                            composer.text = "";
+                        }
+                    }
+                }
+            }
+
+            Column {
+                width: 220px;
+
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    LabelMono { text: "MEMBROS"; }
+
+                    ScrollView {
+                        VerticalLayout {
+                            spacing: 4px;
+                            alignment: start;
+
+                            for member in Ui.members : RowItem {
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 11px;
+                                    spacing: 8px;
+
+                                    Avatar {
+                                        letter: member.initial;
+                                        size: 24px;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+
+                                    Text {
+                                        text: member.name;
+                                        color: Skin.ink-body;
+                                        font-size: 13px;
+                                        horizontal-alignment: left;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Text {
+                                        text: member.note;
+                                        color: Skin.ink-faint;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        UserBar { }
+    }
+}
