@@ -23,6 +23,10 @@ pest()->extend(TestCase::class)
     ->beforeEach(function (): void {
         // Nenhum teste fala com o MinIO: todo comando do S3 é respondido aqui.
         fakeS3Client();
+
+        // O tempo real sai por HTTP em quase toda escrita: a publicação responde vazio em
+        // todo teste, e o stub mais específico vem primeiro para não tapar o `fakeSfu()`.
+        Http::fake(['*/broadcast' => Http::response()]);
     })
     ->in('Feature');
 

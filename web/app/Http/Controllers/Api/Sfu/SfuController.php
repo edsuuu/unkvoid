@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Sfu;
 
 use App\Events\VoiceStateUpdated;
+use App\Http\Requests\Api\Servers\SfuAuthorizeRequest;
 use App\Http\Requests\Api\Servers\SfuEventRequest;
+use App\Http\Resources\Api\SfuAuthorizationResource;
+use App\Http\Resources\Api\VoiceTokenResource;
 use App\Models\Channel;
 use App\Models\ChannelAccess;
 use App\Models\Concerns\LogsFailedWrites;
@@ -13,10 +16,16 @@ use App\Models\GuestAccess;
 use App\Models\User;
 use App\Services\Sfu\SfuClient;
 use Carbon\CarbonImmutable;
+use Illuminate\Container\Attributes\CurrentUser;
 use Illuminate\Http\Response;
+use JsonException;
 use Throwable;
 
-final class SfuEventController
+/**
+ * A conversa com o SFU: o aviso de quem entrou e saiu da voz, a pergunta de quem pode
+ * ouvir cada canal do tempo real, e o token que o app apresenta no `identify`.
+ */
+final class SfuController
 {
     use LogsFailedWrites;
 
@@ -26,7 +35,7 @@ final class SfuEventController
      *
      * @throws Throwable
      */
-    public function __invoke(SfuEventRequest $request, SfuClient $sfu): Response
+    public function events(SfuEventRequest $request, SfuClient $sfu): Response
     {
         $event = $request->string('event')->toString();
         $at = CarbonImmutable::createFromTimestamp($request->integer('at'));
@@ -65,8 +74,30 @@ final class SfuEventController
             ChannelAccess::close($channel, $user, $at);
         }
 
-        self::broadcast(new VoiceStateUpdated($channel->id, $user->id, $request->string('name')->toString(), $event));
+        self::publish(new VoiceStateUpdated($channel->id, $user->id, $request->string('name')->toString(), $event));
 
         return response()->noContent();
+    }
+
+    /**
+     * O SFU pergunta a cada inscrição: quem é o dono do token pode ouvir este canal?
+     */
+    public function authorize(SfuAuthorizeRequest $request): SfuAuthorizationResource
+    {
+        $user = User::query()->find(User::fromSubject($request->string('sub')->toString()));
+
+        if (is_null($user)) {
+            return new SfuAuthorizationResource(false, '');
+        }
+
+        return new SfuAuthorizationResource($user->canSubscribe($request->string('channel')->toString()), $user->name);
+    }
+
+    /**
+     * @throws JsonException
+     */
+    public function session(#[CurrentUser] User $user, SfuClient $sfu): VoiceTokenResource
+    {
+        return new VoiceTokenResource($sfu->sessionToken($user));
     }
 }

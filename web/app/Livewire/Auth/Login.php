@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Livewire\Auth;
 
 use App\Models\User;
-use App\Notifications\NewLoginNotification;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Validation\ValidationException;
@@ -53,7 +52,7 @@ final class Login extends Component
 
         /** @var User $user */
         $user = Auth::user();
-        $user->notifyQuietly(new NewLoginNotification('site', (string) request()->ip(), (string) request()->userAgent()));
+        $user->notifyNewLoginIfUnknown('site', (string) request()->ip(), (string) request()->userAgent());
 
         $this->redirectIntended(default: route('home', absolute: false));
     }

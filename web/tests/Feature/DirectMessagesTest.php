@@ -11,7 +11,6 @@ use App\Models\File;
 use App\Models\Friendship;
 use App\Models\Server;
 use App\Models\User;
-use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
@@ -42,11 +41,7 @@ it('conversa direta só entre amigos, com não lidas, edição e exclusão', fun
         ->assertJsonPath('data.sender.id', $alice->id)
         ->json('data.id');
 
-    Event::assertDispatched(DirectMessageCreated::class, function (DirectMessageCreated $event) use ($alice, $bob): bool {
-        $channels = array_map(fn (PrivateChannel $channel): string => $channel->name, $event->broadcastOn());
-
-        return $channels === ["private-user.{$alice->id}", "private-user.{$bob->id}"];
-    });
+    Event::assertDispatched(DirectMessageCreated::class, fn (DirectMessageCreated $event): bool => $event->channels() === ["user.{$alice->id}", "user.{$bob->id}"]);
 
     $this->actingAs($alice, 'sanctum')->postJson("/api/dm/{$bob->id}", ['body' => ''])->assertUnprocessable();
     $this->actingAs($alice, 'sanctum')->postJson("/api/dm/{$bob->id}", ['body' => str_repeat('a', 2001)])->assertUnprocessable();
@@ -138,12 +133,12 @@ it('o evento vai para os dois lados sem dizer de quem é a mensagem', function (
     befriend($alice, $bob);
 
     $message = DirectMessage::send($alice, $bob, 'oi');
-    $payload = new DirectMessageCreated($message)->broadcastWith();
+    $payload = new DirectMessageCreated($message)->payload();
 
     expect($payload['message'])->not->toHaveKey('mine')
         ->and($payload['message']['sender']['id'])->toBe($alice->id)
         ->and($payload['recipient']['id'])->toBe($bob->id)
-        ->and(new DirectMessageDeleted($message->id, $alice->id, $bob->id)->broadcastWith())->toBe(['id' => $message->id]);
+        ->and(new DirectMessageDeleted($message->id, $alice->id, $bob->id)->payload())->toBe(['id' => $message->id]);
 });
 
 it('gente do mesmo servidor conversa sem ser amiga, e bloquear fecha mesmo assim', function (): void {

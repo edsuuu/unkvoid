@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Auth;
 
 use App\Models\User;
-use App\Notifications\NewLoginNotification;
 use App\Notifications\WelcomeNotification;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -80,7 +79,7 @@ final class GoogleController
         if ($created) {
             $user->notifyQuietly(new WelcomeNotification);
         } else {
-            $user->notifyQuietly(new NewLoginNotification('Google', (string) $request->ip(), (string) $request->userAgent()));
+            $user->notifyNewLoginIfUnknown('Google', (string) $request->ip(), (string) $request->userAgent());
         }
 
         // O app abriu o navegador com uma porta local esperando o token: em vez de sessão,

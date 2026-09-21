@@ -8,6 +8,11 @@ use App\Http\Controllers\Auth\LogoutController;
 use App\Http\Controllers\DownloadController;
 use Illuminate\Support\Facades\Route;
 
+// Em produção quem responde isto é o nginx, que faz proxy para o SFU e nunca chega
+// até aqui. Local não há nginx, e sem a rota o app trava em "Servidor sem resposta":
+// ele consulta `{servidor}/health` antes de qualquer coisa. Só o status importa.
+Route::get('/health', fn (): array => ['ok' => true])->name('health');
+
 Route::view('/', 'home.index')->name('home');
 Route::view('/privacidade', 'legal.privacy')->name('privacy');
 Route::view('/termos', 'legal.terms')->name('terms');

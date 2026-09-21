@@ -137,7 +137,7 @@ it('o webhook do SFU abre e fecha o acesso e retransmite o estado da voz', funct
         ->and($open->ip)->toBe('127.0.0.1')
         ->and($open->user_agent)->toBe('Unkvoid/0.1');
 
-    Event::assertDispatched(VoiceStateUpdated::class, fn (VoiceStateUpdated $event): bool => $event->event === 'joined' && $event->userId === $owner->id && $event->broadcastOn()->name === "private-channel.{$voice->id}");
+    Event::assertDispatched(VoiceStateUpdated::class, fn (VoiceStateUpdated $event): bool => $event->event === 'joined' && $event->userId === $owner->id && $event->channels() === ["channel.{$voice->id}"]);
 
     $left = [...$joined, 'event' => 'left', 'at' => time() + 90];
 

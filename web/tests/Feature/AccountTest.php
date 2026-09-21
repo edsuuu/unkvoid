@@ -16,6 +16,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Password;
+use Illuminate\Testing\TestResponse;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\User as GoogleUser;
 use Livewire\Livewire;
@@ -309,15 +310,43 @@ it('avisa de um novo acesso pelo site, pela API e pelo Google', function (): voi
     Notification::fake();
     $user = User::factory()->create(['email' => 'edson@unkvoid.test', 'password' => 'senha-forte-123']);
 
+    // Cada porta vem de um navegador diferente, que é o que acontece de verdade: o site num
+    // navegador, o app com o `User-Agent` dele, e o Google de volta por uma aba.
+    $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.1', 'HTTP_USER_AGENT' => 'Firefox']);
     Livewire::test(Login::class)->set('email', 'edson@unkvoid.test')->set('password', 'senha-forte-123')->call('login');
-    $this->postJson('/api/auth/login', ['email' => 'edson@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'notebook'])->assertOk();
+
+    $this->withHeader('User-Agent', 'Unkvoid/1.0')
+        ->postJson('/api/auth/login', ['email' => 'edson@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'notebook'])
+        ->assertOk();
 
     $googleUser = new GoogleUser;
     $googleUser->map(['id' => 'g-9', 'email' => 'edson@unkvoid.test', 'name' => 'Edson', 'avatar' => null]);
     Socialite::shouldReceive('driver->user')->andReturn($googleUser);
-    $this->get(route('oauth2.google.callback'));
+    $this->withHeader('User-Agent', 'Chrome')->get(route('oauth2.google.callback'));
 
     Notification::assertSentToTimes($user, NewLoginNotification::class, 3);
+});
+
+it('não avisa de novo quando o acesso vem do mesmo lugar de antes', function (): void {
+    Notification::fake();
+    $user = User::factory()->create(['email' => 'edson@unkvoid.test', 'password' => 'senha-forte-123']);
+
+    $entrar = fn (): TestResponse => $this->withHeader('User-Agent', 'Unkvoid/1.0')
+        ->postJson('/api/auth/login', ['email' => 'edson@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'notebook']);
+
+    $entrar()->assertOk();
+    $entrar()->assertOk();
+    $entrar()->assertOk();
+
+    // Aviso que chega em todo login deixa de ser aviso: a pessoa passa a apagar sem ler.
+    Notification::assertSentToTimes($user, NewLoginNotification::class, 1);
+
+    // De outro computador, avisa — que é o caso que importa.
+    $this->withHeader('User-Agent', 'Outro navegador')
+        ->postJson('/api/auth/login', ['email' => 'edson@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'desktop'])
+        ->assertOk();
+
+    Notification::assertSentToTimes($user, NewLoginNotification::class, 2);
 });
 
 it('renderiza os três e-mails em HTML com o desenho do site', function (): void {

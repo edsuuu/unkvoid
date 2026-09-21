@@ -9,9 +9,13 @@ use App\Models\ChannelAccess;
 use App\Models\Server;
 use App\Models\ServerMember;
 use App\Models\User;
+use App\Services\Sfu\SfuClient;
+use Illuminate\Http\Client\Factory;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
 use OwenIt\Auditing\Models\Audit;
 
 it('cria o servidor com @everyone, um canal de texto, um de voz e o dono dentro', function (): void {
@@ -258,11 +262,11 @@ it('mutar no servidor exige MUTE_MEMBERS e avisa o SFU quando a pessoa está em 
         ->assertJsonPath("data.voice.{$voice->id}.0.sources.0", 'mic');
 });
 
-it('o GET /api/config entrega o SFU e o Reverb sem login', function (): void {
+it('o GET /api/config entrega o SFU sem login', function (): void {
     $this->getJson('/api/config')
         ->assertOk()
         ->assertJsonPath('data.sfu', 'ws://127.0.0.1:3000/sfu')
-        ->assertJsonStructure(['data' => ['sfu', 'reverb' => ['host', 'port', 'key', 'scheme']]]);
+        ->assertJsonStructure(['data' => ['sfu']]);
 });
 
 it('tudo de servidor exige token', function (): void {
@@ -270,11 +274,29 @@ it('tudo de servidor exige token', function (): void {
     $this->postJson('/api/servers', ['name' => 'x'])->assertUnauthorized();
 });
 
-it('o Reverb autoriza pelo token do Sanctum: canal só com VIEW_CHANNEL, servidor só membro, usuário só o próprio', function (): void {
-    // Os canais são registrados no broadcaster padrão quando o app sobe (null no teste):
-    // trocando para o reverb, o arquivo precisa ser lido de novo.
-    config(['broadcasting.default' => 'reverb']);
-    require base_path('routes/channels.php');
+it('a mesma inscrição assinada duas vezes é aceita: duas máquinas ouvem o mesmo canal', function (): void {
+    $owner = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    $text = $server->channels()->where('type', 'text')->firstOrFail();
+
+    // A conta aberta em duas máquinas se inscreve no mesmo instante: corpo igual, hora
+    // igual, assinatura igual. A segunda não pode ser tomada por repetição maliciosa.
+    $body = ['sub' => $owner->subject(), 'channel' => "channel.{$text->id}", 'at' => time()];
+    $headers = sfuHeaders($body, '/api/sfu/authorize');
+
+    $this->withHeaders($headers)->postJson('/api/sfu/authorize', $body)->assertOk()->assertJsonPath('allowed', true);
+    $this->withHeaders($headers)->postJson('/api/sfu/authorize', $body)->assertOk()->assertJsonPath('allowed', true);
+});
+
+it('o webhook do SFU continua recusando assinatura repetida: ele muda estado', function (): void {
+    $body = ['event' => 'left', 'room' => 'nao-existe', 'sub' => 'user:1', 'name' => 'x', 'ip' => '127.0.0.1', 'at' => time()];
+    $headers = sfuHeaders($body, '/api/sfu/events');
+
+    $this->withHeaders($headers)->postJson('/api/sfu/events', $body)->assertNoContent();
+    $this->withHeaders($headers)->postJson('/api/sfu/events', $body)->assertUnauthorized();
+});
+
+it('o POST /api/sfu/authorize decide quem ouve: canal só com VIEW_CHANNEL, servidor só membro, usuário só o próprio', function (): void {
     $owner = User::factory()->create();
     $member = User::factory()->create();
     $stranger = User::factory()->create();
@@ -282,16 +304,46 @@ it('o Reverb autoriza pelo token do Sanctum: canal só com VIEW_CHANNEL, servido
     joinServer($server, $member);
     $text = $server->channels()->where('type', 'text')->firstOrFail();
 
-    $this->postJson('/broadcasting/auth', ['channel_name' => "private-channel.{$text->id}", 'socket_id' => '1.1'])->assertUnauthorized();
-    $this->actingAs($stranger, 'sanctum')->postJson('/broadcasting/auth', ['channel_name' => "private-channel.{$text->id}", 'socket_id' => '1.1'])->assertForbidden();
-    $this->actingAs($member, 'sanctum')->postJson('/broadcasting/auth', ['channel_name' => "private-channel.{$text->id}", 'socket_id' => '1.1'])->assertOk();
-    $this->actingAs($member, 'sanctum')->postJson('/broadcasting/auth', ['channel_name' => "presence-server.{$server->id}", 'socket_id' => '1.1'])->assertOk()->assertJsonStructure(['channel_data']);
-    $this->actingAs($member, 'sanctum')->postJson('/broadcasting/auth', ['channel_name' => "private-user.{$member->id}", 'socket_id' => '1.1'])->assertOk();
-    $this->actingAs($member, 'sanctum')->postJson('/broadcasting/auth', ['channel_name' => "private-user.{$owner->id}", 'socket_id' => '1.1'])->assertForbidden();
+    // Cada pergunta leva um `at` diferente: a mesma assinatura só vale uma vez.
+    $at = time();
+    $ask = function (User $user, string $channel) use (&$at): TestResponse {
+        $body = ['sub' => $user->subject(), 'channel' => $channel, 'at' => $at++];
+
+        return $this->withHeaders(sfuHeaders($body, '/api/sfu/authorize'))->postJson('/api/sfu/authorize', $body);
+    };
+
+    $this->postJson('/api/sfu/authorize', ['sub' => $member->subject(), 'channel' => "channel.{$text->id}", 'at' => time()])->assertUnauthorized();
+
+    $ask($member, "channel.{$text->id}")->assertOk()->assertExactJson(['allowed' => true, 'name' => $member->name]);
+    $ask($stranger, "channel.{$text->id}")->assertOk()->assertJsonPath('allowed', false);
+    $ask($member, "server.{$server->id}")->assertOk()->assertJsonPath('allowed', true);
+    $ask($stranger, "server.{$server->id}")->assertOk()->assertJsonPath('allowed', false);
+    $ask($member, "user.{$member->id}")->assertOk()->assertJsonPath('allowed', true);
+    $ask($member, "user.{$owner->id}")->assertOk()->assertJsonPath('allowed', false);
+    $ask($member, 'sala.qualquer')->assertOk()->assertJsonPath('allowed', false);
+    $ask($member, 'channel.'.mb_strtolower((string) Str::ulid()))->assertOk()->assertJsonPath('allowed', false);
 
     $text->overwrites()->create(['target_type' => 'role', 'target_id' => $server->everyoneRole()->id, 'allow' => 0, 'deny' => PermissionEnum::ViewChannel->value]);
 
-    $this->actingAs($member, 'sanctum')->postJson('/broadcasting/auth', ['channel_name' => "private-channel.{$text->id}", 'socket_id' => '1.1'])->assertForbidden();
+    $ask($member, "channel.{$text->id}")->assertOk()->assertJsonPath('allowed', false);
+});
+
+it('o POST /api/sfu/session devolve o token do identify para quem tem conta', function (): void {
+    $user = User::factory()->create();
+
+    $this->postJson('/api/sfu/session')->assertUnauthorized();
+
+    $token = $this->actingAs($user, 'sanctum')->postJson('/api/sfu/session')
+        ->assertOk()
+        ->assertJsonPath('data.expires_in', SfuClient::TOKEN_SECONDS)
+        ->json('data.token');
+
+    [$body, $signature] = explode('.', (string) $token);
+    $claims = json_decode((string) base64_decode(strtr($body, '-_', '+/'), true), true, 512, JSON_THROW_ON_ERROR);
+
+    expect($signature)->toBe(hash_hmac('sha256', $body, (string) config('services.sfu.secret')))
+        ->and($claims)->toBe(['sub' => $user->subject(), 'name' => $user->name, 'exp' => $claims['exp']])
+        ->and($claims['exp'])->toBeGreaterThan(time());
 });
 
 it('membro de A não toca em nada de B', function (): void {
@@ -389,7 +441,7 @@ it('banir segue a hierarquia, nunca pega o dono, derruba da voz e avisa quem sai
     $this->actingAs($moderator, 'sanctum')->postJson("/api/servers/{$server->id}/bans/{$newbie->id}")->assertCreated();
 
     Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), "/rooms/{$voice->id}/kick") && $request['userId'] === "user:{$newbie->id}");
-    Event::assertDispatched(MemberRemoved::class, fn (MemberRemoved $event): bool => $event->userId === $newbie->id && $event->reason === 'banned' && $event->broadcastOn()->name === "private-user.{$newbie->id}");
+    Event::assertDispatched(MemberRemoved::class, fn (MemberRemoved $event): bool => $event->userId === $newbie->id && $event->reason === 'banned' && $event->channels() === ["user.{$newbie->id}"]);
 
     $this->actingAs($plain, 'sanctum')->getJson("/api/servers/{$server->id}/bans")->assertForbidden();
     $this->actingAs($plain, 'sanctum')->deleteJson("/api/servers/{$server->id}/bans/{$newbie->id}")->assertForbidden();
@@ -397,7 +449,10 @@ it('banir segue a hierarquia, nunca pega o dono, derruba da voz e avisa quem sai
     $this->actingAs($moderator, 'sanctum')->getJson("/api/servers/{$server->id}/bans")->assertOk()->assertJsonCount(1, 'data');
 });
 
-it('expulsar e banir continuam valendo com o SFU fora do ar', function (): void {
+it('expulsar, banir e mandar mensagem continuam valendo com o SFU fora do ar', function (): void {
+    // Fábrica limpa: o coringa do `beforeEach` responde antes de qualquer stub daqui, e o
+    // que interessa neste teste é o tempo real também falhar.
+    Http::swap(new Factory);
     Http::fake(['*' => Http::response('', 500)]);
     $owner = User::factory()->create();
     $first = User::factory()->create();
@@ -405,11 +460,16 @@ it('expulsar e banir continuam valendo com o SFU fora do ar', function (): void 
     $server = Server::createFor($owner, 'Casa');
     joinServer($server, $first);
     joinServer($server, $second);
+    $text = $server->channels()->where('type', 'text')->firstOrFail();
 
     $this->actingAs($owner, 'sanctum')->deleteJson("/api/servers/{$server->id}/members/{$first->id}")->assertNoContent();
     $this->actingAs($owner, 'sanctum')->postJson("/api/servers/{$server->id}/bans/{$second->id}")->assertCreated();
+    $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$text->id}/messages", ['body' => 'oi'])->assertCreated();
 
-    expect($server->members()->count())->toBe(1);
+    expect($server->members()->count())->toBe(1)
+        ->and($text->messages()->count())->toBe(1);
+
+    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/broadcast'));
 });
 
 it('sobrescrita só com os bits que eu tenho no canal, e só em cargo abaixo do meu', function (): void {
@@ -618,5 +678,5 @@ it('ensurdecer no servidor exige DEAFEN_MEMBERS, respeita a hierarquia e nunca c
     $this->actingAs($bigBoss, 'sanctum')->patchJson("/api/servers/{$server->id}/members/{$target->id}", ['server_deaf' => true])->assertOk()->assertJsonPath('data.server_deaf', true);
     $this->actingAs($owner, 'sanctum')->patchJson("/api/servers/{$server->id}/members/{$target->id}", ['server_deaf' => false])->assertOk()->assertJsonPath('data.server_deaf', false);
 
-    Http::assertNothingSent();
+    Http::assertNotSent(fn ($request): bool => str_contains((string) $request->url(), '/mute'));
 });

@@ -9,7 +9,6 @@ use App\Http\Requests\Api\Auth\LoginRequest;
 use App\Http\Requests\Api\Auth\RegisterRequest;
 use App\Http\Resources\Api\AuthTokenResource;
 use App\Models\User;
-use App\Notifications\NewLoginNotification;
 use App\Notifications\WelcomeNotification;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -35,7 +34,7 @@ final class AuthController
         throw_if(is_null($user) || is_null($user->password) || ! Hash::check($request->string('password')->toString(), $user->password), InvalidCredentialsException::class);
 
         $device = $request->string('device')->toString();
-        $user->notifyQuietly(new NewLoginNotification('app: '.$device, (string) $request->ip(), (string) $request->userAgent()));
+        $user->notifyNewLoginIfUnknown('app: '.$device, (string) $request->ip(), (string) $request->userAgent());
 
         return new AuthTokenResource($user, $user->createToken($device)->plainTextToken);
     }

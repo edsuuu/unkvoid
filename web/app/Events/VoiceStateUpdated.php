@@ -4,29 +4,28 @@ declare(strict_types=1);
 
 namespace App\Events;
 
-use Illuminate\Broadcasting\InteractsWithSockets;
-use Illuminate\Broadcasting\PrivateChannel;
-use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 
-final class VoiceStateUpdated implements ShouldBroadcastNow
+final readonly class VoiceStateUpdated implements SfuEvent
 {
     use Dispatchable;
-    use InteractsWithSockets;
 
     public function __construct(
-        public readonly string $channelId,
-        public readonly int $userId,
-        public readonly string $name,
-        public readonly string $event,
+        public string $channelId,
+        public int $userId,
+        public string $name,
+        public string $event,
     ) {}
 
-    public function broadcastOn(): PrivateChannel
+    /**
+     * @return array<int, string>
+     */
+    public function channels(): array
     {
-        return new PrivateChannel('channel.'.$this->channelId);
+        return ['channel.'.$this->channelId];
     }
 
-    public function broadcastAs(): string
+    public function eventName(): string
     {
         return 'VoiceStateUpdated';
     }
@@ -34,7 +33,7 @@ final class VoiceStateUpdated implements ShouldBroadcastNow
     /**
      * @return array<string, mixed>
      */
-    public function broadcastWith(): array
+    public function payload(): array
     {
         return ['channel_id' => $this->channelId, 'user_id' => $this->userId, 'name' => $this->name, 'event' => $this->event];
     }

@@ -64,7 +64,7 @@ final class ServerMember extends Model implements Auditable
     }
 
     /**
-     * As permissões efetivas, na ordem do Discord: dono e ADMINISTRATOR têm tudo; a base
+     * As permissões efetivas, na ordem dos apps de chamada: dono e ADMINISTRATOR têm tudo; a base
      * é @everyone com os cargos por cima; num canal, as sobrescritas entram na ordem
      *
      * @everyone, cargos agregados, membro.
