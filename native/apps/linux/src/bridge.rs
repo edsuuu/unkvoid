@@ -402,6 +402,23 @@ impl Bridge {
 
         self.spawn(async move {
             let config = sending::screen_config(capture::Quality::Hd1080, 60, true);
+
+            // No Wayland quem escolhe a tela é o seletor do sistema, e ele abre aqui — antes
+            // de ligar a captura. Sem esta chamada o `start` não acha sessão nenhuma e o
+            // compartilhamento morre em toda área de trabalho moderna do Linux. No X11 é
+            // uma chamada vazia. `block_in_place` porque o portal espera a pessoa responder.
+            let prepared = match tokio::task::block_in_place(|| capture::prepare(&config)) {
+                Ok(prepared) => prepared,
+                Err(failure) => {
+                    tracing::warn!(%failure, "o seletor de tela não abriu");
+
+                    let _ = screen.send(Update::Complaint("Não deu para escolher a tela.".into()));
+                    let _ = screen.send(Update::Mine(streaming::mine(&session, &sending)));
+
+                    return;
+                }
+            };
+
             let published = streaming::publish(
                 &session,
                 &sending,
@@ -411,6 +428,10 @@ impl Bridge {
                 Some(Source::ScreenAudio),
             )
             .await;
+
+            // O `start` consome a sessão escolhida; largá-la antes disso fecharia o que o
+            // seletor abriu, e o sistema ficaria dizendo que a tela está sendo compartilhada.
+            drop(prepared);
 
             if let Err(failure) = published {
                 tracing::warn!(%failure, "a tela não subiu");
