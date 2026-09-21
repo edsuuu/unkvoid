@@ -172,7 +172,11 @@ impl Room {
             })
             .filter(|(own, producer)| {
                 if *own {
-                    mine && producer.source == "screen"
+                    // ponytail: no macOS a própria câmera volta pelo SFU em vez de uma prévia
+                    // local — custa um decoder e ~150 ms de atraso na própria imagem. A saída é
+                    // um cartão com `AVCaptureVideoPreviewLayer`; o Windows e o Linux já têm a deles.
+                    (mine && producer.source == "screen")
+                        || (cfg!(target_os = "macos") && producer.source == "camera")
                 } else {
                     !closed.contains(&producer.producer_id)
                 }
@@ -536,6 +540,8 @@ impl Room {
         }
 
         lock(&self.producers).insert(Source::Camera, producers);
+        self.consume_all().await;
+        self.announce_tiles();
         self.announce_mine();
 
         Ok(())
@@ -656,6 +662,8 @@ impl Room {
                 .call(action::PRODUCE_PLAIN, request)
                 .await?;
             producers.push(text(&last, "producerId"));
+
+            self.note_own_producer("newProducer", &text(&last, "producerId"), source);
         }
 
         let pointed = lock(&self.sending).use_sfu(
@@ -672,8 +680,37 @@ impl Room {
         Ok(producers)
     }
 
+    /// O SFU avisa a sala inteira de um producer novo, menos quem o abriu. Sem o próprio
+    /// producer no elenco, "ver o que a sala vê" não teria o que assistir.
+    fn note_own_producer(&self, event: &str, producer_id: &str, source: &Source) {
+        let Some(own) = self.session.peers().into_iter().find(|peer| peer.self_peer) else {
+            return;
+        };
+
+        self.session.apply(&Event {
+            name: event.to_owned(),
+            channel: None,
+            data: json!({
+                "peerId": own.peer_id,
+                "producerId": producer_id,
+                "kind": if source.is_video() { "video" } else { "audio" },
+                "source": source.name(),
+            }),
+        });
+    }
+
     async fn close(&self, producers: Vec<String>) {
         for producer_id in producers {
+            // Quem se assistia deixa de se assistir junto com a transmissão.
+            lock(&self.watching).stop(Some(&producer_id));
+            lock(&self.consumers).remove(&producer_id);
+
+            self.session.apply(&Event {
+                name: "producerClosed".to_owned(),
+                channel: None,
+                data: json!({ "peerId": self.session.peers().into_iter().find(|peer| peer.self_peer).map(|peer| peer.peer_id), "producerId": producer_id }),
+            });
+
             if let Err(failure) = self
                 .session
                 .client()
@@ -683,6 +720,8 @@ impl Room {
                 tracing::warn!(%failure, producer = %producer_id, "o producer não fechou no servidor");
             }
         }
+
+        self.announce_tiles();
     }
 
     /// Fecha no servidor o que uma origem abriu, e solta o remetente se foi a última.
