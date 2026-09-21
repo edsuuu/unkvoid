@@ -11,9 +11,38 @@ use gtk::prelude::*;
 
 use crate::bridge::Bridge;
 use crate::components::{
-    button, clear_box, clear_list, column, field, item, list, muted, row, scroll, strong, title,
+    body, button, clear_box, clear_list, column, field, item, label_mono, list, muted, row, scroll, strong, title,
 };
+use crate::streaming::Mine;
 use crate::user_bar::UserBar;
+
+/// A coluna da esquerda e as dos canais e membros. A primeira é mais larga porque a barra de
+/// quem está logado mora nela, e os botões de voz têm tamanho fixo.
+const RAIL_WIDTH: i32 = 240;
+const COLUMN_WIDTH: i32 = 220;
+
+/// A linha de um canal: o desenho à esquerda e o nome ao lado, como no React. Emoji ficaria
+/// à mercê da fonte do sistema — e no contêiner mínimo ela não existe, então vira quadrado.
+fn channel_row(channel: &Channel) -> gtk::Box {
+    let line = row(8);
+    let mark = if channel.kind == ChannelKind::Voice { "speaker" } else { "hash" };
+
+    line.append(&crate::icons::icon(mark, 15, crate::icons::DIM));
+    line.append(&body(&channel.name));
+    crate::components::pad(&line, 4);
+
+    line
+}
+
+/// Uma coluna da tela: painel de vidro com a folga de dentro do React.
+fn panel(width: i32) -> gtk::Box {
+    let panel = column(8);
+
+    panel.add_css_class("panel");
+    panel.set_size_request(width, -1);
+
+    panel
+}
 
 pub struct HubScreen {
     root: gtk::Box,
@@ -47,61 +76,59 @@ impl HubScreen {
         let greeting = muted("");
         let open_channel: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
-        let rail = column(8);
+        // Cada coluna é um painel de vidro, como no React: fundo, contorno e canto. Sem isto
+        // as listas ficam soltas no fundo da janela e a tela perde a divisão.
+        let to_code = button("Sala por código", "ghost");
+        let rail = panel(RAIL_WIDTH);
 
-        rail.set_size_request(200, -1);
-        rail.append(&strong("Servidores"));
+        rail.append(&label_mono("Servidores"));
         rail.append(&scroll(&servers));
+        rail.append(&to_code);
 
-        let sidebar = column(8);
+        let sidebar = panel(COLUMN_WIDTH);
 
-        sidebar.set_size_request(220, -1);
         sidebar.append(&server_name);
         sidebar.append(&scroll(&channels));
 
-        let chat = column(8);
+        let chat = panel(-1);
 
         chat.set_hexpand(true);
         chat.append(&channel_name);
         chat.append(&messages_scroll);
         chat.append(&composer);
 
-        let people = column(8);
+        let people = panel(COLUMN_WIDTH);
 
-        people.set_size_request(220, -1);
-        people.append(&strong("Membros"));
+        people.append(&label_mono("Membros"));
         people.append(&scroll(&members));
 
-        let body = row(12);
+        // A coluna da esquerda termina na barra de quem está logado, como no React — e não
+        // numa faixa que atravessa a janela inteira.
+        let user = UserBar::new(bridge);
+        let left = column(10);
+
+        // A largura é desta coluna, não do que estiver dentro: sem o travamento, a barra de
+        // voz manda na medida e empurra o chat para o canto.
+        left.set_size_request(RAIL_WIDTH, -1);
+        left.set_hexpand(false);
+        left.append(&rail);
+        left.append(user.root());
+
+        let body = row(10);
 
         body.set_vexpand(true);
-        body.append(&rail);
+        body.append(&left);
         body.append(&sidebar);
         body.append(&chat);
         body.append(&people);
 
-        let bar = row(10);
-
-        bar.add_css_class("toolbar");
-        bar.append(&greeting);
-
-        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-
-        spacer.set_hexpand(true);
-        bar.append(&spacer);
-        bar.append(&status);
-
-        let to_code = button("Sala por código", "ghost");
-
-        bar.append(&to_code);
-
-        let user = UserBar::new(bridge);
-        let root = column(12);
+        let root = column(10);
 
         crate::components::pad(&root, 12);
-        root.append(&bar);
+        greeting.set_hexpand(true);
+        status.set_halign(gtk::Align::End);
         root.append(&body);
-        root.append(user.root());
+        root.append(&status);
 
         servers.connect_row_activated({
             let (bridge, ids) = (bridge.clone(), server_ids.clone());
@@ -191,6 +218,16 @@ impl HubScreen {
         self.status.set_text(message);
     }
 
+    /// A voz mora aqui, não na sala por código: é esta barra que mostra o microfone aberto,
+    /// o mudo do servidor e a permissão de falar.
+    pub fn set_mine(&self, mine: Mine) {
+        self.bar.set_mine(mine);
+    }
+
+    pub fn set_deafened(&self, deafened: bool) {
+        self.bar.set_deafened(deafened);
+    }
+
     pub fn set_servers(&self, servers: &[ServerSummary]) {
         clear_list(&self.servers);
         self.server_ids.replace(servers.iter().map(|server| server.id).collect());
@@ -213,9 +250,7 @@ impl HubScreen {
         let ordered = tree.ordered_channels();
 
         for channel in &ordered {
-            let mark = if channel.kind == ChannelKind::Voice { "🔊" } else { "#" };
-
-            self.channels.append(&item(&strong(&format!("{mark} {}", channel.name))));
+            self.channels.append(&item(&channel_row(channel)));
         }
 
         self.channel_ids.replace(ordered);

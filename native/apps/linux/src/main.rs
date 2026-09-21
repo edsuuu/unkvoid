@@ -6,6 +6,7 @@
 mod bridge;
 mod components;
 mod devices;
+mod icons;
 mod screens;
 mod sending;
 mod streaming;
@@ -98,7 +99,6 @@ fn open(application: &Application) {
                     entry.set_user(user.as_ref());
                     entry.refresh_recent(&bridge);
                     hub.set_user(user.as_ref());
-                    room.set_user(&user.as_ref().map(|user| user.name.clone()).unwrap_or_default());
 
                     let landing = bridge.home();
 
@@ -120,6 +120,7 @@ fn open(application: &Application) {
                     hub.set_status(&message);
                     room.set_status(&message);
                 }
+                Update::LoginComplaint(message) => entry.set_login_error(&message),
                 Update::Servers(servers) => hub.set_servers(&servers),
                 Update::Tree(tree) => hub.set_tree(&tree),
                 Update::Messages(messages) => {
@@ -130,12 +131,18 @@ fn open(application: &Application) {
                     entry.set_error("");
                     room.set_room(&code);
                     room.set_peers(&peers);
-                    room.set_deafened(bridge.is_deafened());
                     show(&stack, Screen::Room);
                 }
                 Update::Peers(peers) => room.set_peers(&peers),
+                Update::Ping(milliseconds) => room.set_ping(milliseconds),
                 Update::Tiles(tiles) => room.set_tiles(&tiles),
-                Update::Mine(mine) => room.set_mine(mine),
+                Update::Mine(mine) => {
+                    // A sala por código só tem tela; o microfone e o som são do hub, que é
+                    // onde a voz existe. Cada tela pega o pedaço que desenha.
+                    room.set_mine(mine);
+                    hub.set_mine(mine);
+                    hub.set_deafened(bridge.is_deafened());
+                }
                 Update::Show(screen) => {
                     if screen == Screen::Hub {
                         bridge.load_servers();

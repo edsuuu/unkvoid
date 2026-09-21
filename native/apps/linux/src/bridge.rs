@@ -37,6 +37,9 @@ pub enum Update {
     Offline(String),
     /// A última coisa que deu errado, na frase que a pessoa lê.
     Complaint(String),
+    /// O que deu errado ao entrar ou criar conta. Anda separado do `Complaint` porque no
+    /// desenho são dois cartões, e o erro de um não se escreve no outro.
+    LoginComplaint(String),
     Servers(Vec<ServerSummary>),
     Tree(Box<ServerTree>),
     Messages(Vec<Message>),
@@ -46,6 +49,8 @@ pub enum Update {
     Tiles(Vec<Tile>),
     /// O que esta pessoa está mandando, e o que ela tem permissão de mandar.
     Mine(Mine),
+    /// O ida e volta até o SFU, em milissegundos, de 5 em 5 segundos.
+    Ping(u64),
     /// Trocar de tela sem nada novo para mostrar: sair da sala, ir para os servidores.
     Show(Screen),
 }
@@ -171,7 +176,7 @@ impl Bridge {
                     let _ = screen.send(Update::Ready(user));
                 }
                 Err(failure) => {
-                    let _ = screen.send(Update::Complaint(said(&failure)));
+                    let _ = screen.send(Update::LoginComplaint(said(&failure)));
                 }
             }
         });
@@ -345,6 +350,11 @@ impl Bridge {
                             "A sala não voltou. Entre de novo quando a internet estabilizar.".into(),
                         ));
                     }
+                    local::PING_MEASURED => {
+                        if let Some(milliseconds) = event.data.as_u64() {
+                            let _ = screen.send(Update::Ping(milliseconds));
+                        }
+                    }
                     _ => {}
                 }
 
@@ -416,6 +426,20 @@ impl Bridge {
 
     pub fn stop_sharing(self: &Rc<Self>) {
         self.unpublish(Source::Screen);
+    }
+
+    /// Procura de novo quem está transmitindo. O `newProducer` já faz isso sozinho; este
+    /// caminho existe para quando o evento se perdeu, e é o "Atualizar" da lista de pessoas.
+    pub fn refresh_watch(self: &Rc<Self>) {
+        let Some(session) = lock(&self.session).clone() else {
+            return;
+        };
+
+        let (watching, screen) = (self.watching.clone(), self.to_screen.clone());
+
+        self.spawn(async move {
+            consume_all(&session, &watching, &screen).await;
+        });
     }
 
     pub fn toggle_camera(self: &Rc<Self>) {
