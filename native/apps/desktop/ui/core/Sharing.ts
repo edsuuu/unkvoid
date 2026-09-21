@@ -247,6 +247,12 @@ export class Sharing {
             return;
         }
 
+        if (this.store.state.active) {
+            await this.swapScreen(source, quality, fps);
+
+            return;
+        }
+
         this.store.set({ starting: true });
 
         try {
@@ -258,6 +264,30 @@ export class Sharing {
             this.app.log('broadcast.start.error', { message: Failure.message(failure) });
             this.paint(false);
             this.app.fail(`não deu para transmitir: ${Failure.message(failure)}`);
+        } finally {
+            this.store.set({ starting: false });
+        }
+    }
+
+    private async swapScreen(source: string, quality: string, fps: string): Promise<void> {
+        const broadcast = this.app.media.broadcast;
+
+        if (! broadcast) {
+            return;
+        }
+
+        this.store.set({ starting: true });
+
+        try {
+            await broadcast.changeQuality(quality, Number(fps), source);
+            this.statsGeneration += 1;
+            this.ceilingBitrate = 0;
+            this.lastStats = null;
+            this.statsAt = 0;
+            this.app.toast('tela trocada');
+        } catch (failure) {
+            this.app.log('broadcast.swap.error', { message: Failure.message(failure) });
+            this.app.fail(`não deu para trocar a tela: ${Failure.message(failure)}`);
         } finally {
             this.store.set({ starting: false });
         }

@@ -26,12 +26,12 @@ export class Broadcast {
         }
     }
 
-    async changeQuality(quality: string, fps: number): Promise<void> {
+    async changeQuality(quality: string, fps: number, source: string | null = null): Promise<void> {
         if (! this.nativeActive) {
             return;
         }
 
-        await Tauri.invoke('change_broadcast_quality', { quality, fps });
+        await Tauri.invoke('change_broadcast_quality', { quality, fps, source });
     }
 
     async republish(): Promise<boolean> {

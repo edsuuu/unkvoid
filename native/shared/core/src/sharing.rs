@@ -627,19 +627,32 @@ impl Broadcast {
         })
     }
 
-    /// Troca resolução e fps sem fechar o producer: captura e encoder são refeitos no
-    /// mesmo destino, e quem assiste só vê a imagem mudar de tamanho no quadro-chave
-    /// seguinte. Recusada a qualidade nova (placa sem H.264 em 4K, por exemplo), a
+    /// Troca resolução, fps **e a tela** sem fechar o producer: captura e encoder são
+    /// refeitos no mesmo destino, e quem assiste só vê a imagem mudar no quadro-chave
+    /// seguinte. Recusada a receita nova (placa sem H.264 em 4K, janela que fechou), a
     /// anterior volta e o erro sobe para quem pediu.
+    ///
+    /// Trocar de monitor por aqui, e não parando e começando de novo, é o que mantém o
+    /// mesmo SSRC no ar: o servidor recusa um SSRC repetido na sala, e a transmissão que
+    /// parecia só mudar de tela morria.
     ///
     /// ponytail: os contadores recomeçam do zero, então a linha de estatística da
     /// interface pula uma leitura. Guardá-los fora da transmissão seria o passo seguinte.
-    pub fn restart(&mut self, quality: capture::Quality, frame_rate: u32) -> anyhow::Result<()> {
+    pub fn restart(
+        &mut self,
+        quality: capture::Quality,
+        frame_rate: u32,
+        source: Option<capture::CaptureSource>,
+    ) -> anyhow::Result<()> {
         let previous = self.config.clone();
         let mut wanted = self.config.clone();
 
         wanted.quality = quality;
         wanted.frame_rate = frame_rate;
+
+        if let Some(source) = source {
+            wanted.source = source;
+        }
 
         self.capturer.stop()?;
 

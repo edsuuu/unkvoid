@@ -535,8 +535,10 @@ pub unsafe extern "C" fn unkvoid_app(
         }),
         "changeQuality" => handle.in_room(|room, runtime| {
             let wanted = crate::sharing::capture_config(&data);
+            // A tela só muda quando ela vem no pedido: sem `source`, é só a qualidade.
+            let source = data.get("source").is_some().then_some(wanted.source);
 
-            match runtime.block_on(room.change_quality(wanted.quality, wanted.frame_rate)) {
+            match runtime.block_on(room.change_quality(wanted.quality, wanted.frame_rate, source)) {
                 Ok(()) => json!({ "ok": true }),
                 Err(failure) => {
                     tracing::warn!(%failure, "a qualidade não mudou");

@@ -357,16 +357,27 @@ impl Room {
         self.announce_mine();
     }
 
-    /// Troca resolução e quadros por segundo com a transmissão no ar, sem fechar o producer.
-    pub async fn change_quality(&self, quality: capture::Quality, frame_rate: u32) -> Result<()> {
+    /// Troca resolução, quadros por segundo **e a tela** com a transmissão no ar, sem
+    /// fechar o producer. Trocar de monitor parando e começando de novo esbarraria no SSRC
+    /// repetido da sala, e a transmissão morreria no lugar de mudar de tela.
+    pub async fn change_quality(
+        &self,
+        quality: capture::Quality,
+        frame_rate: u32,
+        source: Option<capture::CaptureSource>,
+    ) -> Result<()> {
         let changed = tokio::task::block_in_place(|| match lock(&self.sending).screen.as_mut() {
-            Some(broadcast) => broadcast.restart(quality, frame_rate),
+            Some(broadcast) => broadcast.restart(quality, frame_rate, source),
             None => Ok(()),
         });
 
         if let Some(config) = lock(&self.shared).as_mut() {
             config.quality = quality;
             config.frame_rate = frame_rate;
+
+            if let Some(source) = source {
+                config.source = source;
+            }
         }
 
         changed

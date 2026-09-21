@@ -368,6 +368,7 @@ async fn change_broadcast_quality(
     state: State<'_, ActiveSession>,
     quality: String,
     fps: u32,
+    source: Option<String>,
 ) -> Result<(), String> {
     let mut session = state.0.lock().await;
 
@@ -375,10 +376,12 @@ async fn change_broadcast_quality(
         return Err("no stream in progress".into());
     };
 
-    tracing::info!(%quality, fps, "broadcast: trocando a qualidade sem parar");
+    tracing::info!(%quality, fps, ?source, "broadcast: trocando a receita sem parar");
+
+    let wanted = source.as_deref().map(|source| source_from(Some(source)));
 
     // Reabrir captura e encoder bloqueia, como no `start_broadcast`.
-    tokio::task::block_in_place(|| broadcast.restart(quality_from(&quality), fps)).map_err(|error| {
+    tokio::task::block_in_place(|| broadcast.restart(quality_from(&quality), fps, wanted)).map_err(|error| {
         tracing::error!(error = %error, "broadcast: a troca de qualidade falhou");
 
         error.to_string()
