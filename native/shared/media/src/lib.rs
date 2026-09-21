@@ -10,6 +10,7 @@ mod audio;
 mod governor;
 mod plain;
 mod receiver;
+mod unpack;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -21,6 +22,7 @@ pub use audio::{AudioEncoder, FRAME_MS};
 pub use governor::BitrateGovernor;
 pub use plain::{Feedback, PlainSender, Source};
 pub use receiver::{PlainReceiver, resolve};
+pub use unpack::{AccessUnit, AudioUnpacker, VideoUnpacker, nals};
 
 #[cfg(target_os = "macos")]
 pub use macos::VideoToolboxEncoder as PlatformEncoder;

@@ -57,6 +57,16 @@ impl Source {
         }
     }
 
+    /// O inverso de `parse`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Screen => "screen",
+            Self::ScreenAudio => "screenAudio",
+            Self::Camera => "camera",
+            Self::Mic => "mic",
+        }
+    }
+
     /// Os SSRCs que o servidor conhece antes do primeiro pacote.
     pub fn ssrc(self) -> u32 {
         match self {
