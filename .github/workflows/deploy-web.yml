@@ -2,10 +2,12 @@
 # mora na própria VPS, então não há ssh nem segredo viajando: o script já está lá.
 name: deploy-web
 
+# PAUSADO junto com o release.yml: nada sobe sozinho até terminarmos. Descomente o `push`
+# quando voltar a valer — enquanto isso o deploy sai só pelo disparo à mão.
 on:
-  push:
-    branches: [main]
-    paths: ['web/**', 'infra/deploy-web.sh', '.github/workflows/deploy-web.yml']
+  # push:
+  #   branches: [main]
+  #   paths: ['web/**', 'infra/deploy-web.sh', '.github/workflows/deploy-web.yml']
   workflow_dispatch:
 
 permissions:
