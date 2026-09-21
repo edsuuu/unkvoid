@@ -14,7 +14,6 @@ opus = "0.4"
 rand = "0.8"
 rtc = "0.20"
 socket2 = "0.6"
-serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }

@@ -45,7 +45,6 @@ fn main() -> anyhow::Result<()> {
     let config = media::EncoderConfig::new(quality, 60, (1920, 1080));
     let (width, height) = (1920_u32, 1080_u32);
 
-    // O device que faria o papel da captura: o encoder cria o dele e monta a ponte.
     let (mut device, mut context) = (None, None);
 
     unsafe {
@@ -91,10 +90,6 @@ fn main() -> anyhow::Result<()> {
         context,
     };
 
-    // Ruído de amplitude média sobre cinza, um quadro diferente do outro: o pior caso de
-    // um jogo, mas que ainda some com quantização grossa. Imagem parada sairia em poucos
-    // kb/s com qualquer alvo, e ruído cheio estouraria qualquer alvo: nos dois casos a
-    // taxa medida não diria nada sobre o que foi pedido.
     let noise: Vec<Vec<u8>> = (0..8)
         .map(|_| {
             let mut pixels = vec![0_u8; (width * height * 4) as usize];
@@ -193,7 +188,6 @@ fn main() -> anyhow::Result<()> {
         .next()
         .and_then(|value| value.parse().ok())
         .unwrap_or(120);
-    // Um monitor 16:9 de mentira: o encoder não precisa de tela para ser medido.
     let config = EncoderConfig::new(quality, 60, (3840, 2160));
     let (width, height) = (config.width, config.height);
 

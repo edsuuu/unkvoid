@@ -179,7 +179,6 @@ impl MediaFoundationEncoder {
 
             let (device, context) = create_device()?;
 
-            // Sem isto, o MFT tocando no device de outra thread corrompe o estado dele.
             let multithread: ID3D11Multithread = device.cast().map_err(start_error)?;
             let _ = multithread.SetMultithreadProtected(true);
 
@@ -294,8 +293,6 @@ impl MediaFoundationEncoder {
         let mean = (&CODECAPI_AVEncCommonMeanBitRate, bitrate);
         let peak = (&CODECAPI_AVEncCommonMaxBitRate, bitrate.saturating_add(bitrate / 2));
 
-        // O pico (uma vez e meia, como no `tune`) nunca pode ficar abaixo da média: subindo
-        // ele vai na frente, descendo vai atrás.
         let order = if bitrate > self.bitrate { [peak, mean] } else { [mean, peak] };
 
         for (key, value) in order {
@@ -413,8 +410,6 @@ impl MediaFoundationEncoder {
                 .AcquireSync(1, LOCK_TIMEOUT_MS)
                 .map_err(encode_error)?;
 
-            // `ManuallyDrop` porque o campo é dono do ponteiro: sem isto a struct
-            // liberaria a view ao sair de escopo, e ela pertence à ponte.
             let stream = D3D11_VIDEO_PROCESSOR_STREAM {
                 Enable: true.into(),
                 pInputSurface: std::mem::ManuallyDrop::new(Some(bridge.input.clone())),
@@ -712,15 +707,6 @@ impl MediaFoundationEncoder {
 
             sample.AddBuffer(&buffer).map_err(encode_error)?;
 
-            // A hora de verdade da captura, não um contador de quadros. O encoder
-            // distribui a taxa pelo relógio que recebe: com a captura entregando 53
-            // quadros por segundo e o contador andando como se fossem 60, ele espalhava
-            // um segundo de bits por 0,88 segundo de vídeo e a transmissão saía acima da
-            // taxa pedida. O caminho do macOS já tinha apanhado disso — o comentário do
-            // `encode` de lá conta a mesma história, com dois terços em vez de um oitavo.
-            //
-            // A duração continua nominal: é dica de ritmo, e o encoder não a usa para
-            // fechar a conta de bits.
             let duration = (HNS_PER_SECOND as f64 / self.frame_rate).round() as i64;
 
             sample
@@ -739,8 +725,6 @@ impl MediaFoundationEncoder {
     /// atender os dois — ignorar um evento trava a fila inteira.
     unsafe fn pump(&mut self, mut input: Option<IMFSample>) -> Result<(), EncoderError> {
         unsafe {
-            // Uma referência a mais por quadro, em troca de não emprestar `self` inteiro
-            // enquanto o laço guarda pedidos e coleta saída.
             let Backend::Gpu { events } = &self.backend else {
                 return Err(EncoderError::Encode("fila de eventos num MFT síncrono".into()));
             };
@@ -798,8 +782,6 @@ impl MediaFoundationEncoder {
             let mut output = [MFT_OUTPUT_DATA_BUFFER::default()];
             let mut status = 0_u32;
 
-            // O MFT de placa entrega a própria amostra; o de software do Windows escreve
-            // numa que quem chama fornece, do tamanho que ele diz precisar.
             let info = self.transform.GetOutputStreamInfo(0).map_err(encode_error)?;
 
             if info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 == 0 {
@@ -812,8 +794,6 @@ impl MediaFoundationEncoder {
             }
 
             let result = self.transform.ProcessOutput(0, &mut output, &mut status);
-            // Tirada do `ManuallyDrop` antes de olhar o resultado: a amostra fornecida por
-            // nós, quando o MFT não tem saída, vazaria um quadro inteiro por chamada.
             let sample = output[0].pSample.take();
 
             match result {
@@ -883,12 +863,6 @@ unsafe fn tune(transform: &IMFTransform, config: &EncoderConfig) {
 
     let gop = (config.frame_rate * GOP_SECONDS).round() as u32;
 
-    // A ordem importa: o modo primeiro, senão a taxa é lida com o significado do modo
-    // antigo. Tudo em VT_UI4 e VT_BOOL porque é o que o ICodecAPI aceita — o `From<u64>`
-    // que a crate oferece monta VT_UI8, que o encoder recusa.
-    // VBR com teto: a média é o alvo, e o pico (uma vez e meia) é o que um keyframe ou
-    // uma cena inteira mudando pode gastar sem estourar o uplink. CBR gastava o alvo
-    // inteiro numa tela parada e faltava justamente quando a cena mexia.
     let settings: [(&::windows::core::GUID, VARIANT, &str); 9] = [
         (
             &CODECAPI_AVEncCommonRateControlMode,
@@ -1040,12 +1014,6 @@ unsafe fn open_encoder(
         )
         .map_err(start_error)?;
 
-        // O `MFTEnumEx` devolve um vetor do alocador COM com uma referência para cada
-        // encoder. Quem chamou é dono das duas coisas: das referências e do vetor. Antes
-        // daqui saía um `clone` — que soma mais uma referência — e nada era liberado,
-        // então cada abertura de transmissão deixava para trás o vetor inteiro e um
-        // objeto COM por encoder instalado na máquina. As referências passam para o
-        // `Vec`, que as solta ao sair de escopo; o vetor é liberado aqui.
         let candidates: Vec<IMFActivate> = if found.is_null() {
             Vec::new()
         } else {
@@ -1094,7 +1062,6 @@ unsafe fn try_encoder(
     unsafe {
         let transform: IMFTransform = activate.ActivateObject().map_err(start_error)?;
 
-        // Só o MFT da placa recebe o gerente: é assíncrono e lê a textura direto.
         if let Some(manager) = manager {
             // Encoder de hardware nasce trancado: sem destrancar, ele recusa ProcessInput.
             transform
@@ -1214,10 +1181,6 @@ unsafe fn configure_types(
     unsafe {
         let rate = config.frame_rate.round() as u32;
 
-        // Os atributos de cor no tipo de saída são o que faz alguns MFTs escreverem o
-        // VUI; outros recusam o tipo inteiro por causa deles. Tenta com, e sem quando
-        // o encoder não aceita — a entrada, que é onde a cor de verdade se define para
-        // o MFT, continua obrigatória.
         let output_type = |with_color: bool| -> Result<IMFMediaType, EncoderError> {
             let output: IMFMediaType = MFCreateMediaType().map_err(start_error)?;
 
@@ -1386,8 +1349,6 @@ mod tests {
 
     #[test]
     fn nv12_rows_leave_the_texture_padding_behind() {
-        // 4x2 com passo de 6: Y em duas linhas, UV em uma, dois bytes de enchimento em cada.
-        // A última linha da textura mapeada pode acabar logo depois da imagem.
         let source = [1, 2, 3, 4, 0xEE, 0xEE, 5, 6, 7, 8, 0xEE, 0xEE, 9, 10, 11, 12];
         let mut destination = [0; 12];
 

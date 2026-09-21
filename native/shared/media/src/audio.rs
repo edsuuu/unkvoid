@@ -69,7 +69,6 @@ mod tests {
     fn accumulates_until_a_20ms_block_closes() {
         let mut encoder = AudioEncoder::new(64_000).expect("encoder");
 
-        // Half a block produces no packet: Opus requires an exact duration.
         let metade = AudioChunk {
             sample_rate: SAMPLE_RATE,
             channels: CHANNELS,

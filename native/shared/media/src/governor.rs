@@ -111,9 +111,6 @@ impl BitrateGovernor {
             return None;
         }
 
-        // O maior dos dois, e não a soma: o pacote que o buffer largou nunca chegou ao
-        // servidor, então ele também vem pedido de volta. Somar contaria a mesma perda
-        // duas vezes; olhar só o NACK ficaria cego quando o caminho de volta não abre.
         let lost = self.nacked.max(self.dropped);
         let loss = (lost * 1000 / self.sent).min(1000);
 

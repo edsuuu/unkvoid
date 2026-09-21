@@ -293,8 +293,6 @@ fn pipeline(quality: Quality, source: CaptureSource) -> Result<String, String> {
     let (encoded_seen, bytes_seen, refused_seen, first_seen, busy_seen) =
         (encoded.clone(), bytes.clone(), refused.clone(), first.clone(), busy_us.clone());
 
-    // `UNKVOID_DUMP=<arquivo>` grava o H.264 que saiu, em Annex-B, para abrir num
-    // decodificador: contar quadros não prova que alguém consegue exibi-los.
     let dump = match std::env::var_os("UNKVOID_DUMP") {
         Some(path) => Some(std::sync::Mutex::new(
             std::fs::File::create(path).map_err(|error| error.to_string())?,
@@ -338,7 +336,6 @@ fn pipeline(quality: Quality, source: CaptureSource) -> Result<String, String> {
                 return;
             };
 
-            // O mesmo relógio do `busyUs` do app: o que o encoder segura da thread da captura.
             let started = Instant::now();
             let outcome = encoder.encode(surface, frame.timestamp_ns);
 

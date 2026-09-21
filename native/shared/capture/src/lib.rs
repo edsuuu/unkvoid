@@ -18,6 +18,9 @@ mod windows_audio;
 #[cfg(target_os = "linux")]
 mod linux;
 
+#[cfg(target_os = "linux")]
+mod linux_audio;
+
 #[cfg(target_os = "macos")]
 pub use macos::MacCapturer as PlatformCapturer;
 
@@ -173,8 +176,8 @@ pub struct CaptureConfig {
     /// Se o som dos aplicativos de `MUTED_APPS` deve ficar de fora da transmissão.
     ///
     /// É escolha de quem transmite, no momento de escolher o que compartilhar: quem usa
-    /// o Discord para conversar quase nunca quer a conversa junto, mas quem está
-    /// mostrando o próprio Discord para alguém quer.
+    /// o app de chamada para conversar quase nunca quer a conversa junto, mas quem está
+    /// mostrando o próprio app de chamada para alguém quer.
     pub mute_listed_apps: bool,
     pub show_cursor: bool,
 }
@@ -190,14 +193,14 @@ impl CaptureConfig {
 
     /// Aplicativos cujo som nunca sobe junto com a tela, identificados pelo bundle.
     ///
-    /// Quem compartilha aqui quase sempre está falando pelo Discord ao mesmo tempo. Sem
+    /// Quem compartilha aqui quase sempre está falando pelo app de chamada ao mesmo tempo. Sem
     /// isto, a voz de todo mundo da chamada de lá entra na transmissão: quem está nos
     /// dois lugares ouve cada pessoa duas vezes, a segunda com o atraso do salto pelo
     /// servidor. O sistema filtra por processo, que é mais confiável do que tentar
     /// adivinhar aqui de onde veio cada som.
     ///
     /// No macOS o filtro do ScreenCaptureKit é um só para vídeo e áudio, então a janela
-    /// do app silenciado também sai da imagem. Para o Discord isso é ganho duplo: a
+    /// do app silenciado também sai da imagem. Para o app de chamada isso é ganho duplo: a
     /// conversa privada não vaza para a sala.
     ///
     /// No Windows não há bundle, e quem vale é `MUTED_EXECUTABLES`.
@@ -208,11 +211,11 @@ impl CaptureConfig {
     ];
 
     /// Os mesmos aplicativos no Windows, pelo nome do executável, sem diferenciar
-    /// maiúsculas. O Discord toca a chamada num processo filho com o mesmo nome; o
+    /// maiúsculas. O app de chamada toca a chamada num processo filho com o mesmo nome; o
     /// `DiscordSystemHelper.exe` nasce fora da árvore dele e precisa vir pelo nome.
     ///
     /// Os clientes alternativos entram pelo nome próprio: a chamada é a mesma, num processo
-    /// que não se chama Discord. O Discord aberto no navegador não tem nome que o separe
+    /// que não se chama assim. O app de chamada aberto no navegador não tem nome que o separe
     /// do resto do navegador, e continua entrando.
     pub const MUTED_EXECUTABLES: &'static [&'static str] = &[
         "Discord.exe",
@@ -325,8 +328,6 @@ mod tests {
 
     #[test]
     fn default_captures_system_audio() {
-        // É por isto que o app nativo existe: no navegador isso depende do sistema e
-        // da versão. Se alguém desligar sem querer, o teste avisa.
         let config = CaptureConfig::default();
 
         assert!(config.capture_audio);

@@ -13,15 +13,15 @@
 //! virtual que grava tudo **menos** a árvore de processos indicada, e a árvore indicada
 //! é a nossa. É a mesma promessa que o `excludesCurrentProcessAudio` cumpre no macOS.
 //!
-//! Só se pode excluir **uma** árvore por captura, então excluir o Discord *e* a nós
+//! Só se pode excluir **uma** árvore por captura, então excluir o app de chamada *e* a nós
 //! mesmos ao mesmo tempo não existe. A saída é virar a pergunta do avesso: ao
 //! compartilhar uma janela, grava-se **só** a árvore daquele processo. O som do jogo
-//! entra, e o do Discord, o do navegador e o nosso ficam de fora sem excluir ninguém —
+//! entra, e o do app de chamada, o do navegador e o nosso ficam de fora sem excluir ninguém —
 //! que é exatamente o que quem compartilha um jogo quer.
 //!
 //! Na tela inteira não há um processo só, e aí a inclusão vira várias: um laço por
-//! processo que toca som, menos a nossa árvore e a do Discord, somados aqui por um
-//! relógio só. Excluir só a nossa árvore fica para quem pediu o Discord junto — e para
+//! processo que toca som, menos a nossa árvore e a do app de chamada, somados aqui por um
+//! relógio só. Excluir só a nossa árvore fica para quem pediu o app de chamada junto — e para
 //! quando a mistura não abre: ela cai uma vez para esse laço, em vez de transmitir mudo.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -68,7 +68,7 @@ pub enum AudioScope {
     /// Tudo menos a nossa árvore. Evita devolver o som de quem se está assistindo.
     ExcludeSelf,
 
-    /// Só a árvore deste processo. Deixa Discord, navegador e nós de fora de graça.
+    /// Só a árvore deste processo. Deixa a chamada, o navegador e nós de fora de graça.
     OnlyProcess(u32),
 
     /// Cada processo que toca som, menos nós e `CaptureConfig::MUTED_EXECUTABLES`.
@@ -113,9 +113,9 @@ const BLIND_SCANS: u32 = 5;
 const MAX_LINEAGE: usize = 64;
 
 /// Quem toca o som dos outros. Mixer virtual (Sonar da SteelSeries, Voicemeeter) recebe
-/// o Discord num dispositivo falso e o devolve misturado na saída de verdade, e o
+/// o app de chamada num dispositivo falso e o devolve misturado na saída de verdade, e o
 /// `audiodg.exe` é o motor de áudio do próprio Windows. Incluir a árvore deles traria o
-/// Discord de volta e dobraria o som de quem já entra pelo próprio processo.
+/// app de chamada de volta e dobraria o som de quem já entra pelo próprio processo.
 const RELAYS: &[&str] = &[
     "audiodg.exe",
     "SteelSeriesSonar.exe",
@@ -170,14 +170,9 @@ impl SystemAudio {
         chunks: Arc<AtomicU64>,
         scope: AudioScope,
     ) -> Result<Self, CaptureError> {
-        // Manual reset: quem espera pode ser mais de um ponto do laço, e um evento de
-        // parada que se rearma sozinho seria perdido pela metade das esperas.
         let stop_event = unsafe { CreateEventW(None, true, false, None) }.map_err(platform_error)?;
         let counter = Arc::clone(&chunks);
 
-        // `HANDLE` é ponteiro, e por isso não é `Send`. Um handle de evento pertence ao
-        // processo inteiro e existe justamente para ser esperado de outra thread, então
-        // ele atravessa como número — o compilador não precisa acreditar em nós.
         let stop_raw = stop_event.0 as isize;
 
         let thread = std::thread::Builder::new()
@@ -252,8 +247,6 @@ impl Lane {
             self.primed = true;
         }
 
-        // O relógio da placa e o nosso nunca batem, e uma volta lenta empilha pacotes:
-        // o excesso sai pelo começo em vez de virar atraso para sempre.
         let limit = mixed.len() + BACKLOG_SAMPLES;
 
         if self.queue.len() > limit {
@@ -336,8 +329,6 @@ impl Tap {
                     lane: Lane::default(),
                 }),
                 Err(failure) => {
-                    // A mistura tenta de novo a cada varredura: sem fechar aqui, um
-                    // processo que sempre recusa vazaria um handle por vez.
                     let _ = CloseHandle(ready_event);
 
                     Err(platform_error(failure))
@@ -388,7 +379,7 @@ unsafe fn record(
             .map(|tap| pump(stop_event, sink, chunks, &tap)),
             // Uma queda só, e fica: o laço clássico não tenta voltar para a mistura, e se
             // ele também não abrir o erro sobe e a transmissão segue muda. Transmitir com o
-            // Discord junto é ruim; transmitir o jogo sem som é pior.
+            // a chamada junto é ruim; transmitir o jogo sem som é pior.
             AudioScope::ExceptMuted => mix(stop_event, sink, chunks).or_else(|failure| {
                 tracing::warn!(
                     failure = %failure,
@@ -529,7 +520,7 @@ unsafe fn rescan(
 
         candidates.extend(taps.iter().map(|tap| tap.process));
 
-        // Quem não está na lista nasceu depois dela: pode ser o Discord, e espera a volta
+        // Quem não está na lista nasceu depois dela: pode ser o app de chamada, e espera a volta
         // seguinte para ser conhecido.
         candidates.retain(|pid| table.contains_key(pid));
 
@@ -575,8 +566,8 @@ unsafe fn rescan(
 /// Quais processos gravar, cada um pela sua árvore.
 ///
 /// Fica de fora quem é silenciado, quem descende de um silenciado (o WebView toca num
-/// filho nosso; o Discord, num filho dele) e quem tem um silenciado abaixo de si:
-/// incluir a árvore do Explorer traria o Discord junto. Quem descende de outro escolhido
+/// filho nosso; o app de chamada, num filho dele) e quem tem um silenciado abaixo de si:
+/// incluir a árvore do Explorer traria o app de chamada junto. Quem descende de outro escolhido
 /// também fica, porque a árvore do ancestral já o traz e gravar de novo dobraria o som.
 fn chosen(candidates: &[u32], muted: &[u32], parent: impl Fn(u32) -> Option<u32>) -> Vec<u32> {
     let parent = &parent;
@@ -641,7 +632,7 @@ unsafe fn processes() -> Result<HashMap<u32, Process>, CaptureError> {
 
         let _ = CloseHandle(snapshot);
 
-        // Tabela vazia faria o Discord passar por desconhecido e entrar na mistura.
+        // Tabela vazia faria o app de chamada passar por desconhecido e entrar na mistura.
         if table.is_empty() {
             return Err(CaptureError::Platform("a lista de processos veio vazia".into()));
         }
@@ -676,7 +667,6 @@ unsafe fn audible_processes() -> Result<Vec<u32>, CaptureError> {
                     .and_then(|session| session.cast::<IAudioSessionControl2>())
                     .and_then(|session| session.GetProcessId());
 
-                // Zero é a sessão dos sons do sistema, que não é de processo nenhum.
                 if let Ok(process) = process
                     && process != 0
                 {
@@ -692,7 +682,7 @@ unsafe fn audible_processes() -> Result<Vec<u32>, CaptureError> {
 /// O pai de `pid`, se ainda for ele.
 ///
 /// O Windows recicla números de processo: o pai registrado de quem sobreviveu ao pai pode
-/// ser hoje um jogo aberto depois, que passaria por ancestral do Discord e ficaria mudo.
+/// ser hoje um jogo aberto depois, que passaria por ancestral do app de chamada e ficaria mudo.
 unsafe fn valid_parent(table: &HashMap<u32, Process>, pid: u32) -> Option<u32> {
     let parent = table.get(&pid)?.parent;
 
@@ -741,8 +731,6 @@ unsafe fn drain(capture: &IAudioCaptureClient, mut deliver: impl FnMut(Vec<f32>)
 
             let total = frames as usize * per_frame;
 
-            // Silêncio vem com o ponteiro sujo de propósito: o Windows avisa pela
-            // bandeira em vez de zerar o buffer, e ler dali seria lixo audível.
             let samples = if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 {
                 vec![0.0_f32; total]
             } else {
@@ -875,15 +863,12 @@ mod testes {
 
     #[test]
     fn mix_leaves_discord_and_ourselves_out() {
-        // (filho, pai). Explorer 10 abriu o Discord 20, nós 30 e o jogo 40; o Discord
-        // toca no filho 21 e o nosso WebView no neto 32. A Steam 50 toca som e abriu o
-        // jogo 51. O Chrome 60 toca no filho 61.
         let links = [(20, 10), (21, 20), (30, 10), (31, 30), (32, 31), (40, 10), (51, 50), (61, 60)];
         let parent = |pid| links.iter().find(|(child, _)| *child == pid).map(|(_, parent)| *parent);
 
         let wanted = chosen(&[10, 21, 32, 40, 50, 51, 61, 40], &[20, 21, 30], parent);
 
-        // O Explorer traria o Discord na árvore, 21 e 32 descendem de silenciados, e o 51
+        // O Explorer traria o app de chamada na árvore, 21 e 32 descendem de silenciados, e o 51
         // já vem na árvore da Steam.
         assert_eq!(wanted, vec![40, 50, 61]);
     }

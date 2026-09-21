@@ -417,8 +417,6 @@ impl WindowsCapturer {
 
         tracing::info!(source = ?config.source, "captura: abrindo o Graphics Capture");
 
-        // Monitor e janela são tipos diferentes, mas `iniciar` é genérico e devolve o
-        // mesmo controle para os dois.
         let control = match config.source {
             // Quem escolheu compartilhar só o jogo não pode ter o e-mail junto: antes
             // isto era ignorado e ia sempre o monitor principal inteiro.
@@ -446,10 +444,6 @@ impl WindowsCapturer {
 
         let audio_chunks = Arc::new(AtomicU64::new(0));
 
-        // Compartilhar uma janela com o áudio de chamada de fora vira a pergunta do
-        // avesso: em vez de excluir o Discord — o que o Windows não deixa fazer junto
-        // com excluir a nós mesmos — grava-se só a árvore do processo daquela janela.
-        // Na tela inteira não há processo só, e a mistura grava cada um que toca som.
         let scope = match config.source {
             _ if !config.mute_listed_apps => AudioScope::ExcludeSelf,
             CaptureSource::Window(id) => {
@@ -458,7 +452,7 @@ impl WindowsCapturer {
                 unsafe { GetWindowThreadProcessId(HWND(hwnd_from_id(id)), Some(&mut pid)) };
 
                 if pid == 0 {
-                    // Janela sem dono legível: a mistura ainda deixa o Discord de fora.
+                    // Janela sem dono legível: a mistura ainda deixa o app de chamada de fora.
                     AudioScope::ExceptMuted
                 } else {
                     AudioScope::OnlyProcess(pid)
@@ -533,12 +527,9 @@ mod tests {
         // À mostra, vale o que está na tela.
         assert_eq!(window_size((1280, 720), None), (1280, 720));
 
-        // Minimizada, o retângulo do ícone nunca é o tamanho.
         let restored = Restored { normal: (1920, 1080), work_area: None };
         assert_eq!(window_size(icon, Some(restored)), (1920, 1080));
 
-        // Minimizada a partir de maximizada: o normal tem outra proporção, e ela volta
-        // ocupando a área útil do monitor.
         let restored = Restored { normal: (1000, 800), work_area: Some((1920, 1040)) };
         assert_eq!(window_size(icon, Some(restored)), (1920, 1040));
 

@@ -69,7 +69,6 @@ impl EncoderConfig {
     pub fn new(quality: Quality, frame_rate: u32, source: (u32, u32)) -> Self {
         let (width, height) = quality.fit(source);
 
-        // Os mesmos valores do app web, onde já foram calibrados.
         let bitrate = match quality {
             // Medidos depois que o controle de taxa passou a ser respeitado de verdade.
             // Antes o MFT do Windows ignorava o alvo e entregava 11 Mb/s com 7 pedidos;
@@ -145,8 +144,6 @@ impl FramePacer {
             return false;
         }
 
-        // Tela parada não gera quadro. Voltando depois de mais de um intervalo, o relógio
-        // recomeça daqui em vez de soltar uma rajada para alcançar o tempo perdido.
         let base = if timestamp_ns > self.next_ns + self.interval_ns {
             timestamp_ns
         } else {
@@ -312,7 +309,6 @@ mod tests {
         let mut pacer = FramePacer::new(30.0);
         let admitted = (0..600_u64)
             .filter(|frame| {
-                // A captura nunca chega a cada 16,67 ms exatos: um milissegundo para cada lado.
                 let jitter = if frame % 2 == 0 { 1_000_000 } else { 0 };
 
                 pacer.admit(frame * 16_666_667 + 1_000_000 - jitter)

@@ -254,8 +254,6 @@ impl MacCapturer {
         let image = SCScreenshotManager::capture_image(&filter, &configuration)
             .map_err(|error| CaptureError::Platform(error.to_string()))?;
 
-        // O macOS já sabe codificar JPEG; escrever um encoder aqui seria refazer o que
-        // o sistema faz melhor. O arquivo é temporário e some logo em seguida.
         let path =
             std::env::temp_dir().join(format!("unkvoid-preview-{}.jpg", std::process::id()));
         let path_text = path.to_string_lossy().to_string();
@@ -283,8 +281,6 @@ impl MacCapturer {
         let content =
             SCShareableContent::get().map_err(|error| CaptureError::Platform(error.to_string()))?;
 
-        // Uma janela específica em vez do monitor inteiro: quem escolheu compartilhar só
-        // o jogo não pode ter o e-mail aparecendo junto.
         let filter = match config.source {
             CaptureSource::Window(id) => {
                 let window = content
@@ -306,8 +302,6 @@ impl MacCapturer {
                 }
                 .ok_or(CaptureError::NoDisplay)?;
 
-                // Só o filtro de display aceita exclusão por aplicativo. Quem escolheu
-                // uma janela só já não leva a do Discord junto de qualquer jeito.
                 let muted_apps: Vec<SCRunningApplication> = if config.mute_listed_apps {
                     content
                         .applications()

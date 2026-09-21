@@ -29,6 +29,7 @@ use ashpd::desktop::screencast::{CursorMode, Screencast, SelectSourcesOptions, S
 use ashpd::desktop::{ResponseError, Session};
 use ashpd::enumflags2::BitFlags;
 
+use crate::linux_audio::{self, SharedSink};
 use crate::{
     AudioChunk, CaptureConfig, CaptureError, CaptureEvent, CaptureSource, Display, Quality,
     VideoFrame, Window,
@@ -47,6 +48,8 @@ const AUDIO_BLOCK_BYTES: usize = 48_000 / 50 * 2 * 4;
 pub struct LinuxCapturer {
     video: Option<Child>,
     audio: Option<Child>,
+    /// O sink que filtra o som por app; cai no `stop`, e o som volta à saída padrão.
+    shared_sink: Option<SharedSink>,
     frames: Arc<AtomicU64>,
     audio_chunks: Arc<AtomicU64>,
     /// A última linha de erro do gst de vídeo. É o que aparece no app quando a captura
@@ -70,8 +73,6 @@ impl LinuxCapturer {
             region(source).map(|monitor| monitor.area()).unwrap_or_default()
         );
 
-        // O `timeout` do coreutils: um X que não responde deixava o `ximagesrc` parado para
-        // sempre, e a miniatura nunca voltava.
         let output = Command::new("timeout")
             .args(["3", "gst-launch-1.0", "-q"])
             .args(pipeline.split_whitespace())
@@ -171,8 +172,6 @@ impl LinuxCapturer {
         static CHOSEN: OnceLock<&'static str> = OnceLock::new();
 
         CHOSEN.get_or_init(|| {
-            // `UNKVOID_ENCODER=cpu` pula a placa: sem isto o x264 só roda em máquina sem
-            // placa, e ninguém que desenvolve tem uma à mão.
             let forced_cpu = std::env::var("UNKVOID_ENCODER").is_ok_and(|value| value == "cpu");
             let chosen = HARDWARE_H264_ENCODERS
                 .into_iter()
@@ -201,10 +200,9 @@ impl LinuxCapturer {
             watch_stderr(&mut audio, Arc::clone(&error));
             read_audio(&mut audio, Arc::clone(&audio_chunks), on_event);
 
-            return Ok(Self { video: None, audio: Some(audio), frames, audio_chunks, error, _portal: None });
+            return Ok(Self { video: None, audio: Some(audio), shared_sink: None, frames, audio_chunks, error, _portal: None });
         }
 
-        // Câmera: só vídeo, pequeno, já em H.264 como a tela.
         if let CaptureSource::Camera(index) = config.source {
             let (width, height) = CAMERA_SIZE;
             let mut video = launch(&camera_pipeline(index), Stdio::null())?;
@@ -212,7 +210,7 @@ impl LinuxCapturer {
             watch_stderr(&mut video, Arc::clone(&error));
             read_video(&mut video, width, height, Arc::clone(&frames), on_event);
 
-            return Ok(Self { video: Some(video), audio: None, frames, audio_chunks, error, _portal: None });
+            return Ok(Self { video: Some(video), audio: None, shared_sink: None, frames, audio_chunks, error, _portal: None });
         }
 
         let portal = match backend() {
@@ -228,7 +226,6 @@ impl LinuxCapturer {
         let (width, height) = config.quality.fit(source_size);
         let frame_rate = config.frame_rate.clamp(1, 60);
 
-        // Os mesmos tetos do `EncoderConfig`, em kbit/s, porque aqui o encoder é o x264.
         let bitrate = match config.quality {
             Quality::Hd720 => 5_000,
             Quality::Hd1080 => 10_000,
@@ -243,11 +240,6 @@ impl LinuxCapturer {
         // na sala espera no pior caso.
         let (format, encoder) = encoder_tail(Self::video_encoder(), frame_rate, bitrate);
 
-        // O fd do PipeWire entra como a entrada padrão do filho, e é por isso que o
-        // pipeline diz `fd=0`. Tirar o `FD_CLOEXEC` dele neste processo o entregaria a
-        // TODO filho aberto enquanto isso — o `gst-launch` do áudio logo abaixo, o de quem
-        // assiste, o `xrandr` — e é um fd que lê a tela. Assim só este filho o recebe, e o
-        // nosso lado fecha no `spawn`. O `pipewiresrc` o duplica antes de usar.
         let (source, stdin) = match &portal {
             Some(session) => (portal_source(session.node, frame_rate), Stdio::from(session.remote()?)),
             None => (x11_source(config.show_cursor, region(config.source)), Stdio::null()),
@@ -258,10 +250,17 @@ impl LinuxCapturer {
         watch_stderr(&mut video, Arc::clone(&error));
         read_video(&mut video, width, height, Arc::clone(&frames), Arc::clone(&on_event));
 
+        let shared_sink = if config.capture_audio {
+            SharedSink::open(config.mute_listed_apps)
+                .inspect_err(|error| tracing::warn!(error = %error, "captura: sem filtro por app, o som do sistema vai inteiro"))
+                .ok()
+        } else {
+            None
+        };
+        let monitor = if shared_sink.is_some() { linux_audio::MONITOR } else { "@DEFAULT_MONITOR@" };
+
         let audio = if config.capture_audio {
-            // O monitor da saída padrão é o som do sistema inteiro. Filtrar por app
-            // (`MUTED_APPS`) não existe aqui.
-            match launch(&format!("pulsesrc device=@DEFAULT_MONITOR@ ! {AUDIO_TAIL}"), Stdio::null()) {
+            match launch(&format!("pulsesrc device={monitor} ! {AUDIO_TAIL}"), Stdio::null()) {
                 Ok(mut child) => {
                     // O stderr vai para o log: sem servidor de som o gst sai na hora, e só a
                     // linha dele diz por quê.
@@ -279,7 +278,7 @@ impl LinuxCapturer {
             None
         };
 
-        Ok(Self { video: Some(video), audio, frames, audio_chunks, error, _portal: portal })
+        Ok(Self { video: Some(video), audio, shared_sink, frames, audio_chunks, error, _portal: portal })
     }
 
     pub fn error(&self) -> Option<String> {
@@ -299,6 +298,8 @@ impl LinuxCapturer {
             let _ = child.kill();
             let _ = child.wait();
         }
+
+        self.shared_sink = None;
 
         Ok(())
     }
@@ -411,7 +412,6 @@ impl PortalSession {
             let sources = source_types(proxy.available_source_types().await.unwrap_or_default());
             let session = Arc::new(proxy.create_session(Default::default()).await?);
 
-            // Daqui em diante qualquer saída, inclusive a pessoa cancelar, fecha a sessão.
             let mut portal = Self { proxy, session, node: 0, size: PORTAL_FALLBACK_SIZE };
 
             portal
@@ -537,9 +537,6 @@ pub(crate) fn prepare(config: &CaptureConfig) -> Result<(), CaptureError> {
 
     let show_cursor = config.show_cursor;
 
-    // Noutra thread, e esperada aqui: o ashpd tem `assert!` e `unwrap` no caminho da
-    // resposta, e um pânico dentro do comando deixaria o `start_broadcast` sem resposta
-    // nenhuma, com a interface esperando para sempre. Assim ele vira erro.
     let session = std::thread::spawn(move || PortalSession::negotiate(show_cursor))
         .join()
         .map_err(|_| CaptureError::Platform("o portal de captura de tela respondeu o que não devia".into()))??;

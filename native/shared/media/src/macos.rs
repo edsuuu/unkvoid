@@ -52,7 +52,6 @@ impl VideoToolboxEncoder {
 
         let session = open_session(config)?;
 
-        // SEGURANÇA: a chave é o CFString estático do SDK; a sessão acabou de nascer.
         let hardware = match unsafe {
             session.copy_property(ffi::kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder)
         } {
@@ -115,8 +114,6 @@ impl VideoToolboxEncoder {
     pub fn set_bitrate(&mut self, bitrate: u32) -> bool {
         let value = i32::try_from(bitrate).unwrap_or(i32::MAX);
 
-        // SEGURANÇA: a chave é o CFString estático do SDK; o CFNumber nasce aqui, vale
-        // durante a chamada e é solto em seguida — a sessão retém o que guardar.
         let outcome = unsafe {
             let number = ffi::CFNumberCreate(
                 ffi::kCFAllocatorDefault,
@@ -168,8 +165,6 @@ fn open_session(config: &EncoderConfig) -> Result<CompressionSession, EncoderErr
         ("transfer", unsafe { ffi::kVTCompressionPropertyKey_TransferFunction }, unsafe { raw::kCMFormatDescriptionTransferFunction_ITU_R_709_2 }),
         ("matrix", unsafe { ffi::kVTCompressionPropertyKey_YCbCrMatrix }, unsafe { raw::kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2 }),
     ] {
-        // SEGURANÇA: chave e valor são os CFStrings estáticos do SDK, válidos pelo
-        // processo inteiro; a sessão é a que acabou de nascer.
         if let Err(error) = unsafe { session.set_property(key, value.cast()) } {
             tracing::warn!(error = %error, ajuste = name, "encoder: cor recusada");
         }
@@ -206,11 +201,6 @@ impl VideoToolboxEncoder {
             return Err(EncoderError::NeedsMoreInput);
         }
 
-        // A hora de verdade da captura, em nanossegundos. Antes era um contador de
-        // quadros sobre o fps nominal, e o VideoToolbox distribui o bitrate pelo relógio
-        // que recebe: com a captura entregando 40 quadros por segundo e o contador
-        // andando como se fossem 60, ele espalhava um segundo de bits por um segundo e
-        // meio de vídeo real — a transmissão saía com dois terços do bitrate pedido.
         let presentation = (timestamp_ns as i64, 1_000_000_000);
 
         let encoded = self
@@ -232,8 +222,6 @@ impl VideoToolboxEncoder {
             });
         }
 
-        // Falhar alto de propósito: um keyframe sem SPS/PPS produz uma transmissão que
-        // parece saudável em todo contador e não abre em nenhuma tela.
         let mut data = format
             .as_ref()
             .and_then(parameter_sets)
@@ -357,7 +345,6 @@ mod tests {
 
     #[test]
     fn avcc_becomes_annex_b_and_finds_the_idr() {
-        // Dois NALs: um SEI (tipo 6) e um IDR (tipo 5).
         let avcc = [0, 0, 0, 2, 0x06, 0xAA, 0, 0, 0, 3, 0x65, 0xBB, 0xCC];
 
         let (output, is_idr) = to_annex_b(&avcc, 4);
@@ -384,7 +371,6 @@ mod tests {
 
     #[test]
     fn lying_prefix_stops_instead_of_walking_into_garbage() {
-        // Diz que o NAL tem 99 bytes num buffer que tem 2.
         let avcc = [0, 0, 0, 99, 0x65, 0xAA];
 
         let (output, is_idr) = to_annex_b(&avcc, 4);

@@ -185,8 +185,6 @@ impl PlainSender {
             .next()
             .ok_or_else(|| anyhow!("the SFU address resolved to nothing"))?;
 
-        // Ligar na porta 0 do endereço não especificado deixa o sistema escolher. O
-        // servidor aprende para onde responder no primeiro pacote que chega.
         let socket = UdpSocket::bind(if server.is_ipv4() {
             "0.0.0.0:0"
         } else {
@@ -216,8 +214,6 @@ impl PlainSender {
         )
         .map_err(|error| anyhow!("could not start SRTP: {error}"))?;
 
-        // Chave do servidor ausente é cliente falando com servidor antigo: a transmissão
-        // sobe igual, só não há recuperação rápida de perda.
         let incoming = server_key.and_then(|key| {
             SrtpContext::new(
                 &key[..KEY_LEN],
@@ -298,13 +294,6 @@ impl PlainSender {
     pub fn send_frame(&mut self, source: Source, frame: EncodedFrame, frame_rate: f64) -> Result<usize> {
         let stream = self.streams.entry(source).or_insert_with(|| source.stream());
 
-        // Todo quadro que a captura ou o encoder não entregam abre um buraco no tempo.
-        // Avançar sempre `90000/fps` roubava esse buraco do vídeo enquanto o áudio
-        // seguia em amostras reais: uma tela parada trinta segundos deixava a
-        // transmissão trinta segundos fora de sincronia, sem volta.
-        //
-        // O avanço vai ANTES de empacotar. O packetizer soma depois de emitir, então
-        // passar o intervalo lá dentro carimbaria o quadro seguinte com o buraco deste.
         let advance = match stream.last_video_ns {
             Some(previous) if frame.timestamp_ns > previous => {
                 let elapsed = u128::from(frame.timestamp_ns - previous);
@@ -321,8 +310,6 @@ impl PlainSender {
         stream.last_video_ns = Some(frame.timestamp_ns);
         stream.packetizer.skip_samples(advance);
 
-        // Campos emprestados separadamente para o empacotador e o contexto SRTP poderem
-        // ser mutáveis ao mesmo tempo — são campos distintos da mesma struct.
         let sent = Self::send(
             &self.socket,
             &mut self.srtp,
@@ -368,9 +355,6 @@ impl PlainSender {
         let mut buffer = [0_u8; 1500];
 
         while let Ok(size) = self.socket.recv(&mut buffer) {
-            // Falha ao abrir é pacote de outra pessoa ou lixo da rede. Ignorar é o certo:
-            // é justamente a autenticação do SRTCP que impede um estranho de nos fazer
-            // gastar quadro-chave a cada pacote forjado.
             let Ok(plain) = incoming.decrypt_rtcp(&buffer[..size]) else {
                 continue;
             };
@@ -514,8 +498,6 @@ fn wants_keyframe(rtcp: &[u8]) -> bool {
     while rest.len() >= 4 {
         let format = rest[0] & 0x1F;
         let kind = rest[1];
-        // O campo conta palavras de 32 bits sem contar a primeira, então o pacote inteiro
-        // tem (length + 1) * 4 bytes.
         let size = (usize::from(u16::from_be_bytes([rest[2], rest[3]])) + 1) * 4;
 
         if kind == LEGACY_FIR || (kind == PSFB && (format == PLI || format == FIR)) {
@@ -585,7 +567,6 @@ mod tests {
     /// pede. Errar a conta da máscara reenviaria o pacote errado e o buraco continuaria.
     #[test]
     fn a_nack_lists_the_lost_video_packets() {
-        // RR vazio, e o NACK: FMT 1, PT 205, comprimento 3 (16 bytes no total).
         let mut packet = vec![0x80, 201, 0x00, 0x01, 0, 0, 0, 1];
         packet.extend_from_slice(&[0x81, 205, 0x00, 0x03, 0, 0, 0, 1]);
         packet.extend_from_slice(&Source::Screen.ssrc().to_be_bytes());
@@ -674,7 +655,6 @@ mod tests {
     /// laço não andar pelo comprimento, este caso passa batido e a travada continua.
     #[test]
     fn a_pli_behind_a_receiver_report_is_found() {
-        // RR vazio: versão 2, sem blocos, PT 201, comprimento 1 (8 bytes no total).
         let mut packet = vec![0x80, 201, 0x00, 0x01, 0, 0, 0, 1];
         // PLI: versão 2, FMT 1, PT 206, comprimento 2 (12 bytes no total).
         packet.extend_from_slice(&[0x81, 206, 0x00, 0x02, 0, 0, 0, 1, 0, 0, 0, 2]);
@@ -717,8 +697,6 @@ mod tests {
         let key = PlainSender::generate_key();
         let mut sender = PlainSender::connect(address, &key, None).expect("could not connect");
 
-        // Uma unidade NAL bem maior que a MTU: o empacotador precisa quebrá-la, e cada
-        // pedaço tem de chegar protegido.
         let mut data = vec![0u8, 0, 0, 1, 0x65];
         data.extend(std::iter::repeat_n(0xAB, MTU * 3));
 
