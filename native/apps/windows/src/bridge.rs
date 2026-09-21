@@ -462,6 +462,7 @@ impl Bridge {
             ui.set_voice_channels(ModelRc::default());
             ui.set_members(ModelRc::default());
             ui.set_messages(ModelRc::default());
+            ui.set_complaint(SharedString::new());
             ui.set_screen(named(landing).into());
         });
     }
@@ -471,7 +472,14 @@ impl Bridge {
         // o que os impede de discordar.
         self.core.show(screen);
 
-        paint(&self.window, move |app| app.global::<Ui>().set_screen(named(screen).into()));
+        paint(&self.window, move |app| {
+            let ui = app.global::<Ui>();
+
+            // Um erro pertence à tela que o levantou. Sem isto, a recusa do login aparecia
+            // dentro do hub, e a da sala aparecia na entrada.
+            ui.set_complaint(SharedString::new());
+            ui.set_screen(named(screen).into());
+        });
     }
 
     /// Volta para a Home e recarrega o que ela mostra.
@@ -788,6 +796,7 @@ impl Bridge {
             ui.set_peers(ModelRc::default());
             ui.set_elapsed("0:00:00".into());
             ui.set_ping("-- ms".into());
+            ui.set_ping_ms(-1);
             ui.set_sharing(false);
         });
 
@@ -884,8 +893,15 @@ impl Bridge {
                     local::PING_MEASURED => {
                         if let Some(milliseconds) = event.data.as_u64() {
                             let said = format!("{milliseconds} ms");
+                            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                            let measured = milliseconds as i32;
 
-                            paint(&window, move |app| app.global::<Ui>().set_ping(said.into()));
+                            paint(&window, move |app| {
+                                let ui = app.global::<Ui>();
+
+                                ui.set_ping(said.into());
+                                ui.set_ping_ms(measured);
+                            });
                         }
                     }
                     _ => {}
@@ -1199,6 +1215,7 @@ fn show(window: &Weak<AppWindow>, screen: Screen, status: String) {
         let ui = app.global::<Ui>();
 
         ui.set_status(status.into());
+        ui.set_complaint(SharedString::new());
         ui.set_screen(named(screen).into());
     });
 }
@@ -1254,7 +1271,9 @@ async fn landed(
             show_conversations(window, conversations, open);
         }
 
-        let recent: Vec<Vec<String>> = core.recent_rooms().chunks(2).map(<[String]>::to_vec).collect();
+        // Só as três últimas: é o que o dono quer ver na Home, e o núcleo guarda mais.
+        let recent: Vec<String> = core.recent_rooms().into_iter().take(3).collect();
+        let recent: Vec<Vec<String>> = recent.chunks(2).map(<[String]>::to_vec).collect();
 
         paint(window, move |app| app.global::<Ui>().set_recent_rooms(model(code_lines(recent))));
     }

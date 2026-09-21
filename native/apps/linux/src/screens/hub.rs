@@ -16,7 +16,7 @@ use core_app::models::{
 };
 use gtk::prelude::*;
 
-use crate::bridge::Bridge;
+use crate::bridge::{Bridge, Peer};
 use crate::components::{
     avatar, badge, body, button, clear_box, clear_list, column, dim, field, item, label_mono, list, muted, row,
     scroll, spacer, strong, title,
@@ -27,8 +27,11 @@ use crate::user_bar::UserBar;
 
 /// A trilha dos servidores, a coluna da esquerda da Home e a dos canais e membros.
 const RAIL_WIDTH: i32 = 182;
-const COLUMN_WIDTH: i32 = 260;
-const CHANNELS_WIDTH: i32 = 240;
+/// As duas colunas de baixo têm a mesma largura porque a barra de baixo é a mesma nas duas:
+/// com larguras diferentes ela se apertava na Home.
+const COLUMN_WIDTH: i32 = 300;
+const CHANNELS_WIDTH: i32 = 300;
+const MEMBERS_WIDTH: i32 = 240;
 
 pub struct HubScreen {
     root: gtk::Box,
@@ -38,8 +41,14 @@ pub struct HubScreen {
     home: gtk::Stack,
     rail: gtk::Box,
     server_ids: Rc<RefCell<Vec<i64>>>,
-    channels: gtk::ListBox,
+    /// Canais de texto e de voz em duas seções, como no React. O núcleo continua com uma
+    /// lista só, e cada linha guarda a posição dela nela.
+    text_channels: gtk::ListBox,
+    voice_channels: gtk::Box,
     channel_ids: Rc<RefCell<Vec<Channel>>>,
+    /// O canal de voz em que se está, e as caixas que precisam saber disso.
+    voice_open: Rc<RefCell<Option<String>>>,
+    voice_people: Rc<RefCell<Vec<Peer>>>,
     members: gtk::ListBox,
     messages: gtk::Box,
     messages_scroll: gtk::ScrolledWindow,
@@ -62,6 +71,8 @@ pub struct HubScreen {
     talking_composer: gtk::Entry,
     user: Rc<RefCell<Option<User>>>,
     bar: UserBar,
+    server_bar: UserBar,
+    bridge: Rc<Bridge>,
 }
 
 impl HubScreen {
@@ -151,7 +162,10 @@ impl HubScreen {
         home.set_hexpand(true);
 
         // ---- o servidor aberto: canais, chat, membros ----
-        let channels = list(true);
+        let text_channels = list(true);
+        let voice_channels = column(6);
+        let voice_open: Rc<RefCell<Option<String>>> = Rc::default();
+        let voice_people: Rc<RefCell<Vec<Peer>>> = Rc::default();
         let members = list(false);
         let messages = column(6);
         let messages_scroll = scroll(&messages);
@@ -160,11 +174,47 @@ impl HubScreen {
         let channel_name = strong("");
         let invite = crate::components::mono("");
 
-        let channels_column = crate::components::panel_box(8);
+        // A coluna dos canais é a do React: o nome do servidor num cartão, os canais
+        // noutro e a barra de baixo fechando.
+        let channels_column = column(10);
+        let server_card = crate::components::panel_box(0);
+        let channels_card = crate::components::panel_box(14);
+        let text_head = row(8);
+        let voice_head = row(8);
+        let new_text = icons::small_plus("Criar canal de texto");
+        let new_voice = icons::small_plus("Criar canal de voz");
+        let text_section = column(8);
+        let voice_section = column(8);
+        let new_channel = field("Nome do canal");
+        let naming: Rc<RefCell<Option<ChannelKind>>> = Rc::default();
 
         channels_column.set_size_request(CHANNELS_WIDTH, -1);
-        channels_column.append(&server_name);
-        channels_column.append(&scroll(&channels));
+        server_card.append(&server_name);
+
+        text_head.append(&label_mono("Canais de texto"));
+        text_head.append(&spacer());
+        text_head.append(&new_text);
+        text_section.append(&text_head);
+        text_section.append(&text_channels);
+
+        voice_head.append(&label_mono("Canais de voz"));
+        voice_head.append(&spacer());
+        voice_head.append(&new_voice);
+        voice_section.append(&voice_head);
+        voice_section.append(&voice_channels);
+
+        new_channel.set_visible(false);
+
+        let channels_inside = column(14);
+
+        channels_inside.append(&text_section);
+        channels_inside.append(&voice_section);
+        channels_inside.append(&new_channel);
+        channels_card.set_vexpand(true);
+        channels_card.append(&scroll(&channels_inside));
+
+        channels_column.append(&server_card);
+        channels_column.append(&channels_card);
 
         let invite_line = row(8);
 
@@ -190,9 +240,16 @@ impl HubScreen {
 
         let people = crate::components::panel_box(8);
 
-        people.set_size_request(CHANNELS_WIDTH, -1);
+        people.set_size_request(MEMBERS_WIDTH, -1);
         people.append(&label_mono("Membros"));
         people.append(&scroll(&members));
+
+        // A barra de baixo fecha as duas colunas, como no React: o `VoicePanel` é o mesmo
+        // na Home e dentro do servidor. Um widget só não cabe em dois pais, então a do
+        // servidor é outra instância da mesma coisa.
+        let server_bar = UserBar::new(bridge);
+
+        channels_column.append(server_bar.root());
 
         let server_side = row(10);
 
@@ -282,25 +339,56 @@ impl HubScreen {
             }
         });
 
-        channels.connect_row_activated({
+        text_channels.connect_row_activated({
             let (bridge, ids, open) = (bridge.clone(), channel_ids.clone(), open_channel.clone());
             let opened_name = channel_name.clone();
 
             move |_, activated| {
-                let Some(channel) = ids.borrow().get(activated.index() as usize).cloned() else {
+                let Some(channel) = ids
+                    .borrow()
+                    .iter()
+                    .filter(|channel| channel.kind == ChannelKind::Text)
+                    .nth(activated.index() as usize)
+                    .cloned()
+                else {
                     return;
                 };
 
-                match channel.kind {
-                    ChannelKind::Text => {
-                        open.replace(Some(channel.id.clone()));
-                        opened_name.set_text(&format!("# {}", channel.name));
-                        bridge.open_channel(&channel.id);
-                    }
-                    // Compartilhar tela só existe dentro de um canal de voz, e entrar nele
-                    // é a mesma sala do código — com o token de 60 s no lugar do nome.
-                    ChannelKind::Voice => bridge.join_voice(&channel.id),
+                open.replace(Some(channel.id.clone()));
+                opened_name.set_text(&format!("# {}", channel.name));
+                bridge.open_channel(&channel.id);
+            }
+        });
+
+        new_text.connect_clicked({
+            let (field, naming) = (new_channel.clone(), naming.clone());
+
+            move |_| open_naming(&field, &naming, ChannelKind::Text)
+        });
+
+        new_voice.connect_clicked({
+            let (field, naming) = (new_channel.clone(), naming.clone());
+
+            move |_| open_naming(&field, &naming, ChannelKind::Voice)
+        });
+
+        new_channel.connect_activate({
+            let (bridge, naming) = (bridge.clone(), naming.clone());
+
+            move |entry| {
+                let written = entry.text();
+                let Some(kind) = *naming.borrow() else {
+                    return;
+                };
+
+                if written.trim().is_empty() {
+                    return;
                 }
+
+                bridge.create_channel(written.as_str(), kind);
+                entry.set_text("");
+                entry.set_visible(false);
+                naming.replace(None);
             }
         });
 
@@ -346,8 +434,11 @@ impl HubScreen {
             home,
             rail: servers_rail,
             server_ids,
-            channels,
+            text_channels,
+            voice_channels,
             channel_ids,
+            voice_open,
+            voice_people,
             members,
             messages,
             messages_scroll,
@@ -368,6 +459,8 @@ impl HubScreen {
             talking_composer,
             user,
             bar,
+            server_bar,
+            bridge: bridge.clone(),
         }
     }
 
@@ -381,6 +474,7 @@ impl HubScreen {
         self.greeting.set_text(&format!("Oi, {name}."));
         self.user.replace(person.cloned());
         self.bar.set_user(&name);
+        self.server_bar.set_user(&name);
     }
 
     pub fn set_status(&self, message: &str) {
@@ -391,10 +485,18 @@ impl HubScreen {
     /// o mudo do servidor e a permissão de falar.
     pub fn set_mine(&self, mine: Mine) {
         self.bar.set_mine(mine);
+        self.server_bar.set_mine(mine);
     }
 
     pub fn set_deafened(&self, deafened: bool) {
         self.bar.set_deafened(deafened);
+        self.server_bar.set_deafened(deafened);
+    }
+
+    /// A ida e volta até o SFU. O sinal muda de cor com ela, e o balão do mouse diz o número.
+    pub fn set_ping(&self, milliseconds: u64) {
+        self.bar.set_ping(milliseconds);
+        self.server_bar.set_ping(milliseconds);
     }
 
     pub fn set_servers(&self, servers: &[ServerSummary], bridge: &Rc<Bridge>) {
@@ -421,20 +523,61 @@ impl HubScreen {
         self.invite.set_text(tree.invite_code.as_deref().unwrap_or(""));
         self.main.set_visible_child_name("server");
 
-        clear_list(&self.channels);
+        clear_list(&self.text_channels);
+        clear_box(&self.voice_channels);
 
         let ordered = tree.ordered_channels();
 
-        for channel in &ordered {
-            self.channels.append(&item(&channel_row(channel)));
+        for channel in ordered.iter().filter(|channel| channel.kind == ChannelKind::Text) {
+            self.text_channels.append(&item(&channel_row(channel)));
         }
 
         self.channel_ids.replace(ordered);
+        self.paint_voice();
 
         clear_list(&self.members);
 
         for member in &tree.members {
             self.members.append(&item(&member_row(&member.name)));
+        }
+    }
+
+    /// Entrou ou saiu da voz. `Some` traz o canal e o nome dele.
+    pub fn set_voice(&self, voice: Option<(&str, &str)>) {
+        self.voice_open.replace(voice.map(|(channel, _)| channel.to_owned()));
+
+        if voice.is_none() {
+            self.voice_people.replace(Vec::new());
+        }
+
+        self.bar.set_voice(voice.map(|(_, name)| name));
+        self.server_bar.set_voice(voice.map(|(_, name)| name));
+        self.paint_voice();
+    }
+
+    pub fn set_voice_peers(&self, peers: &[Peer]) {
+        self.voice_people.replace(peers.to_vec());
+        self.paint_voice();
+    }
+
+    /// Redesenha a seção de voz: o canal aberto se marca e quem está dentro aparece logo
+    /// abaixo do nome — o `VoiceChannelItem` do React.
+    fn paint_voice(&self) {
+        clear_box(&self.voice_channels);
+
+        let open = self.voice_open.borrow().clone();
+        let people = self.voice_people.borrow().clone();
+        let channels = self.channel_ids.borrow().clone();
+
+        for channel in channels.iter().filter(|channel| channel.kind == ChannelKind::Voice) {
+            let here = open.as_deref() == Some(channel.id.as_str());
+
+            self.voice_channels.append(&voice_row(
+                &self.bridge,
+                channel,
+                here,
+                if here { &people } else { &[] },
+            ));
         }
     }
 
@@ -500,7 +643,8 @@ impl HubScreen {
     pub fn refresh_recent(&self, bridge: &Rc<Bridge>) {
         crate::components::clear_flow(&self.recent);
 
-        for code in bridge.recent_rooms().into_iter().take(6) {
+        // Só as três últimas: é o que o dono quer ver na Home, e o núcleo guarda mais.
+        for code in bridge.recent_rooms().into_iter().take(3) {
             let again = button(&code, "chip");
 
             again.connect_clicked({
@@ -809,6 +953,74 @@ fn channel_row(channel: &Channel) -> gtk::Box {
     crate::components::pad(&line, 4);
 
     line
+}
+
+/// Um canal de voz. Clicar entra na voz **sem trocar de tela**, e quem está dentro aparece
+/// logo abaixo do nome — é o `VoiceChannelItem` do React, que é o jeito do Discord.
+fn voice_row(bridge: &Rc<Bridge>, channel: &Channel, here: bool, people: &[Peer]) -> gtk::Box {
+    let card = column(8);
+    let head = row(8);
+    let name = body(&channel.name);
+
+    card.add_css_class("voice-channel");
+
+    if here {
+        card.add_css_class("on");
+    }
+
+    head.append(&icons::icon("speaker", 14, if here { icons::LILAC } else { icons::DIM }));
+    head.append(&name);
+    head.append(&spacer());
+    card.append(&head);
+
+    if !people.is_empty() {
+        let inside = column(6);
+
+        inside.set_margin_start(20);
+
+        for person in people {
+            let line = row(8);
+
+            line.append(&avatar(&person.name, 22, person.self_peer));
+            line.append(&body(&person.name));
+
+            if person.sharing() {
+                line.append(&spacer());
+                line.append(&crate::components::mono("transmitindo"));
+            }
+
+            inside.append(&line);
+        }
+
+        card.append(&inside);
+    }
+
+    let click = gtk::GestureClick::new();
+
+    click.connect_released({
+        let (bridge, channel) = (bridge.clone(), channel.clone());
+
+        move |_, _, _, _| bridge.join_voice(&channel.id, &channel.name)
+    });
+
+    card.add_controller(click);
+    crate::components::clickable(&card);
+
+    card
+}
+
+/// Abre o campo de nome do canal na seção clicada. O React abre um modal; aqui o campo
+/// nasce embaixo das duas listas, e o "+" diz de qual delas ele é.
+fn open_naming(field: &gtk::Entry, naming: &Rc<RefCell<Option<ChannelKind>>>, kind: ChannelKind) {
+    let same = *naming.borrow() == Some(kind);
+
+    field.set_text("");
+    field.set_visible(!same);
+    naming.replace(if same { None } else { Some(kind) });
+
+    if !same {
+        field.grab_focus();
+    }
 }
 
 fn member_row(name: &str) -> gtk::Box {

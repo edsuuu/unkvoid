@@ -374,6 +374,81 @@ button.icon:disabled {
     opacity: 0.45;
 }
 
+/* Os tres controles da barra de baixo sao chapados: sem contorno, o fundo so aparece ao
+   passar o mouse. E o `btn-icon` dessa barra no React, que e outro botao que o da sala. */
+button.icon.bar,
+menubutton.bar > button {
+    background-color: transparent;
+    border: none;
+    border-radius: 8px;
+    box-shadow: none;
+    min-height: 26px;
+    min-width: 26px;
+    padding: 0;
+}
+
+button.icon.bar:hover,
+menubutton.bar > button:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+    border-color: transparent;
+}
+
+/* Fechado e aviso so na cor do desenho: a caixa continua sem fundo. */
+button.icon.bar.off,
+button.icon.bar.off:hover {
+    background-color: transparent;
+    border-color: transparent;
+}
+
+button.icon.bar.on,
+button.icon.bar.on:hover {
+    background-color: rgba(138, 124, 245, 0.22);
+    background-image: none;
+    border-color: transparent;
+}
+
+/* O "+" das secoes de canal: menor que o botao de icone comum. */
+button.icon.tiny {
+    border-radius: 7px;
+    min-height: 20px;
+    min-width: 20px;
+}
+
+/* Um canal de voz e uma caixa, nao uma linha: quem esta dentro aparece embaixo do nome. */
+.voice-channel {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 10px 12px;
+}
+
+.voice-channel:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+.voice-channel.on,
+.voice-channel.on:hover {
+    background-color: rgba(138, 124, 245, 0.10);
+    border-color: rgba(138, 124, 245, 0.30);
+}
+
+/* Uma linha do menu da engrenagem: o `MENU_ITEM` do React. */
+button.menu-item {
+    background-color: transparent;
+    border: none;
+    border-radius: 9px;
+    box-shadow: none;
+    min-height: 32px;
+    padding: 0 10px;
+}
+
+button.menu-item:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+.lilac {
+    color: #aeb0ff;
+}
+
 /* A setinha ao lado do mic e do som: sem caixa, só o desenho. */
 menubutton.arrow > button,
 button.arrow {

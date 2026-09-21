@@ -13,8 +13,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use core_app::api::{Api, HttpError};
 use core_app::app::EntryRefusal;
 use core_app::models::{
-    Conversation, DirectMessage, Friendship, Message, Peer, Person, RoomIdentity, ServerSummary, ServerTree, User,
+    ChannelKind, Conversation, DirectMessage, Friendship, Message, Person, RoomIdentity, ServerSummary,
+    ServerTree, User,
 };
+pub use core_app::models::Peer;
 use core_app::protocol::{action, local};
 use core_app::reconnect::Backoff;
 use core_app::session::Session;
@@ -49,7 +51,11 @@ pub enum Update {
     Conversations(Vec<Conversation>),
     /// A conversa aberta: com quem, e o que já foi dito.
     Direct { person: Person, messages: Vec<DirectMessage> },
-    Joined { room: String, peers: Vec<Peer> },
+    /// Entrou numa sala. `voice` diz o nome do canal quando se entrou pela voz de um
+    /// servidor: aí a tela continua sendo o hub, como no React.
+    Joined { room: String, voice: Option<String>, peers: Vec<Peer> },
+    /// Saiu da voz e continua no servidor.
+    VoiceLeft,
     Peers(Vec<Peer>),
     /// As transmissões que estão sendo assistidas agora, uma por cartão.
     Tiles(Vec<Tile>),
@@ -69,6 +75,8 @@ pub struct Bridge {
     /// Em `Mutex` porque quem o descobre é o runtime e quem o usa é a tela.
     sfu: Arc<Mutex<Option<String>>>,
     session: Arc<Mutex<Option<Arc<Session>>>>,
+    /// Qual servidor está aberto: é nele que um canal novo nasce.
+    opened: Arc<Mutex<Option<i64>>>,
     sending: Arc<Mutex<Sending>>,
     watching: Arc<Mutex<Watching>>,
     install_id: String,
@@ -89,6 +97,7 @@ impl Bridge {
             api: Arc::new(Api::new(&server)?),
             sfu: Arc::new(Mutex::new(None)),
             session: Arc::new(Mutex::new(None)),
+            opened: Arc::default(),
             sending: Arc::default(),
             watching: Arc::default(),
             install_id,
@@ -350,11 +359,32 @@ impl Bridge {
     pub fn open_server(self: &Rc<Self>, server: i64) {
         let (api, screen) = (self.api.clone(), self.to_screen.clone());
 
+        *lock(&self.opened) = Some(server);
+
         self.spawn(async move {
             match api.tree(server).await {
                 Ok(tree) => {
                     let _ = screen.send(Update::Tree(Box::new(tree)));
                 }
+                Err(failure) => {
+                    let _ = screen.send(Update::Complaint(said(&failure)));
+                }
+            }
+        });
+    }
+
+    /// Cria um canal no servidor aberto. A árvore volta inteira: é ela que diz a posição
+    /// do canal novo entre os outros.
+    pub fn create_channel(self: &Rc<Self>, name: &str, kind: ChannelKind) {
+        let Some(server) = *lock(&self.opened) else {
+            return;
+        };
+
+        let (api, screen, name) = (self.api.clone(), self.to_screen.clone(), name.trim().to_owned());
+
+        self.spawn(async move {
+            match api.create_channel(server, &name, kind).await {
+                Ok(()) => entered(&api, &screen, server).await,
                 Err(failure) => {
                     let _ = screen.send(Update::Complaint(said(&failure)));
                 }
@@ -415,11 +445,42 @@ impl Bridge {
     }
 
     /// Entrar num canal de voz é a mesma sala, com o token de 60 s no lugar do nome.
-    pub fn join_voice(self: &Rc<Self>, channel: &str) {
-        self.enter(Ok(channel.to_owned()), Some(channel.to_owned()));
+    /// Entrar num canal de voz **sem sair do hub**: é o que o React faz, e o que o Discord
+    /// fez antes dele. Quem está dentro aparece embaixo do nome do canal.
+    pub fn join_voice(self: &Rc<Self>, channel: &str, name: &str) {
+        if lock(&self.session).is_some() {
+            self.leave_voice();
+        }
+
+        self.connect(Ok(channel.to_owned()), Some(channel.to_owned()), Some(name.to_owned()));
+    }
+
+    /// Sai da voz e continua no servidor. É o fone cortado da barra de baixo.
+    pub fn leave_voice(self: &Rc<Self>) {
+        let held = lock(&self.session).take();
+        let screen = self.to_screen.clone();
+
+        let _ = screen.send(Update::VoiceLeft);
+
+        self.spawn(async move {
+            if let Some(session) = held
+                && let Err(failure) = session.leave().await
+            {
+                tracing::warn!(%failure, "a saída da voz não foi confirmada");
+            }
+        });
     }
 
     fn enter(self: &Rc<Self>, opened: Result<String, EntryRefusal>, voice: Option<String>) {
+        self.connect(opened, voice, None);
+    }
+
+    fn connect(
+        self: &Rc<Self>,
+        opened: Result<String, EntryRefusal>,
+        voice: Option<String>,
+        staying: Option<String>,
+    ) {
         let room = match opened {
             Ok(room) => room,
             Err(refusal) => {
@@ -457,7 +518,7 @@ impl Bridge {
 
             *lock(&held) = Some(session.clone());
 
-            let _ = screen.send(Update::Joined { room, peers: session.peers() });
+            let _ = screen.send(Update::Joined { room, voice: staying, peers: session.peers() });
 
             settle(&session, &sending, &watching, &screen).await;
 

@@ -108,6 +108,9 @@ export component UserBar inherits Rectangle {
     // Os aparelhos moram dentro de "Configurações da conta", como no React: a barra não
     // ganha setinha nenhuma.
     property <bool> showing-devices;
+    // Fora de um canal de voz o microfone não está mudo, está fora: o React desenha o
+    // microfone inteiro e escreve "Online". Vermelho só quando se está na voz e calado.
+    property <bool> in-voice: Ui.voice-channel != "";
 
     height: sheet.preferred-height;
     background: #ffffff08;
@@ -127,11 +130,46 @@ export component UserBar inherits Rectangle {
             HorizontalLayout {
                 spacing: 10px;
 
-                Glyph {
-                    commands: Icons.signal;
-                    size: 15px;
-                    tint: Skin.online;
+                // O sinal muda de cor com a latência, como no React: verde até 150 ms,
+                // lilás acima disso, apagado enquanto o primeiro não voltou.
+                Rectangle {
+                    width: 15px;
+                    height: 15px;
                     y: (parent.height - self.height) / 2;
+
+                    Glyph {
+                        commands: Icons.signal;
+                        size: 15px;
+                        tint: Ui.ping-ms < 0
+                            ? Skin.ink-dim
+                            : (Ui.ping-ms > 150 ? Skin.lilac : Skin.online);
+                    }
+
+                    signal-touch := TouchArea { }
+
+                    // O balão do `title` do React: a ida e volta até o servidor de mídia.
+                    Rectangle {
+                        visible: signal-touch.has-hover;
+                        x: 0;
+                        y: -30px;
+                        width: said.preferred-width + 20px;
+                        height: 24px;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: Skin.line-strong;
+                        background: #100d1afa;
+
+                        said := Text {
+                            text: Ui.ping-ms < 0
+                                ? "Medindo a ida e volta até o servidor de mídia"
+                                : Ui.ping + " até o servidor de mídia";
+                            color: Skin.ink-icon;
+                            font-family: Skin.sans;
+                            font-size: 11.5px;
+                            x: 10px;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
                 }
 
                 VerticalLayout {
@@ -212,7 +250,13 @@ export component UserBar inherits Rectangle {
             }
 
             Text {
-                text: Ui.deafened ? "Surdo" : (Ui.mic-on ? "Microfone aberto" : "Online");
+                text: !root.in-voice
+                    ? "Online"
+                    : Ui.deafened
+                        ? "Surdo"
+                        : !Ui.can-speak
+                            ? "Mutado pelo servidor"
+                            : Ui.mic-on ? "Microfone aberto" : "Mudo";
                 color: Skin.ink-dim;
                 font-family: Skin.sans;
                 font-size: 10.5px;
@@ -223,9 +267,9 @@ export component UserBar inherits Rectangle {
         Rectangle { horizontal-stretch: 1; }
 
         BarButton {
-            commands: Ui.mic-on ? Icons.mic : Icons.mic-off;
-            alert: !Ui.mic-on;
-            enabled: Ui.can-speak;
+            commands: root.in-voice && !Ui.mic-on ? Icons.mic-off : Icons.mic;
+            alert: root.in-voice && !Ui.mic-on;
+            enabled: root.in-voice && Ui.can-speak;
             y: (parent.height - self.height) / 2;
             clicked => { Ui.toggle-mic(); }
         }
@@ -233,6 +277,7 @@ export component UserBar inherits Rectangle {
         BarButton {
             commands: Ui.deafened ? Icons.headphones-off : Icons.headphones;
             alert: Ui.deafened;
+            enabled: root.in-voice;
             y: (parent.height - self.height) / 2;
             clicked => { Ui.toggle-deafen(); }
         }

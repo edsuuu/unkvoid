@@ -1,7 +1,7 @@
-//! A barra de baixo: quem é você, o microfone e o som — cada um com a setinha do lado.
+//! A barra de baixo: quem é você, o microfone, o som e a engrenagem.
 //!
-//! A setinha abre a lista de aparelhos do sistema, no molde dos apps de chamada: escolher ali troca
-//! o microfone que sobe e a saída por onde o som da sala toca, sem sair da tela.
+//! É o `VoicePanel` do React: os três botões são chapados, e a escolha de aparelho mora
+//! dentro de "Configurações da conta" — não há setinha nenhuma ao lado do mudo.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -9,7 +9,10 @@ use std::rc::Rc;
 use gtk::prelude::*;
 
 use crate::bridge::Bridge;
-use crate::components::{body, icon_button, item, list, muted, row, scroll, set_icon, spacer, strong};
+use crate::components::{
+    avatar, body, clear_list, clickable, column, dim, icon_button, item, label_mono, list, muted, popover, row,
+    rule, scroll, set_icon, spacer, strong,
+};
 use crate::devices::{self, Device};
 use crate::icons;
 use crate::streaming::Mine;
@@ -19,7 +22,16 @@ const BAR_ICON: i32 = 15;
 
 pub struct UserBar {
     root: gtk::Box,
+    /// O bloco que só existe dentro de um canal de voz, e o nome do canal nele.
+    voice: gtk::Box,
+    voice_name: gtk::Label,
+    /// O sinal, que muda de cor com a latência, e o que o balão dele diz.
+    signal: gtk::Box,
+    in_voice: std::cell::Cell<bool>,
+    face: gtk::Box,
     name: gtk::Label,
+    status: gtk::Label,
+    menu_name: gtk::Label,
     microphone: gtk::Button,
     camera: gtk::Button,
     sound: gtk::Button,
@@ -29,43 +41,95 @@ pub struct UserBar {
 impl UserBar {
     pub fn new(bridge: &Rc<Bridge>) -> Self {
         let name = strong("");
-        let microphone = small(icon_button("mic", BAR_ICON, icons::RESTING, "Ligar ou calar o microfone"));
-        let camera = small(icon_button("cameraOff", BAR_ICON, icons::RESTING, "Ligar a câmera"));
-        let sound = small(icon_button("headphones", BAR_ICON, icons::RESTING, "Ensurdecer: cala tudo o que chega"));
+        let status = dim("Online");
+        let microphone = flat(icon_button("mic", BAR_ICON, icons::RESTING, "Ligar ou calar o microfone"));
+        let camera = flat(icon_button("cameraOff", BAR_ICON, icons::RESTING, "Ligar a câmera"));
+        let sound = flat(icon_button("headphones", BAR_ICON, icons::RESTING, "Ensurdecer: cala tudo o que chega"));
+        let sign_out = gtk::Button::new();
+        let menu_name = strong("");
 
-        let root = row(6);
+        let root = column(10);
+        let line = row(8);
+        let face = row(0);
+        let who = column(1);
+        let voice = column(10);
+        let voice_name = crate::components::mono("");
 
         // O nome encolhe com reticências: ele é o único pedaço elástico da barra, e sem isto
         // um apelido comprido decide a largura da coluna inteira.
         name.set_ellipsize(gtk::pango::EllipsizeMode::End);
         name.set_width_chars(4);
+        name.set_xalign(0.0);
+        status.set_xalign(0.0);
+        who.append(&name);
+        who.append(&status);
+
         root.add_css_class("userbar");
-        root.append(&name);
-        root.append(&spacer());
-        root.append(&camera);
-        root.append(&microphone);
-        root.append(&chooser(devices::microphones, devices::current_microphone, {
+        line.append(&face);
+        line.append(&who);
+        line.append(&spacer());
+        line.append(&microphone);
+        line.append(&sound);
+        line.append(&gear(bridge, &menu_name, &sign_out));
+
+        // O bloco da voz, em cima da linha de quem você é — como no `VoicePanel` do React.
+        let connected = row(10);
+        let titles = column(1);
+        let hang_up = flat(icon_button("phoneOff", BAR_ICON, icons::DANGER, "Desconectar da voz"));
+        let doing = row(6);
+        let share = wide(icon_button("screen", 16, icons::RESTING, "Compartilhar a tela"));
+        let voice_face = strong("Voz conectada");
+
+        voice_face.add_css_class("online");
+        voice_face.set_xalign(0.0);
+        voice_name.set_xalign(0.0);
+        titles.append(&voice_face);
+        titles.append(&voice_name);
+        let signal = row(0);
+
+        signal.append(&icons::icon("signal", BAR_ICON, icons::DIM));
+        signal.set_has_tooltip(true);
+        signal.set_tooltip_text(Some("Medindo a ida e volta até o servidor de mídia"));
+        connected.append(&signal);
+        connected.append(&titles);
+        connected.append(&spacer());
+        connected.append(&hang_up);
+
+        camera.add_css_class("wide");
+        doing.append(&camera);
+        doing.append(&share);
+        camera.set_hexpand(true);
+        share.set_hexpand(true);
+
+        voice.append(&connected);
+        voice.append(&doing);
+        voice.append(&rule());
+        voice.set_visible(false);
+
+        root.append(&voice);
+        root.append(&line);
+
+        hang_up.connect_clicked({
             let bridge = bridge.clone();
 
-            move |name| bridge.use_microphone(name)
-        }));
-        root.append(&sound);
-        root.append(&chooser(devices::speakers, devices::current_speaker, {
-            let bridge = bridge.clone();
+            move |_| bridge.leave_voice()
+        });
 
-            move |name| bridge.use_speaker(name)
-        }));
+        share.connect_clicked({
+            let (bridge, sharing) = (bridge.clone(), Rc::new(std::cell::Cell::new(false)));
 
-        // No React, "Sair da conta" mora na área de quem está logado — aqui é esta barra.
-        // Sem conta ele não aparece: não há de onde sair.
-        let sign_out = small(icon_button("logout", BAR_ICON, icons::DIM, "Sair da conta"));
+            move |button| {
+                // O botão só reflete o que de fato subiu depois que o núcleo responde; aqui
+                // ele guarda a intenção, que é o que decide entre ligar e desligar.
+                if sharing.get() {
+                    bridge.stop_sharing();
+                } else {
+                    bridge.share_screen();
+                }
 
-        root.append(&sign_out);
-
-        sign_out.connect_clicked({
-            let bridge = bridge.clone();
-
-            move |_| bridge.sign_out()
+                sharing.set(!sharing.get());
+                highlight(button, "screen", "screen", sharing.get());
+            }
         });
 
         microphone.connect_clicked({
@@ -86,7 +150,27 @@ impl UserBar {
             move |sound| mark(sound, "headphones", "headphonesOff", !bridge.toggle_deafen())
         });
 
-        Self { root, name, microphone, camera, sound, sign_out }
+        sign_out.connect_clicked({
+            let bridge = bridge.clone();
+
+            move |_| bridge.sign_out()
+        });
+
+        Self {
+            root,
+            voice,
+            voice_name,
+            signal,
+            in_voice: std::cell::Cell::new(false),
+            face,
+            name,
+            status,
+            menu_name,
+            microphone,
+            camera,
+            sound,
+            sign_out,
+        }
     }
 
     pub fn root(&self) -> &gtk::Box {
@@ -94,29 +178,91 @@ impl UserBar {
     }
 
     pub fn set_user(&self, name: &str) {
-        self.name.set_text(if name.is_empty() { "Sem conta" } else { name });
+        let shown = if name.is_empty() { "Sem conta" } else { name };
+
+        self.name.set_text(shown);
+        self.menu_name.set_text(shown);
         self.sign_out.set_visible(!name.is_empty());
+
+        while let Some(child) = self.face.first_child() {
+            self.face.remove(&child);
+        }
+
+        self.face.append(&avatar(name, 30, true));
+    }
+
+    /// A ida e volta até o SFU: verde até 150 ms, lilás acima disso — a mesma régua do
+    /// React. O número inteiro fica no balão do mouse, que é onde ele cabe.
+    pub fn set_ping(&self, milliseconds: u64) {
+        let color = if milliseconds > 150 { icons::LILAC } else { "#34d399" };
+
+        while let Some(child) = self.signal.first_child() {
+            self.signal.remove(&child);
+        }
+
+        self.signal.append(&icons::icon("signal", BAR_ICON, color));
+        self.signal.set_tooltip_text(Some(&format!("{milliseconds} ms até o servidor de mídia")));
+    }
+
+    /// Entrou ou saiu da voz. Fora dela o microfone não está mudo, está fora: o React
+    /// desenha o microfone inteiro e escreve "Online".
+    pub fn set_voice(&self, channel: Option<&str>) {
+        self.in_voice.set(channel.is_some());
+        self.voice.set_visible(channel.is_some());
+        self.voice_name.set_text(channel.unwrap_or(""));
+
+        if channel.is_none() {
+            self.status.set_text("Online");
+            self.microphone.set_sensitive(false);
+            self.sound.set_sensitive(false);
+            mark(&self.microphone, "mic", "micOff", true);
+        }
     }
 
     /// O botão só mostra o que o servidor já decidiu: mudo pelo servidor chega como
     /// microfone fechado, e sem `speak` o botão nem fica clicável.
     pub fn set_mine(&self, mine: Mine) {
-        self.microphone.set_sensitive(mine.can_speak);
-        mark(&self.microphone, "mic", "micOff", mine.mic && !mine.mic_muted);
+        let here = self.in_voice.get();
+
+        self.microphone.set_sensitive(here && mine.can_speak);
+        self.sound.set_sensitive(here);
+        mark(&self.microphone, "mic", "micOff", !here || (mine.mic && !mine.mic_muted));
 
         self.camera.set_visible(mine.can_video);
         self.camera.set_tooltip_text(Some(if mine.camera { "Desligar a câmera" } else { "Ligar a câmera" }));
         highlight(&self.camera, "camera", "cameraOff", mine.camera);
+
+        self.status.set_text(if !here {
+            "Online"
+        } else if !mine.can_speak {
+            "Mutado pelo servidor"
+        } else if mine.mic && !mine.mic_muted {
+            "Microfone aberto"
+        } else {
+            "Mudo"
+        });
     }
 
     pub fn set_deafened(&self, deafened: bool) {
         mark(&self.sound, "headphones", "headphonesOff", !deafened);
+
+        if deafened && self.in_voice.get() {
+            self.status.set_text("Surdo");
+        }
     }
 }
 
-/// O quadrado menor, de 30: são seis controles numa coluna de 240, e o de 34 não cabe.
-fn small(button: gtk::Button) -> gtk::Button {
-    button.add_css_class("small");
+/// Os três controles da barra são chapados: sem contorno, o fundo só aparece ao passar o
+/// mouse. É o `btn-icon` dessa barra no React, que é outro botão que o da sala.
+fn flat(button: gtk::Button) -> gtk::Button {
+    button.add_css_class("bar");
+
+    button
+}
+
+/// O botão largo da voz: metade da linha, como o `wide` do React.
+fn wide(button: gtk::Button) -> gtk::Button {
+    button.add_css_class("wide-icon");
 
     button
 }
@@ -156,36 +302,145 @@ fn highlight(button: &gtk::Button, on_name: &str, off_name: &str, on: bool) {
     );
 }
 
-/// A setinha ao lado do botão. A lista é lida na hora de abrir: aparelho ligado depois que
-/// o app abriu tem de aparecer sem reiniciar nada.
+/// A engrenagem e o menu dela: quem está conectado, os aparelhos e a saída da conta. Os
+/// aparelhos moram aqui porque é aqui que o React os guarda — dentro das configurações.
+fn gear(bridge: &Rc<Bridge>, menu_name: &gtk::Label, sign_out: &gtk::Button) -> gtk::MenuButton {
+    let menu = gtk::MenuButton::new();
+    let sheet = column(2);
+    let head = column(2);
+    let chosen = column(6);
+
+    menu.set_child(Some(&icons::icon("gear", BAR_ICON, icons::RESTING)));
+    menu.add_css_class("bar");
+    clickable(&menu);
+
+    menu_name.set_xalign(0.0);
+    head.append(menu_name);
+    head.append(&label_mono("CONTA CONECTADA"));
+    head.set_margin_start(10);
+    head.set_margin_end(10);
+    head.set_margin_bottom(8);
+
+    let settings = menu_item("gear", "Configurações da conta", icons::RESTING);
+
+    dress(sign_out, "logout", "Sair da conta", icons::LILAC);
+
+    let microphones = chooser("MICROFONE", devices::microphones, devices::current_microphone, {
+        let bridge = bridge.clone();
+
+        move |name| bridge.use_microphone(name)
+    });
+
+    let speakers = chooser("SAÍDA DE ÁUDIO", devices::speakers, devices::current_speaker, {
+        let bridge = bridge.clone();
+
+        move |name| bridge.use_speaker(name)
+    });
+
+    chosen.append(&microphones.root);
+    chosen.append(&speakers.root);
+    chosen.set_visible(false);
+    chosen.set_margin_top(4);
+    chosen.set_margin_bottom(4);
+
+    sheet.append(&head);
+    sheet.append(&rule());
+    sheet.append(&settings);
+    sheet.append(&chosen);
+    sheet.append(sign_out);
+
+    settings.connect_clicked({
+        let chosen = chosen.clone();
+
+        move |_| chosen.set_visible(!chosen.is_visible())
+    });
+
+    let popup = popover(&sheet);
+
+    sheet.set_size_request(224, -1);
+    menu.set_popover(Some(&popup));
+
+    // A lista é lida na hora de abrir: aparelho ligado depois que o app abriu tem de
+    // aparecer sem reiniciar nada.
+    popup.connect_show(move |_| {
+        microphones.refresh();
+        speakers.refresh();
+    });
+
+    menu
+}
+
+/// Uma linha do menu: o desenho à esquerda e a frase à direita, no molde do React.
+fn menu_item(icon: &str, text: &str, color: &str) -> gtk::Button {
+    let button = gtk::Button::new();
+
+    dress(&button, icon, text, color);
+
+    button
+}
+
+fn dress(button: &gtk::Button, icon: &str, text: &str, color: &str) {
+    let inside = row(10);
+    let label = body(text);
+
+    label.set_xalign(0.0);
+
+    if color == icons::LILAC {
+        label.add_css_class("lilac");
+    }
+
+    inside.append(&icons::icon(icon, BAR_ICON, color));
+    inside.append(&label);
+
+    button.set_child(Some(&inside));
+    button.add_css_class("menu-item");
+    clickable(button);
+}
+
+/// Uma lista de aparelhos dentro do menu, com o título em cima.
+struct Chooser {
+    root: gtk::Box,
+    refresh: Rc<dyn Fn()>,
+}
+
+impl Chooser {
+    fn refresh(&self) {
+        (self.refresh)();
+    }
+}
+
 fn chooser(
+    heading: &str,
     available: fn() -> Vec<Device>,
     current: fn() -> Option<String>,
     choose: impl Fn(&str) + 'static,
-) -> gtk::MenuButton {
-    let menu = gtk::MenuButton::new();
-
-    menu.set_child(Some(&icons::icon("chevronDown", 12, icons::DIM)));
-    crate::components::clickable(&menu);
-
+) -> Chooser {
+    let root = column(4);
     let options = list(true);
     let names: Rc<RefCell<Vec<String>>> = Rc::default();
     let holder = scroll(&options);
 
-    menu.add_css_class("arrow");
-    holder.set_size_request(280, 180);
+    holder.set_size_request(-1, 120);
+    root.append(&label_mono(heading));
+    root.append(&holder);
 
-    let popover = crate::components::popover(&holder);
+    options.connect_row_activated({
+        let names = names.clone();
 
-    menu.set_popover(Some(&popover));
+        move |_, activated| {
+            if let Some(name) = names.borrow().get(activated.index() as usize) {
+                choose(name);
+            }
+        }
+    });
 
-    popover.connect_show({
+    let refresh = {
         let (options, names) = (options.clone(), names.clone());
 
-        move |_| {
+        move || {
             let found = available();
 
-            crate::components::clear_list(&options);
+            clear_list(&options);
             names.replace(found.iter().map(|device| device.name.clone()).collect());
 
             if found.is_empty() {
@@ -206,19 +461,7 @@ fn chooser(
                 options.append(&item(&body(&marked)));
             }
         }
-    });
+    };
 
-    options.connect_row_activated({
-        let (names, popover) = (names.clone(), popover.clone());
-
-        move |_, activated| {
-            if let Some(name) = names.borrow().get(activated.index() as usize) {
-                choose(name);
-            }
-
-            popover.popdown();
-        }
-    });
-
-    menu
+    Chooser { root, refresh: Rc::new(refresh) }
 }

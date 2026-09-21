@@ -123,6 +123,8 @@ export global Ui {
     // O ida e volta até o SFU, medido no batimento do núcleo. Até o primeiro voltar é um
     // traço, que é o que o app em React mostra nesse intervalo.
     in property <string> ping: "-- ms";
+    /// O mesmo número, para a cor do sinal decidir sozinha. Negativo é "ainda medindo".
+    in property <int> ping-ms: -1;
     in property <string> elapsed: "0:00:00";
 
     in property <bool> mic-on;

@@ -135,14 +135,28 @@ fn open(application: &Application) {
                     hub.set_direct(&person, &messages);
                     hub.focus_direct();
                 }
-                Update::Joined { room: code, peers } => {
+                // Canal de voz: a tela continua sendo o hub, e quem está dentro aparece
+                // embaixo do nome do canal — como no React.
+                Update::Joined { room: code, voice: Some(name), peers } => {
+                    hub.set_status("");
+                    hub.set_voice(Some((&code, &name)));
+                    hub.set_voice_peers(&peers);
+                }
+                Update::Joined { room: code, voice: None, peers } => {
                     entry.set_error("");
                     room.set_room(&code);
                     room.set_peers(&peers);
                     show(&stack, Screen::Room);
                 }
-                Update::Peers(peers) => room.set_peers(&peers),
-                Update::Ping(milliseconds) => room.set_ping(milliseconds),
+                Update::VoiceLeft => hub.set_voice(None),
+                Update::Peers(peers) => {
+                    room.set_peers(&peers);
+                    hub.set_voice_peers(&peers);
+                }
+                Update::Ping(milliseconds) => {
+                    room.set_ping(milliseconds);
+                    hub.set_ping(milliseconds);
+                }
                 Update::Tiles(tiles) => room.set_tiles(&tiles),
                 Update::Mine(mine) => {
                     // A sala por código só tem tela; o microfone e o som são do hub, que é

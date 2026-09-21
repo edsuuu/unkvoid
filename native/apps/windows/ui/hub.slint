@@ -521,8 +521,11 @@ export component HubScreen inherits Rectangle {
             spacing: 10px;
 
             // a coluna das abas e das conversas
+            //
+            // 300 como a dos canais: a barra de baixo é a mesma nas duas, e com larguras
+            // diferentes ela se apertava na Home.
             VerticalLayout {
-                width: 260px;
+                width: 300px;
                 spacing: 10px;
 
                 Panel {
