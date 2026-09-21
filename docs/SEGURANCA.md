@@ -7,7 +7,7 @@ O que está protegido, o que não está, e por quê. Escrito para ser escolha e 
 | | Em trânsito | Guardado | Ponta a ponta |
 |---|---|---|---|
 | Site, API, login | TLS (nginx, 443) | senha com bcrypt (12 rodadas); token do Sanctum só como hash no banco | — |
-| Chat e mensagens diretas | TLS até o Laravel; WSS no Reverb | **texto puro** no MySQL | **não** |
+| Chat e mensagens diretas | TLS até o Laravel; WSS no SFU | **texto puro** no MySQL | **não** |
 | Imagens (foto, ícone, chat) | TLS | bucket privado no MinIO; toda URL é assinada e vence em 2 h | **não** |
 | Sinalização do SFU | WSS | nada é guardado | — |
 | Tela, câmera e voz pelo app (RTP puro) | SRTP: AES-128 com HMAC-SHA1, chave sorteada por transmissão | nada é guardado | **não** |
@@ -55,7 +55,8 @@ na resposta do `join`, nunca no broadcast: se o `peerId` bastasse, qualquer um d
 qualquer um.
 
 **Canal que a pessoa não enxerga não existe para ela.** Sem `VIEW_CHANNEL` o canal não aparece
-na árvore, não devolve mensagem, o Reverb recusa a assinatura e não sai token de voz.
+na árvore, não devolve mensagem, o `POST /api/sfu/authorize` recusa a inscrição e não sai
+token de voz.
 
 **Atualização assinada.** O app confere a assinatura minisign com a chave pública que carrega
 por dentro; a privada não fica na VPS. O Linux confia na GPG do repositório APT.
@@ -99,9 +100,9 @@ legítima, e criptografia nenhuma impede isso.
    por `unkvoid://login?token=&state=`; o `state` sorteado impede uma página qualquer de logar
    a pessoa em conta alheia, mas outro programa que registre o mesmo esquema recebe o endereço.
    O caminho de saída é PKCE, com o segredo nascendo dentro do app.
-3. **Quem foi expulso ainda ouve até reconectar, se o cliente for modificado.** O Reverb 1.11
-   não derruba a assinatura de quem já estava inscrito; o app oficial sai dos canais no
-   `MemberRemoved`. Fechar isso é fazer os eventos não levarem conteúdo — muda o contrato, e é
+3. **Quem foi expulso ainda ouve até reconectar, se o cliente for modificado.** O SFU não
+   derruba a inscrição de quem já estava ouvindo — a autorização é perguntada ao Laravel no
+   `subscribe`, e não de novo a cada evento; o app oficial sai dos canais no `MemberRemoved`. Fechar isso é fazer os eventos não levarem conteúdo — muda o contrato, e é
    pergunta aberta no [ESTADO.md](ESTADO.md).
 4. **Quem controla a VPS lê tudo** — ver "Por que não há ponta a ponta".
 

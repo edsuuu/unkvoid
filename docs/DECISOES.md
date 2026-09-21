@@ -3,6 +3,32 @@
 Registro do que foi decidido, e principalmente do **porquê**. Decisão sem motivo
 escrito vira discussão de novo daqui a seis meses.
 
+## Interface nativa por sistema, e não uma webview para os três
+
+**Quando:** 20/09/2026. **Decisão do dono.**
+
+O app roda ao lado de um jogo. Uma webview carrega um motor de browser inteiro para
+desenhar botão, e manter três deles (WebView2, WKWebView, WebKitGTK) significa três
+comportamentos diferentes para o mesmo código — o do Linux nem traz WebRTC, e é daí que
+nasceu o receptor nativo.
+
+Medimos antes de decidir: o app Tauri ocioso estava em **104 MB**, contra 400–600 MB de um
+Electron típico. Ou seja, o argumento do consumo **não se confirmou** nos números. A decisão
+foi tomada mesmo assim, por previsibilidade de renderização e integração com cada sistema.
+
+**O que fez o custo caber:** a parte cara de um app de voz e tela é a mídia, e ela já era
+nativa — captura na GPU, encoder por hardware, RTP+SRTP em `plain.rs`, recepção em
+`receiver.rs`. O caminho sem WebRTC já existia, escrito para o Linux. O que sobrou foi
+desenhar tela.
+
+**O que segura o desenho:** nada de regra de negócio em pasta de sistema. O `shared/core`
+decide; `apps/macos`, `apps/windows` e `apps/linux` desenham. Sem isso, três interfaces
+viram três produtos que divergem no primeiro ajuste.
+
+**ABI C escrita à mão, e não `uniffi`:** são seis funções que mudam devagar. Um header que
+se lê de cima a baixo custa menos que mais um gerador no caminho do build. O Linux não passa
+por ela — GTK é Rust e usa o `core` direto.
+
 ## Em que linguagem o SFU deve ser escrito
 
 **Decidido em 09/09/2026: fica como está, Node com mediasoup.**
@@ -50,7 +76,7 @@ rtc-ice   rtc-dtls   rtc-srtp   rtc-rtp   rtc-rtcp
 rtc-sctp  rtc-sdp    rtc-media  rtc-interceptor
 ```
 
-Isso é WebRTC em Rust, e compila a cada build do app. O `crates/media` já
+Isso é WebRTC em Rust, e compila a cada build do app. O `shared/media` já
 empacota RTP, cifra SRTP e monta payload de H.264.
 
 ### Por que, mesmo assim, não trocar
@@ -70,7 +96,7 @@ já funciona.
 Tem uma assimetria que ajuda a ver o tamanho. A metade de **quem transmite** já
 está resolvida em Rust aqui: o app escolhe o SSRC, a chave SRTP e o tipo de
 payload, e manda RTP puro direto, sem ICE e sem DTLS, porque o servidor aceita
-assim (`crates/media/src/plain.rs`). A metade cara é a de **quem assiste** — ICE,
+assim (`shared/media/src/plain.rs`). A metade cara é a de **quem assiste** — ICE,
 DTLS e negociação com cada navegador, com toda variação de NAT e rede. É essa que
 o mediasoup faz.
 

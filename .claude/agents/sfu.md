@@ -23,7 +23,7 @@ no laço de eventos está desfazendo o projeto.
 ## A arquitetura que você preserva
 
 `Http/Server.ts` (um servidor HTTP + um WebSocketServer em `/sfu`) → `Http/Kernel.ts` despacha
-`{id, action, data}` → `Requests/*` valida → `Controllers/*` age → `Resources/*` responde
+`{id, action, data}` → `Requests/*` valida → `Controllers/*` age e devolve o objeto da resposta
 `{id, ok, data}`. Evento empurrado para o cliente é `{event, data}`, sem `id`. Só `join` e `ping`
 são `guest: true`; qualquer outra ação sem `session.peer` é 401.
 
@@ -84,7 +84,8 @@ o servidor manual usa outra faixa. Rode também
 
 ## Armadilhas já pagas
 
-- Reiniciar o SFU mata os workers e derruba toda sala no ar; `install.sh` espera esvaziar.
+- Reiniciar o SFU mata os workers e derruba toda sala no ar; o `install.sh` reinicia assim
+  mesmo, por decisão do dono: alguns segundos de queda valem o deploy sair na hora.
 - Uma porta plain por transporte: quem fala pelo Linux usa duas (envio e recepção). Teto por
   worker é `SFU_PLAIN_PORTS` (64).
 - `logTags` sem `'rtp'`: o punch de keepalive do receptor nativo enchia o log.

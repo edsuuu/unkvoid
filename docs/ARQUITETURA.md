@@ -51,14 +51,13 @@ A sala por código é produto, não legado: mexer num modo não degrada o outro.
  │    captura, encoder da GPU, RTP/SRTP, receptor Linux │
  └───┬──────────────────┬───────────────────────┬───────┘
      │ HTTPS            │ WSS                   │ UDP
-     │ API, login,      │ chat (Reverb) e       │ mídia: RTP/SRTP
-     │ atualização      │ sinalização (SFU)     │ e WebRTC
+     │ API, login,      │ chat e sinalização,   │ mídia: RTP/SRTP
+     │ atualização      │ os dois pelo SFU      │ e WebRTC
  ┌───▼──────────────────▼───────────────────────▼───────┐
  │ VPS (unkvoid.com)                                    │
  │                                                      │
  │  nginx :443                                          │
  │   ├─ /  /api  /downloads          → Laravel (web/)   │
- │   ├─ /app  /apps                  → Reverb :8080     │
  │   ├─ /sfu  /health                → SFU :3000 (sfu/) │
  │   └─ /apt                         → APT, no MinIO    │
  │                                                      │
@@ -74,9 +73,9 @@ A sala por código é produto, não legado: mexer num modo não degrada o outro.
 
 | Pasta | Para que serve | Tecnologia | Roda em | Dona de | Nunca faz |
 |---|---|---|---|---|---|
-| `native/` | tudo o que acontece na máquina de quem usa: capturar, comprimir, mandar, receber e mostrar | Rust + Tauri 2 + React 19 em TypeScript | Windows, macOS, Linux | interface, captura, encoder, mídia local | decidir permissão: só esconde botão |
+| `native/` | tudo o que acontece na máquina de quem usa: capturar, comprimir, mandar, receber e mostrar | Rust; interface nativa por sistema (SwiftUI, Slint, GTK4) — e o app Tauri + React, até a paridade | Windows, macOS, Linux | interface, captura, encoder, mídia local | decidir permissão: só esconde botão |
 | `sfu/` | relé de mídia: recebe cada transmissão uma vez e replica para quem assiste | Node 22 + mediasoup | VPS | salas, pessoas conectadas, producers, consumers, a mídia | decidir permissão: só confere a assinatura |
-| `web/` | site, contas e tudo que precisa de banco | Laravel 13, Livewire 4, Flux, Reverb, Sanctum | VPS | conta, servidor, cargo, canal, membro, mensagem, auditoria, versões do app | tocar em mídia |
+| `web/` | site, contas e tudo que precisa de banco | Laravel 13, Livewire 4, Flux, Sanctum | VPS | conta, servidor, cargo, canal, membro, mensagem, auditoria, versões do app | tocar em mídia |
 
 Fora das três:
 
@@ -90,24 +89,70 @@ Fora das três:
 
 ### Duas camadas
 
-A **interface** é React na webview do sistema. O **núcleo** é Rust. A interface nunca fala
-com o sistema operacional: ela chama comandos do Tauri (`invoke`), e o Rust cuida do que
-muda de sistema para sistema. A lista de comandos está em
-[docs/CONTRATO.md](CONTRATO.md#app--comandos-do-tauri).
+O **núcleo** é Rust e decide tudo. A **interface** desenha e nada mais. Entre os dois há uma
+superfície pequena: comandos entram, eventos saem.
 
-**Por que webview, e não interface nativa:** a interface é escrita uma vez para os três
-sistemas, o instalador fica pequeno (o motor já vem no sistema), e WebRTC, microfone com
-cancelamento de eco e o chat em React vêm prontos. A webview fica **fora** do caminho do
-quadro, então não custa fps. O preço é que são três motores diferentes (WebView2,
-WKWebView, WebKitGTK), e o WebKitGTK das distros vem sem WebRTC. É daí que nasce o receptor
-nativo do Linux.
+```
+    Swift (macOS)  ──► ABI C ─┐
+    Rust (Windows, Slint)  ───┼──► shared/core ──► capture · media · SFU · Laravel
+    Rust (Linux, GTK)      ───┘
+    React (Tauri)  ─┘   até a paridade
+```
+
+**A regra que sustenta o desenho:** regra de negócio não mora em pasta de sistema. Se uma
+decisão aparecer em `apps/macos/`, ela terá de ser escrita de novo em `apps/windows/` e em
+`apps/linux/` — e é assim que um app vira três apps com os mesmos defeitos em lugares
+diferentes. O teste é direto: "o Windows vai precisar disto igual?" Se sim, sobe para o
+`core`.
+
+**Por que interface nativa, e não uma webview para os três** (decisão do dono, 20/09/2026):
+o app roda ao lado de um jogo, e uma webview carrega um motor de browser inteiro para
+desenhar botão. Some o custo de manter três motores diferentes (WebView2, WKWebView,
+WebKitGTK) que se comportam de formas distintas — o do Linux nem traz WebRTC, e é daí que
+nasceu o receptor nativo. O preço é escrever a tela três vezes; o que **não** se escreve três
+vezes é a lógica, que é o grosso.
+
+**Por que isto custou menos do que parecia:** a parte cara de um app de voz e tela é a
+mídia, e ela já era nativa antes da decisão — captura na GPU, encoder por hardware, envio
+RTP+SRTP (`plain.rs`) e recepção (`receiver.rs`). O caminho sem WebRTC já existia, escrito
+para o Linux.
+
+### A ponte para Swift e C#
+
+Uma ABI C de seis funções, em `shared/core/src/ffi.rs`. **Só o macOS passa por ela** — o
+Linux (GTK) e o Windows (Slint) são Rust e usam o `core` como crate, sem JSON no meio e sem
+liberar ponteiro à mão.
+
+| Função | O quê |
+|---|---|
+| `unkvoid_core_new` / `unkvoid_core_free` | cria e libera o núcleo |
+| `unkvoid_connect` | abre o socket do SFU |
+| `unkvoid_call` | uma ação do SFU. **Bloqueia** até a resposta — nunca na thread que desenha |
+| `unkvoid_app` | as decisões do app: tela, sala, conta, servidores, mensagens. Também bloqueia no que fala com o servidor |
+| `unkvoid_next_event` | o próximo evento da fila, sem bloquear |
+| `unkvoid_string_free` | devolve o que o núcleo alocou — uma vez só |
+
+O `Handle` é seguro para uso concorrente: tudo atrás de `Mutex`, e as funções tomam `&`. A
+interface consulta eventos num timer **enquanto** uma ação está em voo, e com `&mut` isso
+seria corrida de dados.
+
+**Erro que chega à tela nunca carrega caminho, endereço nem código de status.** O núcleo
+devolve um motivo (`unreachable`, `signedOut`, `notAllowed`, `gone`, `invalid`,
+`serverBroke`, `tooFast`) e cada interface escreve a frase; o detalhe vai para o log. A
+única exceção é erro de validação, que o Laravel já devolve em português e falando do campo
+que a pessoa digitou. Ver `shared/core/src/failure.rs`.
 
 ### Pastas
 
 | Caminho | O que faz |
 |---|---|
-| `crates/capture/` | captura de tela e do som do sistema, um arquivo por sistema (`macos.rs`, `windows.rs`, `windows_audio.rs`, `linux.rs`) |
-| `crates/media/` | encoder por hardware (`windows.rs`, `macos.rs`), Opus (`audio.rs`), envio RTP/SRTP para o SFU (`plain.rs`) e recepção (`receiver.rs`) |
+| `shared/capture/` | captura de tela e do som do sistema, um arquivo por sistema (`macos.rs`, `windows.rs`, `windows_audio.rs`, `linux.rs`, `linux_audio.rs`) |
+| `shared/media/` | encoder por hardware (`windows.rs`, `macos.rs`), Opus (`audio.rs`), envio RTP/SRTP para o SFU (`plain.rs`) e recepção (`receiver.rs`) |
+| `shared/core/` | **a lógica, compartilhada pelas quatro interfaces**: protocolo e cliente do SFU, sessão e lista de quem está na sala, cliente da API do Laravel, código de sala, estado do app, motivos de erro, mapa de teclas e a ABI C |
+| `shared/storage/` | o estado em disco na pasta do sistema, com o token cifrado em AES-256-GCM |
+| `apps/macos/` | Swift + SwiftUI |
+| `apps/windows/` | Rust + Slint, sem ponte |
+| `apps/linux/` | Rust + GTK4, sem ponte |
 | `apps/desktop/src-tauri/src/lib.rs` | os comandos do Tauri, janela, bandeja, atualização: a ponte entre interface e crates |
 | `…/broadcast.rs` | liga captura → encoder → transporte; microfone e câmera pelo Rust no Linux |
 | `…/watch.rs` | assistir sem WebRTC (Linux): RTP puro → GStreamer → MJPEG em `127.0.0.1` → `<img>` |
@@ -125,7 +170,7 @@ As classes de `ui/core`:
 | Classe | Papel |
 |---|---|
 | `App` | raiz: escolhe a tela (`update`, `offline`, `entry`, `room`, `hub`), avisos, log, atualização e a sala por código |
-| `Hub` | o modo servidor: `ApiClient`, a conexão com o Reverb (Echo) e os filhos `Chat` (um para o canal de texto aberto, outro para o chat da voz), `Voice`, `ServerSettings`, `Friends`, `Direct`; ao reconectar no Reverb, busca de novo o que perdeu |
+| `Hub` | o modo servidor: `ApiClient`, a conexão de tempo real com o SFU (`Realtime`) e os filhos `Chat` (um para o canal de texto aberto, outro para o chat da voz), `Voice`, `ServerSettings`, `Friends`, `Direct`; ao reconectar, busca de novo o que perdeu |
 | `SfuClient` | o WebSocket do SFU e o `Device` do mediasoup-client; reconexão com espera sorteada, e retomada que compara a lista de pessoas e reproduz o que se perdeu |
 | `Media` | os cartões de quem transmite: consome por WebRTC ou pelo receptor nativo |
 | `Sharing`, `Broadcast` | o seletor de tela e a publicação da tela nativa no SFU |
@@ -173,16 +218,17 @@ O Node não vê um único pacote de vídeo. Por que o SFU é Node, e não PHP, J
 
 | Caminho | O que faz |
 |---|---|
-| `src/server.ts` | sobe os workers, o HTTP e o WebSocket |
-| `src/Http/Server.ts` | WebSocket em `/sfu`, heartbeat de 15 s, teto de conexões novas por IP; o HTTP: `/health`, `/presence` e `/rooms/:code/{kick,mute}` assinados |
-| `src/Http/routes.ts`, `Requests/`, `Controllers/`, `Resources/` | cada ação do WebSocket no molde do Laravel: rota → Request (valida) → Controller → Resource |
+| `src/app.ts` | monta o Express e o WebSocketServer no mesmo servidor: WebSocket em `/sfu`, heartbeat de 15 s, teto de conexões novas por IP |
+| `src/server.ts` | sobe os workers e faz o `listen` |
+| `src/Routers/HttpRouter.ts`, `Controller/HealthController.ts`, `RoomController.ts`, `Middleware/VerifySignature.ts` | o HTTP em Express: `/health`, e `/presence` e `/rooms/:room/{kick,mute}` assinados |
+| `src/Routers/WebSocketRouter.ts`, `Request/`, `Controller/` | cada ação do WebSocket no molde do Laravel: rota → Request (valida) → Controller (age e devolve o objeto da resposta) |
 | `src/Services/RoomRegistry.ts` | os workers e em qual deles cada sala mora |
 | `src/Services/Room.ts`, `Peer.ts` | a sala, as pessoas, a carência de 30 s ao cair (a retomada devolve a lista com quem está na carência), uma sessão por conta |
 | `src/Services/Signature.ts` | confere o token HMAC e a assinatura do HTTP do Laravel |
 | `src/Services/Webhook.ts` | avisa o Laravel (`joined`, `left`) sem nunca segurar o `join` |
-| `src/config.ts` | tudo que vem do ambiente, os codecs e as portas |
+| `src/Config/index.ts` | tudo que vem do ambiente, os codecs e as portas |
 | `check.mjs` | o contrato inteiro contra um servidor no ar, inclusive webhook e heartbeat |
-| `ecosystem.config.cjs` | o pm2 da VPS: o SFU e o Reverb |
+| `ecosystem.config.cjs` | o pm2 da VPS: o SFU |
 
 O WebSocket fala num envelope `{ id, action, data }`. As ações são `join`, `leave`,
 `removePeer`, `createTransport`, `connectTransport`, `produce`, `producePlain`,
@@ -198,7 +244,7 @@ contrato.
 |---|---|
 | Site | página inicial com os downloads, cadastro, login (e-mail ou Google), recuperar senha, privacidade e termos |
 | API do app (`/api`, Sanctum) | conta, servidores, cargos, canais, sobrescritas, membros, banimentos, mensagens, amigos, mensagens diretas, token de voz, token da sala por código, auditoria, `GET /api/config` |
-| Tempo real (Reverb) | `private-channel.{ulid}` (mensagens e voz de um canal), `presence-server.{id}` (quem está online e mudança de estrutura), `private-user.{id}` (amigos, DMs, expulsão). O Pusher não reentrega o que se perdeu numa queda: o app busca de novo pela API ao reconectar |
+| Tempo real (SFU) | `channel.{ulid}` (mensagens e voz de um canal), `server.{id}` (quem está online e mudança de estrutura), `user.{id}` (amigos, DMs, expulsão). O socket não reentrega o que se perdeu numa queda: o app busca de novo pela API ao reconectar |
 | Distribuição | `/downloads/latest.json` (manifesto da atualização automática), `/downloads/{sistema}`, `POST /api/releases` assinado |
 | Registro sem tela | `POST /api/errors` (erros enviados pelos apps) e `guest_accesses` (visitantes da sala por código) gravam no banco; o painel `/admin` que os mostrava saiu, e por enquanto não há tela nenhuma de administração |
 | Webhook do SFU | `POST /api/sfu/events`, assinado |
@@ -211,11 +257,11 @@ contrato.
 | `app/Http/Requests/`, `app/Http/Resources/` | validação da entrada e formato da resposta |
 | `app/Http/Middleware/` | `VerifySfuSignature` e `VerifyReleaseSignature` |
 | `app/Models/` | o modelo de dados (abaixo) |
-| `app/Events/` | o que vai para o Reverb |
+| `app/Events/` | o que o Laravel publica no SFU |
 | `app/Services/Sfu/SfuClient.php` | assina o token de voz e chama o SFU (`kick`, `mute`, `presence`) |
 | `app/Services/Storage/BucketService.php` | o bucket do MinIO |
 | `app/Livewire/` | as páginas do site (entrar, cadastro, senha, início) |
-| `routes/api.php`, `web.php`, `channels.php` | a API, as páginas e a autorização dos canais do Reverb |
+| `routes/api.php`, `web.php` | a API e as páginas; a autorização dos canais é o `POST /api/sfu/authorize` |
 
 ### Modelo de dados
 
@@ -241,7 +287,7 @@ Canal sem `VIEW_CHANNEL` nem aparece. A regra completa está em
 |---|---|---|---|
 | interface → Rust | `invoke` do Tauri | mesmo processo | captura, encoder, envio, recepção nativa, login |
 | app → Laravel | HTTPS, JSON | `Authorization: Bearer` do Sanctum | tudo do modo servidor |
-| app → Reverb | WSS, protocolo do Pusher | `POST /broadcasting/auth` com o token do Sanctum | chat e presença em tempo real |
+| app → SFU | WSS, o mesmo socket da sinalização | `identify` com o token de `POST /api/sfu/session`, e `subscribe` por canal | chat e presença em tempo real |
 | app → SFU | WSS em `/sfu` | token HMAC de 60 s assinado pelo Laravel, ou nenhum (sala por código) | sinalização |
 | app ⇄ SFU | UDP | chave SRTP (RTP puro) ou DTLS (WebRTC) | a mídia |
 | Laravel → SFU | HTTP assinado (`x-unkvoid-timestamp`, `x-unkvoid-signature`) | `SFU_SECRET` | expulsar, mutar, presença |
@@ -324,20 +370,21 @@ SFU               aprende o endereço no primeiro pacote e replica para cada con
 
 1. `POST /api/channels/{id}/messages`: o Laravel confere `SEND_MESSAGES` e grava. Até 3 imagens
    por mensagem, guardadas no bucket privado. Canal de voz também tem chat, pelas mesmas rotas.
-2. `MessageSent` vai para `private-channel.{ulid}`, e o Reverb só deixa assinar quem tem
+2. `MessageSent` vai para `channel.{ulid}`, e o SFU só deixa assinar quem tem
    `VIEW_CHANNEL`.
 3. Mudou a estrutura do servidor (canal, cargo, membro): `ServerUpdated` no
-   `presence-server.{id}`, e o app refaz o `GET`.
-4. Amigos, mensagens diretas e expulsão chegam no `private-user.{id}`.
-5. O Reverb caiu e voltou (rede, ou o deploy do site, que o reinicia): o Pusher não reentrega
-   nada, então o app busca de novo os servidores, a árvore aberta, amigos, conversas e as 50
-   mensagens mais recentes do canal e da conversa abertos, e emenda com o que já estava na tela.
+   `server.{id}`, e o app refaz o `GET`.
+4. Amigos, mensagens diretas e expulsão chegam no `user.{id}`.
+5. O socket caiu e voltou (rede, ou o deploy, que reinicia o SFU): nada do que passou é
+   reentregue, então o app se identifica de novo, reinscreve os canais que ouvia e busca os
+   servidores, a árvore aberta, amigos, conversas e as 50 mensagens mais recentes do canal e
+   da conversa abertos, emendando com o que já estava na tela.
 
 ### 6. Moderação: mutar, expulsar, banir
 
 O Laravel decide, confere a hierarquia e grava. Depois chama o SFU pelo HTTP assinado:
 `mute` pausa o producer do microfone, `kick` fecha o socket. `MemberRemoved` no
-`private-user.{id}` faz o app sair do servidor. Um token de voz emitido antes da expulsão
+`user.{id}` faz o app sair do servidor. Um token de voz emitido antes da expulsão
 ainda vale 60 s, então o `joined` de quem já não é membro dispara um `kick` na hora.
 
 ### 7. Login com Google no app
@@ -371,7 +418,6 @@ As duas chaves e o que acontece se trocar uma: [docs/AUTO-UPDATE.md](AUTO-UPDATE
 |---|---|---|
 | nginx | 80, 443 | TLS; distribui por caminho (visão geral) e serve `s3.unkvoid.com` para o MinIO |
 | Laravel (php-fpm 8.4) | atrás do nginx | cada deploy numa pasta nova; o `current` troca quando tudo está pronto |
-| Reverb | `127.0.0.1:8080` | pm2, **um** processo: dois precisariam de Redis para dividir quem escuta o quê |
 | SFU | `127.0.0.1:3000` + UDP | pm2, 7 workers (um por núcleo menos um) |
 | MySQL 8.4 | `127.0.0.1:3307` | Docker |
 | MinIO | `127.0.0.1:9000` | Docker; instaladores, fotos, ícones e o repositório APT |
@@ -394,8 +440,8 @@ larga: [docs/UDP.md](UDP.md). A máquina, as medições e o que desligar:
 
 | Workflow | Quando | O que faz |
 |---|---|---|
-| `deploy-web.yml` | push na `main` que mexe em `web/` | `infra/deploy-web.sh` no runner: release nova, migrations, recarrega o php-fpm, reinicia o Reverb |
-| `deploy-sfu.yml` | push na `main` que mexe em `sfu/` | build, lint e `install.sh`, que **espera a sala esvaziar** (até 30 min) antes de reiniciar |
+| `deploy-web.yml` | push na `main` que mexe em `web/` | `infra/deploy-web.sh` no runner: release nova, migrations, recarrega o php-fpm |
+| `deploy-sfu.yml` | push na `main` que mexe em `sfu/` | `git reset --hard` no clone da VPS, build, lint e `install.sh`, que **reinicia na hora** — quem está em chamada cai por alguns segundos |
 | `build-linux.yml` | push na `main` que mexe em `native/` | o `.deb`, publicado no APT |
 | `release.yml` | tag `v*` ou disparo manual | Windows e macOS nos runners do GitHub, publicados pela API assinada |
 
@@ -430,13 +476,12 @@ O que não está protegido, e por quê: [docs/SEGURANCA.md](SEGURANCA.md).
 | PLI | pedido de quadro-chave, mandado quando falta pacote |
 | ULID | o id dos canais: 26 caracteres, ordenável por tempo |
 | Sanctum | o token de API do Laravel que o app guarda |
-| Reverb | o servidor de WebSocket do Laravel, que fala o protocolo do Pusher |
 
 ## Onde está o resto
 
 | Arquivo | Para quê |
 |---|---|
-| [docs/CONTRATO.md](CONTRATO.md) | o contrato: rotas, token, ações e eventos do SFU, webhook, Reverb, comandos do Tauri |
+| [docs/CONTRATO.md](CONTRATO.md) | o contrato: rotas, token, ações e eventos do SFU, webhook, comandos do Tauri |
 | [docs/ESTADO.md](ESTADO.md) | o que só foi escrito sem rodar em hardware, o que falta, as perguntas abertas |
 | [docs/DECISOES.md](DECISOES.md) | o que foi decidido e por quê |
 | [docs/REDE.md](REDE.md) | o caminho da imagem e cada ajuste medido |

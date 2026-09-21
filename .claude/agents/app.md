@@ -22,8 +22,8 @@ por quadro e o contador `busyUs` existe para dizer quanto você gastou.
 ## O mapa
 
 ```
-native/crates/capture/   captura de tela, áudio do sistema, mic e câmera, por plataforma
-native/crates/media/     encoder por hardware, Opus, RTP puro (plain.rs), receptor SRTP
+native/shared/capture/   captura de tela, áudio do sistema, mic e câmera, por plataforma
+native/shared/media/     encoder por hardware, Opus, RTP puro (plain.rs), receptor SRTP
 native/apps/desktop/src-tauri/  comandos do Tauri: lib.rs (wiring), broadcast.rs (sessão de
                                 envio), watch.rs (recepção nativa), login.rs, logbook.rs
 native/apps/desktop/ui/core/        lógica sem DOM, uma classe por arquivo, estado numa Store:
@@ -119,7 +119,7 @@ jsdom sem abrir o app — um arquivo por área, e teste novo entra no do assunto
 `voice.test.ts` (voz, mic, retomada, `voice:level`), `chat.test.ts` (chat, imagem, mensagens
 diretas), `sfu-client.test.ts`, `broadcast.test.ts` (o `use_sfu` depois das declarações, a linha
 de números) e `components.test.tsx` (componentes React). Com a pilha local no ar, `npm run test:integration` roda os clientes do app contra
-Laravel, Reverb e SFU. A
+Laravel e SFU. A
 interface se testa clicando em `npm run dev` no navegador (a ponte do Tauri é fingida lá). Lógica
 nova em Rust deixa um teste unitário.
 

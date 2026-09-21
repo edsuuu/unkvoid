@@ -81,10 +81,14 @@ perguntas que esperam o dono. O histórico das sessões saiu do repositório e c
 5. Troque a qualidade no meio (720 → 1080): o seletor não abre de novo e a imagem muda.
 6. Pare de compartilhar: o indicador do sistema some. Compartilhe de novo e dê `kill -9` no
    app: o indicador também some.
-7. Com a transmissão no ar, `ls -l /proc/$(pgrep -f 'gst-launch.*DEFAULT_MONITOR')/fd`: o filho
+7. Com a transmissão no ar, `ls -l /proc/$(pgrep -f 'gst-launch.*monitor')/fd`: o filho
    do áudio **não** pode ter o socket do PipeWire.
-8. `UNKVOID_CAPTURE=x11` numa sessão Wayland e `UNKVOID_CAPTURE=portal` numa X11 do GNOME.
-9. Voz, no modo detecção de voz: falar abre e calar fecha o "falando", sem o aviso "parou de
+8. Com um app de chamada tocando (Discord, Vesktop) e um jogo com som: `pactl list sinks short`
+   mostra `unkvoid_share` enquanto a transmissão está no ar; quem assiste ouve o jogo e não a
+   chamada, e quem transmite continua ouvindo os dois. Ao parar, o sink some e
+   `pactl list sink-inputs` mostra tudo de volta na saída padrão.
+9. `UNKVOID_CAPTURE=x11` numa sessão Wayland e `UNKVOID_CAPTURE=portal` numa X11 do GNOME.
+10. Voz, no modo detecção de voz: falar abre e calar fecha o "falando", sem o aviso "parou de
    medir"; entrar mutado, esperar 40 s e desmutar não dá 404 nem `producerDead`.
 
 </details>
@@ -92,7 +96,7 @@ perguntas que esperam o dono. O histórico das sessões saiu do repositório e c
 ### As três peças
 
 - **Interface nova da 0.0.38** (imagem no chat, chat da voz, volume por pessoa, saída de áudio,
-  aviso "internet apertada"): passa nos testes unitários e na integração contra Laravel, Reverb,
+  aviso "internet apertada"): passa nos testes unitários e na integração contra Laravel,
   SFU e MinIO locais, mas **ninguém clicou** nela ainda, em sistema nenhum.
 - A interface em TypeScript (14/09/2026) ainda não abriu no app de verdade nos três sistemas.
 - Correções feitas pela leitura e pelo SFU, sem captura real (14/09/2026): compartilhar a tela
@@ -135,7 +139,7 @@ perguntas que esperam o dono. O histórico das sessões saiu do repositório e c
   o `rtpjitterbuffer` precisa de folga de pelo menos uma ida e volta para o pacote reenviado
   ainda servir — latência a mais para quem assiste no Linux. E fMP4 por MSE no lugar do MJPEG.
 - **Linux, voz:** volume e mudo por pessoa (a voz dos outros toca pelo Rust, fora do alcance do
-  `audio.volume`); DTX do Opus desligado em `crates/media/src/audio.rs` embora o `plain.rs`
+  `audio.volume`); DTX do Opus desligado em `shared/media/src/audio.rs` embora o `plain.rs`
   anuncie `usedtx` — o silêncio mutado custa ~21 kb/s no fio em vez de ~1.
 - **SFU, ingest puro atrás de NAT:** o `comedia` aprende o endereço no primeiro pacote e não
   reaprende; se o roteador trocar a porta no meio, a tela congela calada. **Um relógio no SFU não
@@ -174,7 +178,7 @@ contêiner é Xvfb).
 
 Cada uma com a recomendação de quem escreveu; nenhuma foi decidida.
 
-1. **Tempo real de quem foi expulso ou banido:** o Reverb 1.11 não derruba a assinatura de quem
+1. **Tempo real de quem foi expulso ou banido:** o SFU não derruba a inscrição de quem
    já estava inscrito; um cliente modificado segue recebendo até reconectar. Fechar fazendo os
    eventos não levarem conteúdo (o app busca pela API, que confere a permissão)? Muda o contrato.
    *Recomendação: sim, mas só quando houver outro motivo para mexer nos eventos — o app oficial
