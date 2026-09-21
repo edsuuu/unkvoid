@@ -250,13 +250,17 @@ mod daemon {
         let scratch = std::env::temp_dir().join("unkvoid-audio-test");
         std::fs::create_dir_all(&scratch).unwrap();
 
-        let mut players = Vec::new();
-
+        // Soltos pelo `sh`, e não filhos nossos: filho nosso é `gst-launch`, e fica de fora
+        // por regra. O jogo de verdade também não é filho do app.
         for name in ["Discord", "cs2"] {
             let path = scratch.join(name);
             std::fs::write(&path, &paplay).unwrap();
             std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-            players.push((name, Command::new(&path).args(["--raw", "/dev/zero"]).stdin(Stdio::null()).stderr(Stdio::null()).spawn().unwrap()));
+            Command::new("sh")
+                .arg("-c")
+                .arg(format!("{} --raw /dev/zero </dev/null >/dev/null 2>&1 &", path.display()))
+                .status()
+                .unwrap();
         }
 
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -283,8 +287,6 @@ mod daemon {
 
         assert!(!pactl(&["list", "sinks", "short"]).unwrap().contains(SINK), "o sink sumiu no fim");
 
-        for (_, mut player) in players {
-            let _ = player.kill();
-        }
+        let _ = Command::new("pkill").args(["-f", "unkvoid-audio-test"]).status();
     }
 }
