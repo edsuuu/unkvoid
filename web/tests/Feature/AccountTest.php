@@ -23,10 +23,10 @@ use Laravel\Socialite\Two\User as GoogleUser;
 use Livewire\Livewire;
 
 it('entra pela API e recebe um token', function (): void {
-    User::factory()->create(['email' => 'edson@unkvoid.test', 'password' => 'senha-forte-123']);
+    User::factory()->create(['email' => 'ada@unkvoid.test', 'password' => 'senha-forte-123']);
 
     $response = $this->postJson('/api/auth/login', [
-        'email' => 'edson@unkvoid.test',
+        'email' => 'ada@unkvoid.test',
         'password' => 'senha-forte-123',
         'device' => 'desktop-linux',
     ]);
@@ -35,13 +35,13 @@ it('entra pela API e recebe um token', function (): void {
 
     $token = $response->json('data.token');
 
-    $this->withToken($token)->getJson('/api/me')->assertOk()->assertJsonPath('data.email', 'edson@unkvoid.test');
+    $this->withToken($token)->getJson('/api/me')->assertOk()->assertJsonPath('data.email', 'ada@unkvoid.test');
 });
 
 it('recusa credenciais erradas na API com 401', function (): void {
-    User::factory()->create(['email' => 'edson@unkvoid.test', 'password' => 'senha-forte-123']);
+    User::factory()->create(['email' => 'ada@unkvoid.test', 'password' => 'senha-forte-123']);
 
-    $this->postJson('/api/auth/login', ['email' => 'edson@unkvoid.test', 'password' => 'x', 'device' => 'd'])
+    $this->postJson('/api/auth/login', ['email' => 'ada@unkvoid.test', 'password' => 'x', 'device' => 'd'])
         ->assertStatus(401)
         ->assertJsonPath('message', 'E-mail ou senha não conferem.');
 });
@@ -73,14 +73,14 @@ it('exige token para o /api/me', function (): void {
 });
 
 it('o cadastro pela API tira o apelido do e-mail, sem confirmar, e desempata quando já existe', function (): void {
-    User::factory()->create(['name' => 'edson.lima']);
+    User::factory()->create(['name' => 'ada.byron']);
 
-    $this->postJson('/api/auth/register', ['email' => 'Edson.Lima@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'd'])
+    $this->postJson('/api/auth/register', ['email' => 'Ada.Byron@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'd'])
         ->assertCreated()
-        ->assertJsonPath('data.user.name', 'edson.lima2')
+        ->assertJsonPath('data.user.name', 'ada.byron2')
         ->assertJsonPath('data.user.nickname_confirmed', false);
 
-    expect(User::query()->where('email', 'edson.lima@unkvoid.test')->firstOrFail()->nickname_confirmed_at)->toBeNull();
+    expect(User::query()->where('email', 'ada.byron@unkvoid.test')->firstOrFail()->nickname_confirmed_at)->toBeNull();
 });
 
 it('o /api/me diz se o apelido já foi confirmado', function (): void {
@@ -91,9 +91,9 @@ it('o /api/me diz se o apelido já foi confirmado', function (): void {
 it('escolhe o apelido pelo PATCH /api/me e confirma', function (): void {
     $user = User::factory()->unconfirmedNickname()->create(['name' => 'novo']);
 
-    $this->actingAs($user)->patchJson('/api/me', ['name' => 'edsu.dev'])
+    $this->actingAs($user)->patchJson('/api/me', ['name' => 'ada.dev'])
         ->assertOk()
-        ->assertJsonPath('data.name', 'edsu.dev')
+        ->assertJsonPath('data.name', 'ada.dev')
         ->assertJsonPath('data.nickname_confirmed', true);
 
     expect($user->fresh()?->hasConfirmedNickname())->toBeTrue();
@@ -109,17 +109,17 @@ it('ficar com o apelido automático também confirma', function (): void {
 });
 
 it('não troca o apelido de quem já confirmou', function (): void {
-    $user = User::factory()->create(['name' => 'edsu']);
+    $user = User::factory()->create(['name' => 'ada']);
 
     $this->actingAs($user)->patchJson('/api/me', ['name' => 'outro.nome'])
         ->assertForbidden()
         ->assertJsonPath('message', 'Você já escolheu o seu apelido.');
 
-    expect($user->fresh()?->name)->toBe('edsu');
+    expect($user->fresh()?->name)->toBe('ada');
 });
 
 it('o PATCH /api/me exige token', function (): void {
-    $this->patchJson('/api/me', ['name' => 'edsu'])->assertUnauthorized();
+    $this->patchJson('/api/me', ['name' => 'ada'])->assertUnauthorized();
 });
 
 it('abre as telas de entrar e de criar conta', function (): void {
@@ -128,10 +128,10 @@ it('abre as telas de entrar e de criar conta', function (): void {
 });
 
 it('entra com e-mail e senha pelo site', function (): void {
-    $user = User::factory()->create(['email' => 'edson@unkvoid.test', 'password' => 'senha-forte-123']);
+    $user = User::factory()->create(['email' => 'ada@unkvoid.test', 'password' => 'senha-forte-123']);
 
     Livewire::test(Login::class)
-        ->set('email', 'Edson@unkvoid.test')
+        ->set('email', 'Ada@unkvoid.test')
         ->set('password', 'senha-forte-123')
         ->call('login')
         ->assertHasNoErrors()
@@ -141,10 +141,10 @@ it('entra com e-mail e senha pelo site', function (): void {
 });
 
 it('recusa senha errada sem dizer qual campo errou', function (): void {
-    User::factory()->create(['email' => 'edson@unkvoid.test', 'password' => 'senha-forte-123']);
+    User::factory()->create(['email' => 'ada@unkvoid.test', 'password' => 'senha-forte-123']);
 
     Livewire::test(Login::class)
-        ->set('email', 'edson@unkvoid.test')
+        ->set('email', 'ada@unkvoid.test')
         ->set('password', 'outra')
         ->call('login')
         ->assertHasErrors(['email']);
@@ -154,7 +154,7 @@ it('recusa senha errada sem dizer qual campo errou', function (): void {
 
 it('cria a conta pelo site e já entra', function (): void {
     Livewire::test(Register::class)
-        ->set('name', 'Edson')
+        ->set('name', 'Ada')
         ->set('email', 'novo@unkvoid.test')
         ->set('password', 'senha-forte-123')
         ->set('password_confirmation', 'senha-forte-123')
@@ -197,18 +197,18 @@ it('redireciona para o Google', function (): void {
 });
 
 it('cria a conta na primeira entrada com o Google', function (): void {
-    Socialite::shouldReceive('driver->user')->andReturn(googleUser('g-1', 'Edson@Unkvoid.test', 'Edson'));
+    Socialite::shouldReceive('driver->user')->andReturn(googleUser('g-1', 'Ada@Unkvoid.test', 'Ada'));
 
     $this->get(route('oauth2.google.callback'))->assertRedirect(route('home', absolute: false));
 
     $this->assertAuthenticated();
-    $this->assertDatabaseHas('users', ['email' => 'edson@unkvoid.test', 'google_id' => 'g-1']);
+    $this->assertDatabaseHas('users', ['email' => 'ada@unkvoid.test', 'google_id' => 'g-1']);
     expect(User::query()->firstOrFail()->hasConfirmedNickname())->toBeFalse();
 });
 
 it('vincula o Google a uma conta que já existia pelo e-mail', function (): void {
-    $existing = User::factory()->create(['email' => 'edson@unkvoid.test']);
-    Socialite::shouldReceive('driver->user')->andReturn(googleUser('g-2', 'edson@unkvoid.test', 'Edson'));
+    $existing = User::factory()->create(['email' => 'ada@unkvoid.test']);
+    Socialite::shouldReceive('driver->user')->andReturn(googleUser('g-2', 'ada@unkvoid.test', 'Ada'));
 
     $this->get(route('oauth2.google.callback'));
 
@@ -257,9 +257,9 @@ it('quem entra com o e-mail do dono vira administrador', function (): void {
 
 it('manda o link de redefinição por e-mail e não revela se a conta existe', function (): void {
     Notification::fake();
-    $user = User::factory()->create(['email' => 'edson@unkvoid.test']);
+    $user = User::factory()->create(['email' => 'ada@unkvoid.test']);
 
-    Livewire::test(ForgotPassword::class)->set('email', 'edson@unkvoid.test')->call('send')->assertSet('sent', true);
+    Livewire::test(ForgotPassword::class)->set('email', 'ada@unkvoid.test')->call('send')->assertSet('sent', true);
     Livewire::test(ForgotPassword::class)->set('email', 'ninguem@unkvoid.test')->call('send')->assertSet('sent', true);
 
     Notification::assertSentTo($user, ResetPasswordNotification::class);
@@ -267,12 +267,12 @@ it('manda o link de redefinição por e-mail e não revela se a conta existe', f
 });
 
 it('redefine a senha com o token e já entra', function (): void {
-    $user = User::factory()->create(['email' => 'edson@unkvoid.test']);
+    $user = User::factory()->create(['email' => 'ada@unkvoid.test']);
     $token = Password::broker()->createToken($user);
 
-    $this->get(route('password.reset', ['token' => $token, 'email' => 'edson@unkvoid.test']))->assertOk()->assertSee('Nova senha');
+    $this->get(route('password.reset', ['token' => $token, 'email' => 'ada@unkvoid.test']))->assertOk()->assertSee('Nova senha');
 
-    Livewire::test(ResetPassword::class, ['token' => $token, 'email' => 'edson@unkvoid.test'])
+    Livewire::test(ResetPassword::class, ['token' => $token, 'email' => 'ada@unkvoid.test'])
         ->set('password', 'senha-nova-123')
         ->set('password_confirmation', 'senha-nova-123')
         ->call('save')
@@ -284,9 +284,9 @@ it('redefine a senha com o token e já entra', function (): void {
 });
 
 it('recusa um token inválido', function (): void {
-    User::factory()->create(['email' => 'edson@unkvoid.test']);
+    User::factory()->create(['email' => 'ada@unkvoid.test']);
 
-    Livewire::test(ResetPassword::class, ['token' => 'lixo', 'email' => 'edson@unkvoid.test'])
+    Livewire::test(ResetPassword::class, ['token' => 'lixo', 'email' => 'ada@unkvoid.test'])
         ->set('password', 'senha-nova-123')
         ->set('password_confirmation', 'senha-nova-123')
         ->call('save')
@@ -297,7 +297,7 @@ it('manda boas-vindas ao criar a conta pelo site e pela API', function (): void 
     Notification::fake();
 
     Livewire::test(Register::class)
-        ->set('name', 'edson.site')->set('email', 'site@unkvoid.test')
+        ->set('name', 'ada.site')->set('email', 'site@unkvoid.test')
         ->set('password', 'senha-forte-123')->set('password_confirmation', 'senha-forte-123')
         ->call('register');
 
@@ -310,19 +310,19 @@ it('manda boas-vindas ao criar a conta pelo site e pela API', function (): void 
 it('avisa de um novo acesso pelo site, pela API e pelo Google', function (): void {
     Notification::fake();
     $password = Str::random(16);
-    $user = User::factory()->create(['email' => 'edson@unkvoid.test', 'password' => $password]);
+    $user = User::factory()->create(['email' => 'ada@unkvoid.test', 'password' => $password]);
 
     // Cada porta vem de um navegador diferente, que é o que acontece de verdade: o site num
     // navegador, o app com o `User-Agent` dele, e o Google de volta por uma aba.
     $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.1', 'HTTP_USER_AGENT' => 'Firefox']);
-    Livewire::test(Login::class)->set('email', 'edson@unkvoid.test')->set('password', $password)->call('login');
+    Livewire::test(Login::class)->set('email', 'ada@unkvoid.test')->set('password', $password)->call('login');
 
     $this->withHeader('User-Agent', 'Unkvoid/1.0')
-        ->postJson('/api/auth/login', ['email' => 'edson@unkvoid.test', 'password' => $password, 'device' => 'notebook'])
+        ->postJson('/api/auth/login', ['email' => 'ada@unkvoid.test', 'password' => $password, 'device' => 'notebook'])
         ->assertOk();
 
     $googleUser = new GoogleUser;
-    $googleUser->map(['id' => 'g-9', 'email' => 'edson@unkvoid.test', 'name' => 'Edson', 'avatar' => null]);
+    $googleUser->map(['id' => 'g-9', 'email' => 'ada@unkvoid.test', 'name' => 'Ada', 'avatar' => null]);
     Socialite::shouldReceive('driver->user')->andReturn($googleUser);
     $this->withHeader('User-Agent', 'Chrome')->get(route('oauth2.google.callback'));
 
@@ -332,10 +332,10 @@ it('avisa de um novo acesso pelo site, pela API e pelo Google', function (): voi
 it('não avisa de novo quando o acesso vem do mesmo lugar de antes', function (): void {
     Notification::fake();
     $password = Str::random(16);
-    $user = User::factory()->create(['email' => 'edson@unkvoid.test', 'password' => $password]);
+    $user = User::factory()->create(['email' => 'ada@unkvoid.test', 'password' => $password]);
 
     $entrar = fn (): TestResponse => $this->withHeader('User-Agent', 'Unkvoid/1.0')
-        ->postJson('/api/auth/login', ['email' => 'edson@unkvoid.test', 'password' => $password, 'device' => 'notebook']);
+        ->postJson('/api/auth/login', ['email' => 'ada@unkvoid.test', 'password' => $password, 'device' => 'notebook']);
 
     $entrar()->assertOk();
     $entrar()->assertOk();
@@ -346,48 +346,48 @@ it('não avisa de novo quando o acesso vem do mesmo lugar de antes', function ()
 
     // De outro computador, avisa — que é o caso que importa.
     $this->withHeader('User-Agent', 'Outro navegador')
-        ->postJson('/api/auth/login', ['email' => 'edson@unkvoid.test', 'password' => $password, 'device' => 'desktop'])
+        ->postJson('/api/auth/login', ['email' => 'ada@unkvoid.test', 'password' => $password, 'device' => 'desktop'])
         ->assertOk();
 
     Notification::assertSentToTimes($user, NewLoginNotification::class, 2);
 });
 
 it('renderiza os três e-mails em HTML com o desenho do site', function (): void {
-    $user = User::factory()->create(['name' => 'Edson', 'email' => 'edson@unkvoid.test']);
+    $user = User::factory()->create(['name' => 'Ada', 'email' => 'ada@unkvoid.test']);
 
     $welcome = (new WelcomeNotification)->toMail($user)->render();
-    expect((string) $welcome)->toContain('Bem-vindo, Edson.')->toContain('<table')->toContain('unkvoid-mark.png')->toContain('#06050a');
+    expect((string) $welcome)->toContain('Bem-vindo, Ada.')->toContain('<table')->toContain('unkvoid-mark.png')->toContain('#06050a');
 
     $login = new NewLoginNotification('site', '203.0.113.9', 'Firefox')->toMail($user)->render();
     expect((string) $login)->toContain('Novo acesso')->toContain('203.0.113.9')->toContain(route('password.request'));
 
     $reset = new ResetPasswordNotification('abc')->toMail($user)->render();
-    expect((string) $reset)->toContain('Redefinir')->toContain(route('password.reset', ['token' => 'abc', 'email' => 'edson@unkvoid.test']));
+    expect((string) $reset)->toContain('Redefinir')->toContain(route('password.reset', ['token' => 'abc', 'email' => 'ada@unkvoid.test']));
 });
 
 it('o apelido e unico e nao aceita espaco', function (): void {
-    User::factory()->create(['name' => 'edsu']);
+    User::factory()->create(['name' => 'ada']);
     $user = User::factory()->unconfirmedNickname()->create(['name' => 'outro']);
 
-    $this->actingAs($user)->patchJson('/api/me', ['name' => 'edsu'])
+    $this->actingAs($user)->patchJson('/api/me', ['name' => 'ada'])
         ->assertStatus(422)
         ->assertJsonPath('errors.name.0', 'Esse apelido já é de outra pessoa.');
 
-    $this->actingAs($user)->patchJson('/api/me', ['name' => 'edsu lima'])
+    $this->actingAs($user)->patchJson('/api/me', ['name' => 'ada byron'])
         ->assertStatus(422)
         ->assertJsonPath('errors.name.0', 'O apelido aceita letras, números, ponto e _ — sem espaço.');
 
     expect($user->fresh()?->hasConfirmedNickname())->toBeFalse();
 
-    $this->actingAs($user)->patchJson('/api/me', ['name' => 'edsu.dois'])->assertOk();
+    $this->actingAs($user)->patchJson('/api/me', ['name' => 'ada.dois'])->assertOk();
 });
 
 it('o login pelo google vira apelido sem espaco, e desempata quando ja existe', function (): void {
-    expect(User::freeNickname('Edson Lima'))->toBe('edsonlima');
+    expect(User::freeNickname('Ada Byron'))->toBe('adabyron');
 
-    User::factory()->create(['name' => 'edsonlima']);
+    User::factory()->create(['name' => 'adabyron']);
 
-    expect(User::freeNickname('Edson Lima'))->toBe('edsonlima2');
+    expect(User::freeNickname('Ada Byron'))->toBe('adabyron2');
     expect(User::freeNickname('Çá'))->toBe('pessoa');
 });
 
