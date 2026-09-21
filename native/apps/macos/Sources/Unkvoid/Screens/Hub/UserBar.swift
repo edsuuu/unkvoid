@@ -41,17 +41,17 @@ struct UserBar: View {
                         .foregroundStyle(Theme.ink)
                         .lineLimit(1)
 
-                    Text(status)
+                    Text("Online")
                         .font(Theme.sans(10.5))
                         .foregroundStyle(Theme.inkDim)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                device(.microphone, icon: micOff ? .micOff : .mic, off: micOff, enabled: inVoice && model.mine.canSpeak, hint: micHint, choose: "Escolher o microfone") {
+                device(.microphone, icon: micOff ? .micOff : .mic, off: micOff, enabled: !inVoice || model.mine.canSpeak, hint: micHint, choose: "Escolher o microfone") {
                     Task { await model.toggleMute() }
                 }
 
-                device(.speaker, icon: model.deafened ? .headphonesOff : .headphones, off: model.deafened, enabled: inVoice, hint: model.deafened ? "Voltar a ouvir" : "Ensurdecer: não ouvir ninguém", choose: "Escolher a saída de áudio") {
+                device(.speaker, icon: model.deafened ? .headphonesOff : .headphones, off: model.deafened, enabled: true, hint: model.deafened ? "Voltar a ouvir" : "Ensurdecer: não ouvir ninguém", choose: "Escolher a saída de áudio") {
                     Task { await model.toggleDeafen() }
                 }
 
@@ -72,27 +72,11 @@ struct UserBar: View {
     }
 
     private var micOff: Bool {
-        inVoice && (!model.mine.mic || model.mine.micMuted || !model.mine.canSpeak)
+        inVoice ? !model.mine.mic || model.mine.micMuted || !model.mine.canSpeak : model.mutedAtRest
     }
 
     private var speaking: Bool {
         inVoice && !micOff && model.micLevel > 0.02
-    }
-
-    private var status: String {
-        guard inVoice else {
-            return "Online"
-        }
-
-        if model.deafened {
-            return "Surdo"
-        }
-
-        if !model.mine.canSpeak || micOff {
-            return "Mudo"
-        }
-
-        return speaking ? "Falando" : "Microfone aberto"
     }
 
     private var micHint: String {
@@ -149,7 +133,7 @@ struct UserBar: View {
                                 .strokeBorder(model.mine.camera ? Theme.brand.opacity(0.6) : Theme.lineStrong, lineWidth: 1)
                         )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pointer)
                 .disabled(!model.mine.canVideo)
                 .opacity(model.mine.canVideo ? 1 : 0.4)
                 .help(model.mine.camera ? "Desligar a câmera" : "Ligar a câmera")
@@ -186,7 +170,7 @@ struct UserBar: View {
                         .strokeBorder(model.mine.sharing ? Theme.brand.opacity(0.6) : Theme.lineStrong, lineWidth: 1)
                 )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointer)
             .disabled(model.shareStarting || !model.mine.canShare)
             .opacity(model.mine.canShare ? 1 : 0.4)
             .help(model.mine.canShare ? "Compartilhar tela" : "Você não tem permissão para transmitir neste canal")
@@ -207,17 +191,10 @@ struct UserBar: View {
             SmallButton(icon: icon, active: false, danger: off, ringed: picker == .microphone && speaking, hint: hint, action: action)
                 .disabled(!enabled)
 
-            Button {
+            Chevron(open: open == picker, hint: choose) {
                 model.refreshDevices()
                 open = open == picker ? nil : picker
-            } label: {
-                Icon(name: .chevronDown, size: 11)
-                    .foregroundStyle(open == picker ? Theme.inkStrong : Theme.inkDim)
-                    .frame(width: 14, height: 26)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help(choose)
         }
     }
 
@@ -265,18 +242,44 @@ private struct SmallButton: View {
 
     var body: some View {
         Button(action: action) {
-            Icon(name: icon, size: 15)
-                .foregroundStyle(danger ? Theme.danger : ringed ? Theme.online : active ? Theme.inkStrong : Theme.inkIcon)
-                .frame(width: 26, height: 26)
+            Icon(name: icon, size: 16.5)
+                .scaleEffect(hovering ? 1.12 : 1)
+                .foregroundStyle(danger ? Theme.danger : ringed ? Theme.online : active || hovering ? Theme.inkStrong : Theme.inkIcon)
+                .frame(width: 28, height: 28)
                 .background(active || hovering ? Theme.row : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .strokeBorder(ringed ? Theme.online.opacity(0.6) : .clear, lineWidth: 1)
                 )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
         .opacity(enabled ? 1 : 0.4)
         .onHover { hovering = $0 && enabled }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .help(hint)
+    }
+}
+
+/// A setinha ao lado do microfone e do fone: acende e cresce sob o mouse, como o botão dela.
+private struct Chevron: View {
+    var open: Bool
+    var hint: String
+    var action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Icon(name: .chevronDown, size: 12.5)
+                .scaleEffect(hovering ? 1.15 : 1)
+                .foregroundStyle(open || hovering ? Theme.inkStrong : Theme.inkDim)
+                .frame(width: 18, height: 28)
+                .background(open || hovering ? Theme.row : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.pointer)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
         .help(hint)
     }
 }
@@ -329,7 +332,7 @@ private struct DeviceRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(hovering ? Theme.row : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
         .onHover { hovering = $0 }
     }
 }

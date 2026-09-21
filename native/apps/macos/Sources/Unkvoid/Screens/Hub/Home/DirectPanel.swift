@@ -24,7 +24,7 @@ struct DirectPanel: View {
                     } label: {
                         Icon(name: .close, size: 14).foregroundStyle(Theme.inkDim)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pointer)
                     .help("Fechar a conversa")
                 }
 

@@ -27,7 +27,7 @@ struct PeopleMenu: View {
             .background(Theme.row, in: Capsule())
             .overlay(Capsule().strokeBorder(Theme.lineStrong, lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
         .help("Quem está na sala")
         .popover(isPresented: $open, arrowEdge: .bottom) {
             PopoverBox(width: 288) {

@@ -256,7 +256,7 @@ private struct InviteBanner: View {
             } label: {
                 Icon(name: .close, size: 14).foregroundStyle(Theme.inkDim)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointer)
             .help("Fechar")
         }
         .padding(.horizontal, 16)
@@ -360,7 +360,7 @@ private struct VoiceToolbar: View {
                     .frame(width: 34, height: 34)
                     .background(Theme.danger, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointer)
             .help("Sair da voz")
         }
         .padding(.horizontal, 12)
@@ -412,7 +412,7 @@ private struct UpdateBanner: View {
             } label: {
                 Icon(name: .close, size: 14).foregroundStyle(Theme.inkDim)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointer)
             .help("Agora não")
         }
         .padding(.horizontal, 16)

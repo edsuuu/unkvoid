@@ -121,7 +121,7 @@ struct UserSettingsModal: View {
                     .overlay(Circle().strokeBorder(Theme.inkDim, lineWidth: 1.5))
                     .contentShape(Circle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointer)
             .accessibilityLabel("Fechar as configurações")
 
             Text("ESC").labelMono()
@@ -144,7 +144,7 @@ struct UserSettingsModal: View {
             .rowItem(selected: selected)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
     }
 
     private func close() {
@@ -177,7 +177,7 @@ private struct AccountTab: View {
                             }
                         }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pointer)
                 .disabled(busy)
                 .help("Trocar a sua foto")
 
@@ -190,7 +190,7 @@ private struct AccountTab: View {
                         Button("Remover a foto") {
                             Task { await model.removeAvatar() }
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.pointer)
                         .font(Theme.sans(11.5))
                         .foregroundStyle(Theme.inkDim)
                     }
@@ -271,7 +271,7 @@ private struct VoiceTab: View {
                     .rowItem(selected: preferences.inputMode == mode)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pointer)
             }
 
             if preferences.inputMode == "voice" {
@@ -367,7 +367,7 @@ private struct VoiceTab: View {
             .background(on ? Theme.brand.opacity(0.2) : Theme.row, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(on ? Theme.brand.opacity(0.5) : Theme.lineStrong, lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
     }
 }
 
@@ -459,7 +459,7 @@ struct KeybindField: View {
                     .background(Theme.fieldFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(capturing ? Theme.brand.opacity(0.6) : Theme.fieldLine, lineWidth: 1))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointer)
 
             if !refused.isEmpty {
                 Text(refused)
@@ -556,7 +556,7 @@ struct NicknameModal: View {
             Button("Sair da conta") {
                 Task { await model.signOut() }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointer)
             .font(Theme.sans(12.5))
             .foregroundStyle(Theme.inkDim)
 

@@ -56,7 +56,7 @@ struct ServerSettingsModal: View {
                                 .rowItem(selected: shown == item)
                                 .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.pointer)
                         }
                     }
                     .frame(width: 170)
@@ -79,7 +79,7 @@ struct ServerSettingsModal: View {
                 Button(model.abilities.owner ? "Excluir servidor" : "Sair do servidor") {
                     model.abilities.owner ? model.deleteServer() : model.leaveServer()
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pointer)
                 .font(Theme.sans(12.5))
                 .foregroundStyle(Theme.inkDim)
 
@@ -152,7 +152,7 @@ private struct OverviewTab: View {
                                 }
                             }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pointer)
                     .disabled(!manage || busy)
                     .help(manage ? "Trocar o ícone do servidor" : "Só quem gerencia o servidor troca o ícone")
 
@@ -167,7 +167,7 @@ private struct OverviewTab: View {
                             Button("Remover o ícone") {
                                 Task { await model.removeServerIcon() }
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.pointer)
                             .font(Theme.sans(11.5))
                             .foregroundStyle(Theme.inkDim)
                         }
@@ -234,7 +234,7 @@ private struct MembersTab: View {
                     } label: {
                         row(member, in: tree)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pointer)
                 }
             }
         }

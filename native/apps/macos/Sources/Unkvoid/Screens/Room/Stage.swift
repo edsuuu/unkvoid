@@ -321,7 +321,7 @@ private struct StreamTile: View {
             Button("Voltar ao padrão") {
                 model.imageFilters[keyPath: look] = ImageFilters.Look()
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointer)
             .font(Theme.sans(11.5))
             .foregroundStyle(Theme.inkDim)
             .padding(.top, 4)

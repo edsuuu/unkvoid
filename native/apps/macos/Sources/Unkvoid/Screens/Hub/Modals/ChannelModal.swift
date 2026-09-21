@@ -213,7 +213,7 @@ private struct OverwriteGrid: View {
                 .frame(width: 42, height: 22)
                 .background(state == "allow" ? Theme.online : state == "deny" ? Theme.danger : Theme.row, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
     }
 }
 

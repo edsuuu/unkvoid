@@ -14,6 +14,11 @@ extension AppModel {
         tiles = decode(now["tiles"]) ?? []
         pendingTiles = decode(now["pending"]) ?? []
         mine = decode(now["mine"]) ?? Mine()
+
+        // Quem ensurdeceu fora da sala entra surdo: a sala nova nasce ouvindo.
+        if deafened {
+            _ = await ask("deafen", ["deafened": true])
+        }
     }
 
     /// Entrar num canal de voz: a mesma sala, com o token de 60 s que o Laravel assina. Quem
@@ -99,10 +104,10 @@ extension AppModel {
         pendingTiles = []
         fullscreenTile = nil
         tileVolumes = [:]
+        mutedAtRest = mine.mic && mine.micMuted
         mine = Mine()
         ping = nil
         reconnecting = false
-        deafened = false
         micLevel = 0
         focusedTile = nil
         heardTiles = []
@@ -403,12 +408,18 @@ extension AppModel {
             return
         }
 
-        if voicePreferences.muteOnJoin {
+        if voicePreferences.muteOnJoin || mutedAtRest {
             _ = await ask("muteMicrophone", ["muted": true])
         }
     }
 
     func toggleMute() async {
+        guard screen == .room || voiceChannel != nil else {
+            mutedAtRest.toggle()
+
+            return
+        }
+
         guard mine.mic else {
             await openMicrophone()
 

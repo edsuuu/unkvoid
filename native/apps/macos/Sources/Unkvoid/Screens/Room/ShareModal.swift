@@ -46,7 +46,7 @@ struct ShareModal: View {
             Button("Cancelar") {
                 model.shareOpen = false
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointer)
             .font(Theme.sans(13.5))
             .foregroundStyle(Theme.inkDim)
             .padding(.horizontal, 14)
@@ -131,7 +131,7 @@ struct ShareModal: View {
                     .strokeBorder(chosen ? Theme.brand.opacity(0.45) : Theme.line, lineWidth: 1)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
     }
 
     private func tab(_ label: String, _ value: String) -> some View {
@@ -140,7 +140,7 @@ struct ShareModal: View {
         return Button(label) {
             model.shareTab = value
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
         .font(Theme.sans(12.5, .medium))
         .foregroundStyle(chosen ? Theme.inkStrong : Theme.inkDim)
         .padding(.horizontal, 12)

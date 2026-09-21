@@ -157,7 +157,7 @@ struct ServersHome: View {
                     .rowItem()
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pointer)
             }
         }
         .padding(20)

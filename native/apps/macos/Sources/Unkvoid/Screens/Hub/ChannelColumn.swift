@@ -125,7 +125,7 @@ private struct TextChannelRow: View {
             .rowItem(selected: active)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
         .contextMenu {
             if model.abilities.allows("manageChannels") {
                 Button("Editar canal") {
@@ -164,7 +164,7 @@ private struct VoiceChannelRow: View {
                     }
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pointer)
                 .help(here ? "Ping \(model.ping.map(String.init) ?? "--") ms" : "Entrar na voz")
 
                 if model.voiceTarget == channel.id || (here && model.reconnecting) {
@@ -176,7 +176,7 @@ private struct VoiceChannelRow: View {
                     } label: {
                         Icon(name: .focus, size: 11).foregroundStyle(Theme.lilac2)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pointer)
                     .frame(width: 22, height: 22)
                     .background(Theme.brand.opacity(0.15), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Theme.brand.opacity(0.35), lineWidth: 1))
@@ -249,7 +249,7 @@ private struct VoiceChannelRow: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointer)
             .disabled(member == nil)
             .help(member == nil ? person.name : "Ações do membro")
 
@@ -278,7 +278,7 @@ private struct VoiceChannelRow: View {
                     .padding(.vertical, 2)
                     .background(Theme.danger, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pointer)
                 .help(here ? "Assistir transmissão — abre aqui do lado" : "Assistir transmissão — entra na voz e abre ao lado")
             }
         }

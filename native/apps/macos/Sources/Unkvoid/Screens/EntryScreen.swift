@@ -153,7 +153,7 @@ private struct AuthCard: View {
                 .padding(12)
                 .background(.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointer)
             .disabled(model.googleWaiting)
 
             DividerOr()
@@ -197,7 +197,7 @@ private struct AuthCard: View {
                 Button(registering ? "Entrar" : "Criar conta") {
                     registering.toggle()
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pointer)
                 .foregroundStyle(Color(hex: 0x9A9CFF))
                 .underline()
             }

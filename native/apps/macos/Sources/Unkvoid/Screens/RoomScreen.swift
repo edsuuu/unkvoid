@@ -22,7 +22,7 @@ struct RoomScreen: View {
                     } label: {
                         Icon(name: .close, size: 14)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pointer)
                 }
                 .foregroundStyle(Theme.danger)
                 .padding(.horizontal, 16)
@@ -73,7 +73,7 @@ private struct RoomToolbar: View {
                 }
                 .codeChip(size: 12)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointer)
             .help("Copiar o código para mandar a alguém")
 
             PeopleMenu()
@@ -198,7 +198,7 @@ private struct ShareButton: View {
                     .frame(height: 34)
                     .background(Theme.danger, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointer)
             .help("Parar de transmitir")
         }
     }

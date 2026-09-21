@@ -177,7 +177,7 @@ struct MenuRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(hovering ? Theme.row : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
         .onHover { hovering = $0 }
     }
 }
@@ -227,7 +227,7 @@ struct ModalFrame<Body: View, Footer: View>: View {
                                 .foregroundStyle(Theme.inkDim)
                                 .padding(4)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.pointer)
                     }
                 }
                 .padding(.horizontal, 24)

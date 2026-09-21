@@ -224,6 +224,6 @@ struct MemberMenu: View {
                 .padding(.horizontal, 10)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
     }
 }

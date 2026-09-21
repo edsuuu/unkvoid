@@ -32,7 +32,7 @@ struct FriendsPanel: View {
                         .padding(.vertical, 7)
                         .background(tab == key ? Theme.row : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pointer)
                 }
 
                 Spacer(minLength: 0)

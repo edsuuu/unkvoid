@@ -40,7 +40,7 @@ struct MemberList: View {
         } label: {
             line(member, tint: tint)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
         .help("Ações do membro")
     }
 

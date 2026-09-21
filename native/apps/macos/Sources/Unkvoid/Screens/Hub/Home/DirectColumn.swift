@@ -77,7 +77,7 @@ struct DirectColumn: View {
             .rowItem(selected: selected)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
     }
 
     private func row(_ conversation: DirectConversation) -> some View {
@@ -107,7 +107,7 @@ struct DirectColumn: View {
             .rowItem(selected: model.directPerson?.id == conversation.id)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
     }
 }
 

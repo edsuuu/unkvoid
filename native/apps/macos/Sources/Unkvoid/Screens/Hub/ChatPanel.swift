@@ -108,7 +108,7 @@ struct ChatPanel: View {
                     Button(action: onClose) {
                         Icon(name: .close, size: 14).foregroundStyle(Theme.inkDim)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pointer)
                     .help("Fechar o chat")
                 }
             }
@@ -202,7 +202,7 @@ struct ChatPanel: View {
             } label: {
                 Icon(name: .close, size: 13).foregroundStyle(Theme.inkDim)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointer)
             .help("Cancelar a resposta")
         }
         .font(Theme.sans(12))
@@ -233,7 +233,7 @@ struct ChatPanel: View {
                             .background(Theme.popoverFill, in: Circle())
                             .overlay(Circle().strokeBorder(Theme.lineStrong, lineWidth: 1))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pointer)
                     .offset(x: 6, y: -6)
                     .help("Tirar a imagem")
                 }
@@ -346,6 +346,7 @@ private struct MessageRow: View {
     var open: (URL) -> Void
 
     @State private var hovering = false
+    @State private var menuOpen = false
     @State private var editing = false
     @State private var draft = ""
     @FocusState private var writing: Bool
@@ -447,16 +448,16 @@ private struct MessageRow: View {
                     pictures(files)
                 }
             }
+
+            // Os três pontinhos têm lugar próprio na linha: o texto quebra antes deles, e nada
+            // fica por cima do que a pessoa escreveu.
+            more(mine: mine)
+                .opacity((hovering || menuOpen) && !editing ? 1 : 0)
         }
-        .padding(.vertical, 1)
+        .padding(.vertical, 2)
         .padding(.horizontal, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(hovering ? Theme.row.opacity(0.5) : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(alignment: .topTrailing) {
-            if hovering, !editing {
-                actions(mine: mine)
-            }
-        }
+        .background(hovering || menuOpen ? Color.white.opacity(0.03) : .clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .onHover { hovering = $0 }
     }
 
@@ -477,43 +478,49 @@ private struct MessageRow: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.lineStrong, lineWidth: 1))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pointer)
                 }
             }
         }
         .padding(.top, 4)
     }
 
-    private func actions(mine: Bool) -> some View {
-        HStack(spacing: 4) {
-            if chat.canSend {
-                action(.arrowLeft, "Responder") { chat.replyTo = message }
-            }
-
-            if mine, !message.body.isEmpty {
-                action(.edit, "Editar") {
-                    draft = message.body
-                    editing = true
-                    writing = true
-                }
-            }
-
-            if chat.canDelete(message) {
-                action(.trash, "Apagar") {
-                    Task { await chat.delete(message) }
-                }
-            }
-        }
-        .padding(.trailing, 4)
-        .offset(y: -6)
-    }
-
-    private func action(_ icon: IconName, _ hint: String, _ work: @escaping () -> Void) -> some View {
-        Button(action: work) {
-            Icon(name: icon, size: 12)
+    private func more(mine: Bool) -> some View {
+        Button {
+            menuOpen.toggle()
+        } label: {
+            Icon(name: .dots, size: 14)
         }
         .buttonStyle(IconButton(side: 26, radius: 8))
-        .help(hint)
+        .help("Opções da mensagem")
+        .popover(isPresented: $menuOpen, arrowEdge: .bottom) {
+            PopoverBox(width: 180) {
+                if chat.canSend {
+                    option(.arrowLeft, "Responder") { chat.replyTo = message }
+                }
+
+                if mine, !message.body.isEmpty {
+                    option(.edit, "Editar") {
+                        draft = message.body
+                        editing = true
+                        writing = true
+                    }
+                }
+
+                if chat.canDelete(message) {
+                    option(.trash, "Apagar", tint: Theme.danger) {
+                        Task { await chat.delete(message) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func option(_ icon: IconName, _ label: String, tint: Color = Theme.inkIcon, _ work: @escaping () -> Void) -> some View {
+        MenuRow(icon: icon, label: label, tint: tint) {
+            menuOpen = false
+            work()
+        }
     }
 }
 

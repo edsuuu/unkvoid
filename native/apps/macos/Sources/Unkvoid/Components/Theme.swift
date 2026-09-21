@@ -157,6 +157,7 @@ struct PrimaryButton: ButtonStyle {
             .brightness(configuration.isPressed ? -0.05 : 0)
             .scaleEffect(configuration.isPressed ? 0.99 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .pointerCursor()
     }
 }
 
@@ -174,6 +175,31 @@ struct DangerButton: ButtonStyle {
                     .strokeBorder(Theme.danger.opacity(0.35), lineWidth: 1)
             )
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .pointerCursor()
+    }
+}
+
+/// O `.plain` do sistema com o `cursor: pointer` que todo botão do React tem.
+struct PointerButton: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.75 : 1)
+            .pointerCursor()
+    }
+}
+
+extension ButtonStyle where Self == PointerButton {
+    static var pointer: PointerButton { PointerButton() }
+}
+
+extension View {
+    /// A mãozinha sobre o que clica. O macOS 14 não tem `pointerStyle`: é o `NSCursor` na
+    /// entrada e na saída do mouse. `set`, e não `push`/`pop`: o botão que some debaixo do
+    /// mouse (um modal que fecha) nunca avisa a saída, e a pilha ficaria com a mão para sempre.
+    func pointerCursor() -> some View {
+        onHover { inside in
+            (inside ? NSCursor.pointingHand : NSCursor.arrow).set()
+        }
     }
 }
 
@@ -193,6 +219,7 @@ struct GhostButton: ButtonStyle {
                     .strokeBorder(Theme.lineStrong, lineWidth: 1)
             )
             .opacity(configuration.isPressed ? 0.8 : 1)
+            .pointerCursor()
     }
 }
 
@@ -220,6 +247,7 @@ struct IconButton: ButtonStyle {
             )
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .pointerCursor()
     }
 
     private var background: AnyShapeStyle {

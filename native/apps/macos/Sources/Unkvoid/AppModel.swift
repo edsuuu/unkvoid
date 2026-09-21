@@ -166,6 +166,9 @@ final class AppModel: ObservableObject {
     @Published var mine = Mine()
     @Published var reconnecting = false
     @Published var deafened = false
+    /// Mudo escolhido fora de uma sala: não há microfone para calar ainda, então fica guardado
+    /// e vale no instante em que ele abrir. Dentro da sala quem sabe é o `mine.micMuted`.
+    @Published var mutedAtRest = false
     @Published var micLevel: Float = 0
     /// O mesmo nível na escala de 0 a 100 da sensibilidade.
     @Published var micPercent = 0
@@ -543,10 +546,17 @@ final class AppModel: ObservableObject {
         }
 
         home = false
-        treeLoading = true
 
-        let answer = await ask("server", ["id": id])
+        // O núcleo guarda a árvore de cada servidor desde a abertura: a resposta volta na hora
+        // e os canais não piscam. O esqueleto só aparece se a rede for mesmo necessária.
+        let slow = Task {
+            try await Task.sleep(for: .milliseconds(150))
+            treeLoading = true
+        }
 
+        let answer = await ask("server", ["id": id, "known": true])
+
+        slow.cancel()
         treeLoading = false
 
         guard let opened: ServerTree = decode(answer["server"]) else {
@@ -571,6 +581,10 @@ final class AppModel: ObservableObject {
             await openChannel(first)
         } else {
             await chat.close()
+        }
+
+        if answer["known"] as? Bool == true {
+            await reloadTree()
         }
     }
 
