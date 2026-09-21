@@ -134,7 +134,10 @@ impl Room {
                     self.stop_everything();
                     self.tell("room.session", json!({ "state": event.name }));
                 }
-                local::PING_MEASURED => self.tell("room.ping", json!({ "ms": event.data })),
+                local::PING_MEASURED => self.tell(
+                    "room.ping",
+                    json!({ "ms": event.data, "bars": event.data.as_u64().map(signal_bars) }),
+                ),
                 // Quem está assistindo a cada tela: o servidor já manda a lista pronta.
                 "watchers" => self.tell("room.watchers", event.data.clone()),
                 _ => {}
@@ -858,8 +861,25 @@ fn lock<T>(cell: &Mutex<T>) -> MutexGuard<'_, T> {
     cell.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Quantas barrinhas de sinal a ida e volta até o SFU merece: 4 é verde, 3 amarelo, 2 laranja
+/// e 1 vermelho. Os cortes são os de uma chamada de voz — até 80 ms ninguém percebe, de 150
+/// em diante a conversa começa a atropelar, e acima de 250 já se fala por cima do outro.
+pub fn signal_bars(round_trip_ms: u64) -> u8 {
+    match round_trip_ms {
+        0..=80 => 4,
+        81..=150 => 3,
+        151..=250 => 2,
+        _ => 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_signal_loses_a_bar_at_each_cut() {
+        assert_eq!([12, 80, 81, 150, 151, 250, 251, 900].map(super::signal_bars), [4, 4, 3, 3, 2, 2, 1, 1]);
+    }
+
     use super::*;
 
     #[test]
