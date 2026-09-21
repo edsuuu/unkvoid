@@ -57,6 +57,7 @@ pub struct RoomScreen {
     status: gtk::Label,
     ping: gtk::Label,
     share: gtk::Button,
+    stop: gtk::Button,
     screens: gtk::Box,
     cameras: gtk::Box,
     pictures: Pictures,
@@ -118,7 +119,23 @@ impl RoomScreen {
         ping.set_tooltip_text(Some("Ida e volta até o servidor de mídia"));
         toolbar.append(&ping);
 
+        // Transmitindo, o React põe um "Parar" de texto ao lado do ícone: o botão da barra
+        // vira o menu da transmissão, e parar precisa de um caminho que não dependa dele.
+        let stop = gtk::Button::new();
+        let stop_inside = row(8);
+
+        stop_inside.append(&icons::icon("stop", 18, icons::DANGER));
+        stop_inside.append(&gtk::Label::new(Some("Parar")));
+        stop.set_child(Some(&stop_inside));
+        stop.add_css_class("danger");
+        stop.add_css_class("stop");
+        stop.set_tooltip_text(Some("Parar de transmitir"));
+        stop.set_valign(gtk::Align::Center);
+        stop.set_visible(false);
+        crate::components::clickable(&stop);
+
         toolbar.append(&spacer());
+        toolbar.append(&stop);
         toolbar.append(&share);
         toolbar.append(&leave);
 
@@ -157,6 +174,12 @@ impl RoomScreen {
                     bridge.share_screen();
                 }
             }
+        });
+
+        stop.connect_clicked({
+            let bridge = bridge.clone();
+
+            move |_| bridge.stop_sharing()
         });
 
         leave.connect_clicked({
@@ -200,6 +223,7 @@ impl RoomScreen {
             status,
             ping,
             share,
+            stop,
             screens,
             cameras,
             pictures,
@@ -361,6 +385,9 @@ impl RoomScreen {
         }));
         mark(&self.share, mine.sharing);
         set_icon(&self.share, "screen", TOOL_ICON, if mine.sharing { icons::STRONG } else { icons::RESTING });
+
+        // O "Parar" só existe enquanto há o que parar, como no React.
+        self.stop.set_visible(mine.sharing);
     }
 
     pub fn set_peers(&self, peers: &[Peer]) {

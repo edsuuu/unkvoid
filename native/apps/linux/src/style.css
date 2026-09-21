@@ -260,6 +260,14 @@ button.danger:hover {
     background-color: rgba(226, 68, 92, 0.2);
 }
 
+/* O "Parar" da barra da sala: o React o desenha um pouco mais fechado que o resto. */
+button.danger.stop {
+    border-radius: 11px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 8px 12px;
+}
+
 /* Ação secundária que pesa (sair, excluir): contorno quieto, sem o vermelho do perigo. */
 button.quiet {
     background-color: transparent;

@@ -125,6 +125,45 @@ export component RoomScreen inherits Rectangle {
 
                 Rectangle { horizontal-stretch: 1; }
 
+                // Transmitindo, o React põe um "Parar" de texto ao lado do ícone.
+                Rectangle {
+                    visible: Ui.sharing;
+                    width: Ui.sharing ? 92px : 0px;
+                    height: 34px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 11px;
+                    border-width: 1px;
+                    border-color: #e2445c59;
+                    background: #e2445c1f;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 8px;
+
+                        Glyph {
+                            commands: Icons.stop;
+                            size: 18px;
+                            filled: true;
+                            tint: Skin.danger;
+                            y: (parent.height - self.height) / 2;
+                        }
+
+                        Text {
+                            text: "Parar";
+                            color: Skin.danger;
+                            font-family: Skin.sans;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Ui.toggle-share(); }
+                    }
+                }
+
                 IconButton {
                     commands: Icons.screen;
                     active: Ui.sharing;
