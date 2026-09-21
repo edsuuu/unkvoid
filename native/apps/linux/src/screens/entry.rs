@@ -350,7 +350,7 @@ impl EntryScreen {
     pub fn refresh_recent(&self, bridge: &Rc<Bridge>) {
         crate::components::clear_flow(&self.recent);
 
-        for code in bridge.recent_rooms().into_iter().take(4) {
+        for code in bridge.recent_rooms().into_iter().take(3) {
             let again = button(&code, "chip");
 
             again.connect_clicked({

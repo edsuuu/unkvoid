@@ -351,6 +351,8 @@ mod polling {
     #[cfg(test)]
     mod tests {
         use super::{Keys, edges, held};
+        #[cfg(not(target_os = "macos"))]
+        use super::parse;
 
         /// As teclas montadas à mão, e não pelo `parse`: `edges` e `held` não sabem de
         /// tabela de sistema nenhuma, e amarrá-los à do Windows faria o teste falhar no
