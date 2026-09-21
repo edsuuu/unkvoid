@@ -33,7 +33,10 @@ pub enum HttpError {
     /// Já em português e já sobre o campo errado. É o único texto do servidor que a tela
     /// mostra — e vem com o nome do campo, para a tela pintar o input certo de vermelho e
     /// pôr a frase embaixo dele, e não numa linha solta no rodapé.
-    Invalid { field: String, message: String },
+    Invalid {
+        field: String,
+        message: String,
+    },
 }
 
 impl From<Failure> for HttpError {
@@ -63,11 +66,21 @@ impl Api {
 
     /// O servidor responde? É o `/health`, que existe para esta pergunta e não pede conta.
     pub async fn reachable(&self) -> bool {
-        self.http.get(self.url("/health")).send().await.is_ok_and(|answer| answer.status().is_success())
+        self.http
+            .get(self.url("/health"))
+            .send()
+            .await
+            .is_ok_and(|answer| answer.status().is_success())
     }
 
-    pub async fn register(&self, email: &str, password: &str, device: &str) -> Result<AuthToken, HttpError> {
-        self.authenticate("/api/auth/register", email, password, device).await
+    pub async fn register(
+        &self,
+        email: &str,
+        password: &str,
+        device: &str,
+    ) -> Result<AuthToken, HttpError> {
+        self.authenticate("/api/auth/register", email, password, device)
+            .await
     }
 
     /// A árvore inteira do servidor: cargos, canais, membros e quem está em cada voz.
@@ -81,26 +94,47 @@ impl Api {
     }
 
     pub fn set_token(&self, token: Option<String>) {
-        *self.token.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = token;
+        *self
+            .token
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = token;
     }
 
     pub fn token(&self) -> Option<String> {
-        self.token.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.token
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub async fn config(&self) -> Result<Config, HttpError> {
         self.get("/api/config").await
     }
 
-    pub async fn login(&self, email: &str, password: &str, device: &str) -> Result<AuthToken, HttpError> {
-        self.authenticate("/api/auth/login", email, password, device).await
+    pub async fn login(
+        &self,
+        email: &str,
+        password: &str,
+        device: &str,
+    ) -> Result<AuthToken, HttpError> {
+        self.authenticate("/api/auth/login", email, password, device)
+            .await
     }
 
     /// Entrar e criar conta só diferem no caminho: as duas devolvem o token e já o guardam,
     /// para a próxima chamada não precisar lembrar de passá-lo.
-    async fn authenticate(&self, path: &str, email: &str, password: &str, device: &str) -> Result<AuthToken, HttpError> {
+    async fn authenticate(
+        &self,
+        path: &str,
+        email: &str,
+        password: &str,
+        device: &str,
+    ) -> Result<AuthToken, HttpError> {
         let answer: AuthToken = self
-            .post(path, &serde_json::json!({ "email": email, "password": password, "device": device }))
+            .post(
+                path,
+                &serde_json::json!({ "email": email, "password": password, "device": device }),
+            )
             .await?;
 
         self.set_token(Some(answer.token.clone()));
@@ -213,8 +247,123 @@ impl Api {
     }
 
     pub async fn send_message(&self, channel: &str, body: &str) -> Result<Message, HttpError> {
-        self.post(&format!("/api/channels/{channel}/messages"), &serde_json::json!({ "body": body }))
+        self.post(
+            &format!("/api/channels/{channel}/messages"),
+            &serde_json::json!({ "body": body }),
+        )
+        .await
+    }
+
+    pub async fn edit_message(&self, message: i64, body: &str) -> Result<Message, HttpError> {
+        let path = format!("/api/messages/{message}");
+
+        self.send(
+            self.http
+                .patch(self.url(&path))
+                .json(&serde_json::json!({ "body": body })),
+            &path,
+        )
+        .await
+    }
+
+    pub async fn delete_message(&self, message: i64) -> Result<(), HttpError> {
+        let path = format!("/api/messages/{message}");
+
+        self.send::<Value>(self.http.delete(self.url(&path)), &path)
             .await
+            .map(|_| ())
+    }
+
+    /// A versão publicada mais nova do que esta, com o endereço do instalador desta
+    /// plataforma (`darwin-aarch64`, `windows-x86_64`…). `None` quando não há nada mais novo —
+    /// inclusive quando nada foi publicado ainda, que é o 404 do `latest.json`.
+    pub async fn newer_release(&self, platform: &str) -> Option<(String, String)> {
+        let manifest: Value = self
+            .http
+            .get(self.url("/downloads/latest.json"))
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        let version = manifest["version"].as_str()?;
+        let url = manifest["platforms"][platform]["url"].as_str()?;
+
+        is_newer(version, env!("CARGO_PKG_VERSION")).then(|| (version.to_owned(), url.to_owned()))
+    }
+
+    /// Uma rota do mapa de `routes.rs`, pelo nome. É por onde passa tudo o que não tem
+    /// método próprio aqui: escrever no servidor, amigos, mensagens diretas.
+    pub async fn perform(
+        &self,
+        name: &str,
+        params: &Value,
+        body: &Value,
+    ) -> Result<Value, HttpError> {
+        let Some((method, path)) = crate::routes::resolve(name, params) else {
+            tracing::warn!(name, "rota desconhecida ou parâmetro faltando");
+
+            return Err(Failure::Invalid.into());
+        };
+
+        let request = self.http.request(method.clone(), self.url(&path));
+        let request = if method == reqwest::Method::GET || body.is_null() {
+            request
+        } else {
+            request.json(body)
+        };
+
+        self.send(request, &path).await
+    }
+
+    /// Manda um arquivo por uma rota do mapa (foto, ícone do servidor, imagem de mensagem).
+    /// `fields` são os outros campos do formulário, como o texto que acompanha a imagem.
+    pub async fn upload(
+        &self,
+        name: &str,
+        params: &Value,
+        field: &str,
+        files: &[std::path::PathBuf],
+        fields: &Value,
+    ) -> Result<Value, HttpError> {
+        let Some((method, path)) = crate::routes::resolve(name, params) else {
+            return Err(Failure::Invalid.into());
+        };
+
+        let mut form = reqwest::multipart::Form::new();
+
+        for (key, value) in fields.as_object().into_iter().flatten() {
+            if let Some(text) = value.as_str() {
+                form = form.text(key.clone(), text.to_owned());
+            }
+        }
+
+        for file in files {
+            let bytes = tokio::fs::read(file).await.map_err(|failure| {
+                tracing::warn!(%failure, "o arquivo escolhido não abriu");
+
+                HttpError::Failed(Failure::Invalid)
+            })?;
+
+            let name = file
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let mime = mime_of(&name).unwrap_or("application/octet-stream");
+            let part = reqwest::multipart::Part::bytes(bytes)
+                .file_name(name)
+                .mime_str(mime)
+                .map_err(|_| HttpError::Failed(Failure::Invalid))?;
+
+            form = form.part(field.to_owned(), part);
+        }
+
+        self.send(
+            self.http.request(method, self.url(&path)).multipart(form),
+            &path,
+        )
+        .await
     }
 
     /// O token que identifica o socket no tempo real. Vale 60 s: pedir um novo a cada
@@ -234,15 +383,21 @@ impl Api {
 
     /// O token de voz de um canal, que diz o que esta sessão pode produzir.
     pub async fn voice_token(&self, channel: &str) -> Result<String, HttpError> {
-        self.token_from(&format!("/api/channels/{channel}/voice/token")).await
+        self.token_from(&format!("/api/channels/{channel}/voice/token"))
+            .await
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, HttpError> {
         self.send(self.http.get(self.url(path)), path).await
     }
 
-    async fn post<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T, HttpError> {
-        self.send(self.http.post(self.url(path)).json(body), path).await
+    async fn post<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<T, HttpError> {
+        self.send(self.http.post(self.url(path)).json(body), path)
+            .await
     }
 
     fn url(&self, path: &str) -> String {
@@ -278,7 +433,9 @@ impl Api {
         }
 
         let payload = match body.as_object() {
-            Some(object) if object.len() == 1 && object.contains_key("data") => body["data"].clone(),
+            Some(object) if object.len() == 1 && object.contains_key("data") => {
+                body["data"].clone()
+            }
             _ => body,
         };
 
@@ -287,6 +444,30 @@ impl Api {
 
             Failure::ServerBroke.into()
         })
+    }
+}
+
+/// `1.10.0` é mais novo que `1.9.3`: compara número a número, e não letra a letra.
+fn is_newer(candidate: &str, current: &str) -> bool {
+    let numbers = |version: &str| {
+        version
+            .split('.')
+            .map(|part| part.parse::<u64>().unwrap_or(0))
+            .collect::<Vec<_>>()
+    };
+
+    numbers(candidate) > numbers(current)
+}
+
+/// O tipo de uma imagem pelo nome do arquivo. O Laravel valida pelo conteúdo; isto só evita
+/// que a parte suba como `application/octet-stream`.
+fn mime_of(name: &str) -> Option<&'static str> {
+    match name.rsplit('.').next()?.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
     }
 }
 
@@ -307,16 +488,27 @@ fn refusal(status: u16, body: &Value, path: &str) -> HttpError {
 /// O primeiro campo com erro, com o nome junto. O Laravel devolve
 /// `{"errors": {"email": ["..."]}}`, e é o `email` dali que diz qual input errou.
 fn first_field_error(body: &Value) -> Option<(String, String)> {
-    body["errors"].as_object()?.iter().find_map(|(field, messages)| {
-        let message = messages.as_array()?.first()?.as_str()?;
+    body["errors"]
+        .as_object()?
+        .iter()
+        .find_map(|(field, messages)| {
+            let message = messages.as_array()?.first()?.as_str()?;
 
-        Some((field.clone(), message.to_owned()))
-    })
+            Some((field.clone(), message.to_owned()))
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn versions_compare_by_number_and_not_by_letter() {
+        assert!(is_newer("1.10.0", "1.9.3"));
+        assert!(is_newer("0.0.41", "0.0.40"));
+        assert!(!is_newer("0.0.40", "0.0.40"));
+        assert!(!is_newer("0.9.9", "1.0.0"));
+    }
 
     use serde_json::json;
 
@@ -357,13 +549,26 @@ mod tests {
     fn a_422_without_field_errors_still_does_not_leak() {
         let body = json!({ "message": "The given data was invalid." });
 
-        assert_eq!(refusal(422, &body, "/api/x"), HttpError::Failed(Failure::Invalid));
+        assert_eq!(
+            refusal(422, &body, "/api/x"),
+            HttpError::Failed(Failure::Invalid)
+        );
     }
 
     #[test]
     fn the_base_address_never_ends_up_with_two_slashes() {
-        assert_eq!(Api::new("http://127.0.0.1:8000/").expect("build").url("/api/config"), "http://127.0.0.1:8000/api/config");
-        assert_eq!(Api::new("http://127.0.0.1:8000").expect("build").url("/api/config"), "http://127.0.0.1:8000/api/config");
+        assert_eq!(
+            Api::new("http://127.0.0.1:8000/")
+                .expect("build")
+                .url("/api/config"),
+            "http://127.0.0.1:8000/api/config"
+        );
+        assert_eq!(
+            Api::new("http://127.0.0.1:8000")
+                .expect("build")
+                .url("/api/config"),
+            "http://127.0.0.1:8000/api/config"
+        );
     }
 
     #[test]

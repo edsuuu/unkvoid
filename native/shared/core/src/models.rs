@@ -115,10 +115,50 @@ pub struct Person {
 pub struct Message {
     pub id: i64,
     pub channel_id: String,
+    /// `user` para o que alguém escreveu; `join` para o aviso de quem entrou no servidor.
+    #[serde(rename = "type", default = "user_message")]
+    pub kind: String,
     pub user: Person,
     #[serde(default)]
+    pub reply_to: Option<ReplyTo>,
+    #[serde(default)]
     pub body: String,
+    #[serde(default)]
+    pub files: Vec<MessageFile>,
     pub edited_at: Option<String>,
+    pub created_at: String,
+}
+
+fn user_message() -> String {
+    "user".to_owned()
+}
+
+/// A mensagem a que outra responde, já resumida pelo Laravel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplyTo {
+    pub id: i64,
+    pub name: String,
+    #[serde(default)]
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageFile {
+    pub id: i64,
+    pub url: String,
+    #[serde(default)]
+    pub mime_type: String,
+    #[serde(default)]
+    pub size: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Ban {
+    pub user_id: i64,
+    pub name: String,
+    pub reason: Option<String>,
+    pub banned_by: Option<i64>,
+    #[serde(default)]
     pub created_at: String,
 }
 
@@ -147,6 +187,9 @@ pub struct ServerTree {
     pub members: Vec<Member>,
     #[serde(default)]
     pub voice: std::collections::HashMap<String, Vec<VoicePerson>>,
+    /// Só vem para quem pode banir.
+    #[serde(default)]
+    pub bans: Vec<Ban>,
 }
 
 impl ServerTree {
@@ -209,7 +252,9 @@ impl Peer {
     /// Transmitir é ter producer de tela. Guardar isso como campo daria duas verdades para
     /// manter em dia — a lista de producers já sabe.
     pub fn sharing(&self) -> bool {
-        self.producers.iter().any(|producer| producer.source == "screen")
+        self.producers
+            .iter()
+            .any(|producer| producer.source == "screen")
     }
 }
 
@@ -219,8 +264,14 @@ impl Peer {
 #[serde(untagged)]
 pub enum RoomIdentity {
     #[serde(rename_all = "camelCase")]
-    Guest { room: String, name: String, install_id: String },
-    Account { token: String },
+    Guest {
+        room: String,
+        name: String,
+        install_id: String,
+    },
+    Account {
+        token: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -338,8 +389,10 @@ mod tests {
 
     #[test]
     fn missing_optional_fields_do_not_break_parsing() {
-        let member: Member = serde_json::from_str(r#"{"user_id": 7, "name": "Ada", "avatar_url": null, "nickname": null}"#)
-            .expect("parse");
+        let member: Member = serde_json::from_str(
+            r#"{"user_id": 7, "name": "Ada", "avatar_url": null, "nickname": null}"#,
+        )
+        .expect("parse");
 
         assert!(member.role_ids.is_empty());
         assert!(!member.is_owner);
@@ -396,10 +449,15 @@ mod tests {
             owner_id: 1,
             invite_code: None,
             icon_url: None,
-            me: Membership { user_id: 1, permissions: 0, top_position: 0 },
+            me: Membership {
+                user_id: 1,
+                permissions: 0,
+                top_position: 0,
+            },
             roles: Vec::new(),
             members: Vec::new(),
             voice: std::collections::HashMap::new(),
+            bans: Vec::new(),
             channels: vec![
                 channel("voz", ChannelKind::Voice, 0),
                 channel("geral", ChannelKind::Text, 1),
@@ -407,8 +465,11 @@ mod tests {
             ],
         };
 
-        let names: Vec<String> =
-            tree.ordered_channels().into_iter().map(|channel| channel.name).collect();
+        let names: Vec<String> = tree
+            .ordered_channels()
+            .into_iter()
+            .map(|channel| channel.name)
+            .collect();
 
         assert_eq!(names, ["avisos", "geral", "voz"]);
     }

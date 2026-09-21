@@ -93,7 +93,11 @@ pub struct ServerError {
 
 impl Event {
     pub fn local(name: &str) -> Self {
-        Self { name: name.to_owned(), channel: None, data: Value::Null }
+        Self {
+            name: name.to_owned(),
+            channel: None,
+            data: Value::Null,
+        }
     }
 }
 
@@ -123,12 +127,14 @@ mod tests {
 
     #[test]
     fn the_id_is_what_tells_a_reply_from_an_event() {
-        let reply = Incoming::parse(r#"{"id":7,"ok":true,"data":{"peerId":"abc"}}"#).expect("parse");
+        let reply =
+            Incoming::parse(r#"{"id":7,"ok":true,"data":{"peerId":"abc"}}"#).expect("parse");
 
         assert!(reply.is_reply());
         assert_eq!(reply.id, Some(7));
 
-        let event = Incoming::parse(r#"{"event":"peerJoined","data":{"peerId":"xyz"}}"#).expect("parse");
+        let event =
+            Incoming::parse(r#"{"event":"peerJoined","data":{"peerId":"xyz"}}"#).expect("parse");
 
         assert!(!event.is_reply());
         assert_eq!(
@@ -144,7 +150,10 @@ mod tests {
     #[test]
     fn a_chat_event_carries_its_channel() {
         let raw = r#"{"event":"MessageSent","channel":"channel.5","data":{"body":"oi"}}"#;
-        let event = Incoming::parse(raw).expect("parse").into_event().expect("into event");
+        let event = Incoming::parse(raw)
+            .expect("parse")
+            .into_event()
+            .expect("into event");
 
         assert_eq!(event.channel.as_deref(), Some("channel.5"));
         assert_eq!(event.data["body"], "oi");

@@ -87,7 +87,8 @@ impl Roster {
                 };
                 let before = peer.producers.len();
 
-                peer.producers.retain(|producer| producer.producer_id != producer_id);
+                peer.producers
+                    .retain(|producer| producer.producer_id != producer_id);
 
                 peer.producers.len() != before
             }
@@ -148,11 +149,20 @@ impl Roster {
             return false;
         };
 
-        if peer.producers.iter().any(|producer| producer.producer_id == producer_id) {
+        if peer
+            .producers
+            .iter()
+            .any(|producer| producer.producer_id == producer_id)
+        {
             return false;
         }
 
-        peer.producers.push(ProducerInfo { producer_id, kind, source, paused: false });
+        peer.producers.push(ProducerInfo {
+            producer_id,
+            kind,
+            source,
+            paused: false,
+        });
 
         true
     }
@@ -284,6 +294,13 @@ impl Session {
             tokio::select! {
                 event = incoming.recv() => match event {
                     Some(event) => {
+                        // O servidor tirou esta sessão de propósito — a conta entrou por outro
+                        // lugar, ou um moderador a removeu. Voltar sozinho derrubaria quem
+                        // entrou, que voltaria e nos derrubaria: os dois brigando para sempre.
+                        if matches!(event.name.as_str(), "replaced" | "kicked") {
+                            self.left.store(true, Ordering::Relaxed);
+                        }
+
                         if events.send(event).is_err() {
                             return false;
                         }
@@ -416,7 +433,9 @@ mod tests {
     use super::*;
 
     fn roster_with(names: &[&str]) -> Roster {
-        Roster { peers: names.iter().map(|name| peer(name)).collect() }
+        Roster {
+            peers: names.iter().map(|name| peer(name)).collect(),
+        }
     }
 
     fn peer(peer_id: &str) -> Peer {
@@ -431,7 +450,11 @@ mod tests {
     }
 
     fn event(name: &str, data: Value) -> Event {
-        Event { name: name.into(), channel: None, data }
+        Event {
+            name: name.into(),
+            channel: None,
+            data,
+        }
     }
 
     #[test]
@@ -453,7 +476,10 @@ mod tests {
     #[test]
     fn someone_arriving_shows_up_once() {
         let mut roster = Roster::default();
-        let arrived = event("peerJoined", json!({ "peerId": "abc", "userId": "user:1", "name": "Ada" }));
+        let arrived = event(
+            "peerJoined",
+            json!({ "peerId": "abc", "userId": "user:1", "name": "Ada" }),
+        );
 
         assert!(roster.apply(&arrived));
         assert_eq!(roster.peers().len(), 1);
@@ -484,7 +510,10 @@ mod tests {
         assert!(roster.peers()[0].sharing());
         assert!(!roster.apply(&started));
 
-        assert!(roster.apply(&event("producerClosed", json!({ "peerId": "abc", "producerId": "p1" }))));
+        assert!(roster.apply(&event(
+            "producerClosed",
+            json!({ "peerId": "abc", "producerId": "p1" })
+        )));
         assert!(!roster.peers()[0].sharing());
     }
 
@@ -497,12 +526,18 @@ mod tests {
             json!({ "peerId": "abc", "producerId": "p1", "kind": "audio", "source": "mic" }),
         ));
 
-        let paused = event("producerPaused", json!({ "peerId": "abc", "producerId": "p1" }));
+        let paused = event(
+            "producerPaused",
+            json!({ "peerId": "abc", "producerId": "p1" }),
+        );
 
         assert!(roster.apply(&paused));
         assert!(roster.peers()[0].producers[0].paused);
         assert!(!roster.apply(&paused));
-        assert!(roster.apply(&event("producerResumed", json!({ "peerId": "abc", "producerId": "p1" }))));
+        assert!(roster.apply(&event(
+            "producerResumed",
+            json!({ "peerId": "abc", "producerId": "p1" })
+        )));
     }
 
     #[test]
@@ -510,7 +545,10 @@ mod tests {
         let mut roster = roster_with(&["abc"]);
 
         assert!(roster.apply(&event("peerConnectionLost", json!({ "peerId": "abc" }))));
-        assert!(roster.peers()[0].reconnecting, "whoever dropped must not vanish from the room");
+        assert!(
+            roster.peers()[0].reconnecting,
+            "whoever dropped must not vanish from the room"
+        );
 
         assert!(roster.apply(&event("peerReconnected", json!({ "peerId": "abc" }))));
         assert!(!roster.peers()[0].reconnecting);
@@ -520,7 +558,10 @@ mod tests {
     fn an_event_about_a_stranger_changes_nothing() {
         let mut roster = roster_with(&["abc"]);
 
-        assert!(!roster.apply(&event("newProducer", json!({ "peerId": "outro", "producerId": "p1" }))));
+        assert!(!roster.apply(&event(
+            "newProducer",
+            json!({ "peerId": "outro", "producerId": "p1" })
+        )));
         assert!(!roster.apply(&event("coisaNova", json!({ "peerId": "abc" }))));
         assert!(!roster.apply(&event("peerLeft", json!({}))));
     }

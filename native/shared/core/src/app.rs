@@ -26,7 +26,9 @@ const TOKEN_KEY: &str = "unkvoid:token";
 
 const INSTALL_KEY: &str = "unkvoid.instalacao";
 
-const MAX_RECENT: usize = 8;
+/// Quantas salas recentes a Home mostra. Três, por decisão do dono: passou disso vira uma
+/// lista que ninguém lê.
+const MAX_RECENT: usize = 3;
 
 /// O motivo de a entrada ter sido recusada. A interface é quem escreve a frase: o texto
 /// que a pessoa lê é da interface, e traduzi-lo aqui obrigaria as três a concordar.
@@ -81,7 +83,11 @@ impl App {
     /// Sem código digitado, sorteia um. É o "criar uma sala" da tela de entrada.
     pub fn create_room(&self, name: &str, typed: &str) -> Result<String, EntryRefusal> {
         let typed = typed.trim().to_lowercase();
-        let code = if typed.is_empty() { room_code::generate() } else { typed };
+        let code = if typed.is_empty() {
+            room_code::generate()
+        } else {
+            typed
+        };
 
         self.open_room(name, &code)
     }
@@ -146,6 +152,7 @@ impl App {
         list.iter()
             .filter_map(|entry| entry.as_str())
             .filter(|code| room_code::is_valid(code))
+            .take(MAX_RECENT)
             .map(str::to_owned)
             .collect()
     }
@@ -162,8 +169,9 @@ impl App {
 
         let fresh = room_code::generate();
 
-        if let Err(failure) =
-            self.storage.set(INSTALL_KEY, serde_json::Value::String(fresh.clone()))
+        if let Err(failure) = self
+            .storage
+            .set(INSTALL_KEY, serde_json::Value::String(fresh.clone()))
         {
             tracing::warn!(%failure, "não deu para guardar o id da instalação");
         }
@@ -184,6 +192,29 @@ impl App {
     /// servidores; quem não tem volta para o código.
     pub fn home(&self) -> Screen {
         Screen::home(self.has_token())
+    }
+
+    /// Uma preferência guardada (microfone, qualidade, teclas…). As chaves são as que o app
+    /// de hoje já grava (`unkvoid:voice`, `unkvoid:quality`…), e o token **não** sai por
+    /// aqui: ele é cifrado e tem o caminho dele.
+    pub fn preference(&self, key: &str) -> Option<serde_json::Value> {
+        (key != TOKEN_KEY).then(|| self.storage.get(key)).flatten()
+    }
+
+    pub fn set_preference(&self, key: &str, value: serde_json::Value) {
+        if key == TOKEN_KEY {
+            return;
+        }
+
+        let saved = if value.is_null() {
+            self.storage.remove(key)
+        } else {
+            self.storage.set(key, value)
+        };
+
+        if let Err(failure) = saved {
+            tracing::warn!(%failure, key, "a preferência não foi guardada");
+        }
     }
 
     /// O token do Sanctum, decifrado. Sem chaveiro não há token guardado, e o app pede
@@ -239,7 +270,9 @@ impl App {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, AppState> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -268,23 +301,61 @@ mod tests {
     fn a_typed_code_is_normalised_before_use() {
         let (app, _dir) = app();
 
-        assert_eq!(app.join_room("Ada", "  SALA-DO-EDSU  ").expect("join"), "sala-do-edsu");
+        assert_eq!(
+            app.join_room("Ada", "  SALA-DO-EDSU  ").expect("join"),
+            "sala-do-edsu"
+        );
     }
 
     #[test]
     fn entering_without_a_name_is_refused() {
         let (app, _dir) = app();
 
-        assert_eq!(app.create_room("   ", "").unwrap_err(), EntryRefusal::NameIsEmpty);
-        assert_eq!(app.state().screen, Screen::Entry, "mudou de tela mesmo recusando");
+        assert_eq!(
+            app.create_room("   ", "").unwrap_err(),
+            EntryRefusal::NameIsEmpty
+        );
+        assert_eq!(
+            app.state().screen,
+            Screen::Entry,
+            "mudou de tela mesmo recusando"
+        );
     }
 
     #[test]
     fn a_malformed_code_is_refused() {
         let (app, _dir) = app();
 
-        assert_eq!(app.join_room("Ada", "-x-").unwrap_err(), EntryRefusal::CodeIsInvalid);
+        assert_eq!(
+            app.join_room("Ada", "-x-").unwrap_err(),
+            EntryRefusal::CodeIsInvalid
+        );
         assert!(app.state().room.is_none());
+    }
+
+    /// Quem já tinha uma lista maior, gravada quando o teto era outro, também vê só três.
+    #[test]
+    fn only_the_last_three_rooms_are_listed() {
+        let (app, _dir) = app();
+        let saved = serde_json::json!([
+            "sala-um",
+            "sala-dois",
+            "sala-tres",
+            "sala-quatro",
+            "sala-cinco"
+        ]);
+
+        app.storage.set(RECENT_KEY, saved).expect("write");
+
+        assert_eq!(app.recent_rooms(), ["sala-um", "sala-dois", "sala-tres"]);
+
+        app.join_room("Ada", "sala-nova").expect("join");
+
+        assert_eq!(
+            app.recent_rooms(),
+            ["sala-nova", "sala-um", "sala-dois"],
+            "a mais nova entra e a mais antiga sai"
+        );
     }
 
     #[test]
@@ -303,7 +374,8 @@ mod tests {
         let (app, _dir) = app();
 
         for index in 0..(MAX_RECENT + 5) {
-            app.join_room("Ada", &format!("sala-{index}")).expect("join");
+            app.join_room("Ada", &format!("sala-{index}"))
+                .expect("join");
         }
 
         assert_eq!(app.recent_rooms().len(), MAX_RECENT);
@@ -313,7 +385,9 @@ mod tests {
     fn an_invalid_code_saved_by_an_older_version_is_ignored() {
         let (app, _dir) = app();
 
-        app.storage.set(RECENT_KEY, serde_json::json!(["boa", "-ruim-", 42])).expect("write");
+        app.storage
+            .set(RECENT_KEY, serde_json::json!(["boa", "-ruim-", 42]))
+            .expect("write");
 
         assert_eq!(app.recent_rooms(), vec!["boa"]);
     }
@@ -331,7 +405,11 @@ mod tests {
         app.create_room("Ada", "sala-um").expect("create");
         app.leave_room();
 
-        assert_eq!(app.state().screen, Screen::Hub, "quem tem conta volta para os servidores");
+        assert_eq!(
+            app.state().screen,
+            Screen::Hub,
+            "quem tem conta volta para os servidores"
+        );
     }
 
     #[test]
@@ -355,7 +433,10 @@ mod tests {
         let first = App::new(Storage::open_at(dir.path()).expect("open")).install_id();
         let again = App::new(Storage::open_at(dir.path()).expect("reopen")).install_id();
 
-        assert_eq!(first, again, "trocar de id derrubaria a própria sessão anterior na sala");
+        assert_eq!(
+            first, again,
+            "trocar de id derrubaria a própria sessão anterior na sala"
+        );
         assert!(room_code::is_valid(&first));
     }
 

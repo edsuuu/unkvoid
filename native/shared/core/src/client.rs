@@ -28,6 +28,10 @@ type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Incoming>>>>;
 /// segundos é muito mais do que uma conexão boa precisa e pouco para quem espera.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Quanto uma ação espera pela resposta. O mesmo prazo do app de hoje: sem ele, um servidor
+/// que aceita o socket e não responde prende para sempre quem perguntou.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub struct SfuClient {
     outgoing: mpsc::UnboundedSender<Message>,
     pending: Pending,
@@ -111,9 +115,14 @@ impl SfuClient {
             return Err(anyhow!("a conexão com o servidor está fechada"));
         }
 
-        let reply = receiver
-            .await
-            .map_err(|_| anyhow!("o servidor não respondeu a {action}"))?;
+        let Ok(reply) = timeout(REPLY_TIMEOUT, receiver).await else {
+            self.pending.lock().await.remove(&id);
+            tracing::warn!(action, "o servidor não respondeu no prazo");
+
+            return Err(anyhow::Error::new(crate::failure::Failure::Unreachable));
+        };
+
+        let reply = reply.map_err(|_| anyhow!("o servidor não respondeu a {action}"))?;
 
         if reply.ok == Some(true) {
             return Ok(reply.data.unwrap_or(Value::Null));
@@ -128,14 +137,23 @@ impl SfuClient {
     }
 
     pub async fn identify(&self, token: &str) -> Result<Value> {
-        self.call(crate::protocol::action::IDENTIFY, json!({ "token": token })).await
+        self.call(crate::protocol::action::IDENTIFY, json!({ "token": token }))
+            .await
     }
 
     pub async fn subscribe(&self, channel: &str) -> Result<Value> {
-        self.call(crate::protocol::action::SUBSCRIBE, json!({ "channel": channel })).await
+        self.call(
+            crate::protocol::action::SUBSCRIBE,
+            json!({ "channel": channel }),
+        )
+        .await
     }
 
     pub async fn unsubscribe(&self, channel: &str) -> Result<Value> {
-        self.call(crate::protocol::action::UNSUBSCRIBE, json!({ "channel": channel })).await
+        self.call(
+            crate::protocol::action::UNSUBSCRIBE,
+            json!({ "channel": channel }),
+        )
+        .await
     }
 }

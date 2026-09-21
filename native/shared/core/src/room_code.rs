@@ -19,7 +19,9 @@ const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 pub fn generate() -> String {
     let mut rng = rand::thread_rng();
 
-    (0..LENGTH).map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char).collect()
+    (0..LENGTH)
+        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
+        .collect()
 }
 
 /// Hífen no meio é permitido para quem quiser um código legível ("time-da-tarde"); no
@@ -35,7 +37,8 @@ pub fn is_valid(code: &str) -> bool {
         return false;
     }
 
-    code.chars().all(|letter| letter.is_ascii_lowercase() || letter.is_ascii_digit() || letter == '-')
+    code.chars()
+        .all(|letter| letter.is_ascii_lowercase() || letter.is_ascii_digit() || letter == '-')
 }
 
 /// O que se aceita de quem digitou: espaço sobrando e maiúscula não são erro de código.
