@@ -59,7 +59,7 @@ struct DirectColumn: View {
 
             UserBar()
         }
-        .frame(width: 260)
+        .frame(width: 300)
     }
 
     private func tab(_ label: String, icon: IconName, selected: Bool, badge: Int, action: @escaping () -> Void) -> some View {

@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// `home/ServersHome.tsx`: criar uma sala com conta, a sala por código com as últimas
-/// acessadas, e a lista das salas em que se está.
+/// `home/ServersHome.tsx`: criar uma sala com conta e a sala por código com as últimas
+/// acessadas. As salas em que se está ficam na barra da esquerda.
 struct ServersHome: View {
     @EnvironmentObject private var model: AppModel
 
@@ -11,13 +11,11 @@ struct ServersHome: View {
 
     var body: some View {
         ScrollView {
-            // As mesmas três regras do React: `flex-[0_1_360px]`, `flex-[1_1_360px]` e `flex-1`.
+            // As mesmas regras do React: `flex-[0_1_360px]` e `flex-[1_1_360px]`.
             FlexWrap(spacing: 12) {
                 create.flex(basis: 360, grow: 0, minimum: 260)
 
                 roomByCode.flex(basis: 360, grow: 1, minimum: 260)
-
-                servers.flex(basis: 0, grow: 1, minimum: 280)
             }
         }
         .scrollIndicators(.never)
@@ -98,66 +96,6 @@ struct ServersHome: View {
                         ))
                     }
                 }
-            }
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .glass()
-    }
-
-    private var servers: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Últimas salas").labelMono()
-                .padding(.bottom, 4)
-
-            if model.serversLoading, model.servers.isEmpty {
-                ForEach(0 ..< 3, id: \.self) { _ in Skeleton(height: 48) }
-            }
-
-            if !model.serversLoading, model.servers.isEmpty {
-                VStack(spacing: 8) {
-                    Text(model.serversFailed ? "Não deu para carregar as suas salas." : "Nenhuma ainda. Crie uma ao lado ou entre com um convite.")
-                        .font(Theme.sans(13))
-                        .foregroundStyle(model.serversFailed ? Theme.danger : Theme.inkDim)
-
-                    if model.serversFailed {
-                        Button("Tentar de novo") {
-                            Task { await model.loadServers() }
-                        }
-                        .buttonStyle(GhostButton())
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 24)
-            }
-
-            ForEach(model.servers) { server in
-                Button {
-                    Task { await model.openServer(server.id) }
-                } label: {
-                    HStack(spacing: 10) {
-                        Avatar(name: server.name, url: server.icon_url, size: 32, square: true)
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(server.name)
-                                .font(Theme.sans(13.5, .semibold))
-                                .foregroundStyle(Theme.ink)
-                                .lineLimit(1)
-
-                            Text(server.owner_id == model.user?.id ? "dono" : "membro").labelMono(size: 9.5)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        if let accessed = server.last_accessed_at {
-                            Text(Clock.day(accessed))
-                                .font(Theme.mono(10.5))
-                                .foregroundStyle(Theme.inkDim)
-                        }
-                    }
-                    .rowItem()
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.pointer)
             }
         }
         .padding(20)

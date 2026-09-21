@@ -357,7 +357,7 @@ private struct DeviceList: View {
         PopoverBox(width: 260) {
             Text(title).labelMono()
                 .padding(.horizontal, 10)
-                .padding(.bottom, 6)
+                .padding(.vertical, 6)
 
             DeviceRow(label: fallback, chosen: chosen == nil) { pick(nil) }
 
