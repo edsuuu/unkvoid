@@ -70,6 +70,10 @@ export global Ui {
     in property <string> room-code;
     in property <[PeerRow]> peers;
     in property <bool> sharing;
+    // O ida e volta até o SFU, medido no batimento do núcleo. Até o primeiro voltar é um
+    // traço, que é o que o app em React mostra nesse intervalo.
+    in property <string> ping: "-- ms";
+    in property <string> elapsed: "0:00:00";
 
     in property <bool> mic-on;
     in property <bool> can-speak: true;

@@ -1,132 +1,290 @@
 import { ScrollView } from "std-widgets.slint";
-import { Skin } from "skin.slint";
+import { Icons, Skin } from "skin.slint";
 import { Ui } from "state.slint";
-import { Avatar, CodeChip, Danger, GhostButton, Glass, LabelMono, Muted, PrimaryButton, RowItem } from "widgets.slint";
-import { UserBar } from "userbar.slint";
+import { Avatar, CodeChip, Danger, Glass, Glyph, IconButton, LabelMono, Muted, Pill, PrimaryButton, RowItem } from "widgets.slint";
 
 // A sala: o código para mandar a alguém, quem está dentro, e o que está sendo transmitido.
+//
+// O desenho é o do `apps/desktop/ui/components/room`: uma barra só, em pílula, com o código
+// à esquerda e os botões redondos à direita.
+//
+// **A sala por código não tem voz.** Nada de microfone, som, câmera ou barra de baixo: ela é
+// só a tela compartilhada, como no React (`RoomToolbar` só desenha isso no modo `voice`).
 export component RoomScreen inherits Rectangle {
+    // Quem está na sala abre na setinha, e não numa coluna que rouba metade da tela.
+    property <bool> showing-people;
+
     VerticalLayout {
-        padding: 14px;
+        padding: 12px;
         spacing: 12px;
 
-        HorizontalLayout {
-            spacing: 10px;
+        Glass {
+            height: 52px;
+            border-radius: 16px;
 
-            LabelMono {
-                text: "SALA";
-                vertical-alignment: center;
-            }
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
 
-            CodeChip {
-                text: Ui.room-code;
-                y: (parent.height - self.height) / 2;
-            }
+                LabelMono {
+                    text: "SALA";
+                    vertical-alignment: center;
+                }
 
-            Muted {
-                text: Ui.peers.length == 1 ? "1 pessoa" : Ui.peers.length + " pessoas";
-                font-size: 12.5px;
-                vertical-alignment: center;
-            }
+                // O chip é um `TextInput` só de leitura: seleciona e copia pelo teclado. O
+                // desenho de copiar do React entra quando a ponte do Windows tiver para onde
+                // mandar o texto — botão que não copia é pior que botão nenhum.
+                CodeChip {
+                    text: Ui.room-code;
+                    y: (parent.height - self.height) / 2;
+                }
 
-            Rectangle { horizontal-stretch: 1; }
+                people := Pill {
+                    // Até três rostos, como no React. A largura sai da conta e não do que
+                    // está dentro: medir o filho aqui faria o filho medir o pai de volta.
+                    property <int> shown: min(3, max(1, Ui.peers.length));
+                    property <length> faces-width: shown * 26px + (shown - 1) * 5px;
 
-            PrimaryButton {
-                text: Ui.sharing ? "Parar de compartilhar" : "Compartilhar tela";
-                width: 190px;
-                height: 34px;
-                clicked => { Ui.toggle-share(); }
-            }
+                    width: 6px + faces-width + 46px;
+                    y: (parent.height - self.height) / 2;
 
-            GhostButton {
-                text: "Câmera";
-                clicked => { Ui.toggle-camera(); }
-            }
+                    HorizontalLayout {
+                        x: 6px;
+                        width: parent.faces-width;
+                        height: parent.height;
+                        spacing: 5px;
+                        alignment: start;
 
-            GhostButton {
-                text: "Sair da sala";
-                clicked => { Ui.leave-room(); }
+                        for peer[index] in Ui.peers : Rectangle {
+                            width: index < 3 ? 26px : 0px;
+                            visible: index < 3;
+
+                            Avatar {
+                                letter: peer.initial;
+                                size: 26px;
+                                mine: peer.mine;
+                            }
+                        }
+                    }
+
+                    Text {
+                        x: 6px + parent.faces-width + 8px;
+                        text: Ui.peers.length == 0 ? "1" : Ui.peers.length;
+                        color: Skin.ink-dim;
+                        font-family: Skin.mono;
+                        font-size: 10.5px;
+                        vertical-alignment: center;
+                        height: parent.height;
+                    }
+
+                    Glyph {
+                        x: parent.width - 20px;
+                        y: (parent.height - self.height) / 2;
+                        commands: Icons.chevron-down;
+                        size: 12px;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { showing-people = !showing-people; }
+                    }
+                }
+
+                Pill {
+                    width: 96px;
+                    y: (parent.height - self.height) / 2;
+
+                    Rectangle {
+                        x: 12px;
+                        y: (parent.height - self.height) / 2;
+                        width: 7px;
+                        height: 7px;
+                        border-radius: 3.5px;
+                        background: Skin.online;
+                    }
+
+                    Text {
+                        x: 27px;
+                        text: Ui.elapsed;
+                        color: Skin.ink-icon;
+                        font-family: Skin.mono;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        height: parent.height;
+                    }
+                }
+
+                Text {
+                    text: Ui.ping;
+                    color: Skin.ink-dim;
+                    font-family: Skin.mono;
+                    font-size: 10.5px;
+                    vertical-alignment: center;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                IconButton {
+                    commands: Icons.screen;
+                    active: Ui.sharing;
+                    y: (parent.height - self.height) / 2;
+                    clicked => { Ui.toggle-share(); }
+                }
+
+                IconButton {
+                    commands: Icons.phone-off;
+                    hangup: true;
+                    filled: true;
+
+                    y: (parent.height - self.height) / 2;
+                    clicked => { Ui.leave-room(); }
+                }
             }
         }
 
-        HorizontalLayout {
-            spacing: 12px;
+        // O cartão do meio quando não há nada para assistir: o desenho, a frase e o botão
+        // que começa a transmissão — nessa ordem, como no React.
+        Rectangle {
             vertical-stretch: 1;
 
             Glass {
-                horizontal-stretch: 1;
-                border-radius: 16px;
+                width: 520px;
+                height: middle.preferred-height + 72px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                border-radius: 24px;
 
-                VerticalLayout {
+                middle := VerticalLayout {
+                    padding: 36px;
+                    spacing: 0px;
                     alignment: center;
-                    spacing: 8px;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        padding-bottom: 20px;
+
+                        Rectangle {
+                            height: 64px;
+                            width: 64px;
+                            border-radius: 20px;
+                            border-width: 1px;
+                            border-color: #8a7cf54d;
+                            background: #8a7cf526;
+
+                            Glyph {
+                                commands: Icons.screen;
+                                size: 26px;
+                                tint: Skin.lilac-2;
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: Ui.sharing
+                            ? "Você está transmitindo."
+                            : "Ninguém está compartilhando ainda.";
+                        color: Skin.ink;
+                        font-family: Skin.sans;
+                        font-size: 19px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
 
                     Muted {
-                        text: Ui.peers.length > 1
-                            ? "Ninguém está transmitindo agora."
-                            : "Mande o código para alguém entrar.";
+                        text: Ui.sharing
+                            ? "A sua tela não aparece aqui para não gastar um decoder à toa."
+                            : "Mande o código " + Ui.room-code + " para quem você quer aqui.";
                         horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        padding-top: Ui.sharing ? 0px : 20px;
+
+                        PrimaryButton {
+                            text: "Iniciar compartilhamento";
+                            visible: !Ui.sharing;
+                            height: Ui.sharing ? 0px : 41px;
+                            width: 240px;
+                            clicked => { Ui.toggle-share(); }
+                        }
                     }
 
                     Danger {
                         text: Ui.complaint;
                         min-height: 20px;
+                        horizontal-alignment: center;
                     }
                 }
             }
 
-            Glass {
-                width: 260px;
-                border-radius: 16px;
+            // O popover de quem está na sala: 320 de largura, colado embaixo da pílula.
+            Rectangle {
+                visible: showing-people;
+                x: 190px;
+                y: 0px;
+                width: 320px;
+                height: list.preferred-height + 16px;
+                border-radius: 14px;
+                border-width: 1px;
+                border-color: Skin.line-strong;
+                background: #100d1af5;
 
-                VerticalLayout {
-                    padding: 12px;
-                    spacing: 8px;
+                list := VerticalLayout {
+                    padding: 8px;
+                    spacing: 6px;
 
-                    LabelMono { text: "NA SALA"; }
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        padding-top: 6px;
+                        padding-bottom: 6px;
 
-                    ScrollView {
-                        VerticalLayout {
-                            spacing: 4px;
-                            alignment: start;
+                        LabelMono {
+                            text: "NA SALA";
+                            horizontal-stretch: 1;
+                        }
+                    }
 
-                            for peer in Ui.peers : RowItem {
-                                HorizontalLayout {
-                                    padding-left: 8px;
-                                    padding-right: 11px;
-                                    spacing: 8px;
+                    for peer in Ui.peers : RowItem {
+                        height: 40px;
 
-                                    Avatar {
-                                        letter: peer.initial;
-                                        size: 24px;
-                                        mine: peer.mine;
-                                        y: (parent.height - self.height) / 2;
-                                    }
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 10px;
 
-                                    Text {
-                                        text: peer.name;
-                                        color: Skin.ink-body;
-                                        font-size: 13px;
-                                        horizontal-alignment: left;
-                                        horizontal-stretch: 1;
-                                        overflow: elide;
-                                        vertical-alignment: center;
-                                    }
+                            Avatar {
+                                letter: peer.initial;
+                                size: 24px;
+                                mine: peer.mine;
+                                y: (parent.height - self.height) / 2;
+                            }
 
-                                    Text {
-                                        text: peer.note;
-                                        color: Skin.ink-faint;
-                                        font-size: 11px;
-                                        vertical-alignment: center;
-                                    }
-                                }
+                            Text {
+                                text: peer.name;
+                                color: Skin.ink-body;
+                                font-family: Skin.sans;
+                                font-size: 12.5px;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: peer.note;
+                                color: Skin.ink-dim;
+                                font-family: Skin.mono;
+                                font-size: 10px;
+                                vertical-alignment: center;
                             }
                         }
                     }
                 }
             }
         }
-
-        UserBar { }
     }
 }

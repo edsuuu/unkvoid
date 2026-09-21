@@ -121,6 +121,13 @@ export component Glyph inherits Rectangle {
     in property <string> commands;
     in property <brush> tint: Skin.ink-icon;
     in property <length> size: 17px;
+    // Os desenhos do React são de linha, menos dois: o fone do "sair" e o triângulo do
+    // "assistir" são preenchidos, e um contorno no lugar deles vira outro ícone.
+    //
+    // ponytail: o React ainda gira o fone em 135°, e o `Path` do Slint não tem rotação. Em
+    // cima do vermelho cheio o fone de pé já se lê como "sair da chamada"; para ficar igual,
+    // o caminho teria de vir girado do `skin.slint`.
+    in property <bool> filled;
 
     width: root.size;
     height: root.size;
@@ -129,9 +136,9 @@ export component Glyph inherits Rectangle {
         commands: root.commands;
         viewbox-width: 24;
         viewbox-height: 24;
-        stroke: root.tint;
+        stroke: root.filled ? transparent : root.tint;
         stroke-width: 1.8px;
-        fill: transparent;
+        fill: root.filled ? root.tint : transparent;
     }
 }
 
@@ -141,19 +148,36 @@ export component IconButton inherits Rectangle {
     in property <string> commands;
     in property <bool> on: true;
     in property <bool> enabled: true;
+    // `btn-icon-on`: o estado ligado, no violeta cheio da marca.
+    in property <bool> active;
+    // O botão de sair: vermelho cheio, sem contorno.
+    in property <bool> hangup;
+    in property <bool> filled;
+
+    in property <length> size: 34px;
+    in property <length> glyph-size: 17px;
     callback clicked();
 
-    width: 34px;
-    height: 34px;
-    border-radius: 11px;
-    border-width: 1px;
-    border-color: Skin.line-strong;
-    background: #ffffff0d;
+    width: root.size;
+    height: root.size;
+    border-radius: root.size == 34px ? 11px : 9px;
+    border-width: root.hangup ? 0px : 1px;
+    border-color: root.active ? #8a7cf599 : Skin.line-strong;
+    background: root.hangup
+        ? Skin.danger
+        : root.active
+            ? @linear-gradient(180deg, Skin.brand 0%, Skin.brand-dark 100%)
+            : #ffffff0d;
     opacity: root.enabled ? 1.0 : 0.45;
 
     Glyph {
         commands: root.commands;
-        tint: root.on ? Skin.ink-icon : Skin.danger;
+        size: root.glyph-size;
+        filled: root.filled;
+
+        tint: root.hangup || root.active
+            ? Skin.ink-strong
+            : root.on ? Skin.ink-icon : Skin.danger;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
     }
@@ -163,6 +187,15 @@ export component IconButton inherits Rectangle {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
+}
+
+// A pílula de contorno redondo da barra da sala: o tempo, a contagem, quem está dentro.
+export component Pill inherits Rectangle {
+    height: 32px;
+    border-radius: 999px;
+    border-width: 1px;
+    border-color: Skin.line-strong;
+    background: Skin.row;
 }
 
 export component LinkButton inherits Text {
@@ -261,7 +294,9 @@ export component Avatar inherits Rectangle {
         text: root.letter == "" ? "?" : root.letter;
         color: root.mine ? Skin.ink-strong : Skin.ink-icon;
         font-family: Skin.sans;
-        font-size: root.size * 0.42;
+        // A mesma conta do React: um terço do diâmetro, e nunca menos que 9 — abaixo disso
+        // as iniciais somem. Em 0.42 a letra enchia o círculo.
+        font-size: max(9px, root.size * 0.33);
         font-weight: 700;
         horizontal-alignment: center;
         vertical-alignment: center;

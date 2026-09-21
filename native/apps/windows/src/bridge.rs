@@ -184,6 +184,7 @@ impl Bridge {
             move || complain(&window, NO_CAPTURE)
         });
 
+
         ui.on_toggle_mic({
             let window = self.window.clone();
 
@@ -543,6 +544,13 @@ impl Bridge {
                         &window,
                         "A sala não voltou. Entre de novo quando a internet estabilizar.",
                     ),
+                    local::PING_MEASURED => {
+                        if let Some(milliseconds) = event.data.as_u64() {
+                            let said = format!("{milliseconds} ms");
+
+                            paint(&window, move |app| app.global::<Ui>().set_ping(said.into()));
+                        }
+                    }
                     _ => {}
                 }
 
