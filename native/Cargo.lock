@@ -9266,7 +9266,11 @@ name = "unkvoid-windows"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
+ "capture",
  "core-app",
+ "media",
+ "serde_json",
  "slint",
  "slint-build",
  "storage",
