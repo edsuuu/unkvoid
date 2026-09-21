@@ -415,6 +415,42 @@ impl Bridge {
         });
     }
 
+    /// Editar e apagar a própria mensagem. O que aparece na tela é o que o servidor gravou:
+    /// o canal é relido em seguida, como no envio.
+    pub fn edit_message(self: &Rc<Self>, channel: &str, message: i64, body: &str) {
+        let (api, screen, body) = (self.api.clone(), self.to_screen.clone(), body.trim().to_owned());
+        let channel = channel.to_owned();
+
+        self.spawn(async move {
+            if let Err(failure) = api.edit_message(message, &body).await {
+                let _ = screen.send(Update::Complaint(said(&failure)));
+
+                return;
+            }
+
+            if let Ok(messages) = api.messages(&channel).await {
+                let _ = screen.send(Update::Messages(messages));
+            }
+        });
+    }
+
+    pub fn delete_message(self: &Rc<Self>, channel: &str, message: i64) {
+        let (api, screen) = (self.api.clone(), self.to_screen.clone());
+        let channel = channel.to_owned();
+
+        self.spawn(async move {
+            if let Err(failure) = api.delete_message(message).await {
+                let _ = screen.send(Update::Complaint(said(&failure)));
+
+                return;
+            }
+
+            if let Ok(messages) = api.messages(&channel).await {
+                let _ = screen.send(Update::Messages(messages));
+            }
+        });
+    }
+
     pub fn send_message(self: &Rc<Self>, channel: &str, body: &str) {
         let (api, screen) = (self.api.clone(), self.to_screen.clone());
         let (channel, body) = (channel.to_owned(), body.to_owned());

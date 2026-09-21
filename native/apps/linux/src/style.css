@@ -382,8 +382,8 @@ menubutton.bar > button {
     border: none;
     border-radius: 8px;
     box-shadow: none;
-    min-height: 26px;
-    min-width: 26px;
+    min-height: 28px;
+    min-width: 28px;
     padding: 0;
 }
 
@@ -526,9 +526,9 @@ button.arrow {
     background-color: transparent;
     border: none;
     box-shadow: none;
-    min-height: 18px;
+    min-height: 28px;
     min-width: 18px;
-    padding: 2px;
+    padding: 0;
 }
 
 menubutton.arrow > button:hover,

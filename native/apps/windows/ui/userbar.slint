@@ -12,15 +12,16 @@ component BarButton inherits Rectangle {
     in property <bool> open;
     callback clicked();
 
-    width: 26px;
-    height: 26px;
+    // As medidas que o Mac fixou: 16,5 numa caixa de 28, e escala 1,12 sob o mouse.
+    width: 28px;
+    height: 28px;
     border-radius: 8px;
     background: root.open || touch.has-hover ? Skin.row : transparent;
     opacity: root.enabled ? 1.0 : 0.4;
 
     Glyph {
         commands: root.commands;
-        size: touch.has-hover ? 17px : 15px;
+        size: touch.has-hover ? 18.5px : 16.5px;
         tint: root.alert ? Skin.danger : (root.open ? Skin.ink-strong : Skin.ink-icon);
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
@@ -43,14 +44,14 @@ component DeviceArrow inherits Rectangle {
     callback opening();
     callback chosen(int);
 
-    width: 14px;
-    height: 26px;
+    width: 18px;
+    height: 28px;
     border-radius: 6px;
     background: touch.has-hover ? Skin.row : transparent;
 
     Glyph {
         commands: Icons.chevron-down;
-        size: touch.has-hover ? 13px : 11px;
+        size: touch.has-hover ? 14px : 12.5px;
         tint: touch.has-hover ? Skin.ink-strong : Skin.ink-dim;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;

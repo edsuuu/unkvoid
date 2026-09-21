@@ -105,6 +105,7 @@ export component SettingsModal inherits Rectangle {
 
     // Clicar fora fecha, e o Esc também. O painel come o clique dele.
     TouchArea {
+        mouse-cursor: pointer;
         clicked => { Ui.close-settings(); }
     }
 

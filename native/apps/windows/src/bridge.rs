@@ -213,6 +213,18 @@ impl Bridge {
             move |index| bridge.open_channel(index)
         });
 
+        ui.on_edit_message({
+            let bridge = self.clone();
+
+            move |id, body| bridge.edit_message(id, &body)
+        });
+
+        ui.on_delete_message({
+            let bridge = self.clone();
+
+            move |id| bridge.delete_message(id)
+        });
+
         ui.on_send_message({
             let bridge = self.clone();
 
@@ -761,7 +773,7 @@ impl Bridge {
 
         let (api, window) = (self.api.clone(), self.window.clone());
         let (id, name) = (channel.id.clone(), channel.name.clone());
-        let chosen = index as usize;
+        let (chosen, mine) = (index as usize, *lock(&self.me));
 
         let (text, voice) = split_channels(&lock(&self.channels), Some(chosen));
 
@@ -774,7 +786,51 @@ impl Bridge {
         });
 
         self.spawn(async move {
-            read_channel(&api, &window, &id).await;
+            read_channel(&api, &window, &id, mine).await;
+        });
+    }
+
+    /// Editar e apagar a própria mensagem. O que aparece na tela é o que o servidor gravou:
+    /// o canal é relido em seguida, como no envio.
+    fn edit_message(self: &Rc<Self>, id: i32, body: &str) {
+        let Some(channel) = lock(&self.reading).clone() else {
+            return;
+        };
+
+        let (api, window, body) = (self.api.clone(), self.window.clone(), body.trim().to_owned());
+        let mine = *lock(&self.me);
+
+        if body.is_empty() {
+            return;
+        }
+
+        self.spawn(async move {
+            if let Err(failure) = api.edit_message(i64::from(id), &body).await {
+                complain(&window, said(&failure));
+
+                return;
+            }
+
+            read_channel(&api, &window, &channel, mine).await;
+        });
+    }
+
+    fn delete_message(self: &Rc<Self>, id: i32) {
+        let Some(channel) = lock(&self.reading).clone() else {
+            return;
+        };
+
+        let (api, window) = (self.api.clone(), self.window.clone());
+        let mine = *lock(&self.me);
+
+        self.spawn(async move {
+            if let Err(failure) = api.delete_message(i64::from(id)).await {
+                complain(&window, said(&failure));
+
+                return;
+            }
+
+            read_channel(&api, &window, &channel, mine).await;
         });
     }
 
@@ -790,6 +846,7 @@ impl Bridge {
         }
 
         let (api, window, body) = (self.api.clone(), self.window.clone(), body.to_owned());
+        let mine = *lock(&self.me);
 
         self.spawn(async move {
             if let Err(failure) = api.send_message(&channel, &body).await {
@@ -800,7 +857,7 @@ impl Bridge {
 
             // Reler o canal em vez de emendar a mensagem na lista: o que aparece é o que o
             // servidor gravou, e não o que este app achou que mandou.
-            read_channel(&api, &window, &channel).await;
+            read_channel(&api, &window, &channel, mine).await;
         });
     }
 
@@ -1200,10 +1257,12 @@ fn show_direct(window: &Weak<AppWindow>, person: &Person, messages: Vec<DirectMe
     let rows: Vec<MessageRow> = messages
         .iter()
         .map(|message| MessageRow {
+            id: 0,
             initial: initial(&message.sender.name),
             author: message.sender.name.clone().into(),
             body: message.body.clone().into(),
             at: at_of(&message.created_at),
+            mine: false,
         })
         .collect();
 
@@ -1313,16 +1372,19 @@ async fn landed(core: &Arc<App>, api: &Arc<Api>, window: &Weak<AppWindow>, landi
     }
 }
 
-async fn read_channel(api: &Arc<Api>, window: &Weak<AppWindow>, channel: &str) {
+async fn read_channel(api: &Arc<Api>, window: &Weak<AppWindow>, channel: &str, me: Option<i64>) {
     match api.messages(channel).await {
         Ok(messages) => {
+            #[allow(clippy::cast_possible_truncation)]
             let rows: Vec<MessageRow> = messages
                 .iter()
                 .map(|message| MessageRow {
+                    id: message.id as i32,
                     initial: initial(&message.user.name),
                     author: message.user.name.clone().into(),
                     body: message.body.clone().into(),
                     at: message.created_at.get(11..16).unwrap_or_default().into(),
+                    mine: Some(message.user.id) == me,
                 })
                 .collect();
 

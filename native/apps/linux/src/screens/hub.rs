@@ -46,6 +46,8 @@ pub struct HubScreen {
     text_channels: gtk::ListBox,
     voice_channels: gtk::Box,
     channel_ids: Rc<RefCell<Vec<Channel>>>,
+    /// O canal de texto aberto: é ele que editar e apagar releem.
+    open_channel: Rc<RefCell<Option<String>>>,
     /// O canal de voz em que se está, e as caixas que precisam saber disso.
     voice_open: Rc<RefCell<Option<String>>>,
     voice_people: Rc<RefCell<Vec<Peer>>>,
@@ -437,6 +439,7 @@ impl HubScreen {
             text_channels,
             voice_channels,
             channel_ids,
+            open_channel,
             voice_open,
             voice_people,
             members,
@@ -584,8 +587,16 @@ impl HubScreen {
     pub fn set_messages(&self, messages: &[Message]) {
         clear_box(&self.messages);
 
+        let mine = self.user.borrow().as_ref().map(|person| person.id);
+        let channel = self.open_channel.borrow().clone().unwrap_or_default();
+
         for message in messages {
-            self.messages.append(&message_row(&message.user.name, &message.body));
+            self.messages.append(&message_row(
+                &self.bridge,
+                &channel,
+                message,
+                Some(message.user.id) == mine,
+            ));
         }
 
         scroll_to_end(&self.messages_scroll);
@@ -632,7 +643,11 @@ impl HubScreen {
         clear_box(&self.talking_messages);
 
         for message in messages {
-            self.talking_messages.append(&message_row(&message.sender.name, &message.body));
+            self.talking_messages.append(&said_row(
+                &message.sender.name,
+                &message.body,
+                message.created_at.get(11..16).unwrap_or_default(),
+            ));
         }
 
         self.main.set_visible_child_name("home");
@@ -1034,19 +1049,125 @@ fn member_row(name: &str) -> gtk::Box {
     line
 }
 
-fn message_row(author: &str, written: &str) -> gtk::Box {
+/// Uma mensagem. O "⋯" tem lugar próprio no fim da linha — o texto quebra antes dele — e só
+/// aparece na sua, que é a única que dá para editar e apagar.
+fn message_row(bridge: &Rc<Bridge>, channel: &str, message: &Message, mine: bool) -> gtk::Box {
+    let line = said_row(
+        &message.user.name,
+        &message.body,
+        message.created_at.get(11..16).unwrap_or_default(),
+    );
+
+    if mine {
+        line.append(&message_menu(bridge, channel, message));
+    }
+
+    line
+}
+
+/// A linha de uma fala: o avatar, o nome com a hora ao lado, e o texto embaixo.
+fn said_row(author: &str, written: &str, when: &str) -> gtk::Box {
     let line = row(10);
-
-    line.add_css_class("fade-in");
     let texts = column(2);
+    let head = row(6);
+    let said = body(written);
 
-    texts.append(&strong(author));
-    texts.append(&body(written));
+    said.set_wrap(true);
+    said.set_xalign(0.0);
+    head.append(&strong(author));
+    head.append(&dim(when));
+    texts.append(&head);
+    texts.append(&said);
+    texts.set_hexpand(true);
+    line.add_css_class("fade-in");
     line.add_css_class("person");
-    line.append(&avatar(author, 28, false));
+    line.append(&avatar(author, 30, false));
     line.append(&texts);
 
     line
+}
+
+/// O menu da própria mensagem: editar e apagar. Responder ainda não existe — o `send_message`
+/// do núcleo não leva `reply_to`, e inventar um caminho por fora duplicaria a regra.
+fn message_menu(bridge: &Rc<Bridge>, channel: &str, message: &Message) -> gtk::MenuButton {
+    let menu = gtk::MenuButton::new();
+    let sheet = column(2);
+    let edit = crate::components::button("Editar", "ghost");
+    let erase = crate::components::button("Apagar", "ghost");
+
+    menu.set_child(Some(&icons::icon("dots", 13, icons::DIM)));
+    menu.add_css_class("arrow");
+    menu.add_css_class("more");
+    crate::components::clickable(&menu);
+    erase.add_css_class("danger");
+    sheet.append(&edit);
+    sheet.append(&erase);
+    sheet.set_size_request(168, -1);
+    menu.set_popover(Some(&crate::components::popover(&sheet)));
+
+    edit.connect_clicked({
+        let (bridge, message, channel) = (bridge.clone(), message.clone(), channel.to_owned());
+
+        move |edit| {
+            let Some(popover) = edit.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>() else {
+                return;
+            };
+
+            popover.popdown();
+            editing(&bridge, &channel, &message);
+        }
+    });
+
+    erase.connect_clicked({
+        let (bridge, id, channel) = (bridge.clone(), message.id, channel.to_owned());
+
+        move |erase| {
+            if let Some(popover) = erase.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>() {
+                popover.popdown();
+            }
+
+            bridge.delete_message(&channel, id);
+        }
+    });
+
+    menu
+}
+
+/// Editar abre a mensagem num campo. Enter grava.
+///
+/// ponytail: no React o campo nasce no lugar da mensagem; aqui ele é um diálogo, porque
+/// trocar a linha por um campo pede reconstruir a lista inteira a cada tecla. Teto: o
+/// caminho é o mesmo, a diferença é onde o campo aparece.
+fn editing(bridge: &Rc<Bridge>, channel: &str, message: &Message) {
+    let dialog = gtk::Window::new();
+    let sheet = column(10);
+    let written = field("Escreva a mensagem");
+
+    written.set_text(&message.body);
+    dialog.set_title(Some("Editar a mensagem"));
+    dialog.set_modal(true);
+    dialog.set_default_size(420, -1);
+    dialog.add_css_class("settings");
+    crate::components::pad(&sheet, 16);
+    sheet.append(&written);
+    dialog.set_child(Some(&sheet));
+
+    written.connect_activate({
+        let (bridge, id, dialog) = (bridge.clone(), message.id, dialog.clone());
+        let channel = channel.to_owned();
+
+        move |written| {
+            let typed = written.text();
+
+            if !typed.trim().is_empty() {
+                bridge.edit_message(&channel, id, typed.as_str());
+            }
+
+            dialog.close();
+        }
+    });
+
+    dialog.present();
 }
 
 /// A aba escolhida fica marcada e a outra apaga — o `row-item-on` do React.

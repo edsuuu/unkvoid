@@ -17,8 +17,9 @@ use crate::devices::{self, Device};
 use crate::icons;
 use crate::streaming::Mine;
 
-/// O tamanho do desenho dentro dos botões da barra, como no React.
-const BAR_ICON: i32 = 15;
+/// O tamanho do desenho dentro dos botões da barra, na medida que o Mac fixou: 16,5 numa
+/// caixa de 28, e a escala de 1,12 sob o mouse fica no CSS.
+const BAR_ICON: i32 = 17;
 
 pub struct UserBar {
     root: gtk::Box,
@@ -304,7 +305,7 @@ fn chooser_arrow(
     let menu = gtk::MenuButton::new();
     let list = chooser(heading, available, current, choose);
 
-    menu.set_child(Some(&icons::icon("chevronDown", 11, icons::DIM)));
+    menu.set_child(Some(&icons::icon("chevronDown", 13, icons::DIM)));
     menu.add_css_class("arrow");
     clickable(&menu);
     list.root.set_size_request(260, -1);

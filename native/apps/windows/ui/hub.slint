@@ -78,56 +78,167 @@ component WideRow inherits Rectangle {
     }
 }
 
+// Uma linha do menu da mensagem.
+component Said-action inherits Rectangle {
+    in property <string> text;
+    in property <bool> danger;
+    callback clicked();
+
+    height: 30px;
+    border-radius: 8px;
+    background: touch.has-hover ? Skin.row : transparent;
+
+    Text {
+        text: root.text;
+        color: root.danger ? Skin.danger : Skin.ink-icon;
+        font-family: Skin.sans;
+        font-size: 12.5px;
+        x: 10px;
+        y: (parent.height - self.height) / 2;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 // Uma fala do chat ou da conversa direta.
-component Said inherits HorizontalLayout {
+component Said inherits Rectangle {
+    in property <int> id;
     in property <string> author;
     in property <string> initial;
     in property <string> body;
     in property <string> at;
+    in property <bool> mine;
     // O `animate-fade-in` do React: a mensagem que chega não pisca no lugar.
     property <bool> shown;
+    property <bool> editing;
 
-    spacing: 10px;
+    height: line.preferred-height;
     opacity: root.shown ? 1.0 : 0.0;
     init => { root.shown = true; }
 
     animate opacity { duration: 180ms; easing: ease-out; }
 
-    Avatar {
-        letter: root.initial;
-        size: 30px;
-    }
+    hover := TouchArea { }
 
-    VerticalLayout {
-        spacing: 2px;
+    line := HorizontalLayout {
+        padding-top: 2px;
+        padding-bottom: 2px;
+        spacing: 10px;
 
-        HorizontalLayout {
-            spacing: 6px;
-            alignment: start;
+        Avatar {
+            letter: root.initial;
+            size: 30px;
+        }
 
-            Text {
-                text: root.author;
-                color: Skin.ink-body;
-                font-family: Skin.sans;
-                font-size: 12.5px;
-                font-weight: 600;
+        VerticalLayout {
+            spacing: 2px;
+            horizontal-stretch: 1;
+
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+
+                Text {
+                    text: root.author;
+                    color: Skin.ink-body;
+                    font-family: Skin.sans;
+                    font-size: 12.5px;
+                    font-weight: 600;
+                }
+
+                Text {
+                    text: root.at;
+                    color: Skin.ink-dim;
+                    font-family: Skin.sans;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
             }
 
-            Text {
-                text: root.at;
-                color: Skin.ink-dim;
+            if !root.editing : Text {
+                text: root.body;
+                color: Skin.ink-body;
                 font-family: Skin.sans;
-                font-size: 11px;
-                vertical-alignment: center;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+
+            if root.editing : Field {
+                text: root.body;
+                placeholder: "Escreva a mensagem";
+                accepted => {
+                    Ui.edit-message(root.id, self.text);
+                    root.editing = false;
+                }
             }
         }
 
-        Text {
-            text: root.body;
-            color: Skin.ink-body;
-            font-family: Skin.sans;
-            font-size: 13px;
-            wrap: word-wrap;
+        // O "⋯" tem lugar próprio no fim da linha: o texto quebra antes dele, em vez de
+        // ele cobrir a mensagem quando o mouse passa.
+        Rectangle {
+            width: 24px;
+            height: 24px;
+            border-radius: 7px;
+            border-width: root.mine && hover.has-hover ? 1px : 0px;
+            border-color: Skin.line-strong;
+            background: root.mine && hover.has-hover ? Skin.row : transparent;
+            y: 2px;
+
+            Glyph {
+                visible: root.mine && hover.has-hover;
+                commands: Icons.dots;
+                size: 13px;
+                filled: true;
+                tint: Skin.ink-icon;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+
+            more := TouchArea {
+                enabled: root.mine && hover.has-hover;
+                mouse-cursor: pointer;
+                clicked => { menu.show(); }
+            }
+
+            menu := PopupWindow {
+                x: -150px;
+                y: 22px;
+                width: 168px;
+                height: 84px;
+                close-policy: PopupClosePolicy.close-on-click-outside;
+
+                Rectangle {
+                    background: #100d1af5;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: Skin.line-strong;
+
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 2px;
+
+                        Said-action {
+                            text: "Editar";
+                            clicked => {
+                                root.editing = true;
+                                menu.close();
+                            }
+                        }
+
+                        Said-action {
+                            text: "Apagar";
+                            danger: true;
+                            clicked => {
+                                Ui.delete-message(root.id);
+                                menu.close();
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1037,10 +1148,12 @@ export component HubScreen inherits Rectangle {
                                 }
 
                                 for message in Ui.messages : Said {
+                                    id: message.id;
                                     author: message.author;
                                     initial: message.initial;
                                     body: message.body;
                                     at: message.at;
+                                    mine: message.mine;
                                 }
                             }
                         }
