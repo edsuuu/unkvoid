@@ -182,6 +182,20 @@ impl Handle {
     /// Roda a chamada e traduz a falha antes de ela chegar à interface. Sem `useServer`
     /// antes, responde `unreachable` em vez de derrubar: é o que acontece de verdade se o
     /// endereço do servidor não foi descoberto ainda.
+    fn warm_trees(&self, servers: &Value) {
+        let ids: Vec<i64> = servers
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|server| server["id"].as_i64())
+            .collect();
+
+        if let Some(api) = self.api() {
+            self.runtime
+                .spawn(async move { api.warm_trees(&ids).await });
+        }
+    }
+
     fn with_api(&self, work: impl FnOnce(&Api, &Runtime) -> Result<Value, HttpError>) -> Value {
         let Some(api) = self.api() else {
             return json!({ "failed": Failure::Unreachable });
@@ -680,16 +694,29 @@ pub unsafe extern "C" fn unkvoid_app(
 
             json!({ "ok": true })
         }
-        "servers" => handle.with_api(|api, runtime| {
-            Ok(json!({ "servers": runtime.block_on(api.servers())? }))
-        }),
+        "servers" => {
+            let answer = handle.with_api(|api, runtime| {
+                Ok(json!({ "servers": runtime.block_on(api.servers())? }))
+            });
+
+            handle.warm_trees(&answer["servers"]);
+
+            answer
+        }
+        // Com `known`, a árvore já vista volta na hora (e `known: true` avisa que pode estar
+        // velha); sem ela em mãos, ou sem `known`, a resposta é a do Laravel.
         "server" => handle.with_api(|api, runtime| {
             let id = data["id"].as_i64().unwrap_or_default();
+            let known = data["known"].as_bool().unwrap_or_default().then(|| api.known_tree(id)).flatten();
+            let from_memory = known.is_some();
 
-            let tree = runtime.block_on(api.tree(id))?;
+            let tree = match known {
+                Some(tree) => tree,
+                None => runtime.block_on(api.tree(id))?,
+            };
 
             // O que dá para fazer ali já vai calculado: a interface só esconde botão.
-            Ok(json!({ "abilities": tree.abilities(), "server": tree }))
+            Ok(json!({ "abilities": tree.abilities(), "server": tree, "known": from_memory }))
         }),
         "messages" => handle.with_api(|api, runtime| {
             Ok(json!({ "messages": runtime.block_on(api.messages(&field("channel")))? }))

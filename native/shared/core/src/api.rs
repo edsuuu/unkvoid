@@ -9,6 +9,7 @@
 //! outra falha vira um [`Failure`], sem caminho, endereço nem código de status — ver
 //! `failure.rs`.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -18,8 +19,8 @@ use serde_json::Value;
 
 use crate::failure::Failure;
 use crate::models::{
-    AuthToken, ChannelKind, Config, Conversation, DirectMessage, Friendship, Message, ServerSummary,
-    ServerTree, User,
+    AuthToken, ChannelKind, Config, Conversation, DirectMessage, Friendship, Message,
+    ServerSummary, ServerTree, User,
 };
 
 /// Dez segundos, o mesmo do app de hoje. Passar disto a pessoa já desistiu e clicou de novo.
@@ -48,6 +49,9 @@ impl From<Failure> for HttpError {
 pub struct Api {
     base: String,
     token: Mutex<Option<String>>,
+    /// A última árvore vista de cada servidor. Trocar de servidor desenha os canais daqui,
+    /// na hora, e a resposta fresca chega por cima: o que espera a rede são só as mensagens.
+    trees: Mutex<HashMap<i64, ServerTree>>,
     http: reqwest::Client,
 }
 
@@ -56,6 +60,7 @@ impl Api {
         Ok(Self {
             base: base.trim_end_matches('/').to_owned(),
             token: Mutex::new(None),
+            trees: Mutex::new(HashMap::new()),
             http: reqwest::Client::builder().timeout(TIMEOUT).build()?,
         })
     }
@@ -85,7 +90,34 @@ impl Api {
 
     /// A árvore inteira do servidor: cargos, canais, membros e quem está em cada voz.
     pub async fn tree(&self, server: i64) -> Result<ServerTree, HttpError> {
-        self.get(&format!("/api/servers/{server}")).await
+        let tree: ServerTree = self.get(&format!("/api/servers/{server}")).await?;
+
+        self.trees().insert(server, tree.clone());
+
+        Ok(tree)
+    }
+
+    /// A árvore que já se conhece, sem ir à rede. Pode estar velha: quem a desenha pede a
+    /// fresca em seguida com `tree`.
+    pub fn known_tree(&self, server: i64) -> Option<ServerTree> {
+        self.trees().get(&server).cloned()
+    }
+
+    /// Busca a árvore de cada servidor logo depois da lista, para que o primeiro clique em
+    /// qualquer um já encontre os canais. Falha aqui não é de ninguém: o clique busca de novo.
+    pub async fn warm_trees(&self, servers: &[i64]) {
+        // ponytail: uma de cada vez; com dezenas de servidores vale buscar em paralelo com um teto.
+        for server in servers {
+            if let Err(failure) = self.tree(*server).await {
+                tracing::debug!(server, ?failure, "a árvore não veio no aquecimento");
+            }
+        }
+    }
+
+    fn trees(&self) -> std::sync::MutexGuard<'_, HashMap<i64, ServerTree>> {
+        self.trees
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// O token de quem tem conta para entrar numa sala por código.
@@ -98,6 +130,9 @@ impl Api {
             .token
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = token;
+
+        // Outra conta, outras permissões: a árvore de quem saiu não serve a quem entrou.
+        self.trees().clear();
     }
 
     pub fn token(&self) -> Option<String> {
@@ -153,23 +188,38 @@ impl Api {
     /// Cria um servidor. Ele já nasce com um canal de texto e um de voz — quem decide isso
     /// é o Laravel, e é por isso que a resposta já serve para abrir a árvore.
     pub async fn create_server(&self, name: &str) -> Result<ServerSummary, HttpError> {
-        self.post("/api/servers", &serde_json::json!({ "name": name })).await
+        self.post("/api/servers", &serde_json::json!({ "name": name }))
+            .await
     }
 
     /// Entra num servidor pelo convite. O código é o que o dono mandou, não o do servidor.
     pub async fn join_invite(&self, code: &str) -> Result<ServerSummary, HttpError> {
-        self.post(&format!("/api/invites/{code}"), &serde_json::json!({})).await
+        self.post(&format!("/api/invites/{code}"), &serde_json::json!({}))
+            .await
     }
 
     /// Sorteia um convite novo. O anterior para de valer na hora.
     pub async fn regenerate_invite(&self, server: i64) -> Result<String, HttpError> {
-        let answer: Value = self.post(&format!("/api/servers/{server}/invite"), &serde_json::json!({})).await?;
+        let answer: Value = self
+            .post(
+                &format!("/api/servers/{server}/invite"),
+                &serde_json::json!({}),
+            )
+            .await?;
 
-        Ok(answer["invite_code"].as_str().unwrap_or_default().to_owned())
+        Ok(answer["invite_code"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned())
     }
 
     pub async fn leave_server(&self, server: i64) -> Result<(), HttpError> {
-        let _: Value = self.post(&format!("/api/servers/{server}/leave"), &serde_json::json!({})).await?;
+        let _: Value = self
+            .post(
+                &format!("/api/servers/{server}/leave"),
+                &serde_json::json!({}),
+            )
+            .await?;
 
         Ok(())
     }
@@ -179,7 +229,12 @@ impl Api {
     ///
     /// Não devolve o canal: a resposta do `store` vem sem a permissão calculada, e quem
     /// chama precisa da árvore inteira de qualquer jeito para desenhar a coluna de novo.
-    pub async fn create_channel(&self, server: i64, name: &str, kind: ChannelKind) -> Result<(), HttpError> {
+    pub async fn create_channel(
+        &self,
+        server: i64,
+        name: &str,
+        kind: ChannelKind,
+    ) -> Result<(), HttpError> {
         let _: Value = self
             .post(
                 &format!("/api/servers/{server}/channels"),
@@ -196,7 +251,8 @@ impl Api {
 
     /// Pede amizade pelo e-mail. O servidor é quem diz se a pessoa existe.
     pub async fn add_friend(&self, email: &str) -> Result<Friendship, HttpError> {
-        self.post("/api/friends", &serde_json::json!({ "email": email })).await
+        self.post("/api/friends", &serde_json::json!({ "email": email }))
+            .await
     }
 
     /// Responde a um pedido. Aceitar é uma ação nomeada (`accept`); recusar é apagar, porque
@@ -216,7 +272,11 @@ impl Api {
         }
 
         let _: Value = self
-            .send(self.http.delete(self.url(&format!("/api/friends/{friendship}"))), "/api/friends")
+            .send(
+                self.http
+                    .delete(self.url(&format!("/api/friends/{friendship}"))),
+                "/api/friends",
+            )
             .await?;
 
         Ok(())
@@ -232,12 +292,18 @@ impl Api {
     }
 
     pub async fn send_direct(&self, user: i64, body: &str) -> Result<DirectMessage, HttpError> {
-        self.post(&format!("/api/dm/{user}"), &serde_json::json!({ "body": body })).await
+        self.post(
+            &format!("/api/dm/{user}"),
+            &serde_json::json!({ "body": body }),
+        )
+        .await
     }
 
     /// Marca a conversa como lida. Sem isto o contador de não lidas nunca zera.
     pub async fn read_conversation(&self, user: i64) -> Result<(), HttpError> {
-        let _: Value = self.post(&format!("/api/dm/{user}/read"), &serde_json::json!({})).await?;
+        let _: Value = self
+            .post(&format!("/api/dm/{user}/read"), &serde_json::json!({}))
+            .await?;
 
         Ok(())
     }
@@ -501,6 +567,57 @@ fn first_field_error(body: &Value) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Um Laravel de mentira que responde a mesma árvore a quantos pedidos vierem.
+    async fn serve_a_tree() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let body = json!({
+                    "id": 7, "name": "Estúdio", "owner_id": 1, "invite_code": null, "icon_url": null,
+                    "me": { "user_id": 1, "permissions": 0, "top_position": 0 },
+                    "roles": [], "channels": [], "members": [],
+                })
+                .to_string();
+                let mut request = [0_u8; 2048];
+                let _ = socket.read(&mut request).await;
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(answer.as_bytes()).await;
+            }
+        });
+
+        format!("http://{address}")
+    }
+
+    #[tokio::test]
+    async fn a_seen_tree_is_kept_for_the_next_click_and_forgotten_with_the_account() {
+        let api = Api::new(&serve_a_tree().await).expect("api");
+
+        assert!(api.known_tree(7).is_none(), "nada visto ainda");
+
+        api.warm_trees(&[7]).await;
+
+        assert_eq!(
+            api.known_tree(7).map(|tree| tree.name),
+            Some("Estúdio".to_owned())
+        );
+
+        api.set_token(None);
+
+        assert!(
+            api.known_tree(7).is_none(),
+            "a árvore de quem saiu não fica para quem entra"
+        );
+    }
 
     #[test]
     fn versions_compare_by_number_and_not_by_letter() {
