@@ -11,12 +11,6 @@ const SUITES = [
     'AES_CM_128_HMAC_SHA1_32',
 ] as const;
 
-/**
- * Uma transmissão que chega como RTP puro, vinda do app nativo e não de um navegador.
- *
- * O cliente traz a própria chave SRTP: quem envia é ele, então é dele a chave que
- * protege o que sai. O servidor responde com a chave do sentido contrário.
- */
 export class ProducePlainRequest extends Request {
     protected override validate(): void {
         this.oneOf('kind', ['audio', 'video'] as const);

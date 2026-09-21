@@ -1,15 +1,13 @@
 import { ValidationException } from '../../Exceptions/ApiException.js';
+import type { Payload } from '../../Routers/WebSocketRouter.js';
 import type { RoomRegistry } from '../../Services/RoomRegistry.js';
 import { Webhook } from '../../Services/Webhook.js';
-import type { JoinRequest } from '../Requests/JoinRequest.js';
-import { JoinResource } from '../Resources/JoinResource.js';
+import type { JoinRequest } from '../Request/JoinRequest.js';
 
 export class JoinController {
     public constructor(private readonly registry: RoomRegistry) {}
 
-    public async handle(request: JoinRequest): Promise<JoinResource> {
-        // Sem esta guarda, entrar de novo no mesmo socket faria a substituição de sessão
-        // fechar o próprio socket antes de responder.
+    public async handle(request: JoinRequest): Promise<Payload> {
         if (request.session.peer) {
             throw new ValidationException('this socket has already joined a room');
         }
@@ -30,7 +28,6 @@ export class JoinController {
             `[INFO] joined room=${room.id} sub=${peer.userId} name=${JSON.stringify(peer.name)} peer=${peer.id} ip=${peer.ip} resumed=${resumed}`,
         );
 
-        // Retomada não é novidade para a sala: ninguém saiu, a sinalização é que voltou.
         if (!resumed) {
             this.registry.replaceAccount(peer);
             room.broadcast(
@@ -41,6 +38,15 @@ export class JoinController {
             Webhook.send('joined', room.id, peer);
         }
 
-        return new JoinResource(peer, room, resumed);
+        return {
+            resumed,
+            peerId: peer.id,
+            name: peer.name,
+            resumeKey: peer.resumeKey,
+            routerRtpCapabilities: room.router.rtpCapabilities,
+            peers: room.describePeers(peer.id, resumed),
+            userId: peer.userId,
+            can: peer.can,
+        };
     }
 }

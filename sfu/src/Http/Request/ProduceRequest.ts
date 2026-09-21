@@ -3,7 +3,6 @@ import type { MediaKind, RtpParameters } from 'mediasoup/types';
 import { Request } from './Request.js';
 import { SOURCES, type SourceName } from '../../Enums/Source.js';
 
-/** Uma transmissão por WebRTC: o `sendTransport` do navegador já negociou o resto. */
 export class ProduceRequest extends Request {
     protected override validate(): void {
         this.string('transportId');

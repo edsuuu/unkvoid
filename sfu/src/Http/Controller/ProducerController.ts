@@ -1,20 +1,17 @@
 import type { Producer } from 'mediasoup/types';
 
 import type { SourceName } from '../../Enums/Source.js';
+import type { Payload } from '../../Routers/WebSocketRouter.js';
 import type { Peer } from '../../Services/Peer.js';
 import type { Room } from '../../Services/Room.js';
-import type { ProducePlainRequest } from '../Requests/ProducePlainRequest.js';
-import type { ProduceRequest } from '../Requests/ProduceRequest.js';
-import type { ProducerRequest } from '../Requests/ProducerRequest.js';
-import { PlainProducerResource } from '../Resources/PlainProducerResource.js';
-import { ProducerResource } from '../Resources/ProducerResource.js';
-import { StatusResource } from '../Resources/StatusResource.js';
+import type { ProducePlainRequest } from '../Request/ProducePlainRequest.js';
+import type { ProduceRequest } from '../Request/ProduceRequest.js';
+import type { ProducerRequest } from '../Request/ProducerRequest.js';
 
 const MEDIA_IDLE_MS = 30_000;
 
 export class ProducerController {
-    /** Mic, câmera e tela de quem tem WebRTC na janela. */
-    public async store(request: ProduceRequest): Promise<ProducerResource> {
+    public async store(request: ProduceRequest): Promise<Payload> {
         const peer = request.peer();
         const room = request.room();
 
@@ -28,15 +25,14 @@ export class ProducerController {
 
         this.announce(peer, room, producer, request.source());
 
-        return new ProducerResource(producer);
+        return {
+            producerId: producer.id,
+            kind: producer.kind,
+            source: String(producer.appData.source),
+        };
     }
 
-    /**
-     * A transmissão chega como RTP puro, não por WebRTC. É assim que o app alcança mais
-     * gente do que conexões diretas aguentam: continua codificando uma vez na GPU, mas
-     * sobe uma vez só para o servidor, que replica.
-     */
-    public async storePlain(request: ProducePlainRequest): Promise<PlainProducerResource> {
+    public async storePlain(request: ProducePlainRequest): Promise<Payload> {
         const peer = request.peer();
         const room = request.room();
 
@@ -52,17 +48,19 @@ export class ProducerController {
 
         this.announce(peer, room, producer, request.source());
 
-        return new PlainProducerResource(producer, transport);
+        return {
+            producerId: producer.id,
+            kind: producer.kind,
+            source: request.source(),
+            ip: transport.tuple.localAddress,
+            port: transport.tuple.localPort,
+            srtpParameters: transport.srtpParameters,
+        };
     }
 
-    /** Registra o producer e conta para a sala. É isto que acende o "ao vivo" dos outros. */
     private announce(peer: Peer, room: Room, producer: Producer, source: SourceName): void {
         peer.addProducer(producer, source);
-        // Trinta segundos sem um pacote e o producer morre. Avisar quem transmite é o
-        // ponto: `close` fala com a sala inteira MENOS o dono, então sem esta linha o app
-        // segue mostrando "ao vivo" para sempre enquanto todo mundo vê tela preta. A
-        // causa quase sempre é a porta de RTP deste worker fechada no firewall — a faixa
-        // inteira precisa estar aberta, não só o começo dela.
+
         let idleTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
             console.warn(
                 `[WARN] producerDead room=${room.id} sub=${peer.userId} source=${source} ip=${peer.ip}: no packet in ${MEDIA_IDLE_MS / 1000}s`,
@@ -71,9 +69,6 @@ export class ProducerController {
             room.closeProducer(peer, producer);
         }, MEDIA_IDLE_MS);
 
-        // Fechado por qualquer caminho (o dono, o transporte, a permissão que caiu na
-        // retomada): sem isto o relógio seguia e avisava `producerDead` de um producer que
-        // já não existe.
         producer.observer.once('close', () => clearTimeout(idleTimer));
 
         producer.on('transportclose', () => {
@@ -90,9 +85,6 @@ export class ProducerController {
             );
         });
 
-        // O producer é declarado antes de um único pacote chegar, então até o score subir
-        // quem transmite não tem como distinguir "o servidor está recebendo" de "meus
-        // pacotes não vão a lugar nenhum". Avisado uma vez: depois o score só oscila.
         let receiving = false;
 
         producer.on('score', (scores) => {
@@ -121,27 +113,27 @@ export class ProducerController {
         );
     }
 
-    public async pause(request: ProducerRequest): Promise<StatusResource> {
+    public async pause(request: ProducerRequest): Promise<Payload> {
         const peer = request.peer();
 
         await request.room().setProducerPaused(peer, peer.getProducer(request.producerId()), true);
 
-        return new StatusResource('paused');
+        return { status: 'paused' };
     }
 
-    public async resume(request: ProducerRequest): Promise<StatusResource> {
+    public async resume(request: ProducerRequest): Promise<Payload> {
         const peer = request.peer();
 
         await request.room().setProducerPaused(peer, peer.getProducer(request.producerId()), false);
 
-        return new StatusResource('resumed');
+        return { status: 'resumed' };
     }
 
-    public destroy(request: ProducerRequest): StatusResource {
+    public destroy(request: ProducerRequest): Payload {
         const peer = request.peer();
 
         request.room().closeProducer(peer, peer.producers.get(request.producerId()));
 
-        return new StatusResource('closed');
+        return { status: 'closed' };
     }
 }

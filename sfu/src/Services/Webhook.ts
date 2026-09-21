@@ -1,19 +1,10 @@
-import { config } from '../config.js';
 import type { Peer } from './Peer.js';
 import { Signature } from './Signature.js';
+import { config } from '../Config/index.js';
 
 const PATH = '/api/sfu/events';
 
-/**
- * Avisa o Laravel de quem entrou e saiu de um canal.
- * Fora do caminho do `join` de propósito: o site fora do ar não pode impedir ninguém de
- * falar, então isto nunca espera resposta nem lança — no máximo reclama no log.
- */
 export class Webhook {
-    /**
-     * Conta e visitante. O visitante da sala por código não tem canal a avisar, mas entra
-     * na auditoria com nome e IP. Qualquer outro `sub` o Laravel recusaria.
-     */
     public static send(event: 'joined' | 'left', roomId: string, peer: Peer): void {
         if (!peer.userId.startsWith('user:') && !peer.userId.startsWith('guest:')) {
             return;

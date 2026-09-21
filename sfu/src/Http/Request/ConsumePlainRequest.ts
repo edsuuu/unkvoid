@@ -5,11 +5,6 @@ import { ValidationException } from '../../Exceptions/ApiException.js';
 
 const SUITES = ['AES_CM_128_HMAC_SHA1_80'] as const;
 
-/**
- * Assistir por RTP puro: o app sem WebRTC na janela (o Linux) recebe a mídia numa
- * porta UDP e decodifica por conta própria. Como no `producePlain`, o cliente traz a
- * chave do que ELE manda — aqui só o pacote que abre o caminho no roteador.
- */
 export class ConsumePlainRequest extends Request {
     protected override validate(): void {
         this.string('producerId');

@@ -31,3 +31,9 @@ export class NotFoundException extends ApiException {
         super(message, 404);
     }
 }
+
+export class ServiceUnavailableException extends ApiException {
+    public constructor(message = 'service unavailable') {
+        super(message, 503);
+    }
+}

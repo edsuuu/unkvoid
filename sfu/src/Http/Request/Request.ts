@@ -1,7 +1,19 @@
-import { ValidationException } from '../../Exceptions/ApiException.js';
+import type { WebSocket } from 'ws';
+
+import { UnauthorizedException, ValidationException } from '../../Exceptions/ApiException.js';
 import type { Peer } from '../../Services/Peer.js';
 import type { Room } from '../../Services/Room.js';
-import type { Session } from '../../types.js';
+
+export type Identity = { userId: string; name: string };
+
+export type Session = {
+    socket: WebSocket;
+    ip: string;
+    room: Room | null;
+    peer: Peer | null;
+    /** Quem é o dono do socket fora de sala: o chat vive por aqui. */
+    identity: Identity | null;
+};
 
 export class Request {
     protected readonly data: Record<string, unknown>;
@@ -22,6 +34,14 @@ export class Request {
         }
 
         return this.session.peer;
+    }
+
+    public identity(): Identity {
+        if (!this.session.identity) {
+            throw new UnauthorizedException('this action requires identify first');
+        }
+
+        return this.session.identity;
     }
 
     public room(): Room {

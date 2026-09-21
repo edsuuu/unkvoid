@@ -3,8 +3,10 @@ const { join } = require('node:path');
 
 // O `.env` ao lado (fora do repositório) vence o que está aqui: é assim que esta máquina
 // tem endereço e portas próprios sem editar um arquivo versionado. Veja o `.env.example`.
-const envPath = join(__dirname, '.env');
-const doArquivo = existsSync(envPath)
+// O `.env` de produção morava em /var/www/projects/sfu quando o deploy era por rsync.
+// O segundo caminho existe só para a migração: some quando ele for movido para cá.
+const envPath = [join(__dirname, '.env'), '/var/www/projects/sfu/.env'].find(existsSync);
+const doArquivo = envPath
     ? Object.fromEntries(
         readFileSync(envPath, 'utf8')
             .split('\n')
@@ -22,7 +24,7 @@ module.exports = {
         {
             name: 'sfu',
             script: 'dist/server.js',
-            cwd: '/var/www/projects/sfu',
+            cwd: __dirname,
             instances: 1,
             autorestart: true,
             // Data e hora em cada linha do log: é o que diz quando alguém entrou, de que IP,
@@ -59,39 +61,6 @@ module.exports = {
                 SFU_LARAVEL_URL: 'https://unkvoid.com',
                 ...doArquivo,
             },
-        },
-        // O Reverb (chat e presença) mora aqui porque o pm2 desta máquina é um só, e um
-        // processo fora do `pm2 save` é um processo que não volta depois do reboot.
-        //
-        // Ele NÃO é reiniciado pelo deploy do SFU (o install.sh passa `--only sfu`): parar
-        // o chat porque a mídia subiu uma versão não tem motivo. Quem o reinicia é o
-        // deploy do site, e **precisa** reiniciar: o processo abre o release que o
-        // `current` apontava na hora em que subiu, e o deploy-web.sh apaga o release
-        // antigo depois de três versões — sem o restart, o Reverb fica de pé segurando
-        // uma pasta que já não existe.
-        //
-        // Primeira vez, na VPS:
-        //   cd /var/www/projects/sfu && pm2 startOrRestart ecosystem.config.cjs --only reverb && pm2 save
-        {
-            name: 'reverb',
-            script: 'artisan',
-            args: 'reverb:start --host=127.0.0.1 --port=8080',
-            interpreter: '/usr/bin/php8.4',
-            cwd: '/var/www/projects/unkvoid-web/current',
-            // UM processo, e não um por núcleo: dois Reverbs só compartilham quem está
-            // escutando o quê através do Redis (`REVERB_SCALING_ENABLED`), que não existe
-            // nesta máquina. Sem ele, a mensagem publicada no processo A não chega a
-            // ninguém conectado no processo B — metade do chat desaparece em silêncio.
-            instances: 1,
-            exec_mode: 'fork',
-            autorestart: true,
-            // `watch` explícito porque o padrão do pm2 é vigiar o diretório: o Laravel
-            // escreve em storage/logs a cada erro, e cada escrita viraria um restart que
-            // derruba TODO WebSocket aberto. Presença é justamente o que não sobrevive a
-            // um restart em loop.
-            watch: false,
-            // O processo de hoje ocupa 61 MB. 200M é teto de vazamento, não de operação.
-            max_memory_restart: '200M',
         },
     ],
 };

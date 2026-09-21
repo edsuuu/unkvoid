@@ -11,11 +11,9 @@ pnpm run build
 
 echo "[INFO] uploading to $REMOTE:$TARGET"
 rsync -az --exclude node_modules \
-    ./dist ./check.mjs ./install.sh ./.env.example ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ./ecosystem.config.cjs \
+    ./dist ./install.sh ./.env.example ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ./ecosystem.config.cjs \
     "$REMOTE:$TARGET/"
 
-# Daqui em diante é o install.sh, que é o mesmo que o runner do GitHub Actions roda: ele
-# espera a sala esvaziar antes de reiniciar, para não derrubar quem está no ar.
 ssh "$REMOTE" "cd $TARGET && ./install.sh"
 
 echo "[INFO] SFU is running"
