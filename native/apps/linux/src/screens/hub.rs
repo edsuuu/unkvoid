@@ -963,6 +963,7 @@ fn voice_row(bridge: &Rc<Bridge>, channel: &Channel, here: bool, people: &[Peer]
     let name = body(&channel.name);
 
     card.add_css_class("voice-channel");
+    card.add_css_class("rise");
 
     if here {
         card.add_css_class("on");
@@ -1035,6 +1036,8 @@ fn member_row(name: &str) -> gtk::Box {
 
 fn message_row(author: &str, written: &str) -> gtk::Box {
     let line = row(10);
+
+    line.add_css_class("fade-in");
     let texts = column(2);
 
     texts.append(&strong(author));

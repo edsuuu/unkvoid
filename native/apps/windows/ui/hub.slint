@@ -84,8 +84,14 @@ component Said inherits HorizontalLayout {
     in property <string> initial;
     in property <string> body;
     in property <string> at;
+    // O `animate-fade-in` do React: a mensagem que chega não pisca no lugar.
+    property <bool> shown;
 
-    spacing: 9px;
+    spacing: 10px;
+    opacity: root.shown ? 1.0 : 0.0;
+    init => { root.shown = true; }
+
+    animate opacity { duration: 180ms; easing: ease-out; }
 
     Avatar {
         letter: root.initial;
@@ -96,20 +102,20 @@ component Said inherits HorizontalLayout {
         spacing: 2px;
 
         HorizontalLayout {
-            spacing: 7px;
+            spacing: 6px;
             alignment: start;
 
             Text {
                 text: root.author;
-                color: Skin.ink-strong;
+                color: Skin.ink-body;
                 font-family: Skin.sans;
-                font-size: 13px;
+                font-size: 12.5px;
                 font-weight: 600;
             }
 
             Text {
                 text: root.at;
-                color: Skin.ink-faint;
+                color: Skin.ink-dim;
                 font-family: Skin.sans;
                 font-size: 11px;
                 vertical-alignment: center;
@@ -251,6 +257,14 @@ component VoiceItem inherits Rectangle {
 // O cartão de criar sala: o campo de cima serve aos dois, nome da sala nova ou código do
 // convite. O React abre um modal no "Tenho um convite"; aqui o mesmo botão troca o campo.
 component HomeCreate inherits Panel {
+    // O `animate-rise` do React: o cartão aparece, não salta pronto.
+    property <bool> shown;
+
+    opacity: root.shown ? 1.0 : 0.0;
+    init => { root.shown = true; }
+
+    animate opacity { duration: 220ms; easing: ease-out; }
+
     property <bool> joining;
 
     horizontal-stretch: 1;
@@ -331,6 +345,14 @@ component CodeChip inherits Rectangle {
 
 // O cartão da sala por código, e as últimas que se abriu — pastilhas, como no React.
 component HomeCodes inherits Panel {
+    // O `animate-rise` do React: o cartão aparece, não salta pronto.
+    property <bool> shown;
+
+    opacity: root.shown ? 1.0 : 0.0;
+    init => { root.shown = true; }
+
+    animate opacity { duration: 220ms; easing: ease-out; }
+
     horizontal-stretch: 1;
     min-width: 260px;
     height: inside.preferred-height;
@@ -365,6 +387,14 @@ component HomeCodes inherits Panel {
 
 // O cartão das salas com conta: nome, se você é dono, e quando entrou pela última vez.
 component HomeRooms inherits Panel {
+    // O `animate-rise` do React: o cartão aparece, não salta pronto.
+    property <bool> shown;
+
+    opacity: root.shown ? 1.0 : 0.0;
+    init => { root.shown = true; }
+
+    animate opacity { duration: 220ms; easing: ease-out; }
+
     height: inside.preferred-height;
 
     inside := VerticalLayout {

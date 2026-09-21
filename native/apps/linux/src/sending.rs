@@ -82,10 +82,12 @@ impl Sending {
 
     /// Quantos bytes já subiram e quantos envios falharam. É o que prova, de fora, que a
     /// captura virou pacote — e o que o teste vivo mede.
+    #[cfg(test)]
     pub fn sent_bytes(&self) -> u64 {
         target(&self.sender).as_ref().map_or(0, PlainSender::sent_bytes)
     }
 
+    #[cfg(test)]
     pub fn errors(&self) -> u64 {
         self.errors.load(Ordering::Relaxed)
     }

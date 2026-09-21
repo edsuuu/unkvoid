@@ -104,6 +104,7 @@ impl UserBar {
         voice.append(&connected);
         voice.append(&doing);
         voice.append(&rule());
+        voice.add_css_class("rise");
         voice.set_visible(false);
 
         root.append(&voice);

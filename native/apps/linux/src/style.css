@@ -407,6 +407,21 @@ button.icon.bar.on:hover {
     border-color: transparent;
 }
 
+/* As duas animacoes do React: `rise` nos cartoes e `fade-in` no que chega no chat. O GTK
+   nao anima `transform` em CSS, entao sobra a opacidade — que e a parte que se ve. */
+@keyframes rise {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.rise {
+    animation: rise 220ms ease-out;
+}
+
+.fade-in {
+    animation: rise 180ms ease-out;
+}
+
 /* O "+" das secoes de canal: menor que o botao de icone comum. */
 button.icon.tiny {
     border-radius: 7px;

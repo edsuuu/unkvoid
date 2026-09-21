@@ -55,8 +55,10 @@ pub fn dim(text: &str) -> gtk::Label {
 
 /// O rótulo acima do campo, em maiúsculas. O CSS faz a caixa alta: escrever o texto já
 /// gritado deixaria o leitor de tela soletrando letra por letra.
+/// O `text-transform: uppercase` do GTK só sobe o ASCII: "Últimas" virava "ULTIMAS". Quem
+/// sobe o acento é o Rust, que conhece Unicode.
 pub fn label_mono(text: &str) -> gtk::Label {
-    labelled(text, "label-mono")
+    labelled(&text.to_uppercase(), "label-mono")
 }
 
 /// Número ou código, na monoespaçada do desenho.

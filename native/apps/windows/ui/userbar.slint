@@ -125,7 +125,14 @@ export component UserBar inherits Rectangle {
         // O bloco da voz: só existe dentro de um canal de voz, e é o que o React mostra
         // em cima da linha de quem você é.
         if Ui.voice-channel != "" : VerticalLayout {
+            // O `animate-rise` do React: o bloco da voz aparece quando se entra no canal.
+            property <bool> shown;
+
             spacing: 10px;
+            opacity: shown ? 1.0 : 0.0;
+            init => { shown = true; }
+
+            animate opacity { duration: 220ms; easing: ease-out; }
 
             HorizontalLayout {
                 spacing: 10px;
