@@ -9,11 +9,11 @@ não confie no que está marcado como não verificado.
 
 | O quê | Prova |
 |---|---|
-| `shared/core` — protocolo e cliente do SFU, sessão e lista da sala, cliente da API do Laravel, código de sala, estado do app, motivos de erro, mapa de teclas, ABI C | 72 testes, clippy limpo |
+| `shared/core` — protocolo e cliente do SFU, sessão, a sala viva da ABI, assistir sem GStreamer, API do Laravel com o mapa de rotas, permissões, portão do microfone, login com Google, preferências, mapa de teclas, ABI C | 92 + 6 testes, clippy limpo |
 | `shared/storage` — estado em disco na pasta do sistema, token cifrado em AES-256-GCM | 14 testes |
 | App Windows (Slint) | 4 testes, clippy limpo, **janela aberta e conferida aqui** |
 | App Linux (GTK) | 133 testes no contêiner, janela abrindo sob `xvfb`, **mídia ligada** |
-| App macOS (SwiftUI) | 13 testes, Entry/Hub/Room desenhando, barra de baixo com popovers |
+| App macOS (SwiftUI) | 21 testes em série; cobre o que o React tem — ver `native/apps/macos/README.md` |
 | Ponte Swift → Rust → SFU | `swift run` conecta e recebe resposta, rodado |
 | Tempo real do SFU (identify, subscribe, broadcast, presença) | 10 verificações em `sfu/check-realtime.mjs` |
 | Laravel publicando pelo SFU, sem Reverb | 123 testes, phpstan max, MySQL |
@@ -41,8 +41,30 @@ cd native && docker build -f apps/linux/Dockerfile -t unkvoid-linux . && docker 
 ```
 
 ### macOS
-Abre, conecta e desenha Entry, Hub e Room. **Não tem captura de tela** — o botão de
-compartilhar está no lugar certo e desligado, porque a captura não atravessa a ABI.
+O app nativo cobre o que o React tem (21/09/2026) — a lista inteira e o que falta estão em
+`native/apps/macos/README.md`. **Verificado aqui**, com a pilha local no ar:
+
+- a tela de uma pessoa desenhando na janela de outra, decodificada pelo
+  `AVSampleBufferDisplayLayer` (218 quadros em 8 s a 30 fps);
+- 23 testes do Swift em série (`./run.sh test`), entre eles: a Ada compartilha a tela pela
+  mesma ação do botão e a Grace recebe quadros H.264 inteiros, o primeiro um keyframe; duas pessoas na mesma sala se veem; a mensagem da
+  Ada chega ao socket da Grace pelo tempo real; a Ada fala na voz e a Grace recebe o som já
+  decodificado; um servidor é criado, ganha canal e cargo, muda de nome e é apagado; uma
+  mensagem é enviada, respondida, editada e apagada pelo `ChatRoom`; a preferência sobrevive a
+  reabrir o app;
+- 95 + 8 testes do núcleo (rotas, permissões, portão do microfone, login com Google, teclas,
+  relatório de erro, e a sessão substituída que **não** volta sozinha);
+- capturas da Home, do servidor e do modal de apelido conferidas a olho;
+- o `bundle.sh` gera o `Unkvoid.app` assinado ad-hoc.
+
+**Não verificado**, porque precisa de gente na frente: microfone e câmera de verdade (abrir o
+aparelho pede permissão na tela), o som saindo no fone, as teclas globais com um jogo na
+frente, o login com Google (precisa do navegador e de uma conta), e cada modal clicado à mão
+— o que está por baixo deles tem teste; o desenho de cada um, não.
+
+Um achado de caminho: o SFU cujos workers do mediasoup morrem continua respondendo `ok` no
+`/health`, e todo `join` dá 500 (`Channel closed … WORKER_CREATE_ROUTER`). Foi o estado em que
+o SFU local estava duas vezes nesta sessão. O `/health` devia conferir os workers.
 
 ## O buraco que atrasou tudo, e o que já foi tapado
 
