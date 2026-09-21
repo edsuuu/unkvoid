@@ -75,6 +75,8 @@ export class Sharing {
     statsGeneration = 0;
     ceilingBitrate = 0;
     cpuEncoderWarned = false;
+    liveAudio = true;
+    liveMuteCalls = false;
     readonly store: Store<SharingState>;
 
     constructor(app: App) {
@@ -227,9 +229,17 @@ export class Sharing {
     }
 
     async confirm(): Promise<void> {
+        const { active, source, quality, fps, audio, muteCalls } = this.store.state;
+
         this.close();
 
-        if (this.store.state.active) {
+        if (active && source && audio === this.liveAudio && muteCalls === this.liveMuteCalls) {
+            await this.swapScreen(source, quality, fps);
+
+            return;
+        }
+
+        if (active) {
             await this.stop();
         }
 
@@ -247,13 +257,11 @@ export class Sharing {
             return;
         }
 
-        if (this.store.state.active) {
-            await this.swapScreen(source, quality, fps);
-
-            return;
-        }
 
         this.store.set({ starting: true });
+
+        this.liveAudio = audio;
+        this.liveMuteCalls = muteCalls;
 
         try {
             await broadcast.start(quality, Number(fps), source, audio, withoutCalls);
@@ -275,6 +283,9 @@ export class Sharing {
         if (! broadcast) {
             return;
         }
+
+        this.setQuality(quality);
+        this.setFps(fps);
 
         this.store.set({ starting: true });
 
