@@ -7,7 +7,6 @@
 //! Nada aqui decide: tudo que é decisão (o código vale? onde se cai ao sair? quem está na
 //! sala?) é chamada ao `core_app`.
 
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -60,10 +59,6 @@ pub struct Bridge {
     reading: Arc<Mutex<Option<String>>>,
     /// Qual servidor está aberto: é nele que um canal novo nasce.
     opened: Arc<Mutex<Option<i64>>>,
-    /// A árvore de cada servidor, guardada assim que se abre uma. Trocar de servidor desenha
-    /// os canais na hora e só depois confere com o servidor: a coluna não pisca vazia, e o
-    /// "carregando" fica só nas mensagens.
-    trees: Arc<Mutex<HashMap<i64, ServerTree>>>,
     /// A Home: as conversas e as amizades que a tela mostra por índice, e com quem se está
     /// falando agora.
     conversations: Arc<Mutex<Vec<Conversation>>>,
@@ -98,7 +93,6 @@ impl Bridge {
             channels: Arc::default(),
             reading: Arc::default(),
             opened: Arc::default(),
-            trees: Arc::default(),
             conversations: Arc::default(),
             friends: Arc::default(),
             talking: Arc::default(),
@@ -688,7 +682,6 @@ impl Bridge {
             known: self.servers.clone(),
             me: self.me.clone(),
             conversations: self.conversations.clone(),
-            trees: self.trees.clone(),
         }
     }
 
@@ -697,7 +690,6 @@ impl Bridge {
             channels: self.channels.clone(),
             reading: self.reading.clone(),
             known: self.servers.clone(),
-            trees: self.trees.clone(),
             me: *lock(&self.me),
         }
     }
@@ -713,8 +705,9 @@ impl Bridge {
 
         *lock(&self.opened) = Some(id);
 
-        // O que já está em mãos vai para a tela antes do pedido.
-        if let Some(tree) = lock(&opening.trees).get(&id).cloned() {
+        // O que o núcleo já guardou vai para a tela antes do pedido: a coluna de canais
+        // não pisca vazia ao trocar de servidor.
+        if let Some(tree) = self.api.known_tree(id) {
             paint_tree(&window, &opening, &tree);
         }
 
@@ -1111,25 +1104,15 @@ fn lock<T>(cell: &Arc<Mutex<T>>) -> MutexGuard<'_, T> {
 }
 
 /// Servidor recém-criado ou recém-entrado: a lista muda e a Home a mostra.
-/// As árvores de todos os servidores, lidas assim que a lista chega. É o que faz trocar de
-/// servidor desenhar os canais na hora: quando o clique acontece, a árvore já está em mãos.
-async fn warm_trees(api: &Arc<Api>, held: &Arc<Mutex<HashMap<i64, ServerTree>>>, servers: &[ServerSummary]) {
-    for server in servers {
-        if let Ok(tree) = api.tree(server.id).await {
-            lock(held).insert(server.id, tree);
-        }
-    }
-}
-
 async fn refresh_servers(api: &Arc<Api>, window: &Weak<AppWindow>, landing: &Landing) {
-    let (known, me, trees) = (&landing.known, &landing.me, &landing.trees);
+    let (known, me) = (&landing.known, &landing.me);
     match api.servers().await {
         Ok(servers) => {
             *lock(known) = servers.clone();
 
             let rows = rows_of(&servers, None, *lock(me));
 
-            warm_trees(api, trees, &servers).await;
+            api.warm_trees(&servers.iter().map(|server| server.id).collect::<Vec<_>>()).await;
 
             paint(window, move |app| {
                 let ui = app.global::<Ui>();
@@ -1277,12 +1260,10 @@ struct Landing {
     known: Arc<Mutex<Vec<ServerSummary>>>,
     me: Arc<Mutex<Option<i64>>>,
     conversations: Arc<Mutex<Vec<Conversation>>>,
-    trees: Arc<Mutex<HashMap<i64, ServerTree>>>,
 }
 
 async fn landed(core: &Arc<App>, api: &Arc<Api>, window: &Weak<AppWindow>, landing: &Landing, user: Option<User>) {
-    let (known, me) = (&landing.known, &landing.me);
-    let (conversations, trees) = (&landing.conversations, &landing.trees);
+    let (known, me, conversations) = (&landing.known, &landing.me, &landing.conversations);
     let landing = core.home();
     let name = user.as_ref().map(|user| user.name.clone()).unwrap_or_default();
     let signed_in = user.is_some();
@@ -1313,7 +1294,7 @@ async fn landed(core: &Arc<App>, api: &Arc<Api>, window: &Weak<AppWindow>, landi
                 let rows = rows_of(&servers, None, mine);
 
                 paint(window, move |app| app.global::<Ui>().set_servers(model(rows)));
-                warm_trees(api, trees, &servers).await;
+                api.warm_trees(&servers.iter().map(|server| server.id).collect::<Vec<_>>()).await;
 
                 *lock(known) = servers;
             }
@@ -1400,7 +1381,6 @@ struct Opening {
     channels: Arc<Mutex<Vec<Channel>>>,
     reading: Arc<Mutex<Option<String>>>,
     known: Arc<Mutex<Vec<ServerSummary>>>,
-    trees: Arc<Mutex<HashMap<i64, ServerTree>>>,
     me: Option<i64>,
 }
 
@@ -1410,7 +1390,6 @@ async fn show_tree(api: &Arc<Api>, window: &Weak<AppWindow>, opening: &Opening, 
         Err(failure) => return complain(window, said(&failure)),
     };
 
-    lock(&opening.trees).insert(id, tree.clone());
     paint_tree(window, opening, &tree);
 }
 

@@ -77,10 +77,6 @@ pub struct Bridge {
     session: Arc<Mutex<Option<Arc<Session>>>>,
     /// Qual servidor está aberto: é nele que um canal novo nasce.
     opened: Arc<Mutex<Option<i64>>>,
-    /// A árvore de cada servidor, lida assim que a lista chega. Trocar de servidor desenha
-    /// os canais na hora e só depois confere com o servidor: a coluna não pisca vazia, e o
-    /// "carregando" fica só nas mensagens.
-    trees: Arc<Mutex<std::collections::HashMap<i64, ServerTree>>>,
     sending: Arc<Mutex<Sending>>,
     watching: Arc<Mutex<Watching>>,
     install_id: String,
@@ -102,7 +98,6 @@ impl Bridge {
             sfu: Arc::new(Mutex::new(None)),
             session: Arc::new(Mutex::new(None)),
             opened: Arc::default(),
-            trees: Arc::default(),
             sending: Arc::default(),
             watching: Arc::default(),
             install_id,
@@ -211,20 +206,14 @@ impl Bridge {
 
     pub fn load_servers(self: &Rc<Self>) {
         let (api, screen) = (self.api.clone(), self.to_screen.clone());
-        let held = self.trees.clone();
-
         self.spawn(async move {
             match api.servers().await {
                 Ok(servers) => {
                     let _ = screen.send(Update::Servers(servers.clone()));
 
                     // As árvores vêm atrás, sem ninguém esperar por elas: quando o clique
-                    // acontecer, os canais já estão em mãos.
-                    for server in &servers {
-                        if let Ok(tree) = api.tree(server.id).await {
-                            lock(&held).insert(server.id, tree);
-                        }
-                    }
+                    // acontecer, os canais já estão em mãos. Quem as guarda é o núcleo.
+                    api.warm_trees(&servers.iter().map(|server| server.id).collect::<Vec<_>>()).await;
                 }
                 Err(failure) => {
                     let _ = screen.send(Update::Complaint(said(&failure)));
@@ -372,20 +361,17 @@ impl Bridge {
 
     pub fn open_server(self: &Rc<Self>, server: i64) {
         let (api, screen) = (self.api.clone(), self.to_screen.clone());
-        let held = self.trees.clone();
-
         *lock(&self.opened) = Some(server);
 
-        // O que já está em mãos vai para a tela antes do pedido.
-        if let Some(tree) = lock(&held).get(&server).cloned() {
+        // O que o núcleo já guardou vai para a tela antes do pedido: a coluna de canais não
+        // pisca vazia ao trocar de servidor.
+        if let Some(tree) = self.api.known_tree(server) {
             let _ = screen.send(Update::Tree(Box::new(tree)));
         }
 
         self.spawn(async move {
             match api.tree(server).await {
                 Ok(tree) => {
-                    lock(&held).insert(server, tree.clone());
-
                     let _ = screen.send(Update::Tree(Box::new(tree)));
                 }
                 Err(failure) => {
