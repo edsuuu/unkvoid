@@ -57,6 +57,9 @@ async fn main() -> Result<()> {
         .send(call("join", json!({ "room": room, "name": "plain-check" })))
         .await?;
 
+    // A base dos SSRC vale para esta transmissão inteira: é ela que vai na oferta e a
+    // mesma que numera os pacotes.
+    let base = PlainSender::random_ssrc_base();
     let mut sender: Option<PlainSender> = None;
     let mut pending_key: Option<[u8; 30]> = None;
     let mut producer = String::new();
@@ -107,7 +110,7 @@ async fn main() -> Result<()> {
                     socket.send(call("producePlain", json!({
                         "kind": "video",
                         "source": "screen",
-                        "rtpParameters": PlainSender::rtp_parameters(Source::Screen),
+                        "rtpParameters": PlainSender::rtp_parameters(Source::Screen, base),
                         "srtpParameters": {
                             "cryptoSuite": PlainSender::CRYPTO_SUITE,
                             "keyBase64": key_base64,
@@ -140,7 +143,7 @@ async fn main() -> Result<()> {
                         .ok_or_else(|| anyhow!("key lost between the request and the answer"))?;
 
                     println!("sending RTP to {address}");
-                    sender = Some(PlainSender::connect(address.as_str(), &key, None)?);
+                    sender = Some(PlainSender::connect(address.as_str(), &key, None, base)?);
                 }
             }
         }

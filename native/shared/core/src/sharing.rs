@@ -205,6 +205,9 @@ pub struct ActiveSession(pub tokio::sync::Mutex<Session>);
 pub struct Session {
     sender: Target,
     key: [u8; 30],
+    /// A base dos SSRC desta transmissão. Sorteada por sessão porque o `RtpListener` do
+    /// mediasoup é por sala: dois SSRC iguais nela e o segundo a pedir não transmite.
+    ssrc_base: u32,
     pub screen: Option<Broadcast>,
     pub voice: Option<Broadcast>,
     pub camera: Option<Broadcast>,
@@ -215,6 +218,7 @@ impl Default for Session {
         Self {
             sender: Arc::default(),
             key: PlainSender::generate_key(),
+            ssrc_base: PlainSender::random_ssrc_base(),
             screen: None,
             voice: None,
             camera: None,
@@ -227,7 +231,7 @@ impl Session {
     /// chave que o protege — a mesma para todas: é um transporte só do lado de lá.
     pub fn sfu_offer(&self, source: Source) -> serde_json::Value {
         serde_json::json!({
-            "rtpParameters": PlainSender::rtp_parameters(source),
+            "rtpParameters": PlainSender::rtp_parameters(source, self.ssrc_base),
             "srtpParameters": {
                 "cryptoSuite": PlainSender::CRYPTO_SUITE,
                 "keyBase64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, self.key),
@@ -243,6 +247,7 @@ impl Session {
     /// keystream se abrem um contra o outro.
     pub fn renew_sfu_key(&mut self) {
         self.key = PlainSender::generate_key();
+        self.ssrc_base = PlainSender::random_ssrc_base();
         *target(&self.sender) = None;
     }
 
@@ -263,6 +268,7 @@ impl Session {
             server,
             &self.key,
             server_key.as_deref(),
+            self.ssrc_base,
         )?);
 
         Ok(())

@@ -48,10 +48,13 @@ pub async fn share_screen(session: &Session, media: &sharing::ActiveSession) -> 
 
         merge(&mut request, held.sfu_offer(source));
         last = session.client().call(action::PRODUCE_PLAIN, request).await?;
+        note_own(session, "newProducer", &text(&last, "producerId"), source);
     }
 
     let address = format!("{}:{}", text(&last, "ip"), last["port"]);
     let server_key = decode(&last["srtpParameters"]["keyBase64"]);
+
+    tracing::info!(%address, key = server_key.is_some(), "transmissão: o servidor pediu este destino");
 
     held.use_sfu(&address, server_key)?;
 
@@ -83,6 +86,8 @@ pub async fn stop_screen(session: &Session, media: &sharing::ActiveSession) {
 
     // O servidor fecha os producers desta pessoa quando ela sai; aqui só se pede o fim da
     // tela, e quem sabe os identificadores é o `Roster` da sessão.
+    let mut fechados = Vec::new();
+
     for producer in session.peers().iter().filter(|peer| peer.self_peer).flat_map(|peer| &peer.producers) {
         if producer.source != "screen" && producer.source != "screenAudio" {
             continue;
@@ -93,7 +98,37 @@ pub async fn stop_screen(session: &Session, media: &sharing::ActiveSession) {
         {
             tracing::warn!(%failure, producer = %producer.producer_id, "o producer não fechou no servidor");
         }
+
+        fechados.push((producer.producer_id.clone(), producer.source.clone()));
     }
+
+    // O elenco também esquece: quem parou de transmitir não continua listado como quem
+    // transmite, e a próxima transmissão não tenta fechar um producer que já morreu.
+    for (producer_id, source) in fechados {
+        if let Some(source) = Source::parse(&source) {
+            note_own(session, "producerClosed", &producer_id, source);
+        }
+    }
+}
+
+/// O SFU avisa a sala inteira de um producer novo, menos quem o abriu. Sem o próprio
+/// producer no elenco, parar de transmitir não fecha nada no servidor — e o SSRC fica
+/// preso lá, o que faz a transmissão seguinte ser recusada.
+fn note_own(session: &Session, event: &str, producer_id: &str, source: Source) {
+    let Some(own) = session.peers().into_iter().find(|peer| peer.self_peer) else {
+        return;
+    };
+
+    session.apply(&core_app::protocol::Event {
+        name: event.to_owned(),
+        channel: None,
+        data: json!({
+            "peerId": own.peer_id,
+            "producerId": producer_id,
+            "kind": if source.is_video() { "video" } else { "audio" },
+            "source": name_of(source),
+        }),
+    });
 }
 
 /// O nome que o servidor conhece para cada origem. Errar aqui é o SFU recusar a oferta.

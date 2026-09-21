@@ -35,6 +35,9 @@ struct Live {
 pub struct Sending {
     sender: Target,
     key: [u8; 30],
+    /// A base dos SSRC desta transmissão. Sorteada por sessão porque o `RtpListener` do
+    /// mediasoup é por sala: dois SSRC iguais nela e o segundo a pedir não transmite.
+    ssrc_base: u32,
     live: HashMap<Source, Live>,
     /// Erros de envio somados. Log por quadro é proibido: a primeira falha sai no log e o
     /// resto vira número.
@@ -46,6 +49,7 @@ impl Default for Sending {
         Self {
             sender: Target::default(),
             key: PlainSender::generate_key(),
+            ssrc_base: PlainSender::random_ssrc_base(),
             live: HashMap::new(),
             errors: Arc::default(),
         }
@@ -57,7 +61,7 @@ impl Sending {
     /// chave que o protege — a mesma para todas: é um transporte só do lado de lá.
     pub fn offer(&self, source: Source) -> serde_json::Value {
         serde_json::json!({
-            "rtpParameters": PlainSender::rtp_parameters(source),
+            "rtpParameters": PlainSender::rtp_parameters(source, self.ssrc_base),
             "srtpParameters": {
                 "cryptoSuite": PlainSender::CRYPTO_SUITE,
                 "keyBase64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, self.key),
@@ -75,7 +79,7 @@ impl Sending {
             return Ok(());
         }
 
-        *sender = Some(PlainSender::connect(server, &self.key, server_key.as_deref())?);
+        *sender = Some(PlainSender::connect(server, &self.key, server_key.as_deref(), self.ssrc_base)?);
 
         Ok(())
     }
@@ -257,6 +261,7 @@ impl Sending {
     /// reiniciado repetiria o keystream.
     pub fn renew_key(&mut self) {
         self.key = PlainSender::generate_key();
+        self.ssrc_base = PlainSender::random_ssrc_base();
         *target(&self.sender) = None;
     }
 

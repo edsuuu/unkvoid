@@ -1028,6 +1028,16 @@ impl Bridge {
             let live = media.0.lock().await.screen.is_some();
 
             paint(&window, move |app| app.global::<Ui>().set_sharing(live));
+
+            // O primeiro relatório sai três segundos depois de ligar: é o que diz, de
+            // dentro, se o quadro saiu pelo socket ou parou no caminho.
+            if live {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+                if let Some(broadcast) = media.0.lock().await.screen.as_ref() {
+                    tracing::info!(stats = %broadcast.stats(), "transmissão: os três primeiros segundos");
+                }
+            }
         });
     }
 
