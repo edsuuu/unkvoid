@@ -1,0 +1,106 @@
+// O que a janela desenha, e o caminho de volta para o núcleo.
+//
+// Nada aqui decide: o que é um código de sala válido, quem pode falar, o que é um servidor
+// e onde se cai ao sair é do `shared/core`. Este arquivo é só o formato em que o que ele
+// respondeu chega à tela, e o nome de cada clique.
+export struct ServerRow {
+    name: string,
+    initial: string,
+    current: bool,
+}
+
+export struct ChannelRow {
+    name: string,
+    voice: bool,
+    current: bool,
+}
+
+export struct MemberRow {
+    name: string,
+    initial: string,
+    note: string,
+}
+
+export struct MessageRow {
+    author: string,
+    initial: string,
+    body: string,
+    at: string,
+}
+
+export struct PeerRow {
+    name: string,
+    initial: string,
+    note: string,
+    mine: bool,
+}
+
+export struct DeviceRow {
+    label: string,
+    current: bool,
+}
+
+export global Ui {
+    // Qual das cinco telas está valendo. Quem escolhe é o núcleo.
+    in property <string> screen: "updating";
+    in property <string> status: "Abrindo o Unkvoid";
+
+    in property <string> user-name;
+    in property <string> user-initial;
+    in property <bool> signed-in;
+
+    in property <string> saved-name;
+    // A última coisa que deu errado, na frase que a pessoa lê. É uma só porque só há uma
+    // tela por vez: a Entry, o Hub e a Room mostram a mesma linha.
+    in property <string> complaint;
+    in property <bool> entry-busy;
+
+    in property <string> login-error;
+    in property <string> login-email-error;
+    in property <string> login-password-error;
+    in property <bool> login-busy;
+
+    in property <string> server-name: "Servidores";
+    in property <string> channel-name;
+    in property <[ServerRow]> servers;
+    in property <[ChannelRow]> channels;
+    in property <[MemberRow]> members;
+    in property <[MessageRow]> messages;
+
+    in property <string> room-code;
+    in property <[PeerRow]> peers;
+    in property <bool> sharing;
+
+    in property <bool> mic-on;
+    in property <bool> can-speak: true;
+    in property <bool> deafened;
+    in property <[DeviceRow]> microphones;
+    in property <[DeviceRow]> speakers;
+
+    callback create-room(string, string);
+    callback join-room(string, string);
+    callback sign-in(string, string, bool);
+    callback google-sign-in();
+    callback sign-out();
+    callback clear-login-error(string);
+
+    callback show-entry();
+    callback show-home();
+
+    callback open-server(int);
+    callback open-channel(int);
+    callback send-message(string);
+
+    callback leave-room();
+    callback toggle-share();
+    callback toggle-camera();
+
+    callback toggle-mic();
+    callback toggle-deafen();
+    // A lista é pedida na hora de abrir o popover: aparelho ligado depois que o app abriu
+    // tem de aparecer sem reiniciar nada.
+    callback list-microphones();
+    callback list-speakers();
+    callback use-microphone(int);
+    callback use-speaker(int);
+}

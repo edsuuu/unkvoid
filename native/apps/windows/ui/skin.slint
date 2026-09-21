@@ -1,0 +1,49 @@
+// A paleta e as medidas são as de `native/apps/desktop/ui/style.css`, valor por valor: o
+// CSS é o que está no ar hoje, e divergir aqui faz o app do Windows parecer outro programa.
+//
+// `Skin` e não `Palette`: `Palette` é nome do `std-widgets`, e os dois no mesmo arquivo se
+// atropelam.
+export global Skin {
+    out property <color> back: #06050a;
+    out property <color> glass: #ffffff0a;
+    out property <color> row: #ffffff0f;
+    out property <color> line: #ffffff17;
+    out property <color> line-strong: #ffffff1f;
+
+    out property <color> ink: #ece9f3;
+    out property <color> ink-strong: #ffffff;
+    out property <color> ink-body: #e6e1f2;
+    out property <color> ink-icon: #cfc9de;
+    out property <color> ink-soft: #a89fc0;
+    out property <color> ink-dim: #8a80a6;
+    out property <color> ink-faint: #6f6889;
+
+    out property <color> brand: #8a7cf5;
+    out property <color> brand-dark: #5a3fd6;
+    out property <color> lilac: #9a9cff;
+    out property <color> lilac-2: #aeb0ff;
+    out property <color> online: #34d399;
+    out property <color> danger: #e2445c;
+
+    // A cadeia do CSS é `Archivo, Helvetica, Arial`. O projeto não distribui a Archivo, e
+    // cair na Segoe UI daria outra tipografia ao app.
+    out property <string> sans: "Archivo";
+    // A monoespaçada ficou só no código da sala, onde ela separa 0 de O.
+    out property <string> mono: "IBM Plex Mono";
+
+    out property <length> card: 420px;
+    out property <length> stage: 880px;
+}
+
+// Os ícones do app, os mesmos traçados de `ui/components/common/Icon.tsx`. Emoji ficaria à
+// mercê da fonte do sistema e destoaria do desenho, que é todo de linha.
+export global Icons {
+    out property <string> mic: "M9 6a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0z M5 11a7 7 0 0 0 14 0 M12 18v3 M8.5 21h7";
+    out property <string> mic-off: "M9 6a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0z M5 11a7 7 0 0 0 14 0 M12 18v3 M8.5 21h7 M4 4l16 16";
+    out property <string> headphones: "M4 15v-3a8 8 0 0 1 16 0v3 M4.5 14h1a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-1a1.5 1.5 0 0 1-1.5-1.5v-3a1.5 1.5 0 0 1 1.5-1.5z M18.5 14h1a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-1a1.5 1.5 0 0 1-1.5-1.5v-3a1.5 1.5 0 0 1 1.5-1.5z";
+    out property <string> headphones-off: "M4 15v-3a8 8 0 0 1 16 0v3 M4.5 14h1a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-1a1.5 1.5 0 0 1-1.5-1.5v-3a1.5 1.5 0 0 1 1.5-1.5z M18.5 14h1a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-1a1.5 1.5 0 0 1-1.5-1.5v-3a1.5 1.5 0 0 1 1.5-1.5z M4 4l16 16";
+    out property <string> hash: "M9 4L7 20 M17 4l-2 16 M4 9h16 M3 15h16";
+    out property <string> speaker: "M4 9h4l5-4v14l-5-4H4z M17 9a4 4 0 0 1 0 6";
+    out property <string> chevron-down: "M7 10l5 5 5-5";
+    out property <string> screen: "M5 4h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M8 20h8 M12 16v4";
+}

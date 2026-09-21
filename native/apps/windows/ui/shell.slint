@@ -1,0 +1,46 @@
+import { Skin } from "skin.slint";
+import { Ui } from "state.slint";
+import { Muted, Title } from "widgets.slint";
+
+// O halo violeta do `body` do CSS. É ele que faz o vidro dos cartões aparecer: sem o halo,
+// um fundo translúcido sobre preto é só preto.
+export component Halo inherits Rectangle {
+    background: Skin.back;
+
+    Rectangle {
+        width: parent.width * 1.6;
+        height: 760px;
+        x: (parent.width - self.width) / 2;
+        y: -380px;
+        background: @radial-gradient(circle, #5a3fd63d 0%, #06050a00 62%);
+    }
+}
+
+// Enquanto o servidor não responde há duas telas com o mesmo conteúdo e sentidos opostos:
+// uma é a abertura, a outra é a desistência. O que muda é o título.
+component Waiting inherits Rectangle {
+    in property <string> title;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 10px;
+
+        Title {
+            text: root.title;
+            horizontal-alignment: center;
+        }
+
+        Muted {
+            text: Ui.status;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+export component OfflineScreen inherits Waiting {
+    title: "Servidor sem resposta";
+}
+
+export component UpdatingScreen inherits Waiting {
+    title: "Unkvoid";
+}
