@@ -133,7 +133,7 @@ type TransportResponse = {
     dtlsParameters: DtlsParameters;
 };
 
-type SfuMessage =
+export type SfuMessage =
     | { event: string; data: SfuEventData }
     | { event?: undefined; id: number; ok: boolean; data?: unknown; error?: string };
 

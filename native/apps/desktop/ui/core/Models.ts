@@ -121,7 +121,6 @@ export type Message = {
 
 export type Config = {
     sfu: string;
-    reverb: { host: string; port: number; key: string; scheme: string };
 };
 
 export type Person = {

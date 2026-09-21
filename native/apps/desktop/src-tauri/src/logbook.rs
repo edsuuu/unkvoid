@@ -72,8 +72,6 @@ pub fn init(version: &str) {
         let _ = std::fs::remove_file(&path);
     }
 
-    // Dois handles do mesmo arquivo em modo append: um para o `tracing`, outro para as
-    // linhas cruas. O append é do sistema, então os dois nunca escrevem por cima.
     let handles = OpenOptions::new()
         .create(true)
         .append(true)
@@ -133,8 +131,6 @@ fn unreported(log: &Path, marker: &Path) -> Option<(String, u64)> {
         .and_then(|text| text.trim().parse::<u64>().ok())
         .unwrap_or(0);
 
-    // Marcador maior que o arquivo quer dizer que o log recomeçou por causa do teto de
-    // tamanho: o que está lá agora é todo novo.
     let from = if sent > size { 0 } else { sent };
 
     if from >= size {
@@ -207,8 +203,6 @@ pub fn report(version: &str) {
     });
 
     tauri::async_runtime::spawn(async move {
-        // `Client::new()` PANICA quando a pilha de TLS não sobe, e quem relata erro não
-        // pode ser mais uma fonte de erro: o construtor que devolve `Result` falha quieto.
         let client = match reqwest::Client::builder().build() {
             Ok(client) => client,
             Err(failure) => {
@@ -293,8 +287,6 @@ mod tests {
             .open(&path)
             .expect("não abriu o arquivo de teste");
 
-        // `write` lê do `OnceLock` global; se outro teste já o preencheu, este vira
-        // apenas a checagem de que cortar não quebra.
         let _ = FILE.set(Mutex::new(file));
 
         write(&"ç".repeat(MAX_LINE * 2));

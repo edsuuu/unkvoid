@@ -75,7 +75,6 @@ describe('imagem no chat de canal', () => {
     const toasts: string[] = [];
     const responses = new Map<string, unknown>();
     const revoked: string[] = [];
-    const quiet = { listen() { return this; }, stopListening() { return this; } };
     const channel = { id: 'text-1', name: 'geral', type: 'text', topic: null, position: 0, permissions: Permissions.ALL };
     const message = (id: number, url: string | null = null) => ({ id, channel_id: 'text-1', type: 'user', body: `m${id}`, reply_to: null, user: { id: 7, name: 'Bia' }, files: url ? [{ id: id * 10, url, mime_type: 'image/png', size: 10 }] : [] });
     let chat: Chat;
@@ -96,7 +95,7 @@ describe('imagem no chat de canal', () => {
             return typeof answer === 'function' ? answer(body) : answer ?? [];
         };
         hub.user = { id: 1, name: 'Edsu' };
-        hub.echo = { private: () => quiet, leave() {} };
+        hub.realtime = { subscribe: () => Promise.resolve(), unsubscribe() {} };
         chat = hub.chat;
         await chat.open(channel);
     });

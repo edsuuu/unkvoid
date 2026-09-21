@@ -1,8 +1,7 @@
-import Echo from 'laravel-echo';
-import Pusher from 'pusher-js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { ApiClient } from '../../ui/core/ApiClient.ts';
+import { Realtime } from '../../ui/core/Realtime.ts';
 import { SfuClient } from '../../ui/core/SfuClient.ts';
 
 const SERVER = process.env.UNKVOID_SERVER ?? 'http://127.0.0.1:8000';
@@ -32,36 +31,30 @@ const waitFor = async <Value>(label: string, predicate: () => Value | Promise<Va
     throw new Error(`esperou ${timeoutMs} ms por: ${label}`);
 };
 
-const listen = (subscription, name: string, handler: (payload) => void) => subscription.listen(`.${name}`, handler).listen(name, handler);
-
-describe('integração: os clientes do app contra o Laravel, o Reverb e o SFU no ar', () => {
+describe('integração: os clientes do app contra o Laravel e o SFU no ar', () => {
     const cleanup: (() => unknown)[] = [];
     const ana = new ApiClient(SERVER);
     const bia = new ApiClient(SERVER);
     const anaSfu = new SfuClient();
     const biaSfu = new SfuClient();
     let config;
-    let anaEcho;
-    let biaEcho;
+    let anaRealtime;
+    let biaRealtime;
     let biaUser;
     let created;
     let text;
     let voice;
     let tree;
 
-    const echoFor = (client: ApiClient) => new Echo({
-        broadcaster: 'reverb',
-        Pusher,
-        key: config.reverb.key,
-        wsHost: config.reverb.host,
-        wsPort: config.reverb.port,
-        wssPort: config.reverb.port,
-        forceTLS: config.reverb.scheme === 'https',
-        enabledTransports: ['ws', 'wss'],
-        authEndpoint: `${SERVER}/broadcasting/auth`,
-        auth: { headers: { Authorization: `Bearer ${client.token}` } },
-    });
-    const subscribed = (echo, channel: string) => waitFor(`inscrição em ${channel}`, () => echo.connector.pusher.channel(channel)?.subscribed);
+    const realtimeFor = async (client: ApiClient) => {
+        const realtime = new Realtime(channel => {
+            throw new Error(`o tempo real largou ${channel}`);
+        });
+
+        await realtime.connect(config.sfu, () => client.post('/api/sfu/session'));
+
+        return realtime;
+    };
     const rejectsWith = async (work: () => Promise<unknown>, statuses: number[], message: string) => {
         const failure = await work().then(() => null, (reason: { status?: number }) => reason);
 
@@ -119,21 +112,20 @@ describe('integração: os clientes do app contra o Laravel, o Reverb e o SFU no
         await rejectsWith(() => bia.patch(`/api/servers/${created.id}`, { name: 'tomado' }), [403], 'membro comum recebe 403');
     });
 
-    it('enviar, editar e apagar mensagem chegam na outra conta pelo Reverb', async () => {
+    it('enviar, editar e apagar mensagem chegam na outra conta pelo SFU', async () => {
         const sent = [];
         const updated = [];
         const deleted = [];
 
-        anaEcho = echoFor(ana);
-        biaEcho = echoFor(bia);
-        cleanup.push(() => anaEcho.disconnect(), () => biaEcho.disconnect());
+        anaRealtime = await realtimeFor(ana);
+        biaRealtime = await realtimeFor(bia);
+        cleanup.push(() => anaRealtime.disconnect(), () => biaRealtime.disconnect());
 
-        const textSubscription = biaEcho.private(`channel.${text.id}`);
-
-        listen(textSubscription, 'MessageSent', ({ message }) => sent.push(message));
-        listen(textSubscription, 'MessageUpdated', ({ message }) => updated.push(message));
-        listen(textSubscription, 'MessageDeleted', payload => deleted.push(payload));
-        await subscribed(biaEcho, `private-channel.${text.id}`);
+        await biaRealtime.subscribe(`channel.${text.id}`, {
+            MessageSent: ({ message }) => sent.push(message),
+            MessageUpdated: ({ message }) => updated.push(message),
+            MessageDeleted: payload => deleted.push(payload),
+        });
 
         const message = await ana.post(`/api/channels/${text.id}/messages`, { body: 'oi da integração' });
 
@@ -147,13 +139,13 @@ describe('integração: os clientes do app contra o Laravel, o Reverb e o SFU no
         expect((await bia.get(`/api/channels/${text.id}/messages`)).some(item => item.id === message.id), 'apagada some do histórico').toBe(false);
     });
 
-    it('mensagem só com imagem sobe em multipart, chega com files pelo Reverb, e o canal de voz também tem chat', async () => {
+    it('mensagem só com imagem sobe em multipart, chega com files pelo SFU, e o canal de voz também tem chat', async () => {
         const sent = [];
         const pixel = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='), char => char.charCodeAt(0));
         const form = new FormData();
 
         form.append('images[]', new File([pixel], 'print.png', { type: 'image/png' }));
-        listen(biaEcho.private(`channel.${text.id}`), 'MessageSent', ({ message }) => sent.push(message));
+        await biaRealtime.subscribe(`channel.${text.id}`, { MessageSent: ({ message }) => sent.push(message) });
 
         const message = await ana.post(`/api/channels/${text.id}/messages`, form);
 
@@ -163,7 +155,7 @@ describe('integração: os clientes do app contra o Laravel, o Reverb e o SFU no
         const arrived = await waitFor('MessageSent com a imagem na outra conta', () => sent.find(item => item.id === message.id));
         const download = await fetch(arrived.files[0].url);
 
-        expect(download.status, 'o link assinado que chegou pelo Reverb abre').toBe(200);
+        expect(download.status, 'o link assinado que chegou pelo SFU abre').toBe(200);
         expect(new Uint8Array(await download.arrayBuffer())).toEqual(pixel);
 
         await ana.delete(`/api/messages/${message.id}`);
@@ -177,11 +169,9 @@ describe('integração: os clientes do app contra o Laravel, o Reverb e o SFU no
     it('a voz pede um token por join, e a outra conta vê chegar pelo SFU e pelo webhook', async () => {
         const voiceStates = [];
         const peerJoined = [];
-        const voiceSubscription = anaEcho.private(`channel.${voice.id}`);
         const tokenFor = (client: ApiClient) => async () => ({ token: (await client.post(`/api/channels/${voice.id}/voice/token`)).token });
 
-        listen(voiceSubscription, 'VoiceStateUpdated', payload => voiceStates.push(payload));
-        await subscribed(anaEcho, `private-channel.${voice.id}`);
+        await anaRealtime.subscribe(`channel.${voice.id}`, { VoiceStateUpdated: payload => voiceStates.push(payload) });
 
         cleanup.push(() => anaSfu.disconnect(), () => biaSfu.disconnect());
         anaSfu.addEventListener('peerJoined', event => peerJoined.push((event as CustomEvent).detail));
@@ -194,7 +184,7 @@ describe('integração: os clientes do app contra o Laravel, o Reverb e o SFU no
 
         expect(biaJoined.peers.some(peer => peer.name === `ana.${STAMP}`), 'quem chega vê quem já estava').toBe(true);
         await waitFor('peerJoined para quem já estava', () => peerJoined.find(peer => peer.name === `bia.${STAMP}`));
-        await waitFor('VoiceStateUpdated (SFU → webhook → Laravel → Reverb)', () => voiceStates.find(item => item.event === 'joined' && item.user_id === biaUser.id));
+        await waitFor('VoiceStateUpdated (SFU → webhook → Laravel → tempo real)', () => voiceStates.find(item => item.event === 'joined' && item.user_id === biaUser.id));
         await waitFor('a árvore mostra quem está na voz', async () => (await ana.get(`/api/servers/${created.id}`)).voice?.[voice.id]?.some(person => person.user_id === biaUser.id), 15_000);
     });
 
@@ -229,10 +219,7 @@ describe('integração: os clientes do app contra o Laravel, o Reverb e o SFU no
     it('expulsar manda MemberRemoved no canal da conta e kicked no SFU, e o servidor some para ela', async () => {
         const removed = [];
         const kicked = [];
-        const ownSubscription = biaEcho.private(`user.${biaUser.id}`);
-
-        listen(ownSubscription, 'MemberRemoved', payload => removed.push(payload));
-        await subscribed(biaEcho, `private-user.${biaUser.id}`);
+        await biaRealtime.subscribe(`user.${biaUser.id}`, { MemberRemoved: payload => removed.push(payload) });
         biaSfu.addEventListener('kicked', event => kicked.push((event as CustomEvent).detail ?? {}));
 
         await ana.delete(`/api/servers/${created.id}/members/${biaUser.id}`);

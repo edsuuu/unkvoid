@@ -59,21 +59,31 @@ describe('modo servidor com a API de mentira', () => {
     const calls: { method: string; path: string; body: unknown }[] = [];
     const toasts: string[] = [];
     const responses = new Map<string, unknown>();
-    const quiet = { here() { return this; }, joining() { return this; }, leaving() { return this; }, listen() { return this; } };
-    const heard: Record<string, (payload: unknown) => void> = {};
-    const echoSteps: string[] = [];
-    const subscription = (name: string) => ({
-        listen(event: string, handler: (payload: unknown) => void) {
-            heard[`${name} ${event}`] = handler;
+    const listeners = new Map<string, Set<Record<string, (payload: unknown) => void>>>();
+    const realtimeSteps: string[] = [];
+    const realtime = () => ({
+        listeners,
+        subscribe(channel: string, listener: Record<string, (payload: unknown) => void>) {
+            realtimeSteps.push(`subscribe ${channel}`);
+            listeners.set(channel, (listeners.get(channel) ?? new Set()).add(listener));
 
-            return this;
+            return Promise.resolve();
         },
-        stopListening(event: string) {
-            echoSteps.push(`stop ${name} ${event}`);
+        unsubscribe(channel: string, listener: Record<string, (payload: unknown) => void>) {
+            const known = listeners.get(channel);
 
-            return this;
+            if (known?.delete(listener) && known.size === 0) {
+                listeners.delete(channel);
+                realtimeSteps.push(`unsubscribe ${channel}`);
+            }
         },
+        disconnect() {},
     });
+    const fire = (channel: string, event: string, payload: unknown) => {
+        for (const listener of [...listeners.get(channel) ?? []]) {
+            listener[event]?.(payload);
+        }
+    };
     const track = { enabled: true, stop() {} };
     const micSteps: string[] = [];
     let app: App;
@@ -158,7 +168,7 @@ describe('modo servidor com a API de mentira', () => {
         };
         hub.user = { id: 1, name: 'Edsu' };
         hub.config = {};
-        hub.echo = { private: subscription, join: () => quiet, leave: (name: string) => echoSteps.push(`leave ${name}`), disconnect() {} };
+        hub.realtime = realtime();
 
         responses.set('GET /api/servers', () => servers);
         responses.set('GET /api/channels/voice-2/messages', []);
@@ -306,12 +316,12 @@ describe('modo servidor com a API de mentira', () => {
         expect(hub.store.state.focusedRoom).toBe(false);
     });
 
-    it('a voz tem chat: abre ao entrar, conta o que chega com o painel fechado e fecha ao sair sem largar o canal do Reverb', async () => {
+    it('a voz tem chat: abre ao entrar, conta o que chega com o painel fechado e fecha ao sair sem largar o canal do tempo real', async () => {
         const voiceChannel = hub.tree!.channels[1];
         const message = (id: number, userId: number) => ({ id, channel_id: 'voice-2', type: 'user', body: `m${id}`, files: [], reply_to: null, user: { id: userId, name: 'Alguém' } });
 
         responses.set('GET /api/channels/voice-2/messages', [message(1, 7)]);
-        echoSteps.length = 0;
+        realtimeSteps.length = 0;
         await hub.openChannel(voiceChannel);
         await new Promise(resolve => setTimeout(resolve, 0));
 
@@ -319,26 +329,27 @@ describe('modo servidor com a API de mentira', () => {
         expect(hub.chat.store.state.channel?.id, 'o chat de texto continua no canal dele').toBe('text-2');
         expect(hub.store.state.stageChat, 'o painel começa fechado').toBeNull();
 
-        heard['channel.voice-2 .MessageSent']({ message: message(2, 7) });
-        heard['channel.voice-2 .MessageSent']({ message: message(3, 1) });
+        fire('channel.voice-2', 'MessageSent', { message: message(2, 7) });
+        fire('channel.voice-2', 'MessageSent', { message: message(3, 1) });
         expect(hub.voiceChat.store.state.unread, 'a minha própria mensagem não conta').toBe(1);
         expect(hub.chat.store.state.messages, 'mensagem da voz não cai no canal de texto').toEqual([]);
 
         hub.setStageChat('voice');
         expect(hub.voiceChat.store.state.unread, 'abrir o painel zera o indicador').toBe(0);
-        heard['channel.voice-2 .MessageSent']({ message: message(4, 7) });
+        fire('channel.voice-2', 'MessageSent', { message: message(4, 7) });
         expect(hub.voiceChat.store.state.unread, 'com o painel aberto nada acumula').toBe(0);
 
         hub.showStage(false);
-        heard['channel.voice-2 .MessageSent']({ message: message(5, 7) });
+        fire('channel.voice-2', 'MessageSent', { message: message(5, 7) });
         expect(hub.voiceChat.store.state.unread, 'de volta ao chat de texto o painel da voz não está à vista').toBe(1);
 
         await voice.leave();
 
         expect(hub.voiceChat.store.state.channel).toBeNull();
         expect(hub.store.state.stageChat).toBeNull();
-        expect(echoSteps).toContain('stop channel.voice-2 .MessageSent');
-        expect(echoSteps, 'o mesmo canal do Reverb carrega o VoiceStateUpdated: sair dele apagaria quem está na voz').not.toContain('leave channel.voice-2');
+        fire('channel.voice-2', 'MessageSent', { message: message(6, 7) });
+        expect(hub.voiceChat.store.state.messages, 'fechado, o chat da voz não ouve mais').toEqual([]);
+        expect(realtimeSteps, 'o mesmo canal carrega o VoiceStateUpdated: largá-lo apagaria quem está na voz').not.toContain('unsubscribe channel.voice-2');
 
         responses.set('GET /api/channels/voice-2/messages', []);
     });
@@ -440,7 +451,7 @@ describe('modo servidor com a API de mentira', () => {
     it('o VoiceStateUpdated sobre mim não duplica a entrada otimista, e o left atrasado da sessão anterior não a apaga', async () => {
         const { doors, reached, restore } = holdEntrance();
         const entering = hub.openChannel(hub.tree!.channels[1]);
-        const voiceState = heard['channel.voice-2 .VoiceStateUpdated'];
+        const voiceState = (payload: unknown) => fire('channel.voice-2', 'VoiceStateUpdated', payload);
 
         await reached(1);
         voiceState({ channel_id: 'voice-2', user_id: 1, name: 'Edsu', event: 'joined' });
@@ -779,24 +790,11 @@ describe('modo servidor com a API de mentira', () => {
         expect(hub.store.state.tree?.voice['voice-2'][1].sources).toEqual(['screen']);
     });
 
-    it('o VoiceStateUpdated que chega atrasado pela fila do Laravel não apaga o AO VIVO que o SFU já mostrou', () => {
-        const voiceHandlers: Record<string, (payload: unknown) => void> = {};
-
-        hub.echo = {
-            private: () => ({
-                listen(name: string, handler: (payload: unknown) => void) {
-                    voiceHandlers[name] = handler;
-
-                    return this;
-                },
-            }),
-            join: () => quiet,
-            leave() {},
-            disconnect() {},
-        };
+    it('o VoiceStateUpdated que chega atrasado pela fila do Laravel não apaga o AO VIVO que o SFU já mostrou', async () => {
         hub.voiceChannels.clear();
-        hub.subscribeVoiceStates();
-        voiceHandlers['.VoiceStateUpdated']({ channel_id: 'voice-2', user_id: 7, name: 'Bia', event: 'joined' });
+        listeners.delete('channel.voice-2');
+        await hub.subscribeVoiceStates();
+        fire('channel.voice-2', 'VoiceStateUpdated', { channel_id: 'voice-2', user_id: 7, name: 'Bia', event: 'joined' });
 
         expect(hub.store.state.tree?.voice['voice-2'].find(person => person.name === 'Bia')?.sources).toEqual(['screen']);
 
@@ -879,7 +877,6 @@ describe('o tempo real que caiu e voltou', () => {
     it('reconectado, busca de novo os servidores, o canal e a conversa abertos', async () => {
         const app = new App();
         const hub = app.hub;
-        const quiet = { here() { return this; }, joining() { return this; }, leaving() { return this; }, listen() { return this; } };
         const responses = new Map<string, unknown>();
         const calls: string[] = [];
         const message = (id: number) => ({ id, channel_id: 'text-2', body: `m${id}`, user: { id: 1, name: 'Edsu' } });
@@ -890,7 +887,7 @@ describe('o tempo real que caiu e voltou', () => {
             return responses.get(`${method} ${path}`) ?? [];
         };
         hub.user = { id: 1, name: 'Edsu' };
-        hub.echo = { private: () => quiet, join: () => quiet, leave() {}, disconnect() {} };
+        hub.realtime = { subscribe: () => Promise.resolve(), unsubscribe() {}, disconnect() {} };
         responses.set('GET /api/servers', [{ id: 2, name: 'Jogatina', owner_id: 1 }]);
         responses.set('GET /api/servers/2', {
             id: 2,

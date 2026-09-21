@@ -22,7 +22,7 @@ export function AuthCard() {
             <div key={loginMode} className="animate-rise">
                 <p className="text-center text-base font-semibold">{registering ? 'Criar conta' : 'Entrar'}</p>
                 <p className="mt-1.5 mb-5 text-center text-[12.5px] text-ink-soft">
-                    {registering ? 'Para ter servidores, voz e chat.' : 'O login é opcional. Dá para usar tudo sem conta.'}
+                    {registering ? 'Para ter servidores, voz e chat.' : 'Sem conta dá para compartilhar a tela. Servidores, voz e chat pedem login.'}
                 </p>
 
                 <button

@@ -210,9 +210,7 @@ fn serve_mjpeg(mut stdout: impl Read + Send + 'static, stop: Arc<AtomicBool>) ->
 
             let mut request = [0_u8; 1024];
             let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-            // Um WebKit que parou de ler não pode segurar o cadeado do cliente para sempre.
             let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-            // Quadro pequeno não espera o Nagle juntar com o próximo.
             let _ = stream.set_nodelay(true);
             let _ = stream.read(&mut request);
 
@@ -220,8 +218,6 @@ fn serve_mjpeg(mut stdout: impl Read + Send + 'static, stop: Arc<AtomicBool>) ->
                 Content-Type: multipart/x-mixed-replace; boundary=unkvoid\r\n\
                 Cache-Control: no-cache\r\nConnection: close\r\n\r\n";
 
-            // Cabeçalho e troca sob o mesmo cadeado: quem já leu o cabeçalho recebe o próximo
-            // quadro e o fim, e o cliente trocado sai com o delimitador final.
             if let Ok(mut current) = client_accept.lock()
                 && stream.write_all(headers.as_bytes()).is_ok()
                 && let Some(old) = current.replace(stream)
