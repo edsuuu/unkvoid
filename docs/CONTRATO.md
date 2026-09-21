@@ -469,43 +469,103 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 
 ## App — a ABI do núcleo (interfaces nativas)
 
-Swift e C# falam com o `native/shared/core` por uma ABI C de seis funções
-(`shared/core/src/ffi.rs`); o header está em
-`native/apps/macos/Sources/UnkvoidCore/include/unkvoid_core.h`. O app Linux não passa por
-ela: GTK é Rust e usa o `core` como crate.
+O Swift fala com o `native/shared/core` por uma ABI C (`shared/core/src/ffi.rs`); o header
+está em `native/apps/macos/Sources/UnkvoidCore/include/unkvoid_core.h`. Os apps do Linux
+(GTK) e do Windows (Slint) não passam por ela: são Rust e usam o `core` como crate.
+
+Tudo o que muda dentro do núcleo vive atrás de cadeado: a interface pode ler eventos e
+mídia em outras threads **enquanto** uma ação está em voo.
 
 | Função | Devolve |
 |---|---|
 | `unkvoid_core_new()` | o ponteiro do núcleo, ou nulo |
-| `unkvoid_connect(h, url)` | `true` se o socket do SFU abriu |
-| `unkvoid_call(h, ação, json)` | a resposta do SFU. **Bloqueia** |
+| `unkvoid_connect(h, url)` | `true` se o socket do tempo real abriu. É o socket do chat e da presença; ele cai e volta sozinho (`realtime.lost`, `realtime.back`). A sala abre outro |
+| `unkvoid_call(h, ação, json)` | a resposta do SFU nesse socket (`subscribe`, `unsubscribe`, `ping`). **Bloqueia**, no máximo 10 s |
 | `unkvoid_app(h, ação, json)` | as decisões do app. **Bloqueia** no que fala com o servidor |
-| `unkvoid_next_event(h)` | o próximo evento, ou nulo. Não bloqueia |
-| `unkvoid_string_free(texto)` | devolve o que o núcleo alocou — uma vez só |
+| `unkvoid_next_event(h)` | o próximo aviso, ou nulo. Não bloqueia |
+| `unkvoid_next_media(h, *tamanho)` | o próximo quadro ou bloco de som do que se assiste; espera até 100 ms e devolve nulo. Para **uma** thread só da interface |
+| `unkvoid_speak(h, *amostras, n)` | o microfone que a interface capturou: PCM `f32` estéreo intercalado a 48 kHz |
+| `unkvoid_show(h, IOSurfaceRef, ns)` | macOS: um quadro da câmera, no buffer de GPU, **já retido** — quem solta é o núcleo |
+| `unkvoid_string_free(texto)`, `unkvoid_bytes_free(bloco, tamanho)` | devolvem o que o núcleo alocou — uma vez só |
+
+O bloco de `unkvoid_next_media`, little-endian:
+`[tipo u8: 0 vídeo, 1 som][keyframe u8][tamanho do id u16][timestamp u32][id do producer][conteúdo]`.
+Vídeo é um quadro H.264 inteiro em Annex-B (o `timestamp` é o do RTP, 90 kHz); som é PCM
+`f32` estéreo intercalado a 48 kHz, já decodificado do Opus. Quem decodifica o vídeo é a
+interface, com o que o sistema tem (`AVSampleBufferDisplayLayer` no macOS).
 
 As ações de `unkvoid_app`:
 
 | Ação | Entra | Sai |
 |---|---|---|
 | `state` | — | `{screen, name, room, signedIn}` |
-| `createRoom` | `{name, code}` | `{ok, room}` ou `{refused}` |
-| `joinRoom` | `{name, code}` | idem |
+| `createRoom`, `joinRoom` | `{name, code}` | `{ok, room}`, `{refused}` ou `{failed}`. **Entra de verdade no SFU**: se ele recusar, a tela não muda |
+| `joinVoice` | `{channel}` | `{ok, room}`: a mesma sala, com o token de voz de 60 s |
 | `leaveRoom`, `recentRooms` | — | `{ok}` / `{rooms}` |
+| `room` | — | `{peers, tiles, mine}`: a sala de agora, sem esperar aviso |
+| `displays` | — | `{portal, displays: [{id, width, height}], windows: [{id, title, application}]}` |
+| `share` | `{source, quality, fps, audio, muteCalls}` | `{ok}`. `source` é `display:<id>` ou `window:<id>`; `quality` é `720`, `1080`, `1440` ou `2160` |
+| `stopSharing` | — | `{ok}` |
+| `openMicrophone`, `closeMicrophone` | — | `{ok}`: abre o producer do microfone; o som entra por `unkvoid_speak` |
+| `muteMicrophone` | `{muted}` | `{ok}`: manda silêncio e pausa o producer |
+| `openCamera`, `closeCamera` | `{width, height, fps}` / — | `{ok}` (macOS): o quadro entra por `unkvoid_show` |
+| `deafen` | `{deafened}` | `{ok}`: cala o som que chega, sem pausar o vídeo |
+| `muteWatched` | `{producerId, muted}` | `{ok}`: o som de uma tela, que chega mudo por regra |
+| `closeWatched`, `pauseWatched` | `{producerId}` / `{producerId, paused}` | `{ok}`: fecha ou pausa uma transmissão só para esta pessoa |
+| `watch` | `{producerId?}` | `{ok}`: reabre o que foi fechado; sem `producerId`, tudo |
+| `selfView` | `{wanted}` | `{ok}`: "ver o que a sala vê" — assistir à própria tela |
+| `changeQuality` | `{quality, fps}` | `{ok}`: troca resolução e quadros com a transmissão no ar |
+| `preview` | `{source}` | `{jpeg}`: a miniatura de uma tela ou janela, em base64 (vazia sem permissão) |
+| `inputMode` | `{mode, sensitivity}` | `{ok}`: `voice` (abre acima de `sensitivity`, 0–100), `ptt` ou `open` |
+| `talk` | `{talking}` | `{ok}`: a tecla de apertar para falar desceu ou subiu |
 | `useServer` | `{url}` | `{ok}` |
-| `login`, `register` | `{email, password, device}` | `{ok, user}` |
+| `config` | — | `{sfu}`: o endereço do SFU que o Laravel anuncia |
+| `login`, `register` | `{email, password, device}` | `{ok, user}`. Como o `signOut`, já deixa o `state` na tela certa: quem decide onde se cai é o núcleo |
+| `me` | — | `{ok, user}`; com o token vencido, `{failed: signedOut}` e o token sai do disco |
 | `signOut` | — | `{ok}` |
+| `identify` | — | `{ok}`: apresenta a conta ao tempo real com o token de `/api/sfu/session` |
 | `servers` | — | `{servers}` |
 | `server` | `{id}` | `{server}` |
 | `messages` | `{channel}` | `{messages}` |
 | `sendMessage` | `{channel, body}` | `{ok, message}` |
+| `editMessage` | `{id, body}` | `{ok, message}` |
+| `deleteMessage` | `{id}` | `{ok}` |
+| `api` | `{name, params, body}` | `{ok, data}`: uma rota do Laravel pelo **nome** (`shared/core/src/routes.rs`): `createServer`, `kickMember`, `putOverwrite`, `friends`, `sendDirect`… `params` preenche o caminho (`{server}`, `{user}`) e pode levar `query` |
+| `upload` | `{name, params, field, files, fields}` | `{ok, data}`: o mesmo, em `multipart` — foto, ícone do servidor, imagens de uma mensagem. `files` são caminhos no disco |
+| `preference`, `setPreference` | `{key}` / `{key, value}` | `{value}` / `{ok}`: o que se guarda em disco, com as chaves do app de hoje (`unkvoid:voice`…). O token não sai por aqui |
+| `keys`, `keyName` | `{accelerator}` / `{code}` | macOS: um atalho (`CmdOrCtrl+Shift+KeyM`) nos códigos do sistema, e o caminho de volta |
+| `googleStart`, `googleWait` | — | `{ok, url}` e depois `{ok, user}`: login com Google por uma porta local (`google.rs`); a segunda espera até 5 min |
+| `logs` | `{lines}` | `{path, lines}`: o fim do registro do núcleo |
+| `update` | — | `{version, url}` se há versão mais nova publicada para esta plataforma, senão `{upToDate}` |
+
+A ação `server` devolve também `abilities` — o que esta pessoa pode fazer ali, já calculado
+(`permissions.rs`): `{can: [nomes], owner, members: {<user_id>: {nickname, mute, deafen,
+disconnect, kick, ban, roles}}, roles: [{id, editable, assignable, up, down}]}`. A interface
+só esconde botão com isso; quem autoriza é o Laravel, em toda chamada.
 
 `screen` é `entry`, `hub`, `room`, `offline` ou `updating`.
 
+Os avisos de `unkvoid_next_event` são `{event, channel, data}`. Os do tempo real vêm como o
+SFU os manda (`MessageSent`, `presence.joining`…), com o `channel` de onde vieram. Os da
+sala aberta não têm canal:
+
+| Aviso | `data` |
+|---|---|
+| `room.peers` | `{peers: [{peerId, userId, name, producers, reconnecting, selfPeer}]}`, a lista inteira |
+| `room.tiles` | `{tiles: [{producerId, peerId, label, camera, mine, paused, audio}], pending: […]}`: o que dá para desenhar, e o que está ao vivo e a pessoa fechou; `audio` é o producer do som daquela tela |
+| `room.mine` | `{sharing, selfView, mic, micMuted, camera, canShare, canSpeak, canVideo}`: o que esta pessoa manda, e o `can` do servidor |
+| `room.watchers` | `{producerId, watchers: [{peerId, name}]}`: quem está assistindo àquela tela |
+| `room.session` | `{state: "lost" \| "rejoined" \| "gone" \| "replaced" \| "kicked"}`. Os dois últimos são o servidor tirando esta sessão de propósito: o núcleo **não** volta sozinho, e a interface tira a pessoa da sala |
+| `room.failed` | `{what: "watch" \| "share" \| "mic"}` |
+| `room.ping` | `{ms}`: a ida e volta da sinalização, a cada 5 s |
+| `room.level` | `{level, percent}`: o nível do microfone — de 0 a 1, e na escala de 0 a 100 da sensibilidade —, uns dez por segundo |
+| `realtime.lost`, `realtime.back` | `{}`: na volta a interface se apresenta e se inscreve de novo |
+
 **Falha nunca atravessa com detalhe técnico.** Vem `{failed: "<motivo>"}` — `unreachable`,
 `signedOut`, `notAllowed`, `gone`, `invalid`, `serverBroke`, `tooFast` — e a interface
-escreve a frase em português. A exceção é validação: `{invalid: "<texto>"}`, que o Laravel
-já devolve em português e sobre o campo digitado. Caminho, endereço e código de status ficam
-no log.
+escreve a frase em português. A exceção é validação: `{invalid: {field, message}}`, que o
+Laravel já devolve em português e sobre o campo digitado. Caminho, endereço e código de
+status ficam no log.
 
 ## App — comandos do Tauri
 

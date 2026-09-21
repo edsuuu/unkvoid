@@ -15,3 +15,9 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Tirar os símbolos de um proc-macro invalida a assinatura do `.dylib` no macOS, e o rustc
+# passa a dizer "can't find crate" no build de release. Isto só vale para o que compila para
+# a máquina que builda (proc-macros e build scripts): o binário que sai continua enxuto.
+[profile.release.build-override]
+strip = false

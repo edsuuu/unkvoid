@@ -6,6 +6,7 @@
 mod bridge;
 mod components;
 mod devices;
+mod icons;
 mod screens;
 mod sending;
 mod streaming;
@@ -82,10 +83,14 @@ fn open(application: &Application) {
     let window = ApplicationWindow::builder()
         .application(application)
         .title("Unkvoid")
-        .default_width(1180)
-        .default_height(760)
+        // Os números do `expand_window` do Tauri, que o macOS e o Windows também usam: com
+        // menos largura os cartões da Home quebram em outra ordem.
+        .default_width(1280)
+        .default_height(800)
         .child(&stack)
         .build();
+
+    window.set_size_request(940, 600);
 
     show(&stack, Screen::Updating);
     window.present();
@@ -98,7 +103,6 @@ fn open(application: &Application) {
                     entry.set_user(user.as_ref());
                     entry.refresh_recent(&bridge);
                     hub.set_user(user.as_ref());
-                    room.set_user(&user.as_ref().map(|user| user.name.clone()).unwrap_or_default());
 
                     let landing = bridge.home();
 
@@ -106,6 +110,8 @@ fn open(application: &Application) {
 
                     if landing == Screen::Hub {
                         bridge.load_servers();
+                        bridge.load_conversations();
+                        hub.refresh_recent(&bridge);
                     } else {
                         entry.focus();
                     }
@@ -120,22 +126,49 @@ fn open(application: &Application) {
                     hub.set_status(&message);
                     room.set_status(&message);
                 }
-                Update::Servers(servers) => hub.set_servers(&servers),
+                Update::LoginComplaint(message) => entry.set_login_error(&message),
+                Update::Servers(servers) => hub.set_servers(&servers, &bridge),
                 Update::Tree(tree) => hub.set_tree(&tree),
                 Update::Messages(messages) => {
                     hub.set_messages(&messages);
                     hub.focus();
                 }
-                Update::Joined { room: code, peers } => {
+                Update::Friends(friends) => hub.set_friends(&friends, &bridge),
+                Update::Conversations(conversations) => hub.set_conversations(&conversations, &bridge),
+                Update::Direct { person, messages } => {
+                    hub.set_direct(&person, &messages);
+                    hub.focus_direct();
+                }
+                // Canal de voz: a tela continua sendo o hub, e quem está dentro aparece
+                // embaixo do nome do canal — como no React.
+                Update::Joined { room: code, voice: Some(name), peers } => {
+                    hub.set_status("");
+                    hub.set_voice(Some((&code, &name)));
+                    hub.set_voice_peers(&peers);
+                }
+                Update::Joined { room: code, voice: None, peers } => {
                     entry.set_error("");
                     room.set_room(&code);
                     room.set_peers(&peers);
-                    room.set_deafened(bridge.is_deafened());
                     show(&stack, Screen::Room);
                 }
-                Update::Peers(peers) => room.set_peers(&peers),
+                Update::VoiceLeft => hub.set_voice(None),
+                Update::Peers(peers) => {
+                    room.set_peers(&peers);
+                    hub.set_voice_peers(&peers);
+                }
+                Update::Ping(milliseconds) => {
+                    room.set_ping(milliseconds);
+                    hub.set_ping(milliseconds);
+                }
                 Update::Tiles(tiles) => room.set_tiles(&tiles),
-                Update::Mine(mine) => room.set_mine(mine),
+                Update::Mine(mine) => {
+                    // A sala por código só tem tela; o microfone e o som são do hub, que é
+                    // onde a voz existe. Cada tela pega o pedaço que desenha.
+                    room.set_mine(mine);
+                    hub.set_mine(mine);
+                    hub.set_deafened(bridge.is_deafened());
+                }
                 Update::Show(screen) => {
                     if screen == Screen::Hub {
                         bridge.load_servers();

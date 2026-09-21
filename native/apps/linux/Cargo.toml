@@ -21,7 +21,10 @@ capture = { path = "../../shared/capture" }
 media = { path = "../../shared/media" }
 # A chave SRTP atravessa o `producePlain` em base64, e volta assim do servidor.
 base64 = "0.22"
-gtk = { version = "0.9", package = "gtk4" }
+# `v4_6` porque o `MenuButton` só aceita um filho desenhado a partir do GTK 4.6, e a setinha
+# de aparelhos mostra o mesmo ícone do React. O Debian 12 — a distribuição que faz este app
+# existir — traz o 4.8, então o piso continua alcançável.
+gtk = { version = "0.9", package = "gtk4", features = ["v4_6"] }
 
 [dev-dependencies]
 tempfile = "3"

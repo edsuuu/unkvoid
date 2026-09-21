@@ -16,6 +16,12 @@ tracing-subscriber.workspace = true
 # Sem ponte: o núcleo entra como crate, e o que ele decide chega tipado.
 core-app = { path = "../../shared/core" }
 storage = { path = "../../shared/storage" }
+# A captura e o encoder: a transmissão é a mesma do `core_app::sharing`, que já os usa.
+capture = { path = "../../shared/capture" }
+media = { path = "../../shared/media" }
+serde_json.workspace = true
+# A chave SRTP atravessa o `producePlain` em base64, e volta assim do servidor.
+base64 = "0.22"
 slint = "1.18"
 
 # A lista de microfones e de saídas de áudio do sistema.

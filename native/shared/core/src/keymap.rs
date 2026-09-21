@@ -18,25 +18,41 @@ pub struct Accelerator<'a> {
 }
 
 pub fn split(accelerator: &str) -> Option<Accelerator<'_>> {
-    let mut parts: Vec<&str> = accelerator.split('+').map(str::trim).filter(|part| !part.is_empty()).collect();
+    let mut parts: Vec<&str> = accelerator
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
     let key = parts.pop()?;
 
-    Some(Accelerator { key, modifiers: parts })
+    Some(Accelerator {
+        key,
+        modifiers: parts,
+    })
 }
 
 /// O número que o macOS usa (`kVK_*` do Carbon), que não se parece com o do Windows nem
 /// com a posição da tecla no teclado.
 #[cfg(target_os = "macos")]
 pub fn macos_key(code: &str) -> Option<u16> {
-    if let Some(letter) = code.strip_prefix("Key").and_then(|rest| rest.chars().next()) {
+    if let Some(letter) = code
+        .strip_prefix("Key")
+        .and_then(|rest| rest.chars().next())
+    {
         return macos_letter(letter);
     }
 
-    if let Some(digit) = code.strip_prefix("Digit").and_then(|rest| rest.parse::<u8>().ok()) {
+    if let Some(digit) = code
+        .strip_prefix("Digit")
+        .and_then(|rest| rest.parse::<u8>().ok())
+    {
         return macos_digit(digit);
     }
 
-    if let Some(number) = code.strip_prefix('F').and_then(|rest| rest.parse::<u8>().ok()) {
+    if let Some(number) = code
+        .strip_prefix('F')
+        .and_then(|rest| rest.parse::<u8>().ok())
+    {
         return macos_function(number);
     }
 
@@ -70,18 +86,89 @@ pub fn macos_key(code: &str) -> Option<u16> {
     })
 }
 
+/// O caminho de volta: o número que o sistema deu quando a pessoa apertou a tecla, no nome
+/// que a interface grava. É procurar em `macos_key`, para as duas direções nunca divergirem.
+#[cfg(target_os = "macos")]
+pub fn macos_key_name(code: u16) -> Option<String> {
+    const NAMED: [&str; 24] = [
+        "Space",
+        "Enter",
+        "Tab",
+        "Backspace",
+        "Escape",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowUp",
+        "Home",
+        "End",
+        "PageUp",
+        "PageDown",
+        "Delete",
+        "Minus",
+        "Equal",
+        "BracketLeft",
+        "BracketRight",
+        "Backslash",
+        "Semicolon",
+        "Quote",
+        "Comma",
+        "Period",
+        "Slash",
+    ];
+
+    let letters = ('A'..='Z').map(|letter| format!("Key{letter}"));
+    let digits = (0..=9).map(|digit| format!("Digit{digit}"));
+    let functions = (1..=20).map(|number| format!("F{number}"));
+    let named = NAMED
+        .iter()
+        .map(|name| (*name).to_owned())
+        .chain(["Backquote".to_owned()]);
+
+    letters
+        .chain(digits)
+        .chain(functions)
+        .chain(named)
+        .find(|name| macos_key(name) == Some(code))
+}
+
 #[cfg(target_os = "macos")]
 fn macos_letter(letter: char) -> Option<u16> {
     const LETTERS: [(char, u16); 26] = [
-        ('a', 0), ('b', 11), ('c', 8), ('d', 2), ('e', 14), ('f', 3), ('g', 5), ('h', 4),
-        ('i', 34), ('j', 38), ('k', 40), ('l', 37), ('m', 46), ('n', 45), ('o', 31), ('p', 35),
-        ('q', 12), ('r', 15), ('s', 1), ('t', 17), ('u', 32), ('v', 9), ('w', 13), ('x', 7),
-        ('y', 16), ('z', 6),
+        ('a', 0),
+        ('b', 11),
+        ('c', 8),
+        ('d', 2),
+        ('e', 14),
+        ('f', 3),
+        ('g', 5),
+        ('h', 4),
+        ('i', 34),
+        ('j', 38),
+        ('k', 40),
+        ('l', 37),
+        ('m', 46),
+        ('n', 45),
+        ('o', 31),
+        ('p', 35),
+        ('q', 12),
+        ('r', 15),
+        ('s', 1),
+        ('t', 17),
+        ('u', 32),
+        ('v', 9),
+        ('w', 13),
+        ('x', 7),
+        ('y', 16),
+        ('z', 6),
     ];
 
     let letter = letter.to_ascii_lowercase();
 
-    LETTERS.iter().find(|(known, _)| *known == letter).map(|(_, code)| *code)
+    LETTERS
+        .iter()
+        .find(|(known, _)| *known == letter)
+        .map(|(_, code)| *code)
 }
 
 #[cfg(target_os = "macos")]
@@ -94,12 +181,32 @@ fn macos_digit(digit: u8) -> Option<u16> {
 #[cfg(target_os = "macos")]
 fn macos_function(number: u8) -> Option<u16> {
     const FUNCTIONS: [(u8, u16); 20] = [
-        (1, 122), (2, 120), (3, 99), (4, 118), (5, 96), (6, 97), (7, 98), (8, 100), (9, 101),
-        (10, 109), (11, 103), (12, 111), (13, 105), (14, 107), (15, 113), (16, 106), (17, 64),
-        (18, 79), (19, 80), (20, 90),
+        (1, 122),
+        (2, 120),
+        (3, 99),
+        (4, 118),
+        (5, 96),
+        (6, 97),
+        (7, 98),
+        (8, 100),
+        (9, 101),
+        (10, 109),
+        (11, 103),
+        (12, 111),
+        (13, 105),
+        (14, 107),
+        (15, 113),
+        (16, 106),
+        (17, 64),
+        (18, 79),
+        (19, 80),
+        (20, 90),
     ];
 
-    FUNCTIONS.iter().find(|(known, _)| *known == number).map(|(_, code)| *code)
+    FUNCTIONS
+        .iter()
+        .find(|(known, _)| *known == number)
+        .map(|(_, code)| *code)
 }
 
 /// Cada modificador vira as teclas que servem: a pessoa segura o Shift da esquerda ou o da
@@ -125,6 +232,18 @@ pub fn macos_modifier(name: &str) -> Option<&'static [u16]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_key_that_can_be_saved_can_be_read_back() {
+        for name in ["KeyM", "Digit0", "F13", "Space", "Backquote", "ArrowUp"] {
+            let code = macos_key(name).expect(name);
+
+            assert_eq!(macos_key_name(code).as_deref(), Some(name));
+        }
+
+        assert_eq!(macos_key_name(9_999), None);
+    }
 
     #[test]
     fn an_accelerator_splits_into_key_and_modifiers() {
@@ -152,11 +271,17 @@ mod tests {
     #[test]
     fn every_letter_and_digit_has_a_macos_code() {
         for letter in 'a'..='z' {
-            assert!(macos_key(&format!("Key{}", letter.to_ascii_uppercase())).is_some(), "faltou {letter}");
+            assert!(
+                macos_key(&format!("Key{}", letter.to_ascii_uppercase())).is_some(),
+                "faltou {letter}"
+            );
         }
 
         for digit in 0..=9 {
-            assert!(macos_key(&format!("Digit{digit}")).is_some(), "faltou o dígito {digit}");
+            assert!(
+                macos_key(&format!("Digit{digit}")).is_some(),
+                "faltou o dígito {digit}"
+            );
         }
     }
 
@@ -179,7 +304,11 @@ mod tests {
 
         let unique: std::collections::HashSet<_> = codes.iter().collect();
 
-        assert_eq!(unique.len(), codes.len(), "há teclas diferentes com o mesmo código");
+        assert_eq!(
+            unique.len(),
+            codes.len(),
+            "há teclas diferentes com o mesmo código"
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -192,7 +321,10 @@ mod tests {
             assert!(macos_key(parsed.key).is_some(), "sem código: {accelerator}");
 
             for modifier in parsed.modifiers {
-                assert!(macos_modifier(modifier).is_some(), "sem modificador: {modifier}");
+                assert!(
+                    macos_modifier(modifier).is_some(),
+                    "sem modificador: {modifier}"
+                );
             }
         }
     }

@@ -93,7 +93,7 @@ private struct RailRow<Badge: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
         .help(label)
     }
 }

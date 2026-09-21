@@ -7,9 +7,18 @@ export struct ServerRow {
     name: string,
     initial: string,
     current: bool,
+    /// "dono" ou "membro" — quem decide é o núcleo, comparando o dono com quem está logado.
+    note: string,
+    /// A data do último acesso, já escrita em pt-BR. Vazia quando nunca se entrou.
+    at: string,
 }
 
 export struct ChannelRow {
+    /// A posição na lista inteira do servidor: é ela que volta em `open-channel`, porque a
+    /// tela mostra texto e voz em duas colunas mas o núcleo só conhece uma.
+    index: int,
+    /// O identificador do canal, que é o que diz se a voz aberta é esta.
+    id: string,
     name: string,
     voice: bool,
     current: bool,
@@ -22,10 +31,15 @@ export struct MemberRow {
 }
 
 export struct MessageRow {
+    /// O identificador da mensagem, que é o que volta em editar e apagar. Zero quando a
+    /// linha não veio do servidor.
+    id: int,
     author: string,
     initial: string,
     body: string,
     at: string,
+    /// Se é sua: só a sua se edita, e o "⋯" só aparece nela.
+    mine: bool,
 }
 
 export struct PeerRow {
@@ -38,6 +52,25 @@ export struct PeerRow {
 export struct DeviceRow {
     label: string,
     current: bool,
+}
+
+/// Uma conversa direta na coluna: com quem, a última frase e quantas faltam ler.
+export struct ConversationRow {
+    user-id: int,
+    name: string,
+    initial: string,
+    last: string,
+    unread: int,
+}
+
+/// Uma amizade. `state` já vem decidido pelo Rust — a tela não calcula quem pediu a quem.
+export struct FriendRow {
+    id: int,
+    user-id: int,
+    name: string,
+    initial: string,
+    // "accepted", "incoming", "waiting" ou "blocked".
+    state: string,
 }
 
 export global Ui {
@@ -63,17 +96,47 @@ export global Ui {
     in property <string> server-name: "Servidores";
     in property <string> channel-name;
     in property <[ServerRow]> servers;
-    in property <[ChannelRow]> channels;
+    in property <[ChannelRow]> text-channels;
+    in property <[ChannelRow]> voice-channels;
     in property <[MemberRow]> members;
     in property <[MessageRow]> messages;
+    /// O convite do servidor aberto. Só quem pode convidar recebe.
+    in property <string> invite-code;
+    /// A Home ou o servidor aberto: as duas nunca aparecem juntas.
+    in property <bool> in-server;
+    /// "servers", "friends" ou "direct" — os três miolos da Home.
+    in-out property <string> home-tab: "servers";
+    in property <[ConversationRow]> conversations;
+    in property <[FriendRow]> friends;
+    /// Quantos pedidos de amizade chegaram e esperam resposta.
+    in property <int> pending-count;
+    /// A conversa aberta.
+    in property <string> talking-name;
+    in property <[MessageRow]> direct-messages;
+    /// As últimas salas por código, já quebradas em linhas: o Slint não embrulha sozinho,
+    /// e no React elas são pastilhas que descem de linha quando não cabem.
+    in property <[[string]]> recent-rooms;
+
+    /// O canal de voz em que se está, e o nome dele. Vazio quer dizer fora da voz — e é
+    /// dentro do hub que isso aparece, como no React: não se troca de tela para falar.
+    in property <string> voice-channel;
+    in property <string> voice-name;
 
     in property <string> room-code;
     in property <[PeerRow]> peers;
     in property <bool> sharing;
+    // O ida e volta até o SFU, medido no batimento do núcleo. Até o primeiro voltar é um
+    // traço, que é o que o app em React mostra nesse intervalo.
+    in property <string> ping: "-- ms";
+    /// O mesmo número, para a cor do sinal decidir sozinha. Negativo é "ainda medindo".
+    in property <int> ping-ms: -1;
+    in property <string> elapsed: "0:00:00";
 
     in property <bool> mic-on;
     in property <bool> can-speak: true;
     in property <bool> deafened;
+    /// As configurações da conta: o modal do React, por cima de tudo.
+    in-out property <bool> settings-open;
     in property <[DeviceRow]> microphones;
     in property <[DeviceRow]> speakers;
 
@@ -89,9 +152,27 @@ export global Ui {
 
     callback open-server(int);
     callback open-channel(int);
+    /// O nome e se é de voz. Quem não pode criar canal recebe a recusa do Laravel.
+    callback create-channel(string, bool);
     callback send-message(string);
+    callback edit-message(int, string);
+    callback delete-message(int);
+    callback create-server(string);
+    callback join-invite(string);
+    /// Volta para a Home e recarrega o que ela mostra.
+    callback show-hub-home();
+    callback load-friends();
+    callback add-friend(string);
+    callback answer-friend(int, bool);
+    /// O índice da conversa na coluna, não o identificador da pessoa.
+    callback open-conversation(int);
+    callback send-direct(string);
+    /// O índice do amigo na lista: abre a conversa com ele.
+    callback talk-to-friend(int);
+    callback open-recent-room(string);
 
     callback leave-room();
+    callback leave-voice();
     callback toggle-share();
     callback toggle-camera();
 
@@ -101,6 +182,8 @@ export global Ui {
     // tem de aparecer sem reiniciar nada.
     callback list-microphones();
     callback list-speakers();
+    callback open-settings();
+    callback close-settings();
     callback use-microphone(int);
     callback use-speaker(int);
 }

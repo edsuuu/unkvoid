@@ -61,7 +61,10 @@ cd sfu && SFU_SECRET=<o do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node 
 # criam sozinhas; para criar antes, à mão
 cd web && php artisan storage:bucket
 
-# App apontando para o Laravel local (a URL do SFU vem do GET /api/config)
+# App nativo do macOS: compila o núcleo em Rust e abre a janela em Swift
+cd native/apps/macos && ./run.sh         # `./run.sh test` roda os testes; `./run.sh app` monta o .app
+
+# App (Tauri) apontando para o Laravel local (a URL do SFU vem do GET /api/config)
 cd native/apps/desktop && VITE_SERVER=http://127.0.0.1:8000 npm run dev:app
 
 # Só a interface, num navegador comum: o Vite faz o papel do nginx e a ponte do Tauri é fingida
@@ -81,6 +84,7 @@ cd sfu && pnpm run check                 # eslint + check.mjs (precisa de um ser
 cd native/apps/desktop && npm run check && npm run build   # tests/static + tsc + eslint + Vitest (tests/unit)
 cd native/apps/desktop && npm run test:integration    # Vitest: os clientes do app contra a pilha local no ar
 cd native && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+cd native/apps/macos && ./run.sh test    # núcleo + app do macOS, em série, contra a pilha local
 ```
 
 O `cargo` do Linux precisa de `cmake` no PATH (o Opus compila em C); sem ele o clippy morre no

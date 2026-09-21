@@ -39,7 +39,9 @@ enum Audio {
         }
 
         return ids.compactMap { device in
-            guard channels(of: device, scope: scope) > 0, let name = name(of: device) else {
+            // O `CADefaultDeviceAggregate-…` é o aparelho que o próprio AVAudioEngine monta por
+            // baixo do pano: escolhê-lo não leva a lugar nenhum, então ele não entra na lista.
+            guard channels(of: device, scope: scope) > 0, let name = name(of: device), !name.hasPrefix("CADefaultDeviceAggregate") else {
                 return nil
             }
 

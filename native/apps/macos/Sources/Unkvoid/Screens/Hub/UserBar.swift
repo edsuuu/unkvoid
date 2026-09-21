@@ -3,70 +3,206 @@ import SwiftUI
 /// A barra de baixo, no lugar do `ui/components/hub/VoicePanel.tsx`: quem você é, o
 /// microfone, o áudio e o menu da conta.
 ///
-/// Os dois botões nascem apagados porque no React eles também nascem: fora de um canal de
-/// voz o `VoicePanel` os desenha `disabled`. A setinha ao lado de cada um é o que o Mac
-/// ganha a mais — ela abre a lista de aparelhos que o CoreAudio enxerga, no molde do
-/// app de chamada, sem depender de estar numa voz para escolher.
+/// Fora de um canal de voz os dois botões ficam apagados, como no React. Dentro, o bloco
+/// "Voz conectada" aparece em cima, com desconectar, câmera e compartilhar. A setinha ao
+/// lado de cada botão é o que o Mac ganha a mais — ela abre a lista de aparelhos que o
+/// CoreAudio enxerga, sem depender de estar numa voz para escolher.
 struct UserBar: View {
     @EnvironmentObject private var model: AppModel
     @State private var open: Picker?
+    @State private var popoverFrame = CGRect.zero
 
     private enum Picker {
         case microphone
         case speaker
-        case menu
     }
 
     /// O painel é alinhado pela base da barra; subi-lo a altura dela mais um respiro é o
-    /// que o põe **acima** da barra, e não por cima dela. 12 + 30 + 12 de padding e avatar.
-    private static let barHeight: CGFloat = 62
+    /// que o põe **acima** da barra, e não por cima dela. 12 + 30 + 12 de padding e avatar,
+    /// e mais o bloco da voz (duas fileiras de 32, a divisória e os respiros) quando ele existe.
+    private var barHeight: CGFloat {
+        inVoice ? 62 + 95 : 62
+    }
 
     var body: some View {
-        HStack(spacing: 10) {
-            Avatar(name: model.user?.name ?? "?", url: model.user?.avatar_url, size: 30, mine: true)
+        VStack(spacing: 10) {
+            if let voice = model.voiceChannel ?? joining {
+                connected(to: voice)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(model.user?.name ?? "Conta conectada")
-                    .font(Theme.sans(12.5, .semibold))
-                    .foregroundStyle(Theme.ink)
-                    .lineLimit(1)
-
-                Text("Online")
-                    .font(Theme.sans(10.5))
-                    .foregroundStyle(Theme.inkDim)
+                Divider().overlay(Theme.line)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
 
-            device(.microphone, icon: .mic, hint: "Escolher o microfone")
-            device(.speaker, icon: .headphones, hint: "Escolher a saída de áudio")
+            HStack(spacing: 10) {
+                Avatar(name: model.user?.name ?? "?", url: model.user?.avatar_url, size: 30, mine: true)
 
-            SmallButton(icon: .gear, active: open == .menu, hint: "Menu") {
-                open = open == .menu ? nil : .menu
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(model.user?.name ?? "Conta conectada")
+                        .font(Theme.sans(12.5, .semibold))
+                        .foregroundStyle(Theme.ink)
+                        .lineLimit(1)
+
+                    Text("Online")
+                        .font(Theme.sans(10.5))
+                        .foregroundStyle(Theme.inkDim)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                device(.microphone, icon: micOff ? .micOff : .mic, off: micOff, enabled: !inVoice || model.mine.canSpeak, hint: micHint, choose: "Escolher o microfone") {
+                    Task { await model.toggleMute() }
+                }
+
+                device(.speaker, icon: model.deafened ? .headphonesOff : .headphones, off: model.deafened, enabled: true, hint: model.deafened ? "Voltar a ouvir" : "Ensurdecer: não ouvir ninguém", choose: "Escolher a saída de áudio") {
+                    Task { await model.toggleDeafen() }
+                }
+
+                SmallButton(icon: .gear, active: false, hint: "Configurações") {
+                    open = nil
+                    model.modal = .account
+                }
             }
         }
         .padding(12)
         .glass()
-        .overlay(alignment: .bottomTrailing) { popover }
+        .overlay(alignment: .bottomTrailing) { popover.reportsFrame(to: $popoverFrame).offset(y: -barHeight) }
+        .closesOnOutsideClick(active: open != nil, panel: popoverFrame) { open = nil }
+    }
+
+    /// O canal em que se está entrando: o bloco da voz aparece já no clique, com
+    /// "Conectando…", e vira "Voz conectada" quando o SFU responde.
+    private var joining: Channel? {
+        model.tree?.voiceChannels.first { $0.id == model.voiceTarget }
+    }
+
+    private var inVoice: Bool {
+        model.voiceChannel != nil
+    }
+
+    private var micOff: Bool {
+        model.micShownOff
+    }
+
+    private var speaking: Bool {
+        model.user.map { model.isSpeaking($0.id) } ?? false
+    }
+
+    private var micHint: String {
+        if inVoice, !model.mine.canSpeak {
+            return "Você não tem permissão para falar neste canal"
+        }
+
+        return micOff ? "Ativar o microfone" : "Mutar o microfone"
+    }
+
+    /// O bloco de cima do `VoicePanel.tsx`: o sinal, "Voz conectada", sair, e a fileira de
+    /// câmera e compartilhar.
+    private func connected(to voice: Channel) -> some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                SignalBars(
+                    bars: model.reconnecting ? nil : model.signalBars,
+                    hint: model.voiceJoining ? "Conectando…" : model.reconnecting ? "Reconectando…" : model.ping.map { "\($0) ms" } ?? "Medindo o ping…"
+                )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.voiceJoining ? "Conectando…" : model.reconnecting ? "Reconectando…" : "Voz conectada")
+                        .font(Theme.sans(13, .semibold))
+                        .foregroundStyle(model.voiceJoining ? Theme.fair : model.reconnecting ? Theme.danger : Theme.online)
+
+                    Text(voice.name)
+                        .font(Theme.mono(10.5))
+                        .foregroundStyle(Theme.inkDim)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture { model.stageOpen = true }
+
+                Button {
+                    Task { await model.leaveVoice() }
+                } label: {
+                    Icon(name: .phoneOff, size: 14)
+                        .foregroundStyle(Theme.periwinkle)
+                }
+                .buttonStyle(IconButton(side: 28, radius: 9))
+                .help("Desconectar da voz")
+            }
+
+            HStack(spacing: 6) {
+                Button {
+                    Task { await model.toggleCamera() }
+                } label: {
+                    Icon(name: model.mine.camera ? .camera : .cameraOff, size: 16)
+                        .foregroundStyle(model.mine.camera ? Theme.inkStrong : Theme.inkIcon)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 32)
+                        .background(model.mine.camera ? AnyShapeStyle(Theme.brandGradient) : AnyShapeStyle(Theme.chrome), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .strokeBorder(model.mine.camera ? Theme.brand.opacity(0.6) : Theme.lineStrong, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.pointer)
+                .disabled(!model.mine.canVideo || model.voiceJoining)
+                .opacity(model.mine.canVideo && !model.voiceJoining ? 1 : 0.4)
+                .help(model.mine.camera ? "Desligar a câmera" : "Ligar a câmera")
+
+                shareButton
+            }
+        }
+    }
+
+    private var shareButton: some View {
+            Button {
+                if model.mine.sharing {
+                    Task { await model.stopSharing() }
+                } else {
+                    Task { await model.openShare() }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    if model.shareStarting {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Icon(name: .screen, size: 16)
+                    }
+
+                    Text(model.mine.sharing ? "Parar" : "Tela")
+                        .font(Theme.sans(12, .medium))
+                }
+                .foregroundStyle(model.mine.sharing ? Theme.inkStrong : Theme.inkIcon)
+                .frame(maxWidth: .infinity)
+                .frame(height: 32)
+                .background(model.mine.sharing ? AnyShapeStyle(Theme.brandGradient) : AnyShapeStyle(Theme.chrome), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(model.mine.sharing ? Theme.brand.opacity(0.6) : Theme.lineStrong, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.pointer)
+            .disabled(model.shareStarting || !model.mine.canShare)
+            .opacity(model.mine.canShare ? 1 : 0.4)
+            .help(model.mine.canShare ? "Compartilhar tela" : "Você não tem permissão para transmitir neste canal")
     }
 
     /// O par "ligar/desligar" e a setinha, colados como nos apps de chamada: o botão à esquerda faz
     /// a ação, a setinha à direita abre a escolha do aparelho.
-    private func device(_ picker: Picker, icon: IconName, hint: String) -> some View {
+    private func device(
+        _ picker: Picker,
+        icon: IconName,
+        off: Bool,
+        enabled: Bool,
+        hint: String,
+        choose: String,
+        action: @escaping () -> Void
+    ) -> some View {
         HStack(spacing: 0) {
-            SmallButton(icon: icon, active: false, hint: hint) {}
-                .disabled(true)
+            SmallButton(icon: icon, active: false, danger: off, ringed: picker == .microphone && speaking, hint: hint, action: action)
+                .disabled(!enabled)
 
-            Button {
+            Chevron(open: open == picker, hint: choose) {
                 model.refreshDevices()
                 open = open == picker ? nil : picker
-            } label: {
-                Icon(name: .chevronDown, size: 11)
-                    .foregroundStyle(open == picker ? Theme.inkStrong : Theme.inkDim)
-                    .frame(width: 14, height: 26)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help(hint)
         }
     }
 
@@ -83,7 +219,6 @@ struct UserBar: View {
                 model.microphone = chosen
                 open = nil
             }
-            .offset(y: -Self.barHeight)
         case .speaker:
             DeviceList(
                 title: "Saída de áudio",
@@ -94,34 +229,6 @@ struct UserBar: View {
                 model.speaker = chosen
                 open = nil
             }
-            .offset(y: -Self.barHeight)
-        case .menu:
-            PopoverBox(width: 224) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model.user?.name ?? "Sem conta")
-                        .font(Theme.sans(13, .semibold))
-                        .foregroundStyle(Theme.ink)
-                        .lineLimit(1)
-
-                    Text(model.user == nil ? "usando sem login" : "conta conectada").labelMono()
-                }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                Divider().overlay(Theme.line)
-
-                MenuRow(icon: .gear, label: "Configurações da conta") {
-                    open = nil
-                    model.modal = .account
-                }
-
-                MenuRow(icon: .logout, label: "Sair da conta", tint: Theme.periwinkle) {
-                    open = nil
-                    Task { await model.signOut() }
-                }
-            }
-            .offset(y: -Self.barHeight)
         case nil:
             EmptyView()
         }
@@ -132,6 +239,9 @@ struct UserBar: View {
 private struct SmallButton: View {
     var icon: IconName
     var active: Bool
+    var danger = false
+    /// O anel verde de quem está falando.
+    var ringed = false
     var hint: String
     var action: () -> Void
 
@@ -140,14 +250,98 @@ private struct SmallButton: View {
 
     var body: some View {
         Button(action: action) {
-            Icon(name: icon, size: 15)
-                .foregroundStyle(active ? Theme.inkStrong : Theme.inkIcon)
-                .frame(width: 26, height: 26)
+            Icon(name: icon, size: 16.5)
+                .scaleEffect(hovering ? 1.12 : 1)
+                .foregroundStyle(danger ? Theme.danger : ringed ? Theme.online : active || hovering ? Theme.inkStrong : Theme.inkIcon)
+                .frame(width: 28, height: 28)
                 .background(active || hovering ? Theme.row : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(ringed ? Theme.online.opacity(0.6) : .clear, lineWidth: 1)
+                )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
         .opacity(enabled ? 1 : 0.4)
         .onHover { hovering = $0 && enabled }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .help(hint)
+    }
+}
+
+/// O sinal da voz: quatro barrinhas que acendem até o nível que o núcleo contou, na cor dele
+/// — verde, amarelo, laranja, vermelho. Sem medida ainda (ou reconectando) ficam apagadas.
+private struct SignalBars: View {
+    var bars: Int?
+    /// O balão é desenhado aqui, e não pelo `.help` do sistema: o tooltip nativo demora um
+    /// segundo e não dispara sobre um desenho sem área de clique.
+    var hint: String
+
+    @State private var hovering = false
+
+    private var tint: Color {
+        switch bars {
+        case 4: Theme.online
+        case 3: Theme.fair
+        case 2: Theme.poor
+        case 1: Theme.danger
+        default: Theme.inkDim
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(1 ... 4, id: \.self) { bar in
+                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                    .fill(bar <= (bars ?? 0) ? tint : Theme.inkDim.opacity(0.35))
+                    .frame(width: 3, height: CGFloat(3 + bar * 3))
+            }
+        }
+        .frame(width: 18, height: 16, alignment: .bottom)
+        .padding(6)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .padding(-6)
+        .overlay(alignment: .bottomLeading) {
+            if hovering {
+                Text(hint)
+                    .font(Theme.mono(11))
+                    .foregroundStyle(Theme.inkStrong)
+                    .fixedSize()
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .popoverPanel()
+                    .offset(x: -4, y: -26)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(.easeOut(duration: 0.2), value: bars)
+        .accessibilityLabel("Sinal da voz")
+        .accessibilityValue(hint)
+    }
+}
+
+/// A setinha ao lado do microfone e do fone: acende e cresce sob o mouse, como o botão dela.
+private struct Chevron: View {
+    var open: Bool
+    var hint: String
+    var action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Icon(name: .chevronDown, size: 12.5)
+                .scaleEffect(hovering ? 1.15 : 1)
+                .foregroundStyle(open || hovering ? Theme.inkStrong : Theme.inkDim)
+                .frame(width: 18, height: 28)
+                .background(open || hovering ? Theme.row : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.pointer)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
         .help(hint)
     }
 }
@@ -163,7 +357,7 @@ private struct DeviceList: View {
         PopoverBox(width: 260) {
             Text(title).labelMono()
                 .padding(.horizontal, 10)
-                .padding(.bottom, 6)
+                .padding(.vertical, 6)
 
             DeviceRow(label: fallback, chosen: chosen == nil) { pick(nil) }
 
@@ -200,7 +394,7 @@ private struct DeviceRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(hovering ? Theme.row : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointer)
         .onHover { hovering = $0 }
     }
 }

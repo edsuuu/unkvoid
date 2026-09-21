@@ -96,7 +96,10 @@ mod tests {
 
     #[test]
     fn a_network_failure_is_unreachable_and_not_a_server_error() {
-        assert_eq!(Failure::from_error(&anyhow!("dns falhou")), Failure::Unreachable);
+        assert_eq!(
+            Failure::from_error(&anyhow!("dns falhou")),
+            Failure::Unreachable
+        );
     }
 
     #[test]
@@ -109,11 +112,18 @@ mod tests {
     #[test]
     fn the_serialised_name_carries_no_technical_detail() {
         // É isto que a interface recebe: um nome, e nada mais.
-        for failure in [Failure::NotAllowed, Failure::Unreachable, Failure::ServerBroke] {
+        for failure in [
+            Failure::NotAllowed,
+            Failure::Unreachable,
+            Failure::ServerBroke,
+        ] {
             let json = serde_json::to_string(&failure).expect("serialize");
 
             assert!(!json.contains("http"), "vazou endereço: {json}");
-            assert!(!json.chars().any(|letter| letter.is_ascii_digit()), "vazou número: {json}");
+            assert!(
+                !json.chars().any(|letter| letter.is_ascii_digit()),
+                "vazou número: {json}"
+            );
         }
     }
 
@@ -129,8 +139,14 @@ mod tests {
         let json = serde_json::to_string(&failure).expect("serialize");
 
         assert_eq!(failure, Failure::NotAllowed);
-        assert!(!json.contains("unkvoid.com"), "o endereço chegou à tela: {json}");
-        assert!(!json.contains("channel"), "o nome do canal chegou à tela: {json}");
+        assert!(
+            !json.contains("unkvoid.com"),
+            "o endereço chegou à tela: {json}"
+        );
+        assert!(
+            !json.contains("channel"),
+            "o nome do canal chegou à tela: {json}"
+        );
         assert!(!json.contains("403"), "o status chegou à tela: {json}");
     }
 }

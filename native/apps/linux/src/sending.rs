@@ -35,6 +35,9 @@ struct Live {
 pub struct Sending {
     sender: Target,
     key: [u8; 30],
+    /// A base dos SSRC desta transmissão. Sorteada por sessão porque o `RtpListener` do
+    /// mediasoup é por sala: dois SSRC iguais nela e o segundo a pedir não transmite.
+    ssrc_base: u32,
     live: HashMap<Source, Live>,
     /// Erros de envio somados. Log por quadro é proibido: a primeira falha sai no log e o
     /// resto vira número.
@@ -46,6 +49,7 @@ impl Default for Sending {
         Self {
             sender: Target::default(),
             key: PlainSender::generate_key(),
+            ssrc_base: PlainSender::random_ssrc_base(),
             live: HashMap::new(),
             errors: Arc::default(),
         }
@@ -57,7 +61,7 @@ impl Sending {
     /// chave que o protege — a mesma para todas: é um transporte só do lado de lá.
     pub fn offer(&self, source: Source) -> serde_json::Value {
         serde_json::json!({
-            "rtpParameters": PlainSender::rtp_parameters(source),
+            "rtpParameters": PlainSender::rtp_parameters(source, self.ssrc_base),
             "srtpParameters": {
                 "cryptoSuite": PlainSender::CRYPTO_SUITE,
                 "keyBase64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, self.key),
@@ -75,9 +79,21 @@ impl Sending {
             return Ok(());
         }
 
-        *sender = Some(PlainSender::connect(server, &self.key, server_key.as_deref())?);
+        *sender = Some(PlainSender::connect(server, &self.key, server_key.as_deref(), self.ssrc_base)?);
 
         Ok(())
+    }
+
+    /// Quantos bytes já subiram e quantos envios falharam. É o que prova, de fora, que a
+    /// captura virou pacote — e o que o teste vivo mede.
+    #[cfg(test)]
+    pub fn sent_bytes(&self) -> u64 {
+        target(&self.sender).as_ref().map_or(0, PlainSender::sent_bytes)
+    }
+
+    #[cfg(test)]
+    pub fn errors(&self) -> u64 {
+        self.errors.load(Ordering::Relaxed)
     }
 
     pub fn is_live(&self, source: Source) -> bool {
@@ -245,6 +261,7 @@ impl Sending {
     /// reiniciado repetiria o keystream.
     pub fn renew_key(&mut self) {
         self.key = PlainSender::generate_key();
+        self.ssrc_base = PlainSender::random_ssrc_base();
         *target(&self.sender) = None;
     }
 
@@ -305,5 +322,51 @@ fn count(errors: &Arc<AtomicU64>, failure: Option<impl std::fmt::Display>) {
 
     if errors.fetch_add(1, Ordering::Relaxed) == 0 {
         tracing::warn!(error = %failure, "transmissão: não saiu (as próximas só contam)");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Prova que a captura e o encoder do Linux abrem, comprimem e que o quadro sai pelo
+    /// socket. O endereço não precisa de ninguém escutando — o que se mede aqui é o envio,
+    /// não a entrega.
+    ///
+    /// `#[ignore]` porque precisa de uma tela de verdade — roda com
+    /// `UNKVOID_CAPTURE=x11 cargo test -p unkvoid-linux -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn the_screen_capture_leaves_through_the_socket() {
+        // Alguém tem de estar escutando: no Linux um socket UDP ligado a uma porta fechada
+        // recebe o ICMP de volta e falha no envio seguinte, o que contaria como erro nosso.
+        let listening = std::net::UdpSocket::bind("127.0.0.1:41999").expect("a porta abriu");
+        let mut sending = Sending::default();
+
+        sending.use_sfu("127.0.0.1:41999", None).expect("o remetente abriu");
+
+        let config = CaptureConfig {
+            source: CaptureSource::PrimaryDisplay,
+            capture_audio: false,
+            quality: capture::Quality::Hd720,
+            frame_rate: 30,
+            ..CaptureConfig::default()
+        };
+
+        sending
+            .start(Source::Screen, config, Some(Source::Screen), None, vec!["prova".to_owned()])
+            .expect("a captura abriu");
+
+        std::thread::sleep(std::time::Duration::from_secs(3));
+
+        let sent = sending.sent_bytes();
+        let errors = sending.errors();
+
+        println!("subiram {sent} bytes, {errors} erros");
+        sending.stop_all();
+        drop(listening);
+
+        assert!(sent > 0, "nada saiu pelo socket em 3 s");
+        assert_eq!(errors, 0, "o envio deu erro");
     }
 }

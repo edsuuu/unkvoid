@@ -57,21 +57,36 @@ impl Source {
         }
     }
 
-    /// Os SSRCs que o servidor conhece antes do primeiro pacote.
-    pub fn ssrc(self) -> u32 {
+    /// O inverso de `parse`.
+    pub fn name(self) -> &'static str {
         match self {
-            Self::Screen => 0x2234_5678,
-            Self::ScreenAudio => 0x2234_5679,
-            Self::Camera => 0x2234_567a,
-            Self::Mic => 0x2234_567b,
+            Self::Screen => "screen",
+            Self::ScreenAudio => "screenAudio",
+            Self::Camera => "camera",
+            Self::Mic => "mic",
         }
+    }
+
+    /// O SSRC que o servidor conhece antes do primeiro pacote.
+    ///
+    /// A base é sorteada por transmissão, e não fixa por origem: o `RtpListener` do
+    /// mediasoup é por sala, e dois SSRC iguais nela — duas pessoas compartilhando, ou a
+    /// mesma pessoa compartilhando de novo — dão `ssrc already exists`, e o segundo a
+    /// pedir não transmite.
+    pub fn ssrc(self, base: u32) -> u32 {
+        base.wrapping_add(match self {
+            Self::Screen => 0,
+            Self::ScreenAudio => 1,
+            Self::Camera => 2,
+            Self::Mic => 3,
+        })
     }
 
     pub fn is_video(self) -> bool {
         matches!(self, Self::Screen | Self::Camera)
     }
 
-    fn stream(self) -> Stream {
+    fn stream(self, base: u32) -> Stream {
         let (payload, payloader, clock): (u8, Box<dyn Payloader>, u32) = if self.is_video() {
             (PAYLOAD_VIDEO, Box::<H264Payloader>::default(), VIDEO_CLOCK)
         } else {
@@ -82,11 +97,15 @@ impl Source {
             packetizer: Box::new(new_packetizer(
                 MTU,
                 payload,
-                self.ssrc(),
+                self.ssrc(base),
                 payloader,
                 Box::new(new_random_sequencer()) as Box<dyn Sequencer>,
                 clock,
             )),
+            packets: 0,
+            bytes: 0,
+            last_timestamp: 0,
+            last_report: None,
             last_video_ns: None,
         }
     }
@@ -96,6 +115,14 @@ impl Source {
 /// sequência independente para quem recebe.
 struct Stream {
     packetizer: Box<dyn Packetizer>,
+
+    /// O que o relatório do remetente informa: quantos pacotes e bytes já saíram, e em que
+    /// ponto do relógio RTP. Sem ele o servidor não sabe casar o relógio desta origem com o
+    /// de nenhuma outra — e sem isso quem assiste não tem como sincronizar imagem e som.
+    packets: u32,
+    bytes: u32,
+    last_timestamp: u32,
+    last_report: Option<std::time::Instant>,
 
     /// Quando o quadro anterior foi capturado. O relógio RTP anda com o tempo de
     /// verdade, não com o fps nominal.
@@ -134,6 +161,9 @@ pub struct PlainSender {
     /// microfone sobem pelo mesmo socket e pela mesma chave, cada um com o seu SSRC.
     streams: HashMap<Source, Stream>,
 
+    /// A base dos SSRC desta transmissão, a mesma que o servidor recebeu na oferta.
+    ssrc_base: u32,
+
     /// Pacotes largados por buffer de saída cheio. Uplink saturado é diferente de erro
     /// de rede, e sem este número os dois viram a mesma linha muda no diagnóstico.
     dropped: u64,
@@ -168,9 +198,21 @@ impl PlainSender {
         std::array::from_fn(|_| rand::random())
     }
 
+    /// A base dos SSRC desta transmissão. Fica longe do topo da faixa para as quatro
+    /// origens não darem a volta, e longe de zero porque SSRC baixo é o que os testes e os
+    /// exemplos usam.
+    pub fn random_ssrc_base() -> u32 {
+        rand::random::<u32>() % 0x7000_0000 + 0x1000_0000
+    }
+
     /// `key` é o que o `generate_key` produziu e o que o servidor recebeu; `server` é o
     /// endereço que ele respondeu.
-    pub fn connect(server: impl ToSocketAddrs, key: &[u8], server_key: Option<&[u8]>) -> Result<Self> {
+    pub fn connect(
+        server: impl ToSocketAddrs,
+        key: &[u8],
+        server_key: Option<&[u8]>,
+        ssrc_base: u32,
+    ) -> Result<Self> {
         if key.len() != KEY_LEN + SALT_LEN {
             return Err(anyhow!(
                 "SRTP key must be {} bytes, got {}",
@@ -229,6 +271,7 @@ impl PlainSender {
             socket,
             server,
             srtp,
+            ssrc_base,
             incoming,
             streams: HashMap::new(),
             dropped: 0,
@@ -247,7 +290,7 @@ impl PlainSender {
      * constantes que o empacotador acima usa — descrever isso em dois lugares é como uma
      * broadcast ends up arriving as noise.
      */
-    pub fn rtp_parameters(source: Source) -> serde_json::Value {
+    pub fn rtp_parameters(source: Source, ssrc_base: u32) -> serde_json::Value {
         if ! source.is_video() {
             return serde_json::json!({
                 "codecs": [{
@@ -258,7 +301,7 @@ impl PlainSender {
                     "parameters": { "useinbandfec": 1, "usedtx": 1 },
                     "rtcpFeedback": [],
                 }],
-                "encodings": [{ "ssrc": source.ssrc() }],
+                "encodings": [{ "ssrc": source.ssrc(ssrc_base) }],
             });
         }
 
@@ -281,7 +324,7 @@ impl PlainSender {
                     { "type": "goog-remb" },
                 ],
             }],
-            "encodings": [{ "ssrc": source.ssrc() }],
+            "encodings": [{ "ssrc": source.ssrc(ssrc_base) }],
         })
     }
 
@@ -292,7 +335,8 @@ impl PlainSender {
     ///
     /// Devolve quantos pacotes o quadro virou: é o denominador da perda.
     pub fn send_frame(&mut self, source: Source, frame: EncodedFrame, frame_rate: f64) -> Result<usize> {
-        let stream = self.streams.entry(source).or_insert_with(|| source.stream());
+        let base = self.ssrc_base;
+        let stream = self.streams.entry(source).or_insert_with(|| source.stream(base));
 
         let advance = match stream.last_video_ns {
             Some(previous) if frame.timestamp_ns > previous => {
@@ -313,14 +357,15 @@ impl PlainSender {
         let sent = Self::send(
             &self.socket,
             &mut self.srtp,
-            stream.packetizer.as_mut(),
+            stream,
             Bytes::from(frame.data),
             0,
-            &mut self.dropped,
-            &mut self.sent_bytes,
+            (&mut self.dropped, &mut self.sent_bytes),
         )?;
 
         let packets = sent.len();
+
+        stream.packets += packets as u32;
 
         for (sequence, packet) in sent {
             if self.history.len() == HISTORY {
@@ -330,7 +375,50 @@ impl PlainSender {
             self.history.push_back((sequence, packet, false));
         }
 
+        self.report(source);
+
         Ok(packets)
+    }
+
+    /// O relatório do remetente (RTCP SR), uma vez por segundo por origem.
+    ///
+    /// Sem ele o servidor não tem como casar o relógio RTP desta origem com o de nenhuma
+    /// outra: o mediasoup não pontua o fluxo que chega, e o `Consumer` do outro lado fica
+    /// parado pedindo quadro-chave sem repassar nada. É o que segurava a tela.
+    fn report(&mut self, source: Source) {
+        let base = self.ssrc_base;
+        let Some(stream) = self.streams.get_mut(&source) else {
+            return;
+        };
+
+        let now = std::time::Instant::now();
+
+        if stream
+            .last_report
+            .is_some_and(|last| now.duration_since(last) < std::time::Duration::from_secs(1))
+        {
+            return;
+        }
+
+        stream.last_report = Some(now);
+
+        let ntp = ntp_now();
+        let mut packet = Vec::with_capacity(28);
+
+        // V=2, P=0, RC=0 | PT=200 (SR) | tamanho em palavras de 32 bits, menos uma.
+        packet.extend_from_slice(&[0x80, 200, 0x00, 0x06]);
+        packet.extend_from_slice(&source.ssrc(base).to_be_bytes());
+        packet.extend_from_slice(&ntp.to_be_bytes());
+        packet.extend_from_slice(&stream.last_timestamp.to_be_bytes());
+        packet.extend_from_slice(&stream.packets.to_be_bytes());
+        packet.extend_from_slice(&stream.bytes.to_be_bytes());
+
+        let Ok(protected) = self.srtp.encrypt_rtcp(&packet) else {
+            return;
+        };
+
+        // Falha aqui não derruba a transmissão: o relatório seguinte sai em um segundo.
+        let _ = self.socket.send(&protected);
     }
 
     /// Lê o que o servidor devolveu: reenvia na hora os pacotes de vídeo que ele diz não
@@ -363,7 +451,7 @@ impl PlainSender {
 
             // ponytail: busca linear no histórico a cada pacote perdido, até 1024 passos.
             // Índice por número de sequência se isto aparecer no custo por quadro.
-            for sequence in lost_video_packets(&plain) {
+            for sequence in lost_video_packets(&plain, self.ssrc_base) {
                 let Some((_, packet, asked)) =
                     self.history.iter_mut().find(|(stored, ..)| *stored == sequence)
                 else {
@@ -394,18 +482,23 @@ impl PlainSender {
     /// O Opus chega em blocos fixos de 20 ms, então o relógio anda sempre o mesmo tanto.
     pub fn send_audio(&mut self, source: Source, opus: &[u8]) -> Result<()> {
         let samples = SAMPLE_RATE / 1000 * FRAME_MS;
-        let stream = self.streams.entry(source).or_insert_with(|| source.stream());
+        let base = self.ssrc_base;
+        let stream = self.streams.entry(source).or_insert_with(|| source.stream(base));
 
-        Self::send(
+        let sent = Self::send(
             &self.socket,
             &mut self.srtp,
-            stream.packetizer.as_mut(),
+            stream,
             Bytes::copy_from_slice(opus),
             samples,
-            &mut self.dropped,
-            &mut self.sent_bytes,
-        )
-        .map(|_| ())
+            (&mut self.dropped, &mut self.sent_bytes),
+        )?;
+
+        stream.packets += sent.len() as u32;
+
+        self.report(source);
+
+        Ok(())
     }
 
     /// Devolve cada pacote que saiu, já cifrado e com o número de sequência — inclusive o
@@ -413,19 +506,26 @@ impl PlainSender {
     fn send(
         socket: &UdpSocket,
         srtp: &mut SrtpContext,
-        packetizer: &mut dyn Packetizer,
+        stream: &mut Stream,
         payload: Bytes,
         samples: u32,
-        dropped: &mut u64,
-        sent_bytes: &mut u64,
+        counters: (&mut u64, &mut u64),
     ) -> Result<Vec<(u16, Bytes)>> {
+        let (dropped, sent_bytes) = counters;
+        let packetizer = stream.packetizer.as_mut();
+        let timestamp = &mut stream.last_timestamp;
+        let payload_bytes = &mut stream.bytes;
         let packets = packetizer
             .packetize(&payload, samples)
             .map_err(|error| anyhow!("could not packetize: {error}"))?;
 
         let mut sent = Vec::with_capacity(packets.len());
 
+        *timestamp = packets.last().map_or(*timestamp, |packet| packet.header.timestamp);
+
         for packet in packets {
+            *payload_bytes += packet.payload.len() as u32;
+
             let plain = packet
                 .marshal()
                 .map_err(|error| anyhow!("could not serialize RTP: {error}"))?;
@@ -514,11 +614,24 @@ fn wants_keyframe(rtcp: &[u8]) -> bool {
     false
 }
 
+/// O relógio NTP de 64 bits do RTCP: segundos desde 1900 nos 32 bits de cima, e a fração
+/// de segundo nos de baixo.
+fn ntp_now() -> u64 {
+    /// Segundos entre 1900 e 1970, que é onde o relógio do sistema começa a contar.
+    const EPOCH: u64 = 2_208_988_800;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+
+    ((now.as_secs() + EPOCH) << 32) | u64::from((f64::from(now.subsec_nanos()) / 1e9 * 4_294_967_296.0) as u32)
+}
+
 /// Os números de sequência que um NACK genérico diz terem faltado no vídeo.
 ///
 /// Cada entrada é o primeiro perdido e uma máscara de 16 bits com os seguintes: o bit `i`
 /// ligado quer dizer que `primeiro + i + 1` também não chegou.
-fn lost_video_packets(rtcp: &[u8]) -> Vec<u16> {
+fn lost_video_packets(rtcp: &[u8], base: u32) -> Vec<u16> {
     /// Transport-layer feedback, onde mora o NACK.
     const RTPFB: u8 = 205;
     const GENERIC_NACK: u8 = 1;
@@ -538,7 +651,7 @@ fn lost_video_packets(rtcp: &[u8]) -> Vec<u16> {
         if packet[1] == RTPFB
             && packet[0] & 0x1F == GENERIC_NACK
             && size >= 16
-            && [Source::Screen.ssrc(), Source::Camera.ssrc()]
+            && [Source::Screen.ssrc(base), Source::Camera.ssrc(base)]
                 .contains(&u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]))
         {
             for entry in packet[12..].as_chunks::<4>().0 {
@@ -562,6 +675,26 @@ fn lost_video_packets(rtcp: &[u8]) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
+    /// Uma base qualquer: o que os testes checam é a conta em cima dela, não o sorteio.
+    const BASE: u32 = 0x2000_0000;
+
+    /// O relatório do remetente sai pelo mesmo socket que o vídeo e o som. Quem conta
+    /// pacote de mídia tem de pular o RTCP, que é tudo de 200 para cima no segundo byte —
+    /// o byte inteiro, sem a máscara de 0x7F que o RTP usa para o tipo de payload.
+    fn is_media(packet: &[u8]) -> bool {
+        !(200..=207).contains(&packet[1])
+    }
+
+    /// O próximo pacote de mídia, pulando o relatório do remetente que sai pelo mesmo socket.
+    fn media_packet(socket: &UdpSocket, buffer: &mut [u8; 2048]) -> usize {
+        loop {
+            let size = socket.recv(buffer).expect("o pacote não voltou");
+
+            if is_media(buffer) {
+                return size;
+            }
+        }
+    }
 
     /// Um NACK atrás de um relatório de recepção, com máscara: é assim que o mediasoup
     /// pede. Errar a conta da máscara reenviaria o pacote errado e o buraco continuaria.
@@ -569,15 +702,15 @@ mod tests {
     fn a_nack_lists_the_lost_video_packets() {
         let mut packet = vec![0x80, 201, 0x00, 0x01, 0, 0, 0, 1];
         packet.extend_from_slice(&[0x81, 205, 0x00, 0x03, 0, 0, 0, 1]);
-        packet.extend_from_slice(&Source::Screen.ssrc().to_be_bytes());
+        packet.extend_from_slice(&Source::Screen.ssrc(BASE).to_be_bytes());
         // Primeiro perdido 100, bits 0 e 2 ligados: faltaram também 101 e 103.
         packet.extend_from_slice(&[0, 100, 0, 0b101]);
 
-        assert_eq!(lost_video_packets(&packet), vec![100, 101, 103]);
+        assert_eq!(lost_video_packets(&packet, BASE), vec![100, 101, 103]);
 
-        packet[16..20].copy_from_slice(&Source::ScreenAudio.ssrc().to_be_bytes());
+        packet[16..20].copy_from_slice(&Source::ScreenAudio.ssrc(BASE).to_be_bytes());
 
-        assert!(lost_video_packets(&packet).is_empty(), "NACK do áudio não é do vídeo");
+        assert!(lost_video_packets(&packet, BASE).is_empty(), "NACK do áudio não é do vídeo");
     }
 
     /// O caminho inteiro da perda: o servidor manda o NACK cifrado com a chave dele, e o
@@ -586,7 +719,7 @@ mod tests {
     fn a_nacked_packet_is_sent_again() {
         let (server_socket, address) = listener();
         let server_key = PlainSender::generate_key();
-        let mut sender = PlainSender::connect(address, &PlainSender::generate_key(), Some(&server_key))
+        let mut sender = PlainSender::connect(address, &PlainSender::generate_key(), Some(&server_key), BASE)
             .expect("could not connect");
 
         sender
@@ -607,7 +740,7 @@ mod tests {
         let sequence = u16::from_be_bytes([original[2], original[3]]);
 
         let mut nack = vec![0x81, 205, 0x00, 0x03, 0, 0, 0, 1];
-        nack.extend_from_slice(&Source::Screen.ssrc().to_be_bytes());
+        nack.extend_from_slice(&Source::Screen.ssrc(BASE).to_be_bytes());
         nack.extend_from_slice(&sequence.to_be_bytes());
         nack.extend_from_slice(&[0, 0]);
 
@@ -636,7 +769,7 @@ mod tests {
             "um NACK não é pedido de quadro-chave, e é um pacote perdido",
         );
 
-        let size = server_socket.recv(&mut buffer).expect("the lost packet was not sent again");
+        let size = media_packet(&server_socket, &mut buffer);
 
         assert_eq!(buffer[..size], original[..]);
 
@@ -682,8 +815,8 @@ mod tests {
     fn key_must_match_the_suite_size() {
         let (_servidor, address) = listener();
 
-        assert!(PlainSender::connect(address, &[0; 10], None).is_err());
-        assert!(PlainSender::connect(address, &PlainSender::generate_key(), None).is_ok());
+        assert!(PlainSender::connect(address, &[0; 10], None, BASE).is_err());
+        assert!(PlainSender::connect(address, &PlainSender::generate_key(), None, BASE).is_ok());
     }
 
     #[test]
@@ -695,7 +828,7 @@ mod tests {
     fn a_big_frame_becomes_several_protected_packets() {
         let (server_socket, address) = listener();
         let key = PlainSender::generate_key();
-        let mut sender = PlainSender::connect(address, &key, None).expect("could not connect");
+        let mut sender = PlainSender::connect(address, &key, None, BASE).expect("could not connect");
 
         let mut data = vec![0u8, 0, 0, 1, 0x65];
         data.extend(std::iter::repeat_n(0xAB, MTU * 3));
@@ -746,7 +879,7 @@ mod tests {
     fn audio_fits_one_packet_and_advances_the_clock() {
         let (server_socket, address) = listener();
         let mut sender =
-            PlainSender::connect(address, &PlainSender::generate_key(), None).expect("could not connect");
+            PlainSender::connect(address, &PlainSender::generate_key(), None, BASE).expect("could not connect");
 
         sender
             .send_audio(Source::ScreenAudio, &[0x7F; 160])
@@ -759,6 +892,10 @@ mod tests {
         let mut timestamps = Vec::new();
 
         while let Ok(size) = server_socket.recv(&mut buffer) {
+            if !is_media(&buffer) {
+                continue;
+            }
+
             // O carimbo de tempo do RTP fica nos bytes 4..8 e não é cifrado — o
             // cabeçalho viaja aberto para o outro lado reordenar antes de decifrar.
             timestamps.push(u32::from_be_bytes([
@@ -784,7 +921,7 @@ mod tests {
     fn dropped_frame_opens_a_gap_in_the_video_clock() {
         let (server_socket, address) = listener();
         let mut sender =
-            PlainSender::connect(address, &PlainSender::generate_key(), None).expect("could not connect");
+            PlainSender::connect(address, &PlainSender::generate_key(), None, BASE).expect("could not connect");
 
         let make_frame = |timestamp_ns| EncodedFrame {
             data: vec![0, 0, 0, 1, 0x41, 0xAB],
@@ -801,6 +938,10 @@ mod tests {
         let mut timestamps = Vec::new();
 
         while server_socket.recv(&mut buffer).is_ok() {
+            if !is_media(&buffer) {
+                continue;
+            }
+
             timestamps.push(u32::from_be_bytes([
                 buffer[4], buffer[5], buffer[6], buffer[7],
             ]));
@@ -821,7 +962,7 @@ mod tests {
     fn each_source_goes_out_with_its_own_ssrc() {
         let (server_socket, address) = listener();
         let mut sender =
-            PlainSender::connect(address, &PlainSender::generate_key(), None).expect("could not connect");
+            PlainSender::connect(address, &PlainSender::generate_key(), None, BASE).expect("could not connect");
 
         let frame = || EncodedFrame { data: vec![0, 0, 1, 0x41, 0xAB], keyframe: false, timestamp_ns: 0 };
 
@@ -834,6 +975,10 @@ mod tests {
         let mut seen = Vec::new();
 
         while server_socket.recv(&mut buffer).is_ok() {
+            if !is_media(&buffer) {
+                continue;
+            }
+
             // O SSRC fica nos bytes 8..12 do cabeçalho, que viaja aberto.
             seen.push((
                 buffer[1] & 0x7f,
@@ -844,15 +989,15 @@ mod tests {
         assert_eq!(
             seen,
             [
-                (PAYLOAD_VIDEO, Source::Screen.ssrc()),
-                (PAYLOAD_VIDEO, Source::Camera.ssrc()),
-                (PAYLOAD_AUDIO, Source::ScreenAudio.ssrc()),
-                (PAYLOAD_AUDIO, Source::Mic.ssrc()),
+                (PAYLOAD_VIDEO, Source::Screen.ssrc(BASE)),
+                (PAYLOAD_VIDEO, Source::Camera.ssrc(BASE)),
+                (PAYLOAD_AUDIO, Source::ScreenAudio.ssrc(BASE)),
+                (PAYLOAD_AUDIO, Source::Mic.ssrc(BASE)),
             ]
         );
         assert_eq!(
-            PlainSender::rtp_parameters(Source::Camera)["encodings"][0]["ssrc"],
-            Source::Camera.ssrc()
+            PlainSender::rtp_parameters(Source::Camera, BASE)["encodings"][0]["ssrc"],
+            Source::Camera.ssrc(BASE)
         );
         assert_eq!(Source::parse("screenAudio"), Some(Source::ScreenAudio));
         assert_eq!(Source::parse("audio"), None);

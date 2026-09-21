@@ -2,10 +2,12 @@
 # em chamada por alguns segundos, e isso é aceito: o deploy sai na hora.
 name: deploy-sfu
 
+# PAUSADO junto com o release.yml: nada sobe sozinho até terminarmos. Descomente o `push`
+# quando voltar a valer — enquanto isso o deploy sai só pelo disparo à mão.
 on:
-  push:
-    branches: [main]
-    paths: ['sfu/**', '.github/workflows/deploy-sfu.yml']
+  # push:
+  #   branches: [main]
+  #   paths: ['sfu/**', '.github/workflows/deploy-sfu.yml']
   workflow_dispatch:
 
 permissions:

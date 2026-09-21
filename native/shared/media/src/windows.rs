@@ -108,6 +108,8 @@ pub struct MediaFoundationEncoder {
     /// seguinte: ligá-la fora do caminho de codificação a gastaria num momento em que
     /// não há quadro nenhum para marcar.
     force_keyframe: bool,
+    /// Quantos quadros já foram descritos no log. Descrever todos encheria o disco.
+    described: u8,
     /// Um encoder de hardware tem fila: nem todo quadro que entra sai no mesmo instante.
     ready: VecDeque<EncodedFrame>,
 
@@ -256,6 +258,7 @@ impl MediaFoundationEncoder {
                 bridge: None,
                 pacer: FramePacer::new(config.frame_rate),
                 force_keyframe: false,
+                described: 0,
                 ready: VecDeque::new(),
                 credits: 0,
             })
@@ -820,6 +823,18 @@ impl MediaFoundationEncoder {
 
             buffer.Unlock().map_err(encode_error)?;
 
+            // Os primeiros quadros saem no log em `debug`: é o que diz, sem adivinhar, se
+            // o MFT entregou Annex-B e se o keyframe trouxe SPS e PPS junto.
+            if self.described < 3 {
+                self.described += 1;
+
+                tracing::debug!(
+                    bytes = data.len(),
+                    nals = %nal_types(&data),
+                    "encoder: como saiu o quadro"
+                );
+            }
+
             self.ready.push_back(EncodedFrame {
                 keyframe: is_keyframe(&data),
                 data,
@@ -1325,6 +1340,43 @@ fn is_keyframe(data: &[u8]) -> bool {
     }
 
     false
+}
+
+/// Os tipos de NAL do quadro, na ordem, e o tamanho de cada um. Sem prefixo Annex-B a
+/// lista sai vazia — e é isso que se quer saber.
+fn nal_types(data: &[u8]) -> String {
+    let mut found = Vec::new();
+    let mut position = 0;
+
+    while position + 4 < data.len() {
+        if data[position] == 0 && data[position + 1] == 0 {
+            let prefix = if data[position + 2] == 1 {
+                3
+            } else if data[position + 2] == 0 && data[position + 3] == 1 {
+                4
+            } else {
+                position += 1;
+
+                continue;
+            };
+
+            if let Some(byte) = data.get(position + prefix) {
+                found.push((byte & 0x1F).to_string());
+            }
+
+            position += prefix;
+
+            continue;
+        }
+
+        position += 1;
+    }
+
+    if found.is_empty() {
+        return format!("sem Annex-B, começa com {:02x?}", &data[..data.len().min(8)]);
+    }
+
+    found.join(",")
 }
 
 fn start_error(error: ::windows::core::Error) -> EncoderError {

@@ -75,6 +75,8 @@ export class Sharing {
     statsGeneration = 0;
     ceilingBitrate = 0;
     cpuEncoderWarned = false;
+    liveAudio = true;
+    liveMuteCalls = false;
     readonly store: Store<SharingState>;
 
     constructor(app: App) {
@@ -227,9 +229,17 @@ export class Sharing {
     }
 
     async confirm(): Promise<void> {
+        const { active, source, quality, fps, audio, muteCalls } = this.store.state;
+
         this.close();
 
-        if (this.store.state.active) {
+        if (active && source && audio === this.liveAudio && muteCalls === this.liveMuteCalls) {
+            await this.swapScreen(source, quality, fps);
+
+            return;
+        }
+
+        if (active) {
             await this.stop();
         }
 
@@ -247,7 +257,11 @@ export class Sharing {
             return;
         }
 
+
         this.store.set({ starting: true });
+
+        this.liveAudio = audio;
+        this.liveMuteCalls = muteCalls;
 
         try {
             await broadcast.start(quality, Number(fps), source, audio, withoutCalls);
@@ -258,6 +272,33 @@ export class Sharing {
             this.app.log('broadcast.start.error', { message: Failure.message(failure) });
             this.paint(false);
             this.app.fail(`não deu para transmitir: ${Failure.message(failure)}`);
+        } finally {
+            this.store.set({ starting: false });
+        }
+    }
+
+    private async swapScreen(source: string, quality: string, fps: string): Promise<void> {
+        const broadcast = this.app.media.broadcast;
+
+        if (! broadcast) {
+            return;
+        }
+
+        this.setQuality(quality);
+        this.setFps(fps);
+
+        this.store.set({ starting: true });
+
+        try {
+            await broadcast.changeQuality(quality, Number(fps), source);
+            this.statsGeneration += 1;
+            this.ceilingBitrate = 0;
+            this.lastStats = null;
+            this.statsAt = 0;
+            this.app.toast('tela trocada');
+        } catch (failure) {
+            this.app.log('broadcast.swap.error', { message: Failure.message(failure) });
+            this.app.fail(`não deu para trocar a tela: ${Failure.message(failure)}`);
         } finally {
             this.store.set({ starting: false });
         }

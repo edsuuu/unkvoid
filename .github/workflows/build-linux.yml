@@ -3,10 +3,12 @@
 # isso o build roda naquela pasta e não no checkout do runner.
 name: build-linux
 
+# PAUSADO junto com o release.yml: um push na main com `native/**` mandaria o .deb para o
+# APT, e quem tem Linux atualizaria no meio do trabalho. Descomente o `push` quando acabar.
 on:
-  push:
-    branches: [main]
-    paths: ['native/**', '.github/workflows/build-linux.yml']
+  # push:
+  #   branches: [main]
+  #   paths: ['native/**', '.github/workflows/build-linux.yml']
   workflow_dispatch:
 
 permissions:

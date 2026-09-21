@@ -4,6 +4,7 @@ import { EntryScreen } from "entry.slint";
 import { HubScreen } from "hub.slint";
 import { RoomScreen } from "room.slint";
 import { Halo, OfflineScreen, UpdatingScreen } from "shell.slint";
+import { SettingsModal } from "settings.slint";
 
 export { Ui }
 export { ChannelRow, DeviceRow, MemberRow, MessageRow, PeerRow, ServerRow } from "state.slint";
@@ -13,10 +14,12 @@ export component AppWindow inherits Window {
     title: "Unkvoid";
     background: Skin.back;
     default-font-family: Skin.sans;
-    preferred-width: 1180px;
-    preferred-height: 760px;
-    min-width: 900px;
-    min-height: 620px;
+    // Os números do `expand_window` do Tauri, que o macOS também usa: com menos largura os
+    // cartões da Home quebram em outra ordem.
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 940px;
+    min-height: 600px;
 
     Halo { }
 
@@ -25,4 +28,8 @@ export component AppWindow inherits Window {
     if Ui.screen == "room" : RoomScreen { }
     if Ui.screen == "offline" : OfflineScreen { }
     if Ui.screen == "updating" : UpdatingScreen { }
+
+    // O modal mora acima das telas: ele cobre a janela inteira, como o `fixed inset-0` do
+    // React, e por isso não pode nascer dentro de nenhuma delas.
+    if Ui.settings-open : SettingsModal { }
 }

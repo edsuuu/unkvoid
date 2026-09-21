@@ -20,6 +20,8 @@ enum Theme {
     static let lilac2 = Color(hex: 0xAEB0FF)
     static let periwinkle = Color(hex: 0x9AA0E0)
     static let online = Color(hex: 0x34D399)
+    static let fair = Color(hex: 0xFACC15)
+    static let poor = Color(hex: 0xFB923C)
     static let offline = Color(hex: 0x4A4265)
     static let danger = Color(hex: 0xE2445C)
 
@@ -94,10 +96,12 @@ struct Glass: ViewModifier {
 /// monoespaçada; hoje a fonte é a do resto do app, e a monoespaçada só sobrou onde tem
 /// função — o campo do código da sala, onde ela separa 0 de O.
 struct LabelMono: ViewModifier {
+    var size: CGFloat = 10.5
+
     func body(content: Content) -> some View {
         content
-            .font(Theme.sans(10.5, .semibold))
-            .tracking(0.84)
+            .font(Theme.sans(size, .semibold))
+            .tracking(size * 0.08)
             .textCase(.uppercase)
             .foregroundStyle(Theme.inkDim)
     }
@@ -137,12 +141,16 @@ struct Field: ViewModifier {
 
 /// `.btn-primary`: o degradê da marca, de cima para baixo.
 struct PrimaryButton: ButtonStyle {
+    /// No rodapé de um modal o botão tem o tamanho do texto; num formulário ele ocupa a linha.
+    var wide = true
+    var font: Font = Theme.sans(14.5, .semibold)
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(Theme.sans(14.5, .semibold))
+            .font(font)
             .foregroundStyle(Theme.inkStrong)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
+            .frame(maxWidth: wide ? .infinity : nil)
+            .padding(.vertical, wide ? 12 : 9)
             .padding(.horizontal, 16)
             .background(
                 LinearGradient(colors: [Theme.brand, Theme.brandDark], startPoint: .top, endPoint: .bottom),
@@ -151,25 +159,69 @@ struct PrimaryButton: ButtonStyle {
             .brightness(configuration.isPressed ? -0.05 : 0)
             .scaleEffect(configuration.isPressed ? 0.99 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .pointerCursor()
+    }
+}
+
+/// `.btn-danger`: o vermelho translúcido do que apaga, expulsa ou bane.
+struct DangerButton: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Theme.sans(12.5, .medium))
+            .foregroundStyle(Theme.danger)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .background(Theme.danger.opacity(configuration.isPressed ? 0.2 : 0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Theme.danger.opacity(0.35), lineWidth: 1)
+            )
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .pointerCursor()
+    }
+}
+
+/// O `.plain` do sistema com o `cursor: pointer` que todo botão do React tem.
+struct PointerButton: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.75 : 1)
+            .pointerCursor()
+    }
+}
+
+extension ButtonStyle where Self == PointerButton {
+    static var pointer: PointerButton { PointerButton() }
+}
+
+extension View {
+    /// A mãozinha sobre o que clica. O macOS 14 não tem `pointerStyle`: é o `NSCursor` na
+    /// entrada e na saída do mouse. `set`, e não `push`/`pop`: o botão que some debaixo do
+    /// mouse (um modal que fecha) nunca avisa a saída, e a pilha ficaria com a mão para sempre.
+    func pointerCursor() -> some View {
+        onHover { inside in
+            (inside ? NSCursor.pointingHand : NSCursor.arrow).set()
+        }
     }
 }
 
 /// `.btn-ghost`: sem preenchimento, só a linha.
 struct GhostButton: ButtonStyle {
-    var font: Font = Theme.sans(13.5, .medium)
-    var padding = EdgeInsets(top: 11, leading: 16, bottom: 11, trailing: 16)
+    var font: Font = Theme.sans(12.5)
+    var padding = EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(font)
-            .foregroundStyle(Theme.inkBody)
+            .foregroundStyle(Theme.inkIcon)
             .padding(padding)
-            .background(Theme.fieldFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Theme.fieldLine, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Theme.lineStrong, lineWidth: 1)
             )
             .opacity(configuration.isPressed ? 0.8 : 1)
+            .pointerCursor()
     }
 }
 
@@ -197,6 +249,7 @@ struct IconButton: ButtonStyle {
             )
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .pointerCursor()
     }
 
     private var background: AnyShapeStyle {
@@ -274,8 +327,8 @@ extension View {
             .background(Theme.brand.opacity(0.16), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
-    func labelMono() -> some View {
-        modifier(LabelMono())
+    func labelMono(size: CGFloat = 10.5) -> some View {
+        modifier(LabelMono(size: size))
     }
 
     func field(focused: Bool = false, invalid: Bool = false) -> some View {
@@ -299,6 +352,13 @@ extension View {
 }
 
 extension Color {
+    /// `#rrggbb`, que é como o Laravel guarda a cor de um cargo.
+    var hexText: String {
+        let color = NSColor(self).usingColorSpace(.sRGB) ?? .white
+
+        return String(format: "#%02x%02x%02x", Int(color.redComponent * 255), Int(color.greenComponent * 255), Int(color.blueComponent * 255))
+    }
+
     init(hex: UInt32) {
         self.init(
             .sRGB,

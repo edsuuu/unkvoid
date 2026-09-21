@@ -9,11 +9,11 @@ não confie no que está marcado como não verificado.
 
 | O quê | Prova |
 |---|---|
-| `shared/core` — protocolo e cliente do SFU, sessão e lista da sala, cliente da API do Laravel, código de sala, estado do app, motivos de erro, mapa de teclas, ABI C | 72 testes, clippy limpo |
+| `shared/core` — protocolo e cliente do SFU, sessão, a sala viva da ABI, assistir sem GStreamer, API do Laravel com o mapa de rotas, permissões, portão do microfone, login com Google, preferências, mapa de teclas, ABI C | 92 + 6 testes, clippy limpo |
 | `shared/storage` — estado em disco na pasta do sistema, token cifrado em AES-256-GCM | 14 testes |
 | App Windows (Slint) | 4 testes, clippy limpo, **janela aberta e conferida aqui** |
 | App Linux (GTK) | 133 testes no contêiner, janela abrindo sob `xvfb`, **mídia ligada** |
-| App macOS (SwiftUI) | 13 testes, Entry/Hub/Room desenhando, barra de baixo com popovers |
+| App macOS (SwiftUI) | 21 testes em série; cobre o que o React tem — ver `native/apps/macos/README.md` |
 | Ponte Swift → Rust → SFU | `swift run` conecta e recebe resposta, rodado |
 | Tempo real do SFU (identify, subscribe, broadcast, presença) | 10 verificações em `sfu/check-realtime.mjs` |
 | Laravel publicando pelo SFU, sem Reverb | 123 testes, phpstan max, MySQL |
@@ -41,8 +41,68 @@ cd native && docker build -f apps/linux/Dockerfile -t unkvoid-linux . && docker 
 ```
 
 ### macOS
-Abre, conecta e desenha Entry, Hub e Room. **Não tem captura de tela** — o botão de
-compartilhar está no lugar certo e desligado, porque a captura não atravessa a ABI.
+O app nativo cobre o que o React tem (21/09/2026) — a lista inteira e o que falta estão em
+`native/apps/macos/README.md`. **Verificado aqui**, com a pilha local no ar:
+
+- a tela de uma pessoa desenhando na janela de outra, decodificada pelo
+  `AVSampleBufferDisplayLayer` (218 quadros em 8 s a 30 fps);
+- 23 testes do Swift em série (`./run.sh test`), entre eles: a Ada compartilha a tela pela
+  mesma ação do botão e a Grace recebe quadros H.264 inteiros, o primeiro um keyframe; duas pessoas na mesma sala se veem; a mensagem da
+  Ada chega ao socket da Grace pelo tempo real; a Ada fala na voz e a Grace recebe o som já
+  decodificado; um servidor é criado, ganha canal e cargo, muda de nome e é apagado; uma
+  mensagem é enviada, respondida, editada e apagada pelo `ChatRoom`; a preferência sobrevive a
+  reabrir o app;
+- 95 + 8 testes do núcleo (rotas, permissões, portão do microfone, login com Google, teclas,
+  relatório de erro, e a sessão substituída que **não** volta sozinha);
+- capturas da Home, do servidor e do modal de apelido conferidas a olho;
+- o `bundle.sh` gera o `Unkvoid.app` assinado ad-hoc.
+
+**Não verificado**, porque precisa de gente na frente: microfone e câmera de verdade (abrir o
+aparelho pede permissão na tela), o som saindo no fone, as teclas globais com um jogo na
+frente, o login com Google (precisa do navegador e de uma conta), e cada modal clicado à mão
+— o que está por baixo deles tem teste; o desenho de cada um, não.
+
+Um achado de caminho: o SFU cujos workers do mediasoup morrem continua respondendo `ok` no
+`/health`, e todo `join` dá 500 (`Channel closed … WORKER_CREATE_ROUTER`). Foi o estado em que
+o SFU local estava duas vezes nesta sessão. O `/health` devia conferir os workers.
+
+## O que o macOS fez e o Linux e o Windows replicam
+
+Tudo abaixo o dono pediu olhando o app do Mac, em 21/09/2026. O que é regra já está no
+`shared/core` e chega de graça; o que é desenho cada interface repete. A referência de medida é
+sempre o `native/apps/desktop/ui/style.css` do React, não outro app nativo.
+
+| O quê | Onde está no Mac | O que replicar |
+|---|---|---|
+| Só as **3 últimas salas** por código | `shared/core/src/app.rs` (`MAX_RECENT`, corta também na leitura) | nada: é só usar `recent_rooms()` |
+| Erro de uma tela **não segue** a pessoa para outra | `AppModel.screen` (`didSet` → `forgetErrors()`) | limpar os erros ao trocar de tela |
+| Janela padrão **1280×800**, piso **940×600** | `App.swift` | são os números do `expand_window` do Tauri; com menos largura os cartões da Home quebram em outra ordem |
+| Cartões da Home nas três regras do flex do React | `Hub/Home/ServersHome.swift` + `FlexWrap.swift` | `0 1 360` (mín. 260), `1 1 360` (mín. 260), `1 1 0` (mín. 280), vão de 12 |
+| `.btn-ghost` nas medidas do CSS | `Components/Theme.swift` (`GhostButton`) | 12,5 px sem peso, respiro 8/12, raio 10, texto `ink-icon`, fundo branco a 5%, linha `line-strong`; só o "Entrar" da tela de entrada é 13,5 médio com 16 de lado |
+| `label-mono` do "dono/membro" com **9,5** | `labelMono(size:)` | o React sobrescreve o tamanho nessa linha |
+| Engrenagem abre as configurações **direto**, no molde do Discord | `Hub/Modals/UserSettingsModal.swift`, `Hub/UserBar.swift` | painel que toma quase a janela toda (24 de margem), seções agrupadas à esquerda ("Configurações de usuário", "Configurações do app", Logs, Sair da conta), a seção aberta à direita com o título grande, "X / ESC" no canto, Esc fecha; o menuzinho da engrenagem deixou de existir |
+| Clique fora fecha **qualquer** modal ou menu | `Components/Chrome.swift` (`ModalFrame`, `ClosesOnOutsideClick`) | o clique no próprio botão que abriu continua sendo do botão, senão fecha e reabre |
+| Clicar no canal de voz põe a pessoa **embaixo do nome**, na hora | `Hub/ChannelColumn.swift` (`VoiceChannelRow`) | já feito no Windows e no Linux; fica aqui pela lista |
+| Trocar de servidor **não tem loading nos canais**, só nas mensagens | `shared/core/src/api.rs` (`known_tree`, `warm_trees`; a `tree` guarda o que busca) | o núcleo aquece a árvore de todos os servidores depois da lista; a interface desenha a `known_tree` na hora e pede a `tree` fresca por trás. Na ABI é `server` com `known: true`. O esqueleto só entra se a resposta passar de 150 ms |
+| O texto embaixo do nome é sempre **"Online"** | `Hub/UserBar.swift` | já tirado do `linux/src/user_bar.rs` e do `windows/ui/userbar.slint`; "Microfone aberto", "Mudo", "Surdo" e "Falando" não existem mais ali |
+| **Mutar e ensurdecer fora de uma sala** | `AppModel.mutedAtRest`, `deafened`, `openedRoom()` | os dois botões valem sempre; a escolha fica guardada, entra valendo na próxima sala e continua depois de sair |
+| Hover em cada botão da barra, ícone maior e que **cresce sob o mouse** | `Hub/UserBar.swift` (`SmallButton`, `Chevron`) | ícone 16,5 em caixa de 28, escala 1,12 no hover, fundo `row`; a setinha 12,5 em 18×28 |
+| **Cursor de mão** em tudo o que clica | `Components/Theme.swift` (`PointerButton`, `pointerCursor`) | é o `cursor: pointer` do React; aqui entrou no estilo dos botões, de uma vez |
+| Ações da mensagem num **"⋯"** com menu | `Hub/ChatPanel.swift` (`MessageRow.more`) | o botão tem lugar próprio no fim da linha (o texto quebra antes dele), aparece no hover e abre Responder / Editar / Apagar; a linha fica com 2 de respiro vertical e 10 entre mensagens, como no React |
+| O ícone de rede é um **sinal de 4 barrinhas**, e o hover mostra o ping | `shared/core/src/room.rs` (`signal_bars`), `Hub/UserBar.swift` (`SignalBars`) | o núcleo conta as barrinhas (até 80 ms = 4, até 150 = 3, até 250 = 2, acima = 1) e a ABI manda `room.ping` com `{ ms, bars }`; quem lê o `PING_MEASURED` direto chama `core_app::room::signal_bars`. Cores: 4 verde `#34D399`, 3 amarelo `#FACC15`, 2 laranja `#FB923C`, 1 vermelho (`danger`), sem medida ou reconectando = apagadas. O balão do hover é desenhado pelo app, instantâneo (o tooltip do sistema demora e não dispara sobre desenho), e só com o número: "42 ms" |
+| A prévia do modal de compartilhar **cresce com uma origem só** | `Room/ShareModal.swift` (`columns(for:)`) | 1 origem: cartão até 440 de largura, centralizado (cabe nos 340 do painel sem rolar); 2: meia linha cada; 3 ou mais: os cartões pequenos de 150. É o `auto-fit` do CSS do React |
+| O canal de voz clica na **linha inteira**, até a moldura | `Hub/ChannelColumn.swift` | o respiro da moldura entra na área de clique do botão; antes só a faixa do texto entrava na voz |
+| A **própria câmera é espelho**, e vira cartão no palco | `Platform/VideoSurface.swift` (`mirrored`), `shared/core/src/room.rs` | só o cartão `mine && camera`, e só no desenho: a sala recebe sem inverter |
+| **"Ver o que a sala vê"** funciona | `shared/core/src/room.rs` (`note_own_producer`) | o SFU não avisa quem produziu do próprio producer; o núcleo o registra no elenco ao abrir e ao fechar. Quem desenha pelos `tiles()` do núcleo ganha de graça |
+| **Desfocar o fundo** da câmera, o primeiro filtro | `Platform/BackgroundBlur.swift`, `Platform/Camera.swift`, preferência `blurBackground` dentro de `unkvoid:voice` | antes do encoder, para a sala inteira ver. No Mac é Vision + Core Image; no Windows e no Linux falta a peça que recorta a pessoa. O botão mora em Configurações → Voz e vídeo → "Câmera" |
+| **"Conectando…"** antes de "Voz conectada" | `Hub/UserBar.swift` (`joining`) | o bloco da voz aparece já no clique, em amarelo, com o sinal apagado e a câmera desabilitada, e vira "Voz conectada" quando o SFU responde |
+| O **fone cortado fica por cima** do microfone cortado | `Hub/ChannelColumn.swift` | na linha da própria pessoa no canal de voz: surdo mostra só o fone, senão mudo mostra o microfone. Só vale para a própria linha — a presença (SFU → Laravel) só carrega `muted`; mostrar nos outros pede mudar o contrato |
+| Carregar mensagens antigas é **esqueleto**, não texto | `Hub/ChatPanel.swift` (`older`) | o "carregando…" do topo da lista saiu; não há mais texto de carregamento no app |
+| Sessão `replaced`/`kicked` **não reconecta** | `shared/core/src/session.rs`, `room.rs` | nada no núcleo; a interface mostra o motivo e volta para a Home |
+
+O ping da barra da sala ficou com o nome que o Linux e o Windows já usavam
+(`local::PING_MEASURED`, o número puro em `data`); a `Room` do núcleo o repassa para a ABI como
+`room.ping` com `{ "ms": … }`.
 
 ## O buraco que atrasou tudo, e o que já foi tapado
 

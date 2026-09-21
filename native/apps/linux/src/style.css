@@ -1,158 +1,708 @@
-/* O escuro do app, nas classes que as telas pedem. Cor aqui, nunca no Rust. */
+/*
+ * A mesma paleta do React (`apps/desktop/ui/style.css`), tom por tom: o app tem de parecer o
+ * mesmo programa nos dois lugares. Cor mora aqui, nunca no Rust.
+ *
+ * O que o GTK não tem e o desenho pede: `backdrop-filter`. O vidro do React é branco a 4%
+ * sobre o fundo borrado; aqui ele é branco a 4% sobre o fundo parado, que é o mais perto
+ * possível sem desfoque.
+ */
 
 window {
-    background: #0b0d12;
-    color: #e6e9f0;
+    /* O halo violeta do design: é ele que faz o vidro dos cartões aparecer. */
+    background-color: #06050a;
+    background-image: radial-gradient(circle farthest-side at 50% 0%, rgba(86, 63, 214, 0.18), rgba(6, 5, 10, 0) 70%);
+    color: #ece9f3;
+    font-family: Archivo, Helvetica, Arial, sans-serif;
+    font-size: 14px;
 }
 
+/* ---- texto ---- */
+
 .title {
-    font-size: 17px;
-    font-weight: 700;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+.headline {
+    font-size: 19px;
+    font-weight: 600;
 }
 
 .strong {
+    font-size: 15px;
     font-weight: 600;
+}
+
+.body {
+    color: #e6e1f2;
+    font-size: 13px;
 }
 
 .muted {
-    color: #9aa3b5;
+    color: #a89fc0;
+    font-size: 13px;
+}
+
+.dim {
+    color: #8a80a6;
     font-size: 12px;
+}
+
+/* O rótulo acima do campo: maiúsculas, miúdo e espaçado. */
+.label-mono {
+    color: #8a80a6;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.mono {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
 }
 
 .danger {
-    color: #ff6b6b;
-    font-size: 12px;
+    color: #e2445c;
+    font-size: 12.5px;
 }
 
+/* ---- superfícies ---- */
+
+/*
+ * A folga de dentro é `padding`, nunca margem: `set_margin_*` empurra por fora da borda, e
+ * o cartão sai com o contorno colado no texto — que não é o `p-8` do React.
+ */
 .card {
-    background: #131722;
-    border: 1px solid #1f2637;
-    border-radius: 16px;
-    min-width: 340px;
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 22px;
+    box-shadow: 0 30px 80px -40px rgba(0, 0, 0, 0.9);
+    padding: 32px;
 }
 
-.toolbar {
-    background: #131722;
-    border: 1px solid #1f2637;
-    border-radius: 14px;
-    padding: 8px 12px;
+/* As colunas do hub: o mesmo vidro dos cartões, com o canto e a folga menores. */
+.panel {
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 16px;
+    padding: 12px;
 }
 
-.stage {
-    background: #0e121b;
-    border: 1px solid #1f2637;
-    border-radius: 16px;
-    padding: 24px;
+.stage-card {
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 24px;
+    box-shadow: 0 30px 80px -40px rgba(0, 0, 0, 0.95);
+    padding: 36px;
 }
+
+/* O quadrado violeta que segura o desenho no vazio da sala. */
+.icon-tile {
+    background-color: rgba(138, 124, 245, 0.15);
+    border: 1px solid rgba(138, 124, 245, 0.3);
+    border-radius: 20px;
+}
+
+.tile {
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+}
+
+/* ---- linhas de lista ---- */
 
 .list {
-    background: transparent;
+    background-color: transparent;
 }
 
-.list row {
+.list > row {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    padding: 0;
+}
+
+/* `.row-item`: a linha larga de clicar — servidor, canal, conversa, aba da Home. */
+button.wide {
+    background-color: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 9px 11px;
+}
+
+button.wide:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+button.wide.on,
+button.wide.on:hover {
+    background-color: rgba(138, 124, 245, 0.12);
+    border-color: rgba(138, 124, 245, 0.32);
+}
+
+/* A linha de quem está na sala: `rounded-[10px] p-2` do React. */
+.person {
     border-radius: 10px;
+    padding: 8px;
 }
 
-.list row:selected {
-    background: #1d2536;
+.person.mine {
+    background-color: rgba(52, 211, 153, 0.1);
+}
+
+.list > row:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+.list > row:selected {
+    background-color: rgba(138, 124, 245, 0.12);
+    border-color: rgba(138, 124, 245, 0.32);
+    color: #ece9f3;
+}
+
+/* ---- campos ---- */
+
+/*
+ * `min-height` de 21 px porque o React usa `line-height: 1.5` em 14 px, e o GTK mede a
+ * linha pela fonte (uns 17 px). Sem isto o campo sai 6 px mais baixo que o do navegador.
+ */
+entry,
+passwordentry {
+    background-color: rgba(255, 255, 255, 0.03);
+    background-image: none;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    box-shadow: none;
+    caret-color: #8a7cf5;
+    color: #ffffff;
+    font-size: 14px;
+    min-height: 21px;
+    padding: 11px 13px;
+    transition: border-color 160ms ease;
+}
+
+entry:focus,
+passwordentry:focus,
+entry:focus-within,
+passwordentry:focus-within {
+    border-color: rgba(138, 124, 245, 0.5);
+    box-shadow: none;
+    outline: none;
+}
+
+entry > text,
+passwordentry > text {
+    background-color: transparent;
+    color: #ffffff;
+}
+
+entry > text selection,
+passwordentry > text selection {
+    background-color: rgba(138, 124, 245, 0.45);
+    color: #ffffff;
+}
+
+entry placeholder,
+passwordentry placeholder {
+    color: #6f6889;
+}
+
+/* ---- botões ---- */
+
+/*
+ * O tema do sistema dá a todo botão e campo uma altura mínima própria, e ela **soma** com a
+ * padding escrita aqui: sem zerar, cada botão sai uns 12 px mais alto que o do React. Quem
+ * precisa de tamanho fixo (os quadrados de ícone) o pede de novo, logo abaixo.
+ */
+button,
+menubutton > button,
+entry,
+passwordentry {
+    min-height: 0;
+    min-width: 0;
+}
+
+button {
+    background-image: none;
+    box-shadow: none;
+    outline: none;
+    text-shadow: none;
+    transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
 }
 
 button.primary {
-    background: #4c6ef5;
+    background-color: #7a67f0;
+    background-image: linear-gradient(to bottom, #8a7cf5, #5a3fd6);
+    border: none;
+    border-radius: 12px;
     color: #ffffff;
-    border-radius: 10px;
-    padding: 8px 14px;
+    font-size: 14px;
     font-weight: 600;
+    min-height: 21px;
+    padding: 12px 16px;
+}
+
+button.primary:hover {
+    background-image: linear-gradient(to bottom, #9a8df7, #6a4fe0);
+}
+
+button.primary:disabled {
+    opacity: 0.45;
 }
 
 button.ghost {
-    background: #1a2030;
-    color: #e6e9f0;
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 10px;
-    padding: 8px 14px;
+    color: #cfc9de;
+    font-size: 12.5px;
+    padding: 8px 12px;
+}
+
+button.ghost:hover {
+    border-color: rgba(138, 124, 245, 0.5);
+    color: #ffffff;
 }
 
 button.danger {
-    background: #c92a2a;
-    color: #ffffff;
+    background-color: rgba(226, 68, 92, 0.12);
+    border: 1px solid rgba(226, 68, 92, 0.35);
     border-radius: 10px;
-    padding: 8px 14px;
+    color: #e2445c;
+    font-size: 12.5px;
+    padding: 8px 12px;
+}
+
+button.danger:hover {
+    background-color: rgba(226, 68, 92, 0.2);
+}
+
+/* O "Parar" da barra da sala: o React o desenha um pouco mais fechado que o resto. */
+button.danger.stop {
+    border-radius: 11px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 8px 12px;
+}
+
+/* Ação secundária que pesa (sair, excluir): contorno quieto, sem o vermelho do perigo. */
+button.quiet {
+    background-color: transparent;
+    border: 1px solid rgba(154, 160, 224, 0.28);
+    border-radius: 10px;
+    color: #9aa0e0;
+    font-size: 12.5px;
+    padding: 9px 13px;
+}
+
+button.quiet:hover {
+    border-color: rgba(154, 160, 224, 0.55);
+    color: #ffffff;
 }
 
 button.link {
-    background: transparent;
-    color: #9aa3b5;
-    padding: 4px;
+    background-color: transparent;
+    border: none;
+    color: #9a9cff;
+    font-size: 12.5px;
+    padding: 4px 6px;
+    text-decoration: underline;
 }
 
+button.link:hover {
+    color: #ffffff;
+}
+
+/* O botão branco do Google, do jeito que a marca pede. */
+button.google {
+    background-color: #ffffff;
+    border: none;
+    border-radius: 12px;
+    color: #1f1f1f;
+    font-size: 14px;
+    font-weight: 600;
+    min-height: 21px;
+    padding: 12px 16px;
+}
+
+button.google:hover {
+    background-color: #f1f1f4;
+}
+
+/* O quadrado de 34 do React: ícone dentro, nada de rótulo. */
+button.icon {
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 11px;
+    color: #cfc9de;
+    min-height: 34px;
+    min-width: 34px;
+    padding: 0;
+}
+
+button.icon:hover {
+    border-color: rgba(138, 124, 245, 0.5);
+}
+
+button.icon.on,
+button.icon.on:hover {
+    background-color: #7a67f0;
+    background-image: linear-gradient(to bottom, #8a7cf5, #5a3fd6);
+    border-color: rgba(138, 124, 245, 0.6);
+}
+
+button.icon.off,
+button.icon.off:hover {
+    background-color: rgba(226, 68, 92, 0.12);
+    border-color: rgba(226, 68, 92, 0.35);
+}
+
+button.icon.hangup,
+button.icon.hangup:hover {
+    background-color: #e2445c;
+    border-color: transparent;
+}
+
+button.icon.small {
+    border-radius: 9px;
+    min-height: 30px;
+    min-width: 30px;
+}
+
+button.icon:disabled {
+    opacity: 0.45;
+}
+
+/* Os tres controles da barra de baixo sao chapados: sem contorno, o fundo so aparece ao
+   passar o mouse. E o `btn-icon` dessa barra no React, que e outro botao que o da sala. */
+button.icon.bar,
+menubutton.bar > button {
+    background-color: transparent;
+    border: none;
+    border-radius: 8px;
+    box-shadow: none;
+    min-height: 28px;
+    min-width: 28px;
+    padding: 0;
+}
+
+button.icon.bar:hover,
+menubutton.bar > button:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+    border-color: transparent;
+}
+
+/* Fechado e aviso so na cor do desenho: a caixa continua sem fundo. */
+button.icon.bar.off,
+button.icon.bar.off:hover {
+    background-color: transparent;
+    border-color: transparent;
+}
+
+button.icon.bar.on,
+button.icon.bar.on:hover {
+    background-color: rgba(138, 124, 245, 0.22);
+    background-image: none;
+    border-color: transparent;
+}
+
+/* As duas animacoes do React: `rise` nos cartoes e `fade-in` no que chega no chat. O GTK
+   nao anima `transform` em CSS, entao sobra a opacidade — que e a parte que se ve. */
+@keyframes rise {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.rise {
+    animation: rise 220ms ease-out;
+}
+
+.fade-in {
+    animation: rise 180ms ease-out;
+}
+
+/* A janela das configuracoes: o mesmo fundo do app, nao o do sistema. */
+window.settings,
+window.settings > * {
+    background-color: #100d1a;
+    color: #ece9f3;
+}
+
+/* A coluna das secoes, mais escura que o resto — como no Mac. */
+.settings-rail {
+    background-color: rgba(0, 0, 0, 0.18);
+    padding: 22px 14px;
+}
+
+button.section {
+    background-color: transparent;
+    border: none;
+    border-radius: 10px;
+    box-shadow: none;
+    min-height: 34px;
+    padding: 0 10px;
+}
+
+button.section:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+button.section.on {
+    background-color: rgba(138, 124, 245, 0.16);
+    color: #ffffff;
+}
+
+button.section.danger {
+    color: #e2445c;
+}
+
+/* O "X" do canto: um circulo vazado, como no Mac. */
+button.escape {
+    background-color: transparent;
+    border: 1.5px solid #8a80a6;
+    border-radius: 17px;
+    box-shadow: none;
+    min-height: 34px;
+    min-width: 34px;
+    padding: 0;
+}
+
+button.escape:hover {
+    border-color: #ffffff;
+}
+
+/* Os controles da barra crescem um tanto ao passar o mouse, como no Mac. */
+button.icon.bar:hover,
+menubutton.arrow > button:hover {
+    transform: scale(1.12);
+}
+
+/* O "+" das secoes de canal: menor que o botao de icone comum. */
+button.icon.tiny {
+    border-radius: 7px;
+    min-height: 20px;
+    min-width: 20px;
+}
+
+/* Um canal de voz e uma caixa, nao uma linha: quem esta dentro aparece embaixo do nome. */
+.voice-channel {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 10px 12px;
+}
+
+.voice-channel:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+.voice-channel.on,
+.voice-channel.on:hover {
+    background-color: rgba(138, 124, 245, 0.10);
+    border-color: rgba(138, 124, 245, 0.30);
+}
+
+/* Uma linha do menu da engrenagem: o `MENU_ITEM` do React. */
+button.menu-item {
+    background-color: transparent;
+    border: none;
+    border-radius: 9px;
+    box-shadow: none;
+    min-height: 32px;
+    padding: 0 10px;
+}
+
+button.menu-item:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+.lilac {
+    color: #aeb0ff;
+}
+
+/* A setinha ao lado do mic e do som: sem caixa, só o desenho. */
+menubutton.arrow > button,
+button.arrow {
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    min-height: 28px;
+    min-width: 18px;
+    padding: 0;
+}
+
+menubutton.arrow > button:hover,
+button.arrow:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+}
+
+/* ---- pílulas ---- */
+
+/* O código da sala no meio de uma frase: mesma cor do chip da barra, sem ser botão. */
+.code-chip {
+    background-color: rgba(138, 124, 245, 0.16);
+    border-radius: 7px;
+    color: #aeb0ff;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    padding: 3px 8px;
+}
+
+/* O código da sala, para clicar e copiar. */
 button.chip {
-    background: #1a2030;
-    color: #c8cfdd;
+    background-color: rgba(138, 124, 245, 0.16);
+    border: none;
+    border-radius: 7px;
+    color: #aeb0ff;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    padding: 3px 8px;
+}
+
+button.chip:hover {
+    color: #ffffff;
+}
+
+/* O tempo na sala e a contagem de quem está dentro. */
+.pill {
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 999px;
-    padding: 4px 12px;
-    font-family: monospace;
+    color: #cfc9de;
+    padding: 5px 12px;
+}
+
+menubutton.pill {
+    padding: 5px 12px 5px 6px;
+}
+
+/* O `MenuButton` desenha um botão por dentro, e é ele que traria a caixa do tema por cima
+   da pílula. A pílula é a de fora; a de dentro não existe. */
+menubutton.pill > button {
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+}
+
+menubutton.pill:hover {
+    border-color: rgba(138, 124, 245, 0.5);
 }
 
 .badge {
     border-radius: 999px;
-    padding: 2px 8px;
     font-size: 10px;
-    font-weight: 700;
+    font-weight: 600;
+    padding: 2px 8px;
 }
 
+.badge.brand {
+    background-color: rgba(138, 124, 245, 0.15);
+    border: 1px solid rgba(138, 124, 245, 0.3);
+    color: #aeb0ff;
+    font-family: "IBM Plex Mono", monospace;
+}
+
+/* O "AO VIVO" do React: vermelho cheio, miúdo e espaçado. */
 .badge.live {
-    background: #c92a2a;
+    background-color: #e2445c;
+    border-radius: 5px;
     color: #ffffff;
-}
-
-.badge.warn {
-    background: #33261a;
-    color: #ffa94d;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 8.5px;
+    letter-spacing: 1px;
+    padding: 3px 6px;
 }
 
 .badge.mine {
-    background: #1d3a2a;
-    color: #69db7c;
+    background-color: rgba(52, 211, 153, 0.12);
+    color: #34d399;
 }
 
-entry,
-passwordentry {
-    background: #0e121b;
-    border: 1px solid #263048;
-    border-radius: 10px;
-    padding: 8px 10px;
-    color: #e6e9f0;
+/* A bolinha verde de "conectado". */
+.dot-online {
+    background-color: #34d399;
+    border-radius: 999px;
+    min-height: 7px;
+    min-width: 7px;
 }
+
+/* ---- avatar ---- */
+
+/* O tamanho da letra não está aqui: ele acompanha o diâmetro, e quem o calcula é o Rust. */
+.avatar {
+    background-color: #7a67f0;
+    background-image: linear-gradient(to bottom, #8a7cf5, #5a3fd6);
+    border-radius: 999px;
+    color: #ffffff;
+    font-weight: 700;
+}
+
+/* Quem não é você não ganha o violeta: ele marca o que é seu na tela. */
+.avatar.flat {
+    background-color: rgba(255, 255, 255, 0.08);
+    background-image: none;
+    color: #cfc9de;
+    font-weight: 600;
+}
+
+/* ---- barras ---- */
 
 .userbar {
-    background: #131722;
-    border: 1px solid #1f2637;
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 16px;
+    padding: 8px 12px;
+}
+
+.toolbar {
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 16px;
+    padding: 8px 12px;
+}
+
+/* A linha fina dos dois lados do "ou". */
+.rule {
+    background-color: rgba(255, 255, 255, 0.09);
+    min-height: 1px;
+}
+
+scrollbar {
+    background-color: transparent;
+    border: none;
+}
+
+scrollbar slider {
+    background-color: rgba(255, 255, 255, 0.12);
+    border: none;
+    border-radius: 999px;
+    min-width: 6px;
+}
+
+scrollbar slider:hover {
+    background-color: rgba(255, 255, 255, 0.2);
+}
+
+/* O `popover` do React: sem bico, `p-2` por dentro, canto de 14 e a sombra funda. */
+popover > contents {
+    background-color: rgba(16, 13, 26, 0.96);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 14px;
-    padding: 6px 10px;
+    box-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.95);
+    color: #ece9f3;
+    padding: 8px;
 }
 
-button.icon {
-    background: #1a2030;
-    color: #e6e9f0;
+popover {
+    background-color: transparent;
+}
+
+tooltip {
+    background-color: rgba(16, 13, 26, 0.98);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 10px;
-    padding: 6px 10px;
-    min-width: 28px;
-}
-
-button.arrow {
-    background: transparent;
-    color: #9aa3b5;
-    padding: 2px 4px;
-    min-width: 18px;
-}
-
-button.off {
-    color: #ff6b6b;
-}
-
-.tile {
-    background: #0b0d12;
-    border: 1px solid #1f2637;
-    border-radius: 12px;
-    padding: 6px;
+    color: #ece9f3;
 }

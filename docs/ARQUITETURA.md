@@ -117,20 +117,22 @@ mídia, e ela já era nativa antes da decisão — captura na GPU, encoder por h
 RTP+SRTP (`plain.rs`) e recepção (`receiver.rs`). O caminho sem WebRTC já existia, escrito
 para o Linux.
 
-### A ponte para Swift e C#
+### A ponte para o Swift
 
-Uma ABI C de seis funções, em `shared/core/src/ffi.rs`. **Só o macOS passa por ela** — o
-Linux (GTK) e o Windows (Slint) são Rust e usam o `core` como crate, sem JSON no meio e sem
-liberar ponteiro à mão.
+Uma ABI C pequena, em `shared/core/src/ffi.rs` — o que ela tem, ação por ação, está em
+`docs/CONTRATO.md`. **Só o macOS passa por ela**: o Linux (GTK) e o Windows (Slint) são Rust
+e usam o `core` como crate, sem JSON no meio e sem liberar ponteiro à mão.
 
 | Função | O quê |
 |---|---|
 | `unkvoid_core_new` / `unkvoid_core_free` | cria e libera o núcleo |
 | `unkvoid_connect` | abre o socket do SFU |
 | `unkvoid_call` | uma ação do SFU. **Bloqueia** até a resposta — nunca na thread que desenha |
-| `unkvoid_app` | as decisões do app: tela, sala, conta, servidores, mensagens. Também bloqueia no que fala com o servidor |
-| `unkvoid_next_event` | o próximo evento da fila, sem bloquear |
-| `unkvoid_string_free` | devolve o que o núcleo alocou — uma vez só |
+| `unkvoid_app` | as decisões do app: tela, sala, voz, compartilhar, conta, servidores, mensagens. Também bloqueia no que fala com o servidor |
+| `unkvoid_next_event` | o próximo aviso da fila (sala, chat, presença), sem bloquear |
+| `unkvoid_next_media` | o próximo quadro H.264 ou bloco de som do que se assiste, para uma thread só da interface |
+| `unkvoid_speak` / `unkvoid_show` | o microfone e a câmera que a interface captura, entrando no núcleo (PCM; `IOSurface`, sem cópia) |
+| `unkvoid_string_free` / `unkvoid_bytes_free` | devolvem o que o núcleo alocou — uma vez só |
 
 O `Handle` é seguro para uso concorrente: tudo atrás de `Mutex`, e as funções tomam `&`. A
 interface consulta eventos num timer **enquanto** uma ação está em voo, e com `&mut` isso
@@ -147,8 +149,8 @@ que a pessoa digitou. Ver `shared/core/src/failure.rs`.
 | Caminho | O que faz |
 |---|---|
 | `shared/capture/` | captura de tela e do som do sistema, um arquivo por sistema (`macos.rs`, `windows.rs`, `windows_audio.rs`, `linux.rs`, `linux_audio.rs`) |
-| `shared/media/` | encoder por hardware (`windows.rs`, `macos.rs`), Opus (`audio.rs`), envio RTP/SRTP para o SFU (`plain.rs`) e recepção (`receiver.rs`) |
-| `shared/core/` | **a lógica, compartilhada pelas quatro interfaces**: protocolo e cliente do SFU, sessão e lista de quem está na sala, cliente da API do Laravel, código de sala, estado do app, motivos de erro, mapa de teclas e a ABI C |
+| `shared/media/` | encoder por hardware (`windows.rs`, `macos.rs`), Opus (`audio.rs`), envio RTP/SRTP para o SFU (`plain.rs`), recepção (`receiver.rs`) e o caminho de volta do RTP: quadro H.264 inteiro e Opus → PCM (`unpack.rs`) |
+| `shared/core/` | **a lógica, compartilhada pelas quatro interfaces**: protocolo e cliente do SFU, sessão e lista de quem está na sala, a sala viva de quem vem pela ABI (`room.rs`: publicar, assistir, microfone, câmera), assistir sem GStreamer (`watching.rs`), cliente da API do Laravel, código de sala, estado do app, motivos de erro, mapa de teclas e a ABI C |
 | `shared/storage/` | o estado em disco na pasta do sistema, com o token cifrado em AES-256-GCM |
 | `apps/macos/` | Swift + SwiftUI |
 | `apps/windows/` | Rust + Slint, sem ponte |

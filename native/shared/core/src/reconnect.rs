@@ -31,14 +31,18 @@ impl Backoff {
             return None;
         }
 
-        let ceiling = FIRST_MS.saturating_mul(1_u64 << self.attempt).min(CEILING_MS);
+        let ceiling = FIRST_MS
+            .saturating_mul(1_u64 << self.attempt)
+            .min(CEILING_MS);
         let half = ceiling / 2;
 
         self.attempt += 1;
 
         // Metade fixa e metade sorteada: garante um mínimo de espera e ainda assim
         // espalha as voltas.
-        Some(Duration::from_millis(half + rand::thread_rng().gen_range(0..=half)))
+        Some(Duration::from_millis(
+            half + rand::thread_rng().gen_range(0..=half),
+        ))
     }
 
     /// Uma conexão que deu certo zera a conta.
@@ -60,13 +64,24 @@ mod tests {
             delays.push(delay.as_millis() as u64);
         }
 
-        assert_eq!(delays.len(), MAX_ATTEMPTS as usize, "gave up at the wrong point");
+        assert_eq!(
+            delays.len(),
+            MAX_ATTEMPTS as usize,
+            "gave up at the wrong point"
+        );
 
         // A primeira espera fica entre meio segundo e um segundo.
-        assert!((500..=1_000).contains(&delays[0]), "first delay: {}", delays[0]);
+        assert!(
+            (500..=1_000).contains(&delays[0]),
+            "first delay: {}",
+            delays[0]
+        );
 
         // Nenhuma passa do teto, mesmo na oitava tentativa.
-        assert!(delays.iter().all(|delay| *delay <= CEILING_MS), "above the ceiling: {delays:?}");
+        assert!(
+            delays.iter().all(|delay| *delay <= CEILING_MS),
+            "above the ceiling: {delays:?}"
+        );
 
         // A última é bem maior que a primeira: a curva subiu de verdade.
         assert!(delays.last().unwrap() > &delays[0]);
@@ -102,11 +117,19 @@ mod tests {
     #[test]
     fn two_machines_do_not_come_back_at_the_same_instant() {
         let delays: Vec<u64> = (0..50)
-            .map(|_| Backoff::default().next_delay().expect("first delay").as_millis() as u64)
+            .map(|_| {
+                Backoff::default()
+                    .next_delay()
+                    .expect("first delay")
+                    .as_millis() as u64
+            })
             .collect();
 
         let distinct: std::collections::HashSet<_> = delays.iter().collect();
 
-        assert!(distinct.len() > 1, "every delay came out the same: no jitter");
+        assert!(
+            distinct.len() > 1,
+            "every delay came out the same: no jitter"
+        );
     }
 }

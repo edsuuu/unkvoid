@@ -166,7 +166,10 @@ impl Storage {
     /// bateria acabando, sistema desligando — deixaria um JSON pela metade, e o app abriria
     /// sem token e sem preferência nenhuma.
     fn flush(&self) -> Result<()> {
-        let body = serde_json::to_string_pretty(&*self.lock())?;
+        // O cadeado fica até a troca: duas gravações ao mesmo tempo dividem o mesmo arquivo
+        // ao lado, e uma trocaria por cima o que a outra ainda estava escrevendo.
+        let state = self.lock();
+        let body = serde_json::to_string_pretty(&*state)?;
         let temporary = self.path.with_extension("json.tmp");
 
         fs::write(&temporary, body)
@@ -194,6 +197,27 @@ mod tests {
         let storage = Storage::open_at(dir.path()).expect("open");
 
         (storage, dir)
+    }
+
+    /// O modal de compartilhar grava a qualidade e os quadros por segundo quase juntos, de
+    /// threads diferentes: nenhuma das duas gravações pode falhar nem sumir.
+    #[test]
+    fn writing_from_many_threads_at_once_loses_nothing() {
+        let (storage, dir) = storage();
+
+        std::thread::scope(|scope| {
+            for index in 0..16 {
+                let storage = &storage;
+
+                scope.spawn(move || storage.set(&format!("key-{index}"), json!(index)).expect("set"));
+            }
+        });
+
+        let reopened = Storage::open_at(dir.path()).expect("reopen");
+
+        for index in 0..16 {
+            assert_eq!(reopened.get(&format!("key-{index}")), Some(json!(index)));
+        }
     }
 
     #[test]

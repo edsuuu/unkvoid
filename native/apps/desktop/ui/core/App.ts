@@ -45,7 +45,7 @@ export class App {
     static readonly NAME_KEY = 'unkvoid:name';
     static readonly ROOM_KEY = 'unkvoid:last-room';
     static readonly RECENT_ROOMS_KEY = 'unkvoid:recent-rooms';
-    static readonly MAX_RECENT_ROOMS = 5;
+    static readonly MAX_RECENT_ROOMS = 3;
     static readonly WEBRTC_RELOAD_KEY = 'unkvoid:webrtc-reload';
     static readonly SERVER: string = import.meta.env?.VITE_SERVER ?? localStorage.getItem('server') ?? 'https://unkvoid.com';
 
@@ -412,7 +412,7 @@ export class App {
         try {
             const saved: unknown = JSON.parse(localStorage.getItem(App.RECENT_ROOMS_KEY) ?? '[]');
 
-            return Array.isArray(saved) ? saved.filter((code): code is string => typeof code === 'string' && RoomCode.isValid(code)) : [];
+            return Array.isArray(saved) ? saved.filter((code): code is string => typeof code === 'string' && RoomCode.isValid(code)).slice(0, App.MAX_RECENT_ROOMS) : [];
         } catch {
             return [];
         }

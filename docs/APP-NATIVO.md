@@ -15,6 +15,7 @@ A parte cara de um app de voz e tela não é a tela: é a mídia. E **ela já é
 | Encoder de hardware | `shared/media` | pronto |
 | Envio RTP + SRTP | `shared/media/plain.rs` (`PlainSender`) | pronto |
 | Recepção RTP + SRTP | `shared/media/receiver.rs` | pronto — já é o caminho do Linux |
+| RTP → quadro H.264 inteiro, Opus → PCM | `shared/media/unpack.rs` | pronto — é o que o macOS decodifica com o `AVSampleBufferDisplayLayer`, e o que o Windows vai entregar ao Media Foundation |
 | Áudio Opus | `shared/media/audio.rs` | pronto |
 
 O `receiver.rs` existe justamente para "o app sem WebRTC na janela". Ou seja: o caminho que o

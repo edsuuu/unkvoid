@@ -16,12 +16,13 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 thiserror.workspace = true
 futures-util = "0.3.34"
 tokio-tungstenite = "0.30.0"
 rand = "0.8"
 # O mesmo do `src-tauri`: uma entrada só no lock, e TLS sem OpenSSL do sistema.
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls"] }
 storage = { path = "../storage" }
 # Transmitir é decisão, não desenho: qual origem, qual taxa, quando republicar. Por
 # isso captura e mídia entram aqui, e não em cada pasta de sistema.
