@@ -53,8 +53,12 @@ export class Room {
     }
 
     /**
-     * Três caminhos: retomar uma sessão órfã (mídia intacta), encerrar a sessão anterior
-     * da mesma pessoa, ou criar uma do zero.
+     * Três caminhos: retomar a sessão (mídia intacta), encerrar a sessão anterior da mesma
+     * pessoa, ou criar uma do zero.
+     *
+     * A retomada não espera a sessão ficar órfã. O app mede o socket de 5 em 5 s e percebe
+     * a queda antes do heartbeat daqui; exigir a carência aberta fazia essa volta virar
+     * entrada nova, que derruba a antiga e a mídia com ela.
      *
      * Quem prova ser a mesma pessoa é a `resumeKey`, e não o `peerId`: o id a sala
      * inteira recebe no `peerJoined`, então aceitá-lo como identidade deixaria qualquer
@@ -76,10 +80,17 @@ export class Room {
         // assinou para outra pessoa. Vira entrada nova, que substitui a antiga.
         const stranger = tokened && previous?.userId !== identity.userId;
 
-        if (previous?.isOrphaned() && options.resume && !stranger) {
+        if (previous && options.resume && !stranger) {
+            const staleSocket = previous.isOrphaned() ? null : previous.socket;
+
             this.cancelEviction(previous.id);
             previous.attachSocket(socket);
-            this.broadcast('peerReconnected', { peerId: previous.id }, previous.id);
+
+            // Só volta quem a sala viu cair: na troca com a sessão de pé ninguém recebeu
+            // `peerConnectionLost`.
+            if (!staleSocket) {
+                this.broadcast('peerReconnected', { peerId: previous.id }, previous.id);
+            }
 
             if (tokened) {
                 this.applyCan(previous, identity.can);
@@ -92,6 +103,16 @@ export class Room {
                 [...previous.consumers.values()].map((consumer) => consumer.producerId),
             )) {
                 this.announceWatchers(producerId);
+            }
+
+            if (staleSocket) {
+                console.log(
+                    `[INFO] socket swapped room=${this.id} sub=${previous.userId} peer=${previous.id} ip=${previous.ip}`,
+                );
+                // `terminate`, e não `close`: o TCP deste socket já sumiu, e o aperto de mão
+                // do fechamento ficaria 30 s esperando uma resposta que não vem. Sem
+                // `replaced` também: a pessoa não entrou de outro lugar, é ela mesma voltando.
+                staleSocket.terminate();
             }
 
             return { peer: previous, resumed: true };

@@ -24,8 +24,8 @@ no laço de eventos está desfazendo o projeto.
 
 `Http/Server.ts` (um servidor HTTP + um WebSocketServer em `/sfu`) → `Http/Kernel.ts` despacha
 `{id, action, data}` → `Requests/*` valida → `Controllers/*` age → `Resources/*` responde
-`{id, ok, data}`. Evento empurrado para o cliente é `{event, data}`, sem `id`. Só `join` é
-`guest: true`; qualquer outra ação sem `session.peer` é 401.
+`{id, ok, data}`. Evento empurrado para o cliente é `{event, data}`, sem `id`. Só `join` e `ping`
+são `guest: true`; qualquer outra ação sem `session.peer` é 401.
 
 `Services/`: `Room` (peers, transports, broadcast, graça de 30 s, kick, mute),
 `Peer` (transports, producers, consumers, `can`, `serverMuted`, ip), `RoomRegistry` (um worker

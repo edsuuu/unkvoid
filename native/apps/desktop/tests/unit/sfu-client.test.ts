@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SfuClient } from '../../ui/core/SfuClient.ts';
 
@@ -294,6 +294,183 @@ describe('cliente do SFU, ao retomar a sessão', () => {
         timer.mockRestore();
 
         expect(delays).toEqual([500, 2000]);
+    });
+});
+
+describe('cliente do SFU, sinalização viva: o navegador não avisa socket morto, então o app pergunta', () => {
+    type Sent = { id: number; action: string; data: { resumeKey?: string | null; resume?: boolean } };
+
+    class FakeSocket {
+        static opened: FakeSocket[] = [];
+        static pingMode: 'answer' | 'silent' | 'refuse' = 'answer';
+        static unreachable = false;
+
+        sent: Sent[] = [];
+        closed = false;
+        onopen: (() => void) | null = null;
+        onmessage: ((message: { data: string }) => void) | null = null;
+        onclose: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+
+        constructor() {
+            FakeSocket.opened.push(this);
+
+            if (! FakeSocket.unreachable) {
+                void Promise.resolve().then(() => this.onopen?.());
+            }
+        }
+
+        send(text: string): void {
+            const message = JSON.parse(text) as Sent;
+
+            this.sent.push(message);
+
+            if (message.action === 'join') {
+                this.reply({ id: message.id, ok: true, data: { peerId: 'me', name: 'Edsu', resumeKey: 'key-1', resumed: Boolean(message.data.resume), peers: [], can: [] } });
+            }
+
+            if (message.action === 'ping' && FakeSocket.pingMode !== 'silent') {
+                this.reply(FakeSocket.pingMode === 'answer' ? { id: message.id, ok: true, data: {} } : { id: message.id, ok: false, error: 'unknown action' });
+            }
+        }
+
+        reply(message: object): void {
+            this.onmessage?.({ data: JSON.stringify(message) });
+        }
+
+        close(): void {
+            this.closed = true;
+        }
+
+        pings(): number {
+            return this.sent.filter(message => message.action === 'ping').length;
+        }
+    }
+
+    const enter = async () => {
+        const client = new SfuClient();
+        const events: string[] = [];
+
+        client.on('diagnostic', detail => events.push(detail.event));
+        client.on('reconnecting', () => events.push('reconnecting'));
+        client.on('reconnected', detail => events.push(`reconnected:${detail.resumed}`));
+        await client.connect('ws://sfu', { room: 'sala', name: 'Edsu', installId: 'i' });
+
+        return { client, events, socket: FakeSocket.opened.at(-1) as FakeSocket };
+    };
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.stubGlobal('WebSocket', FakeSocket);
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+        FakeSocket.opened.length = 0;
+        FakeSocket.pingMode = 'answer';
+        FakeSocket.unreachable = false;
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+    });
+
+    it('depois de entrar sai um ping a cada 5 s, e o lastRttMs anda junto', async () => {
+        const { client, events, socket } = await enter();
+
+        client.lastRttMs = null;
+        await vi.advanceTimersByTimeAsync(4_999);
+        expect(socket.pings(), 'nada antes dos 5 s').toBe(0);
+
+        await vi.advanceTimersByTimeAsync(10_001);
+
+        expect(socket.pings()).toBe(3);
+        expect(client.lastRttMs).not.toBeNull();
+        expect(events).not.toContain('reconnecting');
+        client.disconnect();
+    });
+
+    it('ping sem resposta em 10 s: larga o socket e retoma a sessão com a resumeKey', async () => {
+        const { client, events, socket } = await enter();
+
+        client.recvTransport = { close() {} };
+        FakeSocket.pingMode = 'silent';
+        await vi.advanceTimersByTimeAsync(14_999);
+        expect(socket.closed, 'dentro do prazo o socket fica').toBe(false);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(socket.closed).toBe(true);
+        expect(events.slice(-3)).toEqual(['socket.silent', 'socket.close', 'reconnecting']);
+
+        socket.onclose?.();
+        expect(events.filter(event => event === 'reconnecting').length, 'o close atrasado do socket largado não conta de novo').toBe(1);
+
+        FakeSocket.pingMode = 'answer';
+        await vi.advanceTimersByTimeAsync(500);
+
+        const fresh = FakeSocket.opened[1];
+        const join = fresh.sent.find(message => message.action === 'join');
+
+        expect(join?.data.resumeKey).toBe('key-1');
+        expect(join?.data.resume).toBe(true);
+        expect(events.at(-1)).toBe('reconnected:true');
+
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(fresh.pings(), 'o relógio volta no socket novo').toBe(1);
+        client.disconnect();
+    });
+
+    it('resposta de erro prova que o socket vive: SFU antigo, que não conhece ping, não derruba ninguém', async () => {
+        const { client, events, socket } = await enter();
+
+        FakeSocket.pingMode = 'refuse';
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(socket.pings()).toBe(6);
+        expect(socket.closed).toBe(false);
+        expect(events).not.toContain('reconnecting');
+        expect(events.filter(event => event === 'sfu.ping.error').length, 'a mesma recusa entra no log uma vez só').toBe(1);
+        client.disconnect();
+    });
+
+    it('o ping não se empilha: com um no ar, o relógio pula a vez', async () => {
+        const { client, socket } = await enter();
+
+        FakeSocket.pingMode = 'silent';
+        await vi.advanceTimersByTimeAsync(14_000);
+
+        expect(socket.pings()).toBe(1);
+        client.disconnect();
+    });
+
+    it('o relógio do ping para ao sair, ao ser expulso e quando o socket fecha', async () => {
+        const left = await enter();
+        const kicked = await enter();
+        const dropped = await enter();
+
+        left.client.disconnect();
+        kicked.socket.reply({ event: 'kicked', data: { reason: 'expulso' } });
+        FakeSocket.unreachable = true;
+        dropped.socket.onclose?.();
+        await vi.advanceTimersByTimeAsync(20_000);
+
+        expect(FakeSocket.opened.length, 'só quem caiu abre socket novo').toBe(4);
+        expect(FakeSocket.opened.map(socket => socket.pings())).toEqual([0, 0, 0, 0]);
+        dropped.client.disconnect();
+    });
+
+    it('reconexão que falha no token fecha o socket que abriu, em vez de deixar um vivo por tentativa', async () => {
+        const { client, socket } = await enter();
+
+        client.identity = () => Promise.reject(new Error('o servidor não respondeu'));
+        socket.onclose?.();
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(FakeSocket.opened[1].closed).toBe(true);
+        expect(FakeSocket.opened[1].sent).toEqual([]);
+
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(FakeSocket.opened.length, 'a tentativa seguinte continua marcada').toBe(3);
+        client.disconnect();
     });
 });
 

@@ -136,6 +136,8 @@ export class Sharing {
             await broadcast.changeQuality(quality, Number(fps));
             this.statsGeneration += 1;
             this.ceilingBitrate = 0;
+            this.lastStats = null;
+            this.statsAt = 0;
             this.app.toast(`transmitindo em ${quality === '2160' ? '4K' : `${quality}p`} a ${fps} fps`);
         } catch (failure) {
             this.setQuality(previous.quality);
@@ -279,6 +281,7 @@ export class Sharing {
         }
 
         this.store.set({ active: on });
+        this.app.media.refreshPeople();
 
         if (on) {
             return;

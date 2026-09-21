@@ -771,7 +771,7 @@ export class Hub {
                 this.tree = { ...tree, voice: { ...tree.voice, [id]: event === 'joined' ? [...people, { user_id: userId, name, sources: [] }] : people } };
                 this.publish();
 
-                if (this.voice.channel?.id === id && this.app.media.sfu) {
+                if (this.voice.channel?.id === id) {
                     this.syncVoiceSources();
                 }
             });
@@ -780,32 +780,48 @@ export class Hub {
 
     syncVoiceSources(): void {
         const channel = this.voice.channel;
-        const peers = this.app.media.sfu?.peers;
+        const peers = this.voice.store.state.joining ? undefined : this.app.media.sfu?.peers;
         const tree = this.tree;
+        const user = this.user;
 
-        if (! tree || ! channel || ! peers || ! tree.channels.some(item => item.id === channel.id)) {
+        if (! tree || ! channel || ! user || ! tree.channels.some(item => item.id === channel.id)) {
             this.publish();
 
             return;
         }
 
-        const people: VoicePerson[] = [];
+        const muted = this.voice.muted || this.voice.serverMuted;
+        const people: VoicePerson[] = peers
+            ? []
+            : [{ user_id: user.id, name: user.name, sources: [], muted }, ...(tree.voice?.[channel.id] ?? []).filter(person => person.user_id !== user.id)];
 
-        for (const peer of peers.values()) {
+        for (const peer of peers?.values() ?? []) {
             if (! peer.self && ! peer.userId?.startsWith('user:')) {
                 continue;
             }
 
             people.push({
-                user_id: peer.self ? this.user!.id : Number(peer.userId!.slice('user:'.length)),
-                name: peer.self ? this.user!.name : peer.name,
+                user_id: peer.self ? user.id : Number(peer.userId!.slice('user:'.length)),
+                name: peer.self ? user.name : peer.name,
                 sources: peer.producers.map(producer => producer.source),
-                muted: peer.self ? this.voice.muted || this.voice.serverMuted : peer.producers.some(producer => producer.source === 'mic' && producer.paused),
+                muted: peer.self ? muted : peer.producers.some(producer => producer.source === 'mic' && producer.paused),
             });
         }
 
         this.tree = { ...tree, voice: { ...tree.voice, [channel.id]: people } };
         this.publish();
+    }
+
+    dropFromVoice(channelId: string): void {
+        const tree = this.tree;
+        const people = tree?.voice?.[channelId];
+
+        if (! tree || ! people) {
+            return;
+        }
+
+        this.tree = { ...tree, voice: { ...tree.voice, [channelId]: people.filter(person => person.user_id !== this.user?.id) } };
+        this.store.set({ tree: this.tree });
     }
 
     me(): Member | null {
@@ -824,13 +840,7 @@ export class Hub {
                 return;
             }
 
-            const focusedRoom = this.store.state.focusedRoom;
-
-            if (this.voice.channel && this.voice.channel.id !== channel.id) {
-                await this.voice.leave();
-            }
-
-            this.publish({ home: false, stageOpen: true, focusedRoom });
+            this.publish({ home: false, stageOpen: true });
             await this.voice.join(channel);
 
             return;

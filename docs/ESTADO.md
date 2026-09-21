@@ -5,7 +5,7 @@ O que o projeto é e como instalar estão no [README](../README.md); o contrato 
 que ainda não foi feito: o que foi escrito sem rodar em hardware, o que falta construir e as
 perguntas que esperam o dono. O histórico das sessões saiu do repositório e continua no git.
 
-Última revisão: 19/09/2026 (versão 0.0.39).
+Última revisão: 20/09/2026 (versão 0.0.40).
 
 ## Escrito, mas nunca rodou em hardware
 
@@ -113,6 +113,11 @@ perguntas que esperam o dono. O histórico das sessões saiu do repositório e c
   no fluxo (a ordem está em [AUTO-UPDATE.md](AUTO-UPDATE.md#de-onde-sai-a-release)) e
   autenticação em dois fatores na conta do GitHub. Até lá o Windows avisa que o editor é
   desconhecido.
+- **Borda amarela no Windows 10.** O Windows Graphics Capture só desliga a borda do Windows 11
+  em diante; no 10 a saída é capturar o monitor pelo DXGI Desktop Duplication (sem borda, quadro
+  na GPU, backend que a `windows-capture` já traz). Nada implementado: o porquê, os custos (só
+  monitor, cursor desenhado à mão, acesso que cai) e as fases estão em
+  [BORDA-AMARELA.md](BORDA-AMARELA.md).
 - **Áudio do Discord vazando no Windows.** A exclusão é por nome de executável. Em 0.0.38
   entraram os clientes alternativos mais comuns (Vesktop, ArmCord/Legcord, WebCord). Continua sem
   conserto: o Discord aberto **no navegador** (entra pela árvore do Chrome, e nome não distingue),

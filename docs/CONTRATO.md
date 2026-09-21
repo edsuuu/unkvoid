@@ -71,6 +71,7 @@ Ações novas (mesmo envelope `{id, action, data}`):
 | `pauseProducer` | `{ producerId }` | `{ status: 'paused' }` |
 | `resumeProducer` | `{ producerId }` | `{ status: 'resumed' }` |
 | `closeConsumer` | `{ consumerId }` | `{ status: 'closed' }` |
+| `ping` | `{}` | `{}` — vale sem ter entrado em sala |
 
 `Source` passa a ser `screen | screenAudio | mic | camera`. `producePlain` aceita os
 quatro. `newProducer`, `producerClosed`, `consume`, `consumePlain` e `describePeers`
@@ -97,6 +98,20 @@ Na entrada nova, quem está na carência de reconexão fica de fora da lista. Na
 a que já tinha e reproduz o que perdeu na queda (`peerJoined`, `peerLeft`, `newProducer`,
 `producerClosed`, `producerPaused`/`Resumed`, `peerConnectionLost`/`Reconnected`). Sem quem
 caiu junto, ele não saberia dizer se a pessoa saiu ou só está voltando.
+
+**Sinalização viva é medida dos dois lados.** O servidor manda ping de WebSocket a cada 15 s
+e derruba quem não responde. O navegador responde sozinho, mas não conta ao app que o socket
+morreu: em 20/09/2026 o TCP da sinalização sumiu com a mídia (UDP) inteira, a carência
+expirou, a mídia foi destruída e o app só soube 3,5 min depois. Por isso o app manda `ping` a
+cada 5 s; sem resposta em 10 s ele larga o socket e reconecta com a `resumeKey`. Qualquer
+resposta, até erro, prova que o socket vive — só o silêncio derruba.
+
+**A retomada vale também com a sessão ainda de pé.** O app costuma perceber a queda antes do
+heartbeat do servidor. `join` com `resume: true` e a `resumeKey` de uma sessão que ainda não
+ficou órfã troca o socket dela (`resumed: true`, mesma `peerId`, mídia intacta), e o socket
+velho é fechado sem abrir carência nem avisar a sala. Antes isso virava entrada nova, que
+derrubava a antiga e a mídia com ela. A regra da conta continua: token de outro `sub` não
+retoma.
 
 **Na retomada vale o `can` do token novo.** O app pede token antes de cada `join`, inclusive
 na reconexão, e quem decide permissão é o Laravel: se nos 30 s de carência a pessoa perdeu
@@ -410,7 +425,12 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
   servidor, **não** entra na voz, e mostra o código de convite para mandar. Últimas salas
   é o `GET /api/servers`: abrir uma mostra quem está em cada voz, e entrar é um clique. A
   sala por código sem login continua como está.
-- Entrar numa voz liga o microfone **mutado**; desmutar é da pessoa.
+- Entrar numa voz liga o microfone **aberto**; quem prefere entrar calado marca "Silenciar ao
+  entrar" nas configurações. (Até a 0.0.39 o padrão era mutado.)
+- O clique no canal de voz vale na hora: a pessoa já aparece na lista do canal e a barra de voz
+  mostra "Conectando…" enquanto o token, o SFU e o microfone acontecem por trás. Se a entrada
+  falhar, ela sai da lista. O ícone de mudo da própria pessoa na lista do canal segue o estado
+  local (mutar, ensurdecer, mudo do servidor), sem esperar ninguém.
 - Modo servidor: trilho de servidores | canais (texto e voz, quem está em cada voz) |
   centro (chat ou palco) | membros com cargos. Barra de voz embaixo: mutar, ensurdecer,
   câmera, **compartilhar tela (só aqui)**, sair.
@@ -451,7 +471,7 @@ Tauri converte para o snake_case do Rust. Mudou um comando, mude aqui e em `ui/c
 | `sfu_offer` | `source` (`screen`, `screenAudio`, `mic`, `camera`) | `{rtpParameters, srtpParameters}` | o corpo do `producePlain` |
 | `use_sfu` | `address, serverKey` | — | aponta o remetente para a porta do `producePlain`; repetir o mesmo endereço não faz nada |
 | `renew_sfu_key` | — | — | chave SRTP nova para republicar depois de o SFU reiniciar |
-| `set_shortcuts` | `bindings: [{action, accelerator}]` | `{registered, failed}` | atalhos do sistema (mutar, ensurdecer, falar apertando); cada tecla disparada chega no evento `shortcut` com `{action, pressed}`. No Windows a ação `talk` não passa pelo registro de atalho do sistema, que engole a tecla (o jogo deixa de recebê-la) e não enxerga o mouse: o Rust consulta o estado da tecla a cada 20 ms, e `Mouse3`, `Mouse4` e `Mouse5` valem como tecla de falar. O formato do `accelerator` é o mesmo: modificadores + código (`Control+KeyV`, `KeyV`, `Mouse4`) |
+| `set_shortcuts` | `bindings: [{action, accelerator}]` | `{registered, failed}` | atalhos do sistema (mutar, ensurdecer, falar apertando); cada tecla disparada chega no evento `shortcut` com `{action, pressed}`. No Windows **nenhuma** ação passa pelo registro de atalho do sistema, que engole a tecla (o jogo deixa de recebê-la) e não enxerga o mouse: o Rust consulta o estado das teclas a cada 20 ms e só avisa a interface, então a tecla chega ao jogo e ao app ao mesmo tempo. Vale para `mute`, `deafen` e `talk`; modificador a mais não impede (quem corre com Shift no jogo ainda muta), e `Mouse3`, `Mouse4` e `Mouse5` valem como tecla de falar. No macOS e no Linux continua o registro do sistema. O formato do `accelerator` é o mesmo: modificadores + código (`Control+KeyV`, `KeyV`, `Mouse4`) |
 | `start_voice` / `stop_voice` / `set_voice_muted` | — / — / `muted` | — | o mic pelo Rust (Linux). De `start_voice` a `stop_voice` sai o evento `voice:level` com `{ level }` (RMS linear de 0 a 1, o maior de cada janela de 100 ms): é o que a detecção de voz da interface mede, já que ali o áudio não passa pela janela. Sai **mesmo mutado** — é ele que reabre o portão. Mutado, o Rust manda silêncio em Opus em vez de nenhum pacote: sem pacote o relógio de 30 s do SFU mataria o producer |
 | `start_camera` / `stop_camera` | `device` / — | — | a câmera pelo Rust (Linux) |
 | `watch_key` | — | chave SRTP em base64 | a chave de recepção do `consumePlain` |

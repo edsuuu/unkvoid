@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
+#[cfg(not(target_os = "windows"))]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 /// Uma tecla que a pessoa escolheu e o que ela faz.
@@ -32,7 +33,7 @@ fn fire(app: &AppHandle, action: &str, pressed: bool) {
     }
 }
 
-/// Registra os atalhos no sistema, trocando os de antes.
+/// Liga os atalhos, trocando os de antes.
 ///
 /// Atalho de sistema, e não `keydown` na janela, porque mutar o microfone só serve se
 /// funcionar com o jogo na frente — e aí o app não recebe tecla nenhuma.
@@ -40,48 +41,52 @@ fn fire(app: &AppHandle, action: &str, pressed: bool) {
 /// Uma tecla recusada (outro programa já a tomou, ou o sistema não conhece o nome) não
 /// derruba as outras: cada uma é tentada por si, e a resposta diz quais valeram.
 ///
-/// No Windows o falar-apertando não passa por aqui, e sim por `talk`: o registro de
-/// atalho de lá (`RegisterHotKey`) engole a tecla — com tecla solta para falar, ela morria
-/// no jogo — e não conhece botão de mouse.
+/// No Windows nenhuma ação é registrada no sistema, todas vão para a vigia de `polling`: o
+/// registro de lá (`RegisterHotKey`) engole a tecla — a bind apertada sem querer no meio
+/// do jogo morria antes de chegar nele — e não conhece botão de mouse.
 #[tauri::command]
 pub fn set_shortcuts(app: AppHandle, bindings: Vec<Binding>) -> Result<Registered, String> {
-    let manager = app.global_shortcut();
-
-    manager.unregister_all().map_err(|error| error.to_string())?;
-
-    #[cfg(target_os = "windows")]
-    talk::stop();
-
+    let bindings = bindings.into_iter().filter(|binding| !binding.accelerator.trim().is_empty());
     let mut result = Registered::default();
 
-    for binding in bindings {
-        if binding.accelerator.trim().is_empty() {
-            continue;
-        }
+    #[cfg(target_os = "windows")]
+    {
+        let mut watched = Vec::new();
 
-        #[cfg(target_os = "windows")]
-        if binding.action == talk::ACTION {
-            match talk::watch(&app, &binding.accelerator) {
-                Ok(()) => result.registered.push(binding.action),
-                Err(error) => {
-                    tracing::warn!(%error, accelerator = %binding.accelerator, "atalho: a tecla de falar não pôde ser vigiada");
+        for binding in bindings {
+            match polling::parse(&binding.accelerator) {
+                Some(keys) => {
+                    result.registered.push(binding.action.clone());
+                    watched.push((binding.action, keys));
+                }
+                None => {
+                    tracing::warn!(accelerator = %binding.accelerator, "atalho: tecla sem virtual-key conhecida");
                     result.failed.push(binding.action);
                 }
             }
-
-            continue;
         }
 
-        let action = binding.action.clone();
-        let handle = app.clone();
+        polling::watch(&app, watched)?;
+    }
 
-        match manager.on_shortcut(binding.accelerator.as_str(), move |_app, _shortcut, event| {
-            fire(&handle, &action, event.state() == ShortcutState::Pressed);
-        }) {
-            Ok(()) => result.registered.push(binding.action),
-            Err(error) => {
-                tracing::warn!(%error, accelerator = %binding.accelerator, "atalho recusado pelo sistema");
-                result.failed.push(binding.action);
+    #[cfg(not(target_os = "windows"))]
+    {
+        let manager = app.global_shortcut();
+
+        manager.unregister_all().map_err(|error| error.to_string())?;
+
+        for binding in bindings {
+            let action = binding.action.clone();
+            let handle = app.clone();
+
+            match manager.on_shortcut(binding.accelerator.as_str(), move |_app, _shortcut, event| {
+                fire(&handle, &action, event.state() == ShortcutState::Pressed);
+            }) {
+                Ok(()) => result.registered.push(binding.action),
+                Err(error) => {
+                    tracing::warn!(%error, accelerator = %binding.accelerator, "atalho recusado pelo sistema");
+                    result.failed.push(binding.action);
+                }
             }
         }
     }
@@ -89,18 +94,15 @@ pub fn set_shortcuts(app: AppHandle, bindings: Vec<Binding>) -> Result<Registere
     Ok(result)
 }
 
-/// A tecla de falar no Windows: em vez de registrar atalho, uma thread pergunta ao sistema
-/// se a tecla está para baixo (`GetAsyncKeyState`). Perguntar não consome nada: o jogo
-/// continua recebendo a tecla, e botão de mouse é tecla como outra qualquer.
+/// Os atalhos no Windows: em vez de registrar no sistema, uma thread pergunta se as teclas
+/// estão para baixo (`GetAsyncKeyState`). Perguntar não consome nada: o jogo continua
+/// recebendo a tecla, e botão de mouse é tecla como outra qualquer.
 ///
 /// ponytail: com o jogo rodando como administrador o Windows esconde o estado das teclas de
-/// um processo sem elevação, e a tecla de falar para de responder enquanto o jogo está na
+/// um processo sem elevação, e os atalhos param de responder enquanto o jogo está na
 /// frente (o Discord tem o mesmo limite). A saída é rodar o app elevado.
 #[cfg(any(target_os = "windows", test))]
-mod talk {
-    #[cfg(target_os = "windows")]
-    pub const ACTION: &str = "talk";
-
+mod polling {
     const SHIFT: &[u16] = &[0x10];
     const CONTROL: &[u16] = &[0x11];
     const ALT: &[u16] = &[0x12];
@@ -117,8 +119,8 @@ mod talk {
     }
 
     /// `Control+Shift+KeyV`, `KeyV`, `Mouse4`: modificadores, e a tecla por último. `None`
-    /// para o que não tem virtual-key conhecida — a ação vai em `failed`, e a interface
-    /// deixa o microfone aberto.
+    /// para o que não tem virtual-key conhecida — a ação vai em `failed`, e se for a de
+    /// falar a interface deixa o microfone aberto.
     pub fn parse(accelerator: &str) -> Option<Keys> {
         let mut parts: Vec<&str> = accelerator.split('+').map(str::trim).collect();
         let key = virtual_key(parts.pop()?)?;
@@ -138,8 +140,8 @@ mod talk {
     }
 
     /// O `KeyboardEvent.code` que a interface manda, na mesma tabela (a do teclado
-    /// americano) que o plugin usa para as outras ações: a tecla que vale é a que tem
-    /// aquela letra, como no mutar e no ensurdecer.
+    /// americano) que o plugin usa no macOS e no Linux: a tecla que vale é a que tem
+    /// aquela letra, igual nos três sistemas.
     fn virtual_key(code: &str) -> Option<u16> {
         let numbered = |prefix: &str| code.strip_prefix(prefix)?.parse::<u16>().ok();
 
@@ -195,14 +197,36 @@ mod talk {
     }
 
     /// Apertado é a tecla e todos os modificadores pedidos para baixo. Modificador a mais
-    /// não impede: a pessoa segura Shift para correr no jogo e fala ao mesmo tempo.
+    /// não impede: a pessoa segura Shift para correr no jogo e fala, ou muta, ao mesmo tempo.
     pub fn held(keys: &Keys, down: impl Fn(u16) -> bool) -> bool {
         down(keys.key)
             && keys.modifiers.iter().all(|alternatives| alternatives.iter().any(|&key| down(key)))
     }
 
+    /// Uma volta da vigia: confere cada ação com a leitura de agora, guarda em `pressed` e
+    /// devolve só o que mudou. A interface quer a borda: tecla segurada não pode virar uma
+    /// fila de "mutar" a cada 20 ms.
+    pub fn edges<'watched>(
+        watched: &'watched [(String, Keys)],
+        pressed: &mut [bool],
+        down: impl Fn(u16) -> bool,
+    ) -> Vec<(&'watched str, bool)> {
+        let mut changed = Vec::new();
+
+        for ((action, keys), pressed) in watched.iter().zip(pressed) {
+            let now = held(keys, &down);
+
+            if now != *pressed {
+                *pressed = now;
+                changed.push((action.as_str(), now));
+            }
+        }
+
+        changed
+    }
+
     #[cfg(target_os = "windows")]
-    pub use watcher::{stop, watch};
+    pub use watcher::watch;
 
     #[cfg(target_os = "windows")]
     mod watcher {
@@ -214,17 +238,18 @@ mod talk {
         use tauri::AppHandle;
         use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
-        use super::{ACTION, held, parse};
+        use super::super::fire;
+        use super::{Keys, edges};
 
-        /// Vinte milissegundos: o atraso que a voz ganha na descida da tecla, e 50
-        /// perguntas por segundo de meia dúzia de teclas não custam nada.
+        /// Vinte milissegundos: o atraso que a voz ganha na descida da tecla, e 50 voltas
+        /// por segundo perguntando por três atalhos não custam nada.
         const POLL: Duration = Duration::from_millis(20);
 
-        /// A thread só existe enquanto há tecla de falar para vigiar. Ninguém a espera ao
-        /// fechar o app: ela não segura nada, e morre com o processo.
+        /// Uma thread só, para todas as ações, e só enquanto há atalho para vigiar. Ninguém
+        /// a espera ao fechar o app: ela não segura nada, e morre com o processo.
         static WATCH: Mutex<Option<(Arc<AtomicBool>, JoinHandle<()>)>> = Mutex::new(None);
 
-        pub fn stop() {
+        fn stop() {
             let watch = WATCH.lock().unwrap_or_else(PoisonError::into_inner).take();
 
             if let Some((stopping, thread)) = watch {
@@ -233,40 +258,47 @@ mod talk {
                 // Esperar custa até uma volta, e garante que a vigia velha não solta um
                 // evento atrasado por cima da nova.
                 if thread.join().is_err() {
-                    tracing::warn!("atalho: a vigia da tecla de falar morreu em pânico");
+                    tracing::warn!("atalho: a vigia das teclas morreu em pânico");
                 }
             }
         }
 
-        pub fn watch(app: &AppHandle, accelerator: &str) -> Result<(), String> {
-            let keys = parse(accelerator).ok_or("tecla sem virtual-key conhecida")?;
-
+        /// Troca a vigia de antes por esta lista de `(ação, teclas)`; lista vazia só para.
+        pub fn watch(app: &AppHandle, watched: Vec<(String, Keys)>) -> Result<(), String> {
             stop();
+
+            if watched.is_empty() {
+                return Ok(());
+            }
 
             let stopping = Arc::new(AtomicBool::new(false));
             let stopped = Arc::clone(&stopping);
             let app = app.clone();
 
             let thread = std::thread::Builder::new()
-                .name("unkvoid-talk-key".into())
+                .name("unkvoid-shortcut-keys".into())
                 .spawn(move || {
-                    let mut pressed = false;
+                    // O bit alto é "para baixo agora", e num `i16` ele é o sinal.
+                    let down = |key: u16| unsafe { GetAsyncKeyState(i32::from(key)) } < 0;
+                    let mut pressed = vec![false; watched.len()];
+
+                    // O que já está para baixo quando a vigia começa não é aperto: a interface
+                    // grava a tecla na descida, e sem esta leitura jogada fora escolher a tecla
+                    // de mutar já mutava, com o dedo ainda nela.
+                    edges(&watched, &mut pressed, down);
 
                     while !stopped.load(Ordering::Relaxed) {
-                        // O bit alto é "para baixo agora", e num `i16` ele é o sinal.
-                        let now = held(&keys, |key| unsafe { GetAsyncKeyState(i32::from(key)) } < 0);
-
-                        if now != pressed {
-                            pressed = now;
-                            super::super::fire(&app, ACTION, pressed);
+                        for (action, now) in edges(&watched, &mut pressed, down) {
+                            fire(&app, action, now);
                         }
 
                         std::thread::sleep(POLL);
                     }
 
-                    // Trocar de tecla com ela apertada não pode deixar o microfone aberto.
-                    if pressed {
-                        super::super::fire(&app, ACTION, false);
+                    // Trocar de tecla com ela apertada não pode deixar o microfone aberto:
+                    // uma leitura de "nada para baixo" solta o que estava apertado.
+                    for (action, now) in edges(&watched, &mut pressed, |_| false) {
+                        fire(&app, action, now);
                     }
                 })
                 .map_err(|error| error.to_string())?;
@@ -279,7 +311,18 @@ mod talk {
 
     #[cfg(test)]
     mod tests {
-        use super::{Keys, held, parse};
+        use super::{Keys, edges, held, parse};
+
+        fn watching(bindings: &[(&str, &str)]) -> Vec<(String, Keys)> {
+            bindings
+                .iter()
+                .map(|&(action, accelerator)| (action.to_owned(), parse(accelerator).expect("atalho válido")))
+                .collect()
+        }
+
+        fn with(down: &'static [u16]) -> impl Fn(u16) -> bool {
+            move |key| down.contains(&key)
+        }
 
         #[test]
         fn the_accelerator_becomes_the_keys_to_watch() {
@@ -311,7 +354,6 @@ mod talk {
         #[test]
         fn held_needs_the_key_and_every_asked_modifier_and_ignores_the_extra_ones() {
             let keys = parse("Control+Super+Mouse4").expect("atalho válido");
-            let with = |down: &'static [u16]| move |key: u16| down.contains(&key);
 
             assert!(held(&keys, with(&[0x05, 0x11, 0x5B])));
             assert!(held(&keys, with(&[0x05, 0x11, 0x5C])), "a tecla Windows da direita também vale");
@@ -324,6 +366,62 @@ mod talk {
             let bare = parse("KeyV").expect("atalho válido");
 
             assert!(held(&bare, with(&[0x56, 0x10, 0x11])), "tecla solta com o jogo segurando Shift e Ctrl");
+        }
+
+        #[test]
+        fn each_action_fires_on_its_own_edges_and_a_held_key_does_not_repeat() {
+            let watched = watching(&[("mute", "Control+Shift+KeyM"), ("talk", "Mouse4")]);
+            let mut pressed = vec![false; watched.len()];
+
+            assert!(edges(&watched, &mut pressed, with(&[])).is_empty(), "nada apertado, nada a dizer");
+
+            assert_eq!(edges(&watched, &mut pressed, with(&[0x05])), [("talk", true)]);
+            assert!(edges(&watched, &mut pressed, with(&[0x05])).is_empty(), "tecla segurada não repete");
+
+            assert_eq!(
+                edges(&watched, &mut pressed, with(&[0x05, 0x11, 0x10, 0x4D])),
+                [("mute", true)],
+                "mutar no meio da fala não mexe na tecla de falar",
+            );
+            assert!(edges(&watched, &mut pressed, with(&[0x05, 0x11, 0x10, 0x4D])).is_empty());
+
+            assert_eq!(edges(&watched, &mut pressed, with(&[0x05, 0x11, 0x10])), [("mute", false)]);
+            assert_eq!(edges(&watched, &mut pressed, with(&[])), [("talk", false)]);
+        }
+
+        /// É com esta leitura que a vigia para: o que estava apertado sobe, o resto fica quieto.
+        #[test]
+        fn a_reading_with_nothing_down_releases_only_what_was_pressed() {
+            let watched = watching(&[("mute", "Control+KeyM"), ("deafen", "Control+KeyD"), ("talk", "KeyV")]);
+            let mut pressed = vec![false; watched.len()];
+
+            assert_eq!(edges(&watched, &mut pressed, with(&[0x11, 0x4D, 0x56])), [("mute", true), ("talk", true)]);
+            assert_eq!(edges(&watched, &mut pressed, |_| false), [("mute", false), ("talk", false)]);
+            assert!(edges(&watched, &mut pressed, |_| false).is_empty());
+        }
+
+        /// O `RegisterHotKey` casava o conjunto exato de modificadores; a consulta não, porque
+        /// modificador a mais não impede. Então um atalho contido em outro dispara junto com
+        /// ele: `Control+Shift+KeyM` muta **e** ensurdece. Quem não quer isso escolhe teclas
+        /// que não se contêm.
+        #[test]
+        fn a_binding_contained_in_another_fires_along_with_it() {
+            let watched = watching(&[("mute", "Control+KeyM"), ("deafen", "Control+Shift+KeyM")]);
+            let mut pressed = vec![false; watched.len()];
+
+            assert_eq!(edges(&watched, &mut pressed, with(&[0x11, 0x4D])), [("mute", true)], "o menor sozinho");
+            assert_eq!(
+                edges(&watched, &mut pressed, with(&[0x11, 0x10, 0x4D])),
+                [("deafen", true)],
+                "o Shift chega depois: o mutar já estava apertado e não repete",
+            );
+            assert_eq!(edges(&watched, &mut pressed, with(&[])), [("mute", false), ("deafen", false)]);
+
+            assert_eq!(
+                edges(&watched, &mut pressed, with(&[0x11, 0x10, 0x4D])),
+                [("mute", true), ("deafen", true)],
+                "o maior de uma vez só aperta os dois",
+            );
         }
 
         /// A tabela é número escrito à mão; aqui ela é conferida com os nomes da Microsoft.

@@ -42,9 +42,9 @@ tracing-subscriber.workspace = true
 url = "2"
 tauri-plugin-global-shortcut = "2.3.2"
 
-# O falar-apertando no Windows pergunta o estado da tecla (`GetAsyncKeyState`) em vez de
-# registrar atalho: o `RegisterHotKey` do plugin engole a tecla do jogo e não conhece botão
-# de mouse. A mesma versão que o `capture` já compila.
+# Os atalhos no Windows perguntam o estado da tecla (`GetAsyncKeyState`) em vez de
+# registrar no sistema: o `RegisterHotKey` do plugin engole a tecla do jogo e não conhece
+# botão de mouse. A mesma versão que o `capture` já compila.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = ["Win32_UI_Input_KeyboardAndMouse"] }
 

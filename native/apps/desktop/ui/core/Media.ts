@@ -325,7 +325,11 @@ export class Media {
     }
 
     async dropIfOffline(sfu: SfuClient): Promise<void> {
-        if (this.sfu === sfu && ! await this.app.reachable()) {
+        if (this.sfu !== sfu || await this.app.reachable()) {
+            return;
+        }
+
+        if (this.sfu === sfu && this.store.state.reconnecting) {
             await this.app.dropConnection();
         }
     }
@@ -384,10 +388,12 @@ export class Media {
 
     refreshPeople(): void {
         const tiles = this.store.state.tiles;
+        const sharingNow = this.app.sharing.store.state.active;
         const peers: PeerView[] = [...(this.sfu?.peers?.values() ?? [])].map(peer => ({
             ...peer,
+            sharing: peer.self ? sharingNow : peer.sharing,
             latency: this.sfu?.peerLatency?.get(peer.peerId) ?? null,
-            missing: Boolean(peer.sharing) && ! tiles.some(tile => tile.key === peer.peerId),
+            missing: ! peer.self && Boolean(peer.sharing) && ! tiles.some(tile => tile.key === peer.peerId),
         }));
 
         this.store.set({
