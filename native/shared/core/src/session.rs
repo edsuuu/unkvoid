@@ -292,6 +292,7 @@ impl Session {
                 },
                 _ = beat.tick() => {
                     let client = self.client();
+                    let sent_at = std::time::Instant::now();
 
                     // Resposta de erro também prova que o socket vive: só o silêncio derruba.
                     if tokio::time::timeout(PING_PATIENCE, client.call(action::PING, json!({})))
@@ -301,6 +302,19 @@ impl Session {
                         tracing::warn!("a sinalização emudeceu: o socket vai voltar");
 
                         return !self.left.load(Ordering::Relaxed);
+                    }
+
+                    // A medição já estava aqui, de graça: o ping que prova que o socket vive
+                    // é o mesmo ida e volta que a barra da sala mostra.
+                    let round_trip = sent_at.elapsed().as_millis();
+                    let measured = Event {
+                        name: local::PING_MEASURED.to_owned(),
+                        channel: None,
+                        data: json!(round_trip),
+                    };
+
+                    if events.send(measured).is_err() {
+                        return false;
                     }
                 }
             }

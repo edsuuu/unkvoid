@@ -36,6 +36,9 @@ pub mod local {
     pub const SESSION_REJOINED: &str = "sessionRejoined";
     /// Desistiu de voltar. Daqui não vem mais nada.
     pub const SESSION_GONE: &str = "sessionGone";
+    /// O ida e volta até o SFU, em milissegundos, medido no ping que já é enviado de 5 em
+    /// 5 s. O número vem em `data`, e é o que a barra da sala mostra.
+    pub const PING_MEASURED: &str = "pingMeasured";
 }
 
 #[derive(Debug, Serialize)]
