@@ -30,7 +30,6 @@ pub struct UserBar {
     in_voice: std::cell::Cell<bool>,
     face: gtk::Box,
     name: gtk::Label,
-    status: gtk::Label,
     menu_name: gtk::Label,
     microphone: gtk::Button,
     camera: gtk::Button,
@@ -165,7 +164,6 @@ impl UserBar {
             in_voice: std::cell::Cell::new(false),
             face,
             name,
-            status,
             menu_name,
             microphone,
             camera,
@@ -213,7 +211,6 @@ impl UserBar {
         self.voice_name.set_text(channel.unwrap_or(""));
 
         if channel.is_none() {
-            self.status.set_text("Online");
             self.microphone.set_sensitive(false);
             self.sound.set_sensitive(false);
             mark(&self.microphone, "mic", "micOff", true);
@@ -232,24 +229,10 @@ impl UserBar {
         self.camera.set_visible(mine.can_video);
         self.camera.set_tooltip_text(Some(if mine.camera { "Desligar a câmera" } else { "Ligar a câmera" }));
         highlight(&self.camera, "camera", "cameraOff", mine.camera);
-
-        self.status.set_text(if !here {
-            "Online"
-        } else if !mine.can_speak {
-            "Mutado pelo servidor"
-        } else if mine.mic && !mine.mic_muted {
-            "Microfone aberto"
-        } else {
-            "Mudo"
-        });
     }
 
     pub fn set_deafened(&self, deafened: bool) {
         mark(&self.sound, "headphones", "headphonesOff", !deafened);
-
-        if deafened && self.in_voice.get() {
-            self.status.set_text("Surdo");
-        }
     }
 }
 

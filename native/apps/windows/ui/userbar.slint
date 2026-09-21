@@ -213,13 +213,7 @@ export component UserBar inherits Rectangle {
             }
 
             Text {
-                text: !root.in-voice
-                    ? "Online"
-                    : Ui.deafened
-                        ? "Surdo"
-                        : !Ui.can-speak
-                            ? "Mutado pelo servidor"
-                            : Ui.mic-on ? "Microfone aberto" : "Mudo";
+                text: "Online";
                 color: Skin.ink-dim;
                 font-family: Skin.sans;
                 font-size: 10.5px;
