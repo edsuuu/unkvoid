@@ -269,11 +269,11 @@ component HomeCreate inherits Panel {
 
     horizontal-stretch: 1;
     min-width: 260px;
-    height: inside.preferred-height;
 
-    inside := VerticalLayout {
+    VerticalLayout {
         padding: 20px;
         spacing: 12px;
+        alignment: start;
 
         LabelMono { text: "HOME"; }
 
@@ -355,11 +355,11 @@ component HomeCodes inherits Panel {
 
     horizontal-stretch: 1;
     min-width: 260px;
-    height: inside.preferred-height;
 
-    inside := VerticalLayout {
+    VerticalLayout {
         padding: 20px;
         spacing: 12px;
+        alignment: start;
 
         LabelMono { text: "SÓ COMPARTILHAR A TELA"; }
         Muted { text: "Uma sala por código, sem servidor: quem tiver o código assiste."; }
@@ -395,11 +395,10 @@ component HomeRooms inherits Panel {
 
     animate opacity { duration: 220ms; easing: ease-out; }
 
-    height: inside.preferred-height;
-
-    inside := VerticalLayout {
+    VerticalLayout {
         padding: 20px;
         spacing: 8px;
+        alignment: start;
 
         LabelMono { text: "ÚLTIMAS SALAS"; }
 

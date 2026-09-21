@@ -130,6 +130,8 @@ export global Ui {
     in property <bool> mic-on;
     in property <bool> can-speak: true;
     in property <bool> deafened;
+    /// As configurações da conta: o modal do React, por cima de tudo.
+    in-out property <bool> settings-open;
     in property <[DeviceRow]> microphones;
     in property <[DeviceRow]> speakers;
 
@@ -173,6 +175,8 @@ export global Ui {
     // tem de aparecer sem reiniciar nada.
     callback list-microphones();
     callback list-speakers();
+    callback open-settings();
+    callback close-settings();
     callback use-microphone(int);
     callback use-speaker(int);
 }

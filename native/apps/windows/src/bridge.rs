@@ -328,6 +328,24 @@ impl Bridge {
             }
         });
 
+        ui.on_open_settings({
+            let bridge = self.clone();
+
+            move || {
+                // A lista é lida na hora de abrir: aparelho ligado depois que o app abriu
+                // tem de aparecer sem reiniciar nada.
+                bridge.show_devices(true);
+                bridge.show_devices(false);
+                paint(&bridge.window, |app| app.global::<Ui>().set_settings_open(true));
+            }
+        });
+
+        ui.on_close_settings({
+            let window = self.window.clone();
+
+            move || paint(&window, |app| app.global::<Ui>().set_settings_open(false))
+        });
+
         ui.on_list_microphones({
             let bridge = self.clone();
 

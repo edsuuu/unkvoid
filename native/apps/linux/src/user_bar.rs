@@ -10,7 +10,7 @@ use gtk::prelude::*;
 
 use crate::bridge::Bridge;
 use crate::components::{
-    avatar, body, clear_list, clickable, column, dim, icon_button, item, label_mono, list, muted, popover, row,
+    avatar, body, clear_list, clickable, column, dim, icon_button, item, label_mono, list, muted, row,
     rule, scroll, set_icon, spacer, strong,
 };
 use crate::devices::{self, Device};
@@ -303,81 +303,122 @@ fn highlight(button: &gtk::Button, on_name: &str, off_name: &str, on: bool) {
     );
 }
 
-/// A engrenagem e o menu dela: quem está conectado, os aparelhos e a saída da conta. Os
-/// aparelhos moram aqui porque é aqui que o React os guarda — dentro das configurações.
-fn gear(bridge: &Rc<Bridge>, menu_name: &gtk::Label, sign_out: &gtk::Button) -> gtk::MenuButton {
-    let menu = gtk::MenuButton::new();
-    let sheet = column(2);
-    let head = column(2);
-    let chosen = column(6);
-
-    menu.set_child(Some(&icons::icon("gear", BAR_ICON, icons::RESTING)));
-    menu.add_css_class("bar");
-    clickable(&menu);
-
-    menu_name.set_xalign(0.0);
-    head.append(menu_name);
-    head.append(&label_mono("CONTA CONECTADA"));
-    head.set_margin_start(10);
-    head.set_margin_end(10);
-    head.set_margin_bottom(8);
-
-    let settings = menu_item("gear", "Configurações da conta", icons::RESTING);
+/// A engrenagem: abre as configurações da conta numa janela modal, como o Discord — e como
+/// o `UserSettingsModal` do React, que é um modal e não um menu.
+fn gear(bridge: &Rc<Bridge>, menu_name: &gtk::Label, sign_out: &gtk::Button) -> gtk::Button {
+    let button = flat(icon_button("gear", BAR_ICON, icons::RESTING, "Configurações da conta"));
 
     dress(sign_out, "logout", "Sair da conta", icons::LILAC);
 
-    let microphones = chooser("MICROFONE", devices::microphones, devices::current_microphone, {
+    button.connect_clicked({
+        let (bridge, menu_name, sign_out) = (bridge.clone(), menu_name.clone(), sign_out.clone());
+
+        move |button| {
+            let parent = button.root().and_downcast::<gtk::Window>();
+
+            settings(&bridge, &menu_name, &sign_out, parent.as_ref()).present();
+        }
+    });
+
+    button
+}
+
+/// A janela das configurações: cabeçalho, os aparelhos que o sistema lista e o rodapé. O que
+/// está aqui é o que existe — foto de perfil, teclas e modo do microfone continuam só no
+/// React, e botão que não faz nada não entra.
+fn settings(
+    bridge: &Rc<Bridge>,
+    menu_name: &gtk::Label,
+    sign_out: &gtk::Button,
+    parent: Option<&gtk::Window>,
+) -> gtk::Window {
+    let window = gtk::Window::new();
+    let sheet = column(0);
+    let head = row(12);
+    let who = column(4);
+    let inside = column(8);
+
+    window.set_title(Some("Configurações da conta"));
+    window.set_modal(true);
+    window.set_default_size(460, 520);
+    window.set_transient_for(parent);
+    window.add_css_class("settings");
+
+    let name = strong(&menu_name.text());
+
+    name.set_xalign(0.0);
+    name.add_css_class("headline");
+    who.append(&name);
+    who.append(&muted(if bridge.name().is_empty() { "Usando sem login" } else { "Online" }));
+    who.set_hexpand(true);
+    head.append(&avatar(&menu_name.text(), 40, true));
+    head.append(&who);
+    head.set_margin_start(24);
+    head.set_margin_end(24);
+    head.set_margin_top(24);
+
+    let microphones = chooser("Microfone", devices::microphones, devices::current_microphone, {
         let bridge = bridge.clone();
 
         move |name| bridge.use_microphone(name)
     });
 
-    let speakers = chooser("SAÍDA DE ÁUDIO", devices::speakers, devices::current_speaker, {
+    let speakers = chooser("Saída de áudio", devices::speakers, devices::current_speaker, {
         let bridge = bridge.clone();
 
         move |name| bridge.use_speaker(name)
     });
 
-    chosen.append(&microphones.root);
-    chosen.append(&speakers.root);
-    chosen.set_visible(false);
-    chosen.set_margin_top(4);
-    chosen.set_margin_bottom(4);
+    microphones.refresh();
+    speakers.refresh();
+
+    inside.append(&microphones.root);
+    inside.append(&speakers.root);
+    inside.append(&muted("Vale para a voz das pessoas, o áudio das telas e os sons do app."));
+    inside.set_margin_start(24);
+    inside.set_margin_end(24);
+    inside.set_margin_top(20);
+    inside.set_margin_bottom(20);
+    inside.set_vexpand(true);
+
+    let footer = row(8);
+    let done = crate::components::button("Pronto", "primary");
+
+    // O botão de sair é o mesmo da barra: um widget só não cabe em dois pais, então aqui ele
+    // vira um irmão que faz a mesma coisa.
+    let leave = crate::components::button("Sair da conta", "ghost");
+
+    leave.set_visible(sign_out.is_visible());
+    leave.connect_clicked({
+        let (bridge, window) = (bridge.clone(), window.clone());
+
+        move |_| {
+            window.close();
+            bridge.sign_out();
+        }
+    });
+
+    done.connect_clicked({
+        let window = window.clone();
+
+        move |_| window.close()
+    });
+
+    footer.append(&leave);
+    footer.append(&spacer());
+    footer.append(&done);
+    footer.set_margin_start(16);
+    footer.set_margin_end(16);
+    footer.set_margin_top(16);
+    footer.set_margin_bottom(16);
 
     sheet.append(&head);
+    sheet.append(&inside);
     sheet.append(&rule());
-    sheet.append(&settings);
-    sheet.append(&chosen);
-    sheet.append(sign_out);
+    sheet.append(&footer);
+    window.set_child(Some(&sheet));
 
-    settings.connect_clicked({
-        let chosen = chosen.clone();
-
-        move |_| chosen.set_visible(!chosen.is_visible())
-    });
-
-    let popup = popover(&sheet);
-
-    sheet.set_size_request(224, -1);
-    menu.set_popover(Some(&popup));
-
-    // A lista é lida na hora de abrir: aparelho ligado depois que o app abriu tem de
-    // aparecer sem reiniciar nada.
-    popup.connect_show(move |_| {
-        microphones.refresh();
-        speakers.refresh();
-    });
-
-    menu
-}
-
-/// Uma linha do menu: o desenho à esquerda e a frase à direita, no molde do React.
-fn menu_item(icon: &str, text: &str, color: &str) -> gtk::Button {
-    let button = gtk::Button::new();
-
-    dress(&button, icon, text, color);
-
-    button
+    window
 }
 
 fn dress(button: &gtk::Button, icon: &str, text: &str, color: &str) {

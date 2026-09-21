@@ -422,6 +422,13 @@ button.icon.bar.on:hover {
     animation: rise 180ms ease-out;
 }
 
+/* A janela das configuracoes: o mesmo fundo do app, nao o do sistema. */
+window.settings,
+window.settings > * {
+    background-color: #100d1a;
+    color: #ece9f3;
+}
+
 /* O "+" das secoes de canal: menor que o botao de icone comum. */
 button.icon.tiny {
     border-radius: 7px;

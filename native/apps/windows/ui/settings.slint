@@ -1,0 +1,207 @@
+import { ScrollView } from "std-widgets.slint";
+import { Icons, Skin } from "skin.slint";
+import { Ui } from "state.slint";
+import { Avatar, GhostButton, Glyph, LabelMono, Muted, PrimaryButton, RowItem } from "widgets.slint";
+
+// As configurações da conta, no molde do `Modal` + `UserSettingsModal` do React: o véu
+// escuro por cima de tudo, o painel no meio, e o rodapé com "Sair da conta" e "Pronto".
+//
+// O que está aqui é o que existe: os aparelhos que o sistema lista. Foto de perfil, teclas e
+// modo do microfone continuam só no React, e botão que não faz nada não entra.
+export component SettingsModal inherits Rectangle {
+    property <bool> shown;
+
+    background: #06050abd;
+    opacity: root.shown ? 1.0 : 0.0;
+    init => { root.shown = true; }
+
+    animate opacity { duration: 180ms; easing: ease-out; }
+
+    // Clicar fora fecha, como no React. O painel come o clique dele.
+    veil := TouchArea {
+        clicked => { Ui.close-settings(); }
+    }
+
+    Rectangle {
+        width: 460px;
+        // O `ScrollView` do meio não devolve a altura do que tem dentro, então a do painel
+        // é a do React: o quanto couber, até o teto da janela.
+        height: min(parent.height - 48px, 520px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: #100d1af7;
+        border-radius: 20px;
+        border-width: 1px;
+        border-color: Skin.line-strong;
+
+        TouchArea { }
+
+        sheet := VerticalLayout {
+            // ---- o cabeçalho ----
+            HorizontalLayout {
+                padding-left: 24px;
+                padding-right: 24px;
+                padding-top: 24px;
+                spacing: 12px;
+
+                Avatar {
+                    letter: Ui.user-initial;
+                    size: 40px;
+                    mine: true;
+                }
+
+                VerticalLayout {
+                    spacing: 4px;
+                    horizontal-stretch: 1;
+
+                    Text {
+                        text: Ui.user-name == "" ? "Sem conta" : Ui.user-name;
+                        color: Skin.ink-strong;
+                        font-family: Skin.sans;
+                        font-size: 18px;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+
+                    Muted { text: Ui.signed-in ? "Online" : "Usando sem login"; }
+                }
+
+                Rectangle {
+                    width: 24px;
+                    height: 24px;
+                    border-radius: 6px;
+                    background: close-touch.has-hover ? Skin.row : transparent;
+
+                    Glyph {
+                        commands: Icons.close;
+                        size: 16px;
+                        tint: close-touch.has-hover ? Skin.ink-strong : Skin.ink-dim;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    close-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Ui.close-settings(); }
+                    }
+                }
+            }
+
+            // ---- o miolo ----
+            ScrollView {
+                vertical-stretch: 1;
+
+                VerticalLayout {
+                    padding-left: 24px;
+                    padding-right: 24px;
+                    padding-top: 20px;
+                    padding-bottom: 20px;
+                    spacing: 8px;
+                    alignment: start;
+
+                    LabelMono { text: "MICROFONE"; }
+
+                    if Ui.microphones.length == 0 : Muted {
+                        text: "Nenhum aparelho encontrado.";
+                    }
+
+                    for device[index] in Ui.microphones : RowItem {
+                        on: device.current;
+                        clicked => { Ui.use-microphone(index); }
+
+                        HorizontalLayout {
+                            padding-left: 11px;
+                            padding-right: 11px;
+                            spacing: 10px;
+
+                            Rectangle {
+                                width: 9px;
+                                height: 9px;
+                                border-radius: 5px;
+                                background: device.current ? Skin.brand : #ffffff33;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            Text {
+                                text: device.label;
+                                color: Skin.ink-body;
+                                font-family: Skin.sans;
+                                font-size: 12.5px;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    Rectangle { height: 14px; }
+
+                    LabelMono { text: "SAÍDA DE ÁUDIO"; }
+
+                    if Ui.speakers.length == 0 : Muted {
+                        text: "Nenhum aparelho encontrado.";
+                    }
+
+                    for device[index] in Ui.speakers : RowItem {
+                        on: device.current;
+                        clicked => { Ui.use-speaker(index); }
+
+                        HorizontalLayout {
+                            padding-left: 11px;
+                            padding-right: 11px;
+                            spacing: 10px;
+
+                            Rectangle {
+                                width: 9px;
+                                height: 9px;
+                                border-radius: 5px;
+                                background: device.current ? Skin.brand : #ffffff33;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            Text {
+                                text: device.label;
+                                color: Skin.ink-body;
+                                font-family: Skin.sans;
+                                font-size: 12.5px;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    Muted { text: "Vale para a voz das pessoas, o áudio das telas e os sons do app."; }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Skin.line;
+            }
+
+            // ---- o rodapé ----
+            HorizontalLayout {
+                padding: 16px;
+                spacing: 8px;
+
+                if Ui.signed-in : GhostButton {
+                    text: "Sair da conta";
+                    width: 130px;
+                    clicked => {
+                        Ui.close-settings();
+                        Ui.sign-out();
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                PrimaryButton {
+                    text: "Pronto";
+                    width: 110px;
+                    clicked => { Ui.close-settings(); }
+                }
+            }
+        }
+    }
+}

@@ -4,6 +4,7 @@ import { EntryScreen } from "entry.slint";
 import { HubScreen } from "hub.slint";
 import { RoomScreen } from "room.slint";
 import { Halo, OfflineScreen, UpdatingScreen } from "shell.slint";
+import { SettingsModal } from "settings.slint";
 
 export { Ui }
 export { ChannelRow, DeviceRow, MemberRow, MessageRow, PeerRow, ServerRow } from "state.slint";
@@ -25,4 +26,8 @@ export component AppWindow inherits Window {
     if Ui.screen == "room" : RoomScreen { }
     if Ui.screen == "offline" : OfflineScreen { }
     if Ui.screen == "updating" : UpdatingScreen { }
+
+    // O modal mora acima das telas: ele cobre a janela inteira, como o `fixed inset-0` do
+    // React, e por isso não pode nascer dentro de nenhuma delas.
+    if Ui.settings-open : SettingsModal { }
 }

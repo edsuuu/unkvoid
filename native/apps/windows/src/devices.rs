@@ -117,3 +117,20 @@ mod win {
         }
     }
 }
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    /// Contra o WASAPI de verdade: mostra o que esta máquina tem. Roda com
+    /// `cargo test -p unkvoid-windows -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn the_system_lists_its_devices() {
+        for device in super::microphones() {
+            println!("microfone: {} ({}) padrão={}", device.label, device.id, device.default);
+        }
+
+        for device in super::speakers() {
+            println!("saída: {} ({}) padrão={}", device.label, device.id, device.default);
+        }
+    }
+}

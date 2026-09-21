@@ -1,7 +1,6 @@
-import { ScrollView } from "std-widgets.slint";
 import { Icons, Skin } from "skin.slint";
-import { DeviceRow, Ui } from "state.slint";
-import { Avatar, Glyph, LabelMono, Muted, RowItem } from "widgets.slint";
+import { Ui } from "state.slint";
+import { Avatar, Glyph } from "widgets.slint";
 
 // Os três botões da barra são chapados: sem contorno, o fundo só aparece ao passar o mouse.
 // É o `btn-icon` do React nessa barra, que é diferente do botão da sala.
@@ -62,52 +61,9 @@ component WideIcon inherits Rectangle {
     }
 }
 
-// Uma linha do menu da engrenagem: ícone à esquerda, texto à direita.
-component MenuItem inherits Rectangle {
-    in property <string> commands;
-    in property <string> text;
-    in property <bool> danger;
-    callback clicked();
-
-    height: 32px;
-    border-radius: 9px;
-    background: touch.has-hover ? Skin.row : transparent;
-
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        spacing: 10px;
-
-        Glyph {
-            commands: root.commands;
-            size: 15px;
-            tint: root.danger ? Skin.lilac : Skin.ink-icon;
-            y: (parent.height - self.height) / 2;
-        }
-
-        Text {
-            text: root.text;
-            color: root.danger ? Skin.lilac : Skin.ink-icon;
-            font-family: Skin.sans;
-            font-size: 12.5px;
-            horizontal-stretch: 1;
-            overflow: elide;
-            vertical-alignment: center;
-        }
-    }
-
-    touch := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-}
-
 // A barra de baixo: quem é você, o microfone, o som e a engrenagem — os mesmos três botões
 // do `VoicePanel` do React, nessa ordem.
 export component UserBar inherits Rectangle {
-    // Os aparelhos moram dentro de "Configurações da conta", como no React: a barra não
-    // ganha setinha nenhuma.
-    property <bool> showing-devices;
     // Fora de um canal de voz o microfone não está mudo, está fora: o React desenha o
     // microfone inteiro e escreve "Online". Vermelho só quando se está na voz e calado.
     property <bool> in-voice: Ui.voice-channel != "";
@@ -289,149 +245,11 @@ export component UserBar inherits Rectangle {
             clicked => { Ui.toggle-deafen(); }
         }
 
-        Rectangle {
-            width: 26px;
+        BarButton {
+            commands: Icons.gear;
+            open: Ui.settings-open;
             y: (parent.height - self.height) / 2;
-            height: 26px;
-
-            BarButton {
-                commands: Icons.gear;
-                clicked => {
-                    // A lista é lida na hora de abrir: aparelho ligado depois que o app
-                    // abriu tem de aparecer sem reiniciar nada.
-                    Ui.list-microphones();
-                    Ui.list-speakers();
-                    menu.show();
-                }
-            }
-
-            menu := PopupWindow {
-                x: -198px;
-                y: root.showing-devices ? -392px : -132px;
-                width: 224px;
-                height: root.showing-devices ? 384px : 124px;
-                close-policy: PopupClosePolicy.close-on-click-outside;
-
-                Rectangle {
-                    background: #100d1af5;
-                    border-radius: 14px;
-                    border-width: 1px;
-                    border-color: Skin.line-strong;
-
-                    VerticalLayout {
-                        padding: 8px;
-                        spacing: 2px;
-
-                        VerticalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            padding-bottom: 8px;
-                            spacing: 2px;
-
-                            Text {
-                                text: Ui.user-name == "" ? "Sem conta" : Ui.user-name;
-                                color: Skin.ink-strong;
-                                font-family: Skin.sans;
-                                font-size: 13px;
-                                font-weight: 600;
-                                overflow: elide;
-                            }
-
-                            LabelMono {
-                                text: Ui.signed-in ? "CONTA CONECTADA" : "USANDO SEM LOGIN";
-                            }
-                        }
-
-                        Rectangle {
-                            height: 1px;
-                            background: Skin.line;
-                        }
-
-                        Rectangle { height: 4px; }
-
-                        MenuItem {
-                            commands: Icons.gear;
-                            text: "Configurações da conta";
-                            clicked => { root.showing-devices = !root.showing-devices; }
-                        }
-
-                        if root.showing-devices : ScrollView {
-                            vertical-stretch: 1;
-
-                            VerticalLayout {
-                                spacing: 4px;
-                                alignment: start;
-
-                                LabelMono { text: "MICROFONE"; }
-
-                                if Ui.microphones.length == 0 : Muted {
-                                    text: "Nenhum aparelho encontrado.";
-                                    font-size: 12.5px;
-                                }
-
-                                for device[index] in Ui.microphones : RowItem {
-                                    on: device.current;
-                                    clicked => { Ui.use-microphone(index); }
-
-                                    HorizontalLayout {
-                                        padding-left: 10px;
-                                        padding-right: 10px;
-
-                                        Text {
-                                            text: device.label;
-                                            color: Skin.ink-body;
-                                            font-family: Skin.sans;
-                                            font-size: 12.5px;
-                                            horizontal-stretch: 1;
-                                            overflow: elide;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-                                }
-
-                                Rectangle { height: 4px; }
-
-                                LabelMono { text: "SAÍDA DE ÁUDIO"; }
-
-                                if Ui.speakers.length == 0 : Muted {
-                                    text: "Nenhum aparelho encontrado.";
-                                    font-size: 12.5px;
-                                }
-
-                                for device[index] in Ui.speakers : RowItem {
-                                    on: device.current;
-                                    clicked => { Ui.use-speaker(index); }
-
-                                    HorizontalLayout {
-                                        padding-left: 10px;
-                                        padding-right: 10px;
-
-                                        Text {
-                                            text: device.label;
-                                            color: Skin.ink-body;
-                                            font-family: Skin.sans;
-                                            font-size: 12.5px;
-                                            horizontal-stretch: 1;
-                                            overflow: elide;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        MenuItem {
-                            commands: Icons.logout;
-                            text: "Sair da conta";
-                            danger: true;
-                            clicked => {
-                                menu.close();
-                                Ui.sign-out();
-                            }
-                        }
-                    }
-                }
-            }
+            clicked => { Ui.open-settings(); }
         }
         }
     }
