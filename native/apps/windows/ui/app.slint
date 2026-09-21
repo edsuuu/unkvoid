@@ -14,10 +14,12 @@ export component AppWindow inherits Window {
     title: "Unkvoid";
     background: Skin.back;
     default-font-family: Skin.sans;
-    preferred-width: 1180px;
-    preferred-height: 760px;
-    min-width: 900px;
-    min-height: 620px;
+    // Os números do `expand_window` do Tauri, que o macOS também usa: com menos largura os
+    // cartões da Home quebram em outra ordem.
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 940px;
+    min-height: 600px;
 
     Halo { }
 

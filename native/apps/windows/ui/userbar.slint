@@ -1,9 +1,10 @@
+import { ScrollView } from "std-widgets.slint";
 import { Icons, Skin } from "skin.slint";
-import { Ui } from "state.slint";
-import { Avatar, Glyph } from "widgets.slint";
+import { DeviceRow, Ui } from "state.slint";
+import { Avatar, Glyph, LabelMono, Muted, RowItem } from "widgets.slint";
 
-// Os três botões da barra são chapados: sem contorno, o fundo só aparece ao passar o mouse.
-// É o `btn-icon` do React nessa barra, que é diferente do botão da sala.
+// Os controles da barra são chapados: sem contorno, o fundo só aparece ao passar o mouse, e
+// o desenho cresce um pouco junto — é o `btn-icon` dessa barra no React e no Mac.
 component BarButton inherits Rectangle {
     in property <string> commands;
     in property <bool> enabled: true;
@@ -19,10 +20,12 @@ component BarButton inherits Rectangle {
 
     Glyph {
         commands: root.commands;
-        size: 15px;
+        size: touch.has-hover ? 17px : 15px;
         tint: root.alert ? Skin.danger : (root.open ? Skin.ink-strong : Skin.ink-icon);
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
+
+        animate width, height { duration: 90ms; easing: ease-out; }
     }
 
     touch := TouchArea {
@@ -32,7 +35,106 @@ component BarButton inherits Rectangle {
     }
 }
 
-// O botão largo da voz: ocupa metade da linha, como o `wide` do React.
+// A setinha ao lado do botão, como no Mac: ela abre a lista de aparelhos sem depender de
+// estar numa voz para escolher.
+component DeviceArrow inherits Rectangle {
+    in property <[DeviceRow]> devices;
+    in property <string> heading;
+    callback opening();
+    callback chosen(int);
+
+    width: 14px;
+    height: 26px;
+    border-radius: 6px;
+    background: touch.has-hover ? Skin.row : transparent;
+
+    Glyph {
+        commands: Icons.chevron-down;
+        size: touch.has-hover ? 13px : 11px;
+        tint: touch.has-hover ? Skin.ink-strong : Skin.ink-dim;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+
+        animate width, height { duration: 90ms; easing: ease-out; }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            // A lista é lida na hora de abrir: aparelho ligado depois que o app abriu tem
+            // de aparecer sem reiniciar nada.
+            root.opening();
+            list.show();
+        }
+    }
+
+    list := PopupWindow {
+        x: -246px;
+        y: -196px;
+        width: 260px;
+        height: 188px;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+
+        Rectangle {
+            background: #100d1af5;
+            border-radius: 14px;
+            border-width: 1px;
+            border-color: Skin.line-strong;
+
+            ScrollView {
+                x: 8px;
+                y: 8px;
+                width: parent.width - 16px;
+                height: parent.height - 16px;
+
+                VerticalLayout {
+                    spacing: 4px;
+                    alignment: start;
+
+                    LabelMono { text: root.heading; }
+
+                    if root.devices.length == 0 : Muted {
+                        text: "Nenhum aparelho encontrado.";
+                    }
+
+                    for device[index] in root.devices : RowItem {
+                        on: device.current;
+                        clicked => {
+                            root.chosen(index);
+                            list.close();
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 10px;
+
+                            Rectangle {
+                                width: 9px;
+                                height: 9px;
+                                border-radius: 5px;
+                                background: device.current ? Skin.brand : #ffffff33;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            Text {
+                                text: device.label;
+                                color: device.current ? Skin.ink-strong : Skin.ink-icon;
+                                font-family: Skin.sans;
+                                font-size: 12.5px;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// O botão largo da voz: metade da linha, como o `wide` do React.
 component WideIcon inherits Rectangle {
     in property <string> commands;
     in property <bool> active;
@@ -61,11 +163,9 @@ component WideIcon inherits Rectangle {
     }
 }
 
-// A barra de baixo: quem é você, o microfone, o som e a engrenagem — os mesmos três botões
-// do `VoicePanel` do React, nessa ordem.
+// A barra de baixo: quem é você, o microfone, o som e a engrenagem — os mesmos controles do
+// `VoicePanel` do React, na ordem do Mac.
 export component UserBar inherits Rectangle {
-    // Fora de um canal de voz o microfone não está mudo, está fora: o React desenha o
-    // microfone inteiro e escreve "Online". Vermelho só quando se está na voz e calado.
     property <bool> in-voice: Ui.voice-channel != "";
 
     height: sheet.preferred-height;
@@ -80,7 +180,7 @@ export component UserBar inherits Rectangle {
 
         // O bloco da voz: só existe dentro de um canal de voz, e é o que o React mostra
         // em cima da linha de quem você é.
-        if Ui.voice-channel != "" : VerticalLayout {
+        if root.in-voice : VerticalLayout {
             // O `animate-rise` do React: o bloco da voz aparece quando se entra no canal.
             property <bool> shown;
 
@@ -187,64 +287,84 @@ export component UserBar inherits Rectangle {
             }
         }
 
-    HorizontalLayout {
-        spacing: 8px;
+        HorizontalLayout {
+            spacing: 8px;
 
-        Avatar {
-            letter: Ui.user-initial;
-            size: 30px;
-            mine: Ui.signed-in;
-            y: (parent.height - self.height) / 2;
-        }
-
-        Rectangle { width: 2px; }
-
-        VerticalLayout {
-            alignment: center;
-            spacing: 1px;
-
-            Text {
-                text: Ui.user-name == "" ? "Sem conta" : Ui.user-name;
-                color: Skin.ink-strong;
-                font-family: Skin.sans;
-                font-size: 12.5px;
-                font-weight: 600;
-                overflow: elide;
+            Avatar {
+                letter: Ui.user-initial;
+                size: 30px;
+                mine: Ui.signed-in;
+                y: (parent.height - self.height) / 2;
             }
 
-            Text {
-                text: "Online";
-                color: Skin.ink-dim;
-                font-family: Skin.sans;
-                font-size: 10.5px;
-                overflow: elide;
+            Rectangle { width: 2px; }
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 1px;
+
+                Text {
+                    text: Ui.user-name == "" ? "Sem conta" : Ui.user-name;
+                    color: Skin.ink-strong;
+                    font-family: Skin.sans;
+                    font-size: 12.5px;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+
+                // Sempre "Online": o estado do microfone já está no botão, e escrevê-lo
+                // duas vezes só dava chance de as duas linhas discordarem.
+                Text {
+                    text: "Online";
+                    color: Skin.ink-dim;
+                    font-family: Skin.sans;
+                    font-size: 10.5px;
+                    overflow: elide;
+                }
             }
-        }
 
-        Rectangle { horizontal-stretch: 1; }
+            Rectangle { horizontal-stretch: 1; }
 
-        BarButton {
-            commands: root.in-voice && !Ui.mic-on ? Icons.mic-off : Icons.mic;
-            alert: root.in-voice && !Ui.mic-on;
-            enabled: root.in-voice && Ui.can-speak;
-            y: (parent.height - self.height) / 2;
-            clicked => { Ui.toggle-mic(); }
-        }
+            BarButton {
+                commands: Ui.mic-on ? Icons.mic : Icons.mic-off;
+                alert: !Ui.mic-on;
+                y: (parent.height - self.height) / 2;
+                clicked => { Ui.toggle-mic(); }
+            }
 
-        BarButton {
-            commands: Ui.deafened ? Icons.headphones-off : Icons.headphones;
-            alert: Ui.deafened;
-            enabled: root.in-voice;
-            y: (parent.height - self.height) / 2;
-            clicked => { Ui.toggle-deafen(); }
-        }
+            DeviceArrow {
+                devices: Ui.microphones;
+                heading: "MICROFONE";
+                y: (parent.height - self.height) / 2;
+                opening => { Ui.list-microphones(); }
+                chosen(index) => { Ui.use-microphone(index); }
+            }
 
-        BarButton {
-            commands: Icons.gear;
-            open: Ui.settings-open;
-            y: (parent.height - self.height) / 2;
-            clicked => { Ui.open-settings(); }
-        }
+            Rectangle { width: 2px; }
+
+            BarButton {
+                commands: Ui.deafened ? Icons.headphones-off : Icons.headphones;
+                alert: Ui.deafened;
+                y: (parent.height - self.height) / 2;
+                clicked => { Ui.toggle-deafen(); }
+            }
+
+            DeviceArrow {
+                devices: Ui.speakers;
+                heading: "SAÍDA DE ÁUDIO";
+                y: (parent.height - self.height) / 2;
+                opening => { Ui.list-speakers(); }
+                chosen(index) => { Ui.use-speaker(index); }
+            }
+
+            Rectangle { width: 2px; }
+
+            BarButton {
+                commands: Icons.gear;
+                open: Ui.settings-open;
+                y: (parent.height - self.height) / 2;
+                clicked => { Ui.open-settings(); }
+            }
         }
     }
 }

@@ -93,7 +93,8 @@ export component GhostButton inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked();
 
-    height: 34px;
+    // 8 de respiro em cima e embaixo, como o `.btn-ghost` do CSS.
+    height: 32px;
     min-width: 72px;
     border-radius: 10px;
     border-width: 1px;

@@ -7,6 +7,7 @@
 //! Nada aqui decide: tudo que é decisão (o código vale? onde se cai ao sair? quem está na
 //! sala?) é chamada ao `core_app`.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -14,7 +15,7 @@ use core_app::api::{Api, HttpError};
 use core_app::app::EntryRefusal;
 use core_app::models::{
     Channel, ChannelKind, Conversation, DirectMessage, Friendship, FriendshipStatus, Person, RoomIdentity,
-    ServerSummary, User,
+    ServerSummary, ServerTree, User,
 };
 use core_app::protocol::local;
 use core_app::reconnect::Backoff;
@@ -59,6 +60,10 @@ pub struct Bridge {
     reading: Arc<Mutex<Option<String>>>,
     /// Qual servidor está aberto: é nele que um canal novo nasce.
     opened: Arc<Mutex<Option<i64>>>,
+    /// A árvore de cada servidor, guardada assim que se abre uma. Trocar de servidor desenha
+    /// os canais na hora e só depois confere com o servidor: a coluna não pisca vazia, e o
+    /// "carregando" fica só nas mensagens.
+    trees: Arc<Mutex<HashMap<i64, ServerTree>>>,
     /// A Home: as conversas e as amizades que a tela mostra por índice, e com quem se está
     /// falando agora.
     conversations: Arc<Mutex<Vec<Conversation>>>,
@@ -93,6 +98,7 @@ impl Bridge {
             channels: Arc::default(),
             reading: Arc::default(),
             opened: Arc::default(),
+            trees: Arc::default(),
             conversations: Arc::default(),
             friends: Arc::default(),
             talking: Arc::default(),
@@ -374,8 +380,8 @@ impl Bridge {
     /// A abertura: o servidor responde? Onde fica o SFU? O token guardado ainda vale?
     pub fn start(self: &Rc<Self>) {
         let (core, api, window) = (self.core.clone(), self.api.clone(), self.window.clone());
-        let (sfu, servers) = (self.sfu.clone(), self.servers.clone());
-        let (me, conversations) = (self.me.clone(), self.conversations.clone());
+        let sfu = self.sfu.clone();
+        let landing = self.landing();
 
         self.spawn(async move {
             let mut backoff = Backoff::default();
@@ -422,15 +428,14 @@ impl Bridge {
                 None => None,
             };
 
-            landed(&core, &api, &window, &servers, &me, &conversations, user).await;
+            landed(&core, &api, &window, &landing, user).await;
         });
     }
 
     fn sign_in(self: &Rc<Self>, email: &str, password: &str, register: bool) {
         let (core, api, window) = (self.core.clone(), self.api.clone(), self.window.clone());
         let (email, password) = (email.to_owned(), password.to_owned());
-        let servers = self.servers.clone();
-        let (me, conversations) = (self.me.clone(), self.conversations.clone());
+        let landing = self.landing();
 
         paint(&self.window, |app| app.global::<Ui>().set_login_busy(true));
 
@@ -453,7 +458,7 @@ impl Bridge {
                         None => api.me().await.ok(),
                     };
 
-                    landed(&core, &api, &window, &servers, &me, &conversations, user).await;
+                    landed(&core, &api, &window, &landing, user).await;
                 }
                 Err(failure) => refuse_login(&window, &failure),
             }
@@ -505,11 +510,10 @@ impl Bridge {
         paint(&self.window, |app| app.global::<Ui>().set_in_server(false));
 
         let (api, window) = (self.api.clone(), self.window.clone());
-        let (known, held) = (self.servers.clone(), self.conversations.clone());
-        let mine = self.me.clone();
+        let (landing, held) = (self.landing(), self.conversations.clone());
 
         self.spawn(async move {
-            refresh_servers(&api, &window, &known, &mine).await;
+            refresh_servers(&api, &window, &landing).await;
 
             if let Ok(open) = api.conversations().await {
                 show_conversations(&window, &held, open);
@@ -525,12 +529,11 @@ impl Bridge {
         }
 
         let (api, window) = (self.api.clone(), self.window.clone());
-        let known = self.servers.clone();
-        let mine = self.me.clone();
+        let landing = self.landing();
 
         self.spawn(async move {
             match api.create_server(&name).await {
-                Ok(_) => refresh_servers(&api, &window, &known, &mine).await,
+                Ok(_) => refresh_servers(&api, &window, &landing).await,
                 Err(failure) => complain(&window, said(&failure)),
             }
         });
@@ -544,12 +547,11 @@ impl Bridge {
         }
 
         let (api, window) = (self.api.clone(), self.window.clone());
-        let known = self.servers.clone();
-        let mine = self.me.clone();
+        let landing = self.landing();
 
         self.spawn(async move {
             match api.join_invite(&code).await {
-                Ok(_) => refresh_servers(&api, &window, &known, &mine).await,
+                Ok(_) => refresh_servers(&api, &window, &landing).await,
                 Err(failure) => complain(&window, said(&failure)),
             }
         });
@@ -681,20 +683,43 @@ impl Bridge {
         });
     }
 
+    fn landing(self: &Rc<Self>) -> Landing {
+        Landing {
+            known: self.servers.clone(),
+            me: self.me.clone(),
+            conversations: self.conversations.clone(),
+            trees: self.trees.clone(),
+        }
+    }
+
+    fn opening(self: &Rc<Self>) -> Opening {
+        Opening {
+            channels: self.channels.clone(),
+            reading: self.reading.clone(),
+            known: self.servers.clone(),
+            trees: self.trees.clone(),
+            me: *lock(&self.me),
+        }
+    }
+
     fn open_server(self: &Rc<Self>, index: i32) {
         let Some(server) = at(&self.servers, index) else {
             return;
         };
 
         let (api, window) = (self.api.clone(), self.window.clone());
-        let (channels, reading) = (self.channels.clone(), self.reading.clone());
-        let known = self.servers.clone();
-        let (id, mine) = (server.id, *lock(&self.me));
+        let opening = self.opening();
+        let id = server.id;
 
         *lock(&self.opened) = Some(id);
 
+        // O que já está em mãos vai para a tela antes do pedido.
+        if let Some(tree) = lock(&opening.trees).get(&id).cloned() {
+            paint_tree(&window, &opening, &tree);
+        }
+
         self.spawn(async move {
-            show_tree(&api, &window, &channels, &reading, &known, mine, id).await;
+            show_tree(&api, &window, &opening, id).await;
         });
     }
 
@@ -711,14 +736,12 @@ impl Bridge {
 
         let kind = if voice { ChannelKind::Voice } else { ChannelKind::Text };
         let (api, window) = (self.api.clone(), self.window.clone());
-        let (channels, reading) = (self.channels.clone(), self.reading.clone());
-        let known = self.servers.clone();
-        let mine = *lock(&self.me);
+        let opening = self.opening();
 
         self.spawn(async move {
             match api.create_channel(server, &name, kind).await {
                 // A árvore volta inteira: é ela que diz a posição do canal novo entre os outros.
-                Ok(()) => show_tree(&api, &window, &channels, &reading, &known, mine, server).await,
+                Ok(()) => show_tree(&api, &window, &opening, server).await,
                 Err(failure) => complain(&window, said(&failure)),
             }
         });
@@ -1088,17 +1111,25 @@ fn lock<T>(cell: &Arc<Mutex<T>>) -> MutexGuard<'_, T> {
 }
 
 /// Servidor recém-criado ou recém-entrado: a lista muda e a Home a mostra.
-async fn refresh_servers(
-    api: &Arc<Api>,
-    window: &Weak<AppWindow>,
-    known: &Arc<Mutex<Vec<ServerSummary>>>,
-    me: &Arc<Mutex<Option<i64>>>,
-) {
+/// As árvores de todos os servidores, lidas assim que a lista chega. É o que faz trocar de
+/// servidor desenhar os canais na hora: quando o clique acontece, a árvore já está em mãos.
+async fn warm_trees(api: &Arc<Api>, held: &Arc<Mutex<HashMap<i64, ServerTree>>>, servers: &[ServerSummary]) {
+    for server in servers {
+        if let Ok(tree) = api.tree(server.id).await {
+            lock(held).insert(server.id, tree);
+        }
+    }
+}
+
+async fn refresh_servers(api: &Arc<Api>, window: &Weak<AppWindow>, landing: &Landing) {
+    let (known, me, trees) = (&landing.known, &landing.me, &landing.trees);
     match api.servers().await {
         Ok(servers) => {
             *lock(known) = servers.clone();
 
             let rows = rows_of(&servers, None, *lock(me));
+
+            warm_trees(api, trees, &servers).await;
 
             paint(window, move |app| {
                 let ui = app.global::<Ui>();
@@ -1240,15 +1271,18 @@ fn show(window: &Weak<AppWindow>, screen: Screen, status: String) {
 
 /// Onde o app cai quando o servidor responde: com conta, nos servidores; sem conta, no
 /// código. Quem decide é o núcleo.
-async fn landed(
-    core: &Arc<App>,
-    api: &Arc<Api>,
-    window: &Weak<AppWindow>,
-    known: &Arc<Mutex<Vec<ServerSummary>>>,
-    me: &Arc<Mutex<Option<i64>>>,
-    conversations: &Arc<Mutex<Vec<Conversation>>>,
-    user: Option<User>,
-) {
+/// O que a aterrissagem guarda: quem sou eu, os servidores, as conversas e as árvores deles.
+#[derive(Clone)]
+struct Landing {
+    known: Arc<Mutex<Vec<ServerSummary>>>,
+    me: Arc<Mutex<Option<i64>>>,
+    conversations: Arc<Mutex<Vec<Conversation>>>,
+    trees: Arc<Mutex<HashMap<i64, ServerTree>>>,
+}
+
+async fn landed(core: &Arc<App>, api: &Arc<Api>, window: &Weak<AppWindow>, landing: &Landing, user: Option<User>) {
+    let (known, me) = (&landing.known, &landing.me);
+    let (conversations, trees) = (&landing.conversations, &landing.trees);
     let landing = core.home();
     let name = user.as_ref().map(|user| user.name.clone()).unwrap_or_default();
     let signed_in = user.is_some();
@@ -1278,9 +1312,10 @@ async fn landed(
             Ok(servers) => {
                 let rows = rows_of(&servers, None, mine);
 
-                *lock(known) = servers;
-
                 paint(window, move |app| app.global::<Ui>().set_servers(model(rows)));
+                warm_trees(api, trees, &servers).await;
+
+                *lock(known) = servers;
             }
             Err(failure) => complain(window, said(&failure)),
         }
@@ -1358,20 +1393,32 @@ fn code_lines(codes: Vec<Vec<String>>) -> Vec<ModelRc<SharedString>> {
 /// A tela mostra texto e voz em duas seções, como o React; o núcleo só conhece uma lista.
 /// Cada linha leva a posição dela na lista inteira, que é o que volta no clique.
 /// Abre o servidor na tela: os canais, quem está dentro e o convite, tudo da mesma árvore.
-async fn show_tree(
-    api: &Arc<Api>,
-    window: &Weak<AppWindow>,
-    channels: &Arc<Mutex<Vec<Channel>>>,
-    reading: &Arc<Mutex<Option<String>>>,
-    known: &Arc<Mutex<Vec<ServerSummary>>>,
+/// O que desenhar um servidor precisa ter em mãos. Anda junto porque as duas horas em que
+/// ele é desenhado — o que já estava guardado e o que o servidor respondeu — usam tudo.
+#[derive(Clone)]
+struct Opening {
+    channels: Arc<Mutex<Vec<Channel>>>,
+    reading: Arc<Mutex<Option<String>>>,
+    known: Arc<Mutex<Vec<ServerSummary>>>,
+    trees: Arc<Mutex<HashMap<i64, ServerTree>>>,
     me: Option<i64>,
-    id: i64,
-) {
+}
+
+async fn show_tree(api: &Arc<Api>, window: &Weak<AppWindow>, opening: &Opening, id: i64) {
     let tree = match api.tree(id).await {
         Ok(tree) => tree,
         Err(failure) => return complain(window, said(&failure)),
     };
 
+    lock(&opening.trees).insert(id, tree.clone());
+    paint_tree(window, opening, &tree);
+}
+
+/// A árvore na tela. Fica separada do pedido porque o que já está em mãos é desenhado antes
+/// dele — e o mesmo desenho serve às duas horas.
+fn paint_tree(window: &Weak<AppWindow>, opening: &Opening, tree: &ServerTree) {
+    let (channels, reading, known, me) =
+        (&opening.channels, &opening.reading, &opening.known, opening.me);
     let ordered = tree.ordered_channels();
     let members: Vec<MemberRow> = tree
         .members
@@ -1392,7 +1439,7 @@ async fn show_tree(
     *lock(channels) = ordered;
     *lock(reading) = None;
 
-    let chosen = lock(known).iter().position(|server| server.id == id);
+    let chosen = lock(known).iter().position(|server| server.id == tree.id);
     let servers = rows_of(&lock(known), chosen, me);
     let name = tree.name.clone();
     let invite = tree.invite_code.clone().unwrap_or_default();

@@ -267,7 +267,9 @@ component HomeCreate inherits Panel {
 
     property <bool> joining;
 
-    horizontal-stretch: 1;
+    // `flex: 0 1 360` com mínimo de 260: não cresce, encolhe até caber.
+    horizontal-stretch: 0;
+    preferred-width: 360px;
     min-width: 260px;
 
     VerticalLayout {
@@ -353,7 +355,9 @@ component HomeCodes inherits Panel {
 
     animate opacity { duration: 220ms; easing: ease-out; }
 
+    // `flex: 1 1 360` com mínimo de 260: cresce com a janela.
     horizontal-stretch: 1;
+    preferred-width: 360px;
     min-width: 260px;
 
     VerticalLayout {
@@ -394,6 +398,10 @@ component HomeRooms inherits Panel {
     init => { root.shown = true; }
 
     animate opacity { duration: 220ms; easing: ease-out; }
+
+    // `flex: 1 1 0` com mínimo de 280: é o que sobra da linha.
+    horizontal-stretch: 1;
+    min-width: 280px;
 
     VerticalLayout {
         padding: 20px;
