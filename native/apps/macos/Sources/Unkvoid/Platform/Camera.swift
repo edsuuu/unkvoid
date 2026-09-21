@@ -13,6 +13,13 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     private let session = AVCaptureSession()
     private let frames = DispatchQueue(label: "unkvoid-camera")
     private var seen: (@Sendable (IOSurfaceRef, UInt64) -> Void)?
+    private var blur: BackgroundBlur?
+
+    /// Liga e desliga o desfoque do fundo, com a câmera no ar ou não. O filtro só existe
+    /// enquanto está ligado: desligado, o quadro segue do sensor ao encoder sem ser tocado.
+    func blurBackground(_ wanted: Bool) {
+        frames.async { self.blur = wanted ? self.blur ?? BackgroundBlur() : nil }
+    }
 
     enum Failure: Error {
         case noCamera
@@ -66,7 +73,13 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     }
 
     func captureOutput(_: AVCaptureOutput, didOutput sample: CMSampleBuffer, from _: AVCaptureConnection) {
-        guard let seen, let pixels = CMSampleBufferGetImageBuffer(sample), let surface = CVPixelBufferGetIOSurface(pixels)?.takeUnretainedValue() else {
+        guard let seen, let captured = CMSampleBufferGetImageBuffer(sample) else {
+            return
+        }
+
+        let pixels = blur?.blurred(captured) ?? captured
+
+        guard let surface = CVPixelBufferGetIOSurface(pixels)?.takeUnretainedValue() else {
             return
         }
 

@@ -92,8 +92,10 @@ struct UserBar: View {
     private func connected(to voice: Channel) -> some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                Icon(name: .signal, size: 15)
-                    .foregroundStyle(model.reconnecting ? Theme.inkDim : Theme.online)
+                SignalBars(
+                    bars: model.reconnecting ? nil : model.signalBars,
+                    hint: model.reconnecting ? "Reconectando…" : model.ping.map { "\($0) ms até o servidor de mídia" } ?? "Medindo o ping…"
+                )
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.reconnecting ? "Reconectando…" : "Voz conectada")
@@ -257,6 +259,60 @@ private struct SmallButton: View {
         .onHover { hovering = $0 && enabled }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .help(hint)
+    }
+}
+
+/// O sinal da voz: quatro barrinhas que acendem até o nível que o núcleo contou, na cor dele
+/// — verde, amarelo, laranja, vermelho. Sem medida ainda (ou reconectando) ficam apagadas.
+private struct SignalBars: View {
+    var bars: Int?
+    /// O balão é desenhado aqui, e não pelo `.help` do sistema: o tooltip nativo demora um
+    /// segundo e não dispara sobre um desenho sem área de clique.
+    var hint: String
+
+    @State private var hovering = false
+
+    private var tint: Color {
+        switch bars {
+        case 4: Theme.online
+        case 3: Theme.fair
+        case 2: Theme.poor
+        case 1: Theme.danger
+        default: Theme.inkDim
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(1 ... 4, id: \.self) { bar in
+                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                    .fill(bar <= (bars ?? 0) ? tint : Theme.inkDim.opacity(0.35))
+                    .frame(width: 3, height: CGFloat(3 + bar * 3))
+            }
+        }
+        .frame(width: 18, height: 16, alignment: .bottom)
+        .padding(6)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .padding(-6)
+        .overlay(alignment: .bottomLeading) {
+            if hovering {
+                Text(hint)
+                    .font(Theme.mono(11))
+                    .foregroundStyle(Theme.inkStrong)
+                    .fixedSize()
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .popoverPanel()
+                    .offset(x: -4, y: -26)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(.easeOut(duration: 0.2), value: bars)
+        .accessibilityLabel("Sinal da voz")
+        .accessibilityValue(hint)
     }
 }
 

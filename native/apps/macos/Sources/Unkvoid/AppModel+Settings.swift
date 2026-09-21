@@ -64,6 +64,8 @@ extension AppModel {
             applyDevices()
         }
 
+        media?.camera.blurBackground(next.blurBackground)
+
         Task {
             if before.inputMode != next.inputMode || before.sensitivity != next.sensitivity {
                 await applyInputMode()

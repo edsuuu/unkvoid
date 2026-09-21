@@ -43,6 +43,8 @@ final class AppModel: ObservableObject {
     /// Ida e volta até o SFU. Enquanto não há medida a barra mostra `-- ms`, que é o
     /// que o React faz — o espaço já fica reservado e a barra não salta depois.
     @Published var ping: Int?
+    /// De 1 a 4, contado pelo núcleo a partir do ping: a interface só escolhe a cor.
+    @Published var signalBars: Int?
     @Published var roomError: String?
     @Published private(set) var entryError = ""
     /// O erro fica no campo que errou: o núcleo diz qual é (`nameIsEmpty`, `codeIsInvalid`)

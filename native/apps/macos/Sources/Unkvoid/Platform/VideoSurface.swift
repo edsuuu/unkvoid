@@ -181,6 +181,9 @@ final class VideoSink: @unchecked Sendable {
 struct VideoSurface: NSViewRepresentable {
     let sink: VideoSink
     var look = ImageFilters.Look()
+    /// A própria câmera é espelho, como em todo app de chamada. Só no desenho: a sala recebe
+    /// a imagem sem inverter.
+    var mirrored = false
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -199,7 +202,11 @@ struct VideoSurface: NSViewRepresentable {
             attach(to: view)
         }
 
+        // O `frame` de um layer transformado não é confiável: volta ao normal, mede, e só
+        // então vira. A virada é em torno do centro, então o layer não sai do lugar.
+        sink.layer.setAffineTransform(.identity)
         sink.layer.frame = view.bounds
+        sink.layer.setAffineTransform(mirrored ? CGAffineTransform(scaleX: -1, y: 1) : .identity)
         sink.layer.filters = filters
     }
 

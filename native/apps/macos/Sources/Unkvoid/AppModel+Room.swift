@@ -107,6 +107,7 @@ extension AppModel {
         mutedAtRest = mine.mic && mine.micMuted
         mine = Mine()
         ping = nil
+        signalBars = nil
         reconnecting = false
         micLevel = 0
         focusedTile = nil
@@ -153,6 +154,7 @@ extension AppModel {
             micPercent = data["percent"] as? Int ?? 0
         case "room.ping":
             ping = data["ms"] as? Int
+            signalBars = data["bars"] as? Int
         case "room.watchers":
             if let producer = data["producerId"] as? String {
                 watchers[producer] = (data["watchers"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
@@ -449,6 +451,8 @@ extension AppModel {
 
             return
         }
+
+        media.camera.blurBackground(voicePreferences.blurBackground)
 
         do {
             try await media.camera.start { surface, time in

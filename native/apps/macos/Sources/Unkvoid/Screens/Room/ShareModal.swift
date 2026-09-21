@@ -78,13 +78,25 @@ struct ShareModal: View {
             .foregroundStyle(Theme.inkSoft)
         } else {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
+                LazyVGrid(columns: columns(for: items.count), spacing: 12) {
                     ForEach(items) { item in
                         source(item)
                     }
                 }
+                // Uma tela só cresce até onde ainda cabe inteira nos 340 do painel, sem rolar.
+                .frame(maxWidth: items.count == 1 ? 440 : .infinity)
+                .frame(maxWidth: .infinity)
             }
         }
+    }
+
+    /// O `auto-fit` do CSS estica o que houver até encher a linha; o `.adaptive` do SwiftUI
+    /// não. Com uma ou duas origens cada uma ganha a sua coluna inteira, e só de três em
+    /// diante os cartões encolhem para caber mais por linha.
+    private func columns(for count: Int) -> [GridItem] {
+        count <= 2
+            ? Array(repeating: GridItem(.flexible(), spacing: 12), count: max(count, 1))
+            : [GridItem(.adaptive(minimum: 150), spacing: 12)]
     }
 
     private func source(_ item: ShareSource) -> some View {

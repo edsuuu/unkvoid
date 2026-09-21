@@ -195,7 +195,11 @@ private struct StreamTile: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             if let media = model.media {
-                VideoSurface(sink: media.sink(for: tile.producerId), look: tile.camera ? model.imageFilters.camera : model.imageFilters.screen)
+                VideoSurface(
+                    sink: media.sink(for: tile.producerId),
+                    look: tile.camera ? model.imageFilters.camera : model.imageFilters.screen,
+                    mirrored: tile.camera && tile.mine == true
+                )
             }
 
             if tile.paused == true {

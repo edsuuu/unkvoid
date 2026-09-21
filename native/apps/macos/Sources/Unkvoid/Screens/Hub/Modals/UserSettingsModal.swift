@@ -304,6 +304,18 @@ private struct VoiceTab: View {
             Text("Vale para a voz das pessoas, o áudio das telas e os sons do app.")
                 .font(Theme.sans(11.5))
                 .foregroundStyle(Theme.inkDim)
+
+            Text("Câmera").labelMono()
+                .padding(.top, 16)
+
+            HStack(spacing: 8) {
+                chip("Desfocar o fundo", on: preferences.blurBackground) { model.setVoice { $0.blurBackground.toggle() } }
+            }
+
+            Text("Você fica nítido e o que está atrás de você, não. Vale na hora, com a câmera ligada ou não, e é o que a sala vê.")
+                .font(Theme.sans(11.5))
+                .foregroundStyle(Theme.inkDim)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .onAppear { model.refreshDevices() }
     }

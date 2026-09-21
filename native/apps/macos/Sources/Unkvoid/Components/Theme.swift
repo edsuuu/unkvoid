@@ -20,6 +20,8 @@ enum Theme {
     static let lilac2 = Color(hex: 0xAEB0FF)
     static let periwinkle = Color(hex: 0x9AA0E0)
     static let online = Color(hex: 0x34D399)
+    static let fair = Color(hex: 0xFACC15)
+    static let poor = Color(hex: 0xFB923C)
     static let offline = Color(hex: 0x4A4265)
     static let danger = Color(hex: 0xE2445C)
 

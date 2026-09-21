@@ -8,6 +8,7 @@ struct VoicePreferences: Equatable {
     var speaker = ""
     var noiseSuppression = true
     var muteOnJoin = false
+    var blurBackground = false
     /// `voice`, `ptt` ou `open`.
     var inputMode = "voice"
     var sensitivity = 35
@@ -24,6 +25,7 @@ struct VoicePreferences: Equatable {
         speaker = saved["speaker"] as? String ?? speaker
         noiseSuppression = saved["noiseSuppression"] as? Bool ?? noiseSuppression
         muteOnJoin = saved["muteOnJoin"] as? Bool ?? muteOnJoin
+        blurBackground = saved["blurBackground"] as? Bool ?? blurBackground
         inputMode = saved["inputMode"] as? String ?? inputMode
         sensitivity = saved["sensitivity"] as? Int ?? sensitivity
         mute = keys["mute"] as? String ?? mute
@@ -37,6 +39,7 @@ struct VoicePreferences: Equatable {
             "speaker": speaker,
             "noiseSuppression": noiseSuppression,
             "muteOnJoin": muteOnJoin,
+            "blurBackground": blurBackground,
             "inputMode": inputMode,
             "sensitivity": sensitivity,
             "keybinds": ["mute": mute, "deafen": deafen, "talk": talk],

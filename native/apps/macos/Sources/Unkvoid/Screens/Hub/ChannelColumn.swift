@@ -162,9 +162,15 @@ private struct VoiceChannelRow: View {
                             .lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    // A área de clique vai até a moldura do canal (10 em cima e embaixo, 12 à
+                    // esquerda): o respiro entra no botão e sai de volta do desenho.
+                    .padding(.vertical, 10)
+                    .padding(.leading, 12)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.pointer)
+                .padding(.vertical, -10)
+                .padding(.leading, -12)
                 .help(here ? "Ping \(model.ping.map(String.init) ?? "--") ms" : "Entrar na voz")
 
                 if model.voiceTarget == channel.id || (here && model.reconnecting) {
