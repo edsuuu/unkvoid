@@ -10,7 +10,7 @@ use gtk::prelude::*;
 
 use crate::bridge::Bridge;
 use crate::components::{
-    avatar, body, clear_list, clickable, column, dim, icon_button, item, label_mono, list, muted, row,
+    avatar, body, clear_list, clickable, column, dim, icon_button, item, label_mono, list, muted, popover, row,
     rule, scroll, set_icon, spacer, strong,
 };
 use crate::devices::{self, Device};
@@ -40,6 +40,8 @@ pub struct UserBar {
 impl UserBar {
     pub fn new(bridge: &Rc<Bridge>) -> Self {
         let name = strong("");
+        // Sempre "Online": o estado do microfone já está no botão, e escrevê-lo duas vezes
+        // só dava chance de as duas linhas discordarem.
         let status = dim("Online");
         let microphone = flat(icon_button("mic", BAR_ICON, icons::RESTING, "Ligar ou calar o microfone"));
         let camera = flat(icon_button("cameraOff", BAR_ICON, icons::RESTING, "Ligar a câmera"));
@@ -68,7 +70,17 @@ impl UserBar {
         line.append(&who);
         line.append(&spacer());
         line.append(&microphone);
+        line.append(&chooser_arrow("Microfone", devices::microphones, devices::current_microphone, {
+            let bridge = bridge.clone();
+
+            move |name| bridge.use_microphone(name)
+        }));
         line.append(&sound);
+        line.append(&chooser_arrow("Saída de áudio", devices::speakers, devices::current_speaker, {
+            let bridge = bridge.clone();
+
+            move |name| bridge.use_speaker(name)
+        }));
         line.append(&gear(bridge, &menu_name, &sign_out));
 
         // O bloco da voz, em cima da linha de quem você é — como no `VoicePanel` do React.
@@ -210,25 +222,20 @@ impl UserBar {
         self.voice.set_visible(channel.is_some());
         self.voice_name.set_text(channel.unwrap_or(""));
 
-        if channel.is_none() {
-            self.microphone.set_sensitive(false);
-            self.sound.set_sensitive(false);
-            mark(&self.microphone, "mic", "micOff", true);
-        }
     }
 
     /// O botão só mostra o que o servidor já decidiu: mudo pelo servidor chega como
     /// microfone fechado, e sem `speak` o botão nem fica clicável.
     pub fn set_mine(&self, mine: Mine) {
-        let here = self.in_voice.get();
-
-        self.microphone.set_sensitive(here && mine.can_speak);
-        self.sound.set_sensitive(here);
-        mark(&self.microphone, "mic", "micOff", !here || (mine.mic && !mine.mic_muted));
+        // Mutar e ensurdecer valem fora da voz também: a escolha é de quem usa, e o servidor
+        // só entra quando há voz para ele calar.
+        self.microphone.set_sensitive(mine.can_speak);
+        mark(&self.microphone, "mic", "micOff", mine.mic && !mine.mic_muted);
 
         self.camera.set_visible(mine.can_video);
         self.camera.set_tooltip_text(Some(if mine.camera { "Desligar a câmera" } else { "Ligar a câmera" }));
         highlight(&self.camera, "camera", "cameraOff", mine.camera);
+
     }
 
     pub fn set_deafened(&self, deafened: bool) {
@@ -286,6 +293,33 @@ fn highlight(button: &gtk::Button, on_name: &str, off_name: &str, on: bool) {
     );
 }
 
+/// A setinha ao lado do botão, como no Mac: ela abre a lista de aparelhos sem depender de
+/// estar numa voz para escolher.
+fn chooser_arrow(
+    heading: &str,
+    available: fn() -> Vec<Device>,
+    current: fn() -> Option<String>,
+    choose: impl Fn(&str) + 'static,
+) -> gtk::MenuButton {
+    let menu = gtk::MenuButton::new();
+    let list = chooser(heading, available, current, choose);
+
+    menu.set_child(Some(&icons::icon("chevronDown", 11, icons::DIM)));
+    menu.add_css_class("arrow");
+    clickable(&menu);
+    list.root.set_size_request(260, -1);
+
+    let popup = popover(&list.root);
+
+    menu.set_popover(Some(&popup));
+
+    // A lista é lida na hora de abrir: aparelho ligado depois que o app abriu tem de
+    // aparecer sem reiniciar nada.
+    popup.connect_show(move |_| list.refresh());
+
+    menu
+}
+
 /// A engrenagem: abre as configurações da conta numa janela modal, como o Discord — e como
 /// o `UserSettingsModal` do React, que é um modal e não um menu.
 fn gear(bridge: &Rc<Bridge>, menu_name: &gtk::Label, sign_out: &gtk::Button) -> gtk::Button {
@@ -306,9 +340,13 @@ fn gear(bridge: &Rc<Bridge>, menu_name: &gtk::Label, sign_out: &gtk::Button) -> 
     button
 }
 
-/// A janela das configurações: cabeçalho, os aparelhos que o sistema lista e o rodapé. O que
-/// está aqui é o que existe — foto de perfil, teclas e modo do microfone continuam só no
-/// React, e botão que não faz nada não entra.
+/// As configurações da conta, no molde do Discord — e o mesmo desenho do macOS: uma janela
+/// que toma quase a tela, as seções agrupadas à esquerda, a aberta à direita com o título
+/// grande, e o "X / ESC" no canto.
+///
+/// Só entram as seções que têm o que mostrar. "Teclas" e "Notificações" existem no Mac
+/// porque as preferências de voz moram na ABI dele; aqui elas ainda não subiram para o
+/// núcleo, e seção que não faz nada não entra.
 fn settings(
     bridge: &Rc<Bridge>,
     menu_name: &gtk::Label,
@@ -316,29 +354,187 @@ fn settings(
     parent: Option<&gtk::Window>,
 ) -> gtk::Window {
     let window = gtk::Window::new();
-    let sheet = column(0);
-    let head = row(12);
-    let who = column(4);
-    let inside = column(8);
+    let body = row(0);
+    let rail = column(4);
+    let pages = gtk::Stack::new();
 
-    window.set_title(Some("Configurações da conta"));
+    window.set_title(Some("Configurações"));
     window.set_modal(true);
-    window.set_default_size(460, 520);
+    window.set_default_size(1040, 720);
     window.set_transient_for(parent);
     window.add_css_class("settings");
 
-    let name = strong(&menu_name.text());
+    // ---- a coluna das seções ----
+    let account = section("users", "Minha conta");
+    let voice = section("mic", "Voz e vídeo");
+    let group_user = label_mono("Configurações de usuário");
+    let group_app = label_mono("Configurações do app");
 
-    name.set_xalign(0.0);
-    name.add_css_class("headline");
-    who.append(&name);
-    who.append(&muted(if bridge.name().is_empty() { "Usando sem login" } else { "Online" }));
-    who.set_hexpand(true);
-    head.append(&avatar(&menu_name.text(), 40, true));
-    head.append(&who);
-    head.set_margin_start(24);
-    head.set_margin_end(24);
-    head.set_margin_top(24);
+    group_user.set_margin_start(10);
+    group_app.set_margin_start(10);
+    group_app.set_margin_top(10);
+    rail.append(&group_user);
+    rail.append(&account);
+    rail.append(&group_app);
+    rail.append(&voice);
+    rail.append(&rule());
+
+    let leave = section("logout", "Sair da conta");
+
+    leave.add_css_class("danger");
+    leave.set_visible(sign_out.is_visible());
+    rail.append(&leave);
+    rail.add_css_class("settings-rail");
+    rail.set_size_request(252, -1);
+
+    // ---- a seção aberta ----
+    pages.add_named(&account_page(menu_name, bridge), Some("account"));
+    pages.add_named(&voice_page(bridge), Some("voice"));
+    pages.set_visible_child_name("account");
+    pages.set_hexpand(true);
+    pages.set_vexpand(true);
+
+    // ---- o "X / ESC" do canto ----
+    let corner = column(6);
+    let close = gtk::Button::new();
+
+    close.set_child(Some(&icons::icon("close", 14, icons::RESTING)));
+    close.add_css_class("escape");
+    close.set_tooltip_text(Some("Fechar as configurações"));
+    clickable(&close);
+    corner.append(&close);
+    corner.append(&label_mono("Esc"));
+    corner.set_valign(gtk::Align::Start);
+    corner.set_margin_top(36);
+    corner.set_margin_end(28);
+    corner.set_margin_start(8);
+
+    body.append(&rail);
+    body.append(&pages);
+    body.append(&corner);
+    window.set_child(Some(&body));
+
+    account.connect_clicked({
+        let (pages, account, voice) = (pages.clone(), account.clone(), voice.clone());
+
+        move |_| {
+            pages.set_visible_child_name("account");
+            account.add_css_class("on");
+            voice.remove_css_class("on");
+        }
+    });
+
+    voice.connect_clicked({
+        let (pages, account, voice) = (pages.clone(), account.clone(), voice.clone());
+
+        move |_| {
+            pages.set_visible_child_name("voice");
+            voice.add_css_class("on");
+            account.remove_css_class("on");
+        }
+    });
+
+    account.add_css_class("on");
+
+    leave.connect_clicked({
+        let (bridge, window) = (bridge.clone(), window.clone());
+
+        move |_| {
+            window.close();
+            bridge.sign_out();
+        }
+    });
+
+    close.connect_clicked({
+        let window = window.clone();
+
+        move |_| window.close()
+    });
+
+    // Esc fecha, como no Mac.
+    let keys = gtk::EventControllerKey::new();
+
+    keys.connect_key_pressed({
+        let window = window.clone();
+
+        move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                window.close();
+
+                return gtk::glib::Propagation::Stop;
+            }
+
+            gtk::glib::Propagation::Proceed
+        }
+    });
+
+    window.add_controller(keys);
+
+    window
+}
+
+/// O desenho à esquerda e a frase à direita, dentro de um botão.
+fn dress(button: &gtk::Button, icon: &str, text: &str, color: &str) {
+    let inside = row(10);
+    let label = body(text);
+
+    label.set_xalign(0.0);
+    inside.append(&icons::icon(icon, 14, color));
+    inside.append(&label);
+    button.set_child(Some(&inside));
+    clickable(button);
+}
+
+/// Uma linha da coluna da esquerda.
+fn section(icon: &str, text: &str) -> gtk::Button {
+    let button = gtk::Button::new();
+
+    dress(&button, icon, text, icons::RESTING);
+    button.add_css_class("section");
+
+    button
+}
+
+/// O miolo da seção: o título grande e o que ela mostra.
+fn page(title: &str) -> gtk::Box {
+    let inside = column(20);
+    let headline = crate::components::headline(title);
+
+    headline.set_xalign(0.0);
+    inside.append(&headline);
+    inside.set_margin_start(40);
+    inside.set_margin_end(40);
+    inside.set_margin_top(36);
+    inside.set_margin_bottom(36);
+
+    inside
+}
+
+fn account_page(menu_name: &gtk::Label, bridge: &Rc<Bridge>) -> gtk::Widget {
+    let inside = page("Minha conta");
+    let photo = row(12);
+    let face = row(0);
+
+    inside.append(&label_mono("Foto de perfil"));
+    face.append(&avatar(&menu_name.text(), 56, true));
+    photo.append(&face);
+    // ponytail: trocar a foto é `POST /api/me/avatar` com um arquivo, e o seletor do GTK
+    // ainda não está ligado aqui. Teto: a foto se troca pelo site ou pelo Mac.
+    photo.append(&muted("A foto se troca no site ou no app do Mac."));
+    inside.append(&photo);
+
+    inside.append(&label_mono("Conta"));
+    inside.append(&line("Apelido", &menu_name.text()));
+    inside.append(&line(
+        "Entrada",
+        if bridge.name().is_empty() { "usando sem login" } else { "conta conectada" },
+    ));
+
+    crate::components::scroll(&inside).upcast()
+}
+
+fn voice_page(bridge: &Rc<Bridge>) -> gtk::Widget {
+    let inside = page("Voz e vídeo");
 
     let microphones = chooser("Microfone", devices::microphones, devices::current_microphone, {
         let bridge = bridge.clone();
@@ -354,72 +550,26 @@ fn settings(
 
     microphones.refresh();
     speakers.refresh();
-
     inside.append(&microphones.root);
     inside.append(&speakers.root);
     inside.append(&muted("Vale para a voz das pessoas, o áudio das telas e os sons do app."));
-    inside.set_margin_start(24);
-    inside.set_margin_end(24);
-    inside.set_margin_top(20);
-    inside.set_margin_bottom(20);
-    inside.set_vexpand(true);
 
-    let footer = row(8);
-    let done = crate::components::button("Pronto", "primary");
-
-    // O botão de sair é o mesmo da barra: um widget só não cabe em dois pais, então aqui ele
-    // vira um irmão que faz a mesma coisa.
-    let leave = crate::components::button("Sair da conta", "ghost");
-
-    leave.set_visible(sign_out.is_visible());
-    leave.connect_clicked({
-        let (bridge, window) = (bridge.clone(), window.clone());
-
-        move |_| {
-            window.close();
-            bridge.sign_out();
-        }
-    });
-
-    done.connect_clicked({
-        let window = window.clone();
-
-        move |_| window.close()
-    });
-
-    footer.append(&leave);
-    footer.append(&spacer());
-    footer.append(&done);
-    footer.set_margin_start(16);
-    footer.set_margin_end(16);
-    footer.set_margin_top(16);
-    footer.set_margin_bottom(16);
-
-    sheet.append(&head);
-    sheet.append(&inside);
-    sheet.append(&rule());
-    sheet.append(&footer);
-    window.set_child(Some(&sheet));
-
-    window
+    crate::components::scroll(&inside).upcast()
 }
 
-fn dress(button: &gtk::Button, icon: &str, text: &str, color: &str) {
+/// Um dado da conta: o nome à esquerda, o valor à direita.
+fn line(label: &str, value: &str) -> gtk::Box {
     let inside = row(10);
-    let label = body(text);
+    let left = muted(label);
+    let right = body(value);
 
-    label.set_xalign(0.0);
+    left.set_xalign(0.0);
+    right.set_xalign(1.0);
+    inside.append(&left);
+    inside.append(&spacer());
+    inside.append(&right);
 
-    if color == icons::LILAC {
-        label.add_css_class("lilac");
-    }
-
-    inside.append(&icons::icon(icon, BAR_ICON, color));
-    inside.append(&label);
-
-    button.set_child(Some(&inside));
-    button.add_css_class("menu-item");
-    clickable(button);
+    inside
 }
 
 /// Uma lista de aparelhos dentro do menu, com o título em cima.

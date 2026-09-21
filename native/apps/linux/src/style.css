@@ -429,6 +429,55 @@ window.settings > * {
     color: #ece9f3;
 }
 
+/* A coluna das secoes, mais escura que o resto — como no Mac. */
+.settings-rail {
+    background-color: rgba(0, 0, 0, 0.18);
+    padding: 22px 14px;
+}
+
+button.section {
+    background-color: transparent;
+    border: none;
+    border-radius: 10px;
+    box-shadow: none;
+    min-height: 34px;
+    padding: 0 10px;
+}
+
+button.section:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+button.section.on {
+    background-color: rgba(138, 124, 245, 0.16);
+    color: #ffffff;
+}
+
+button.section.danger {
+    color: #e2445c;
+}
+
+/* O "X" do canto: um circulo vazado, como no Mac. */
+button.escape {
+    background-color: transparent;
+    border: 1.5px solid #8a80a6;
+    border-radius: 17px;
+    box-shadow: none;
+    min-height: 34px;
+    min-width: 34px;
+    padding: 0;
+}
+
+button.escape:hover {
+    border-color: #ffffff;
+}
+
+/* Os controles da barra crescem um tanto ao passar o mouse, como no Mac. */
+button.icon.bar:hover,
+menubutton.arrow > button:hover {
+    transform: scale(1.12);
+}
+
 /* O "+" das secoes de canal: menor que o botao de icone comum. */
 button.icon.tiny {
     border-radius: 7px;

@@ -120,15 +120,22 @@ export component SettingsModal inherits Rectangle {
         }
     }
 
+    // O painel sobe ao aparecer (o `animate-rise` do React) e tem a sombra funda do
+    // `.glass-panel`: é ela que o descola do fundo em vez de deixá-lo colado na janela.
     Rectangle {
         x: 24px;
-        y: 24px;
+        y: root.shown ? 24px : 34px;
         width: parent.width - 48px;
         height: parent.height - 48px;
         background: #100d1af7;
-        border-radius: 20px;
+        border-radius: 22px;
         border-width: 1px;
-        border-color: Skin.line-strong;
+        border-color: #ffffff1a;
+        drop-shadow-blur: 45px;
+        drop-shadow-offset-y: 20px;
+        drop-shadow-color: #000000f2;
+
+        animate y { duration: 220ms; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
 
         TouchArea { }
 
@@ -148,7 +155,11 @@ export component SettingsModal inherits Rectangle {
                     spacing: 4px;
                     alignment: start;
 
-                    LabelMono { text: "CONFIGURAÇÕES DE USUÁRIO"; }
+                    LabelMono {
+                        text: "CONFIGURAÇÕES DE USUÁRIO";
+                        // O mesmo respiro do Mac em volta do título de cada grupo.
+                        x: 10px;
+                    }
 
                     Section {
                         commands: Icons.users;
@@ -159,7 +170,10 @@ export component SettingsModal inherits Rectangle {
 
                     Rectangle { height: 10px; }
 
-                    LabelMono { text: "CONFIGURAÇÕES DO APP"; }
+                    LabelMono {
+                        text: "CONFIGURAÇÕES DO APP";
+                        x: 10px;
+                    }
 
                     Section {
                         commands: Icons.mic;

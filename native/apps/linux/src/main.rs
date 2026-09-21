@@ -83,10 +83,14 @@ fn open(application: &Application) {
     let window = ApplicationWindow::builder()
         .application(application)
         .title("Unkvoid")
-        .default_width(1180)
-        .default_height(760)
+        // Os números do `expand_window` do Tauri, que o macOS e o Windows também usam: com
+        // menos largura os cartões da Home quebram em outra ordem.
+        .default_width(1280)
+        .default_height(800)
         .child(&stack)
         .build();
+
+    window.set_size_request(940, 600);
 
     show(&stack, Screen::Updating);
     window.present();
