@@ -17,7 +17,10 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::failure::Failure;
-use crate::models::{AuthToken, Config, Message, ServerSummary, ServerTree, User};
+use crate::models::{
+    AuthToken, ChannelKind, Config, Conversation, DirectMessage, Friendship, Message, ServerSummary,
+    ServerTree, User,
+};
 
 /// Dez segundos, o mesmo do app de hoje. Passar disto a pessoa já desistiu e clicou de novo.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -111,6 +114,98 @@ impl Api {
 
     pub async fn servers(&self) -> Result<Vec<ServerSummary>, HttpError> {
         self.get("/api/servers").await
+    }
+
+    /// Cria um servidor. Ele já nasce com um canal de texto e um de voz — quem decide isso
+    /// é o Laravel, e é por isso que a resposta já serve para abrir a árvore.
+    pub async fn create_server(&self, name: &str) -> Result<ServerSummary, HttpError> {
+        self.post("/api/servers", &serde_json::json!({ "name": name })).await
+    }
+
+    /// Entra num servidor pelo convite. O código é o que o dono mandou, não o do servidor.
+    pub async fn join_invite(&self, code: &str) -> Result<ServerSummary, HttpError> {
+        self.post(&format!("/api/invites/{code}"), &serde_json::json!({})).await
+    }
+
+    /// Sorteia um convite novo. O anterior para de valer na hora.
+    pub async fn regenerate_invite(&self, server: i64) -> Result<String, HttpError> {
+        let answer: Value = self.post(&format!("/api/servers/{server}/invite"), &serde_json::json!({})).await?;
+
+        Ok(answer["invite_code"].as_str().unwrap_or_default().to_owned())
+    }
+
+    pub async fn leave_server(&self, server: i64) -> Result<(), HttpError> {
+        let _: Value = self.post(&format!("/api/servers/{server}/leave"), &serde_json::json!({})).await?;
+
+        Ok(())
+    }
+
+    /// Abre um canal no servidor. `kind` é o que separa texto de voz, e o servidor recusa
+    /// qualquer outra coisa.
+    ///
+    /// Não devolve o canal: a resposta do `store` vem sem a permissão calculada, e quem
+    /// chama precisa da árvore inteira de qualquer jeito para desenhar a coluna de novo.
+    pub async fn create_channel(&self, server: i64, name: &str, kind: ChannelKind) -> Result<(), HttpError> {
+        let _: Value = self
+            .post(
+                &format!("/api/servers/{server}/channels"),
+                &serde_json::json!({ "name": name, "type": kind }),
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn friends(&self) -> Result<Vec<Friendship>, HttpError> {
+        self.get("/api/friends").await
+    }
+
+    /// Pede amizade pelo e-mail. O servidor é quem diz se a pessoa existe.
+    pub async fn add_friend(&self, email: &str) -> Result<Friendship, HttpError> {
+        self.post("/api/friends", &serde_json::json!({ "email": email })).await
+    }
+
+    /// Responde a um pedido. Aceitar é uma ação nomeada (`accept`); recusar é apagar, porque
+    /// o servidor não guarda "não" — só `accept` e `block` passam pelo `PATCH`.
+    pub async fn answer_friend(&self, friendship: i64, accept: bool) -> Result<(), HttpError> {
+        if accept {
+            let _: Value = self
+                .send(
+                    self.http
+                        .patch(self.url(&format!("/api/friends/{friendship}")))
+                        .json(&serde_json::json!({ "action": "accept" })),
+                    "/api/friends",
+                )
+                .await?;
+
+            return Ok(());
+        }
+
+        let _: Value = self
+            .send(self.http.delete(self.url(&format!("/api/friends/{friendship}"))), "/api/friends")
+            .await?;
+
+        Ok(())
+    }
+
+    /// As conversas abertas, a última frase de cada uma e quantas faltam ler.
+    pub async fn conversations(&self) -> Result<Vec<Conversation>, HttpError> {
+        self.get("/api/dm").await
+    }
+
+    pub async fn direct_messages(&self, user: i64) -> Result<Vec<DirectMessage>, HttpError> {
+        self.get(&format!("/api/dm/{user}")).await
+    }
+
+    pub async fn send_direct(&self, user: i64, body: &str) -> Result<DirectMessage, HttpError> {
+        self.post(&format!("/api/dm/{user}"), &serde_json::json!({ "body": body })).await
+    }
+
+    /// Marca a conversa como lida. Sem isto o contador de não lidas nunca zera.
+    pub async fn read_conversation(&self, user: i64) -> Result<(), HttpError> {
+        let _: Value = self.post(&format!("/api/dm/{user}/read"), &serde_json::json!({})).await?;
+
+        Ok(())
     }
 
     pub async fn messages(&self, channel: &str) -> Result<Vec<Message>, HttpError> {

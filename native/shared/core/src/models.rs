@@ -259,6 +259,59 @@ impl Screen {
     }
 }
 
+/// O estado de uma amizade. O servidor manda o nome em minúsculas.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FriendshipStatus {
+    Pending,
+    Accepted,
+    Blocked,
+}
+
+/// Um pedido de amizade, aceito ou não. `requester` é quem pediu — e é por ele que a tela
+/// sabe se o convite é para responder ou para esperar.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Friendship {
+    pub id: i64,
+    pub status: FriendshipStatus,
+    pub requester: Person,
+    pub addressee: Person,
+    #[serde(default)]
+    pub responded_at: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+/// A última mensagem de uma conversa, que é o que a lista mostra embaixo do nome.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LastMessage {
+    pub id: i64,
+    pub body: String,
+    pub created_at: String,
+    pub mine: bool,
+}
+
+/// Uma conversa direta na lista: com quem, o que foi dito por último, e quantas faltam ler.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Conversation {
+    pub user: Person,
+    pub last: LastMessage,
+    #[serde(default)]
+    pub unread: i64,
+}
+
+/// Uma mensagem direta. `mine` vem do servidor: quem é você quem diz é ele.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DirectMessage {
+    pub id: i64,
+    pub body: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub edited_at: Option<String>,
+    pub mine: bool,
+    pub sender: Person,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,5 +431,56 @@ mod tests {
         let voice = serde_json::to_string(&ChannelKind::Voice).expect("serialize");
 
         assert_eq!(voice, "\"voice\"");
+    }
+
+    /// As três respostas do Laravel, copiadas da API no ar. O que este teste protege é o
+    /// formato: se um `Resource` mudar de campo, ele cai aqui e não na tela de alguém.
+    #[test]
+    fn friendship_conversation_and_direct_message_read_what_the_server_sends() {
+        let friendship: Friendship = serde_json::from_str(
+            r#"{"id":1,"status":"accepted",
+                "requester":{"id":14,"name":"edson","avatar_url":null},
+                "addressee":{"id":15,"name":"maria","avatar_url":null},
+                "responded_at":"2026-09-21T09:44:52-03:00","created_at":"2026-09-21T09:44:20-03:00"}"#,
+        )
+        .expect("amizade");
+
+        assert_eq!(friendship.status, FriendshipStatus::Accepted);
+        assert_eq!(friendship.addressee.name, "maria");
+
+        let conversation: Conversation = serde_json::from_str(
+            r#"{"user":{"id":15,"name":"maria","avatar_url":null},
+                "last":{"id":1,"body":"Oi","created_at":"2026-09-21T09:44:52-03:00","mine":true},
+                "unread":0}"#,
+        )
+        .expect("conversa");
+
+        assert_eq!(conversation.user.id, 15);
+        assert!(conversation.last.mine);
+
+        let direct: DirectMessage = serde_json::from_str(
+            r#"{"id":1,"body":"Oi","created_at":"2026-09-21T09:44:52-03:00","edited_at":null,
+                "mine":true,"sender":{"id":14,"name":"edson","avatar_url":null}}"#,
+        )
+        .expect("mensagem direta");
+
+        assert_eq!(direct.sender.name, "edson");
+        assert_eq!(direct.edited_at, None);
+    }
+
+    /// O pedido de amizade que ainda não foi respondido: é por `status` que a tela sabe se
+    /// mostra "aceitar" ou "aguardando".
+    #[test]
+    fn a_pending_friendship_has_no_answer_yet() {
+        let friendship: Friendship = serde_json::from_str(
+            r#"{"id":1,"status":"pending",
+                "requester":{"id":14,"name":"edson","avatar_url":null},
+                "addressee":{"id":15,"name":"maria","avatar_url":null},
+                "responded_at":null,"created_at":"2026-09-21T09:44:20-03:00"}"#,
+        )
+        .expect("amizade");
+
+        assert_eq!(friendship.status, FriendshipStatus::Pending);
+        assert_eq!(friendship.responded_at, None);
     }
 }
