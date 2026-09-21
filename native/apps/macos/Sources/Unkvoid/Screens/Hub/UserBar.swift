@@ -26,7 +26,7 @@ struct UserBar: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            if let voice = model.voiceChannel {
+            if let voice = model.voiceChannel ?? joining {
                 connected(to: voice)
 
                 Divider().overlay(Theme.line)
@@ -67,6 +67,12 @@ struct UserBar: View {
         .closesOnOutsideClick(active: open != nil, panel: popoverFrame) { open = nil }
     }
 
+    /// O canal em que se está entrando: o bloco da voz aparece já no clique, com
+    /// "Conectando…", e vira "Voz conectada" quando o SFU responde.
+    private var joining: Channel? {
+        model.tree?.voiceChannels.first { $0.id == model.voiceTarget }
+    }
+
     private var inVoice: Bool {
         model.voiceChannel != nil
     }
@@ -94,13 +100,13 @@ struct UserBar: View {
             HStack(spacing: 10) {
                 SignalBars(
                     bars: model.reconnecting ? nil : model.signalBars,
-                    hint: model.reconnecting ? "Reconectando…" : model.ping.map { "\($0) ms até o servidor de mídia" } ?? "Medindo o ping…"
+                    hint: model.voiceJoining ? "Conectando…" : model.reconnecting ? "Reconectando…" : model.ping.map { "\($0) ms" } ?? "Medindo o ping…"
                 )
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(model.reconnecting ? "Reconectando…" : "Voz conectada")
+                    Text(model.voiceJoining ? "Conectando…" : model.reconnecting ? "Reconectando…" : "Voz conectada")
                         .font(Theme.sans(13, .semibold))
-                        .foregroundStyle(model.reconnecting ? Theme.danger : Theme.online)
+                        .foregroundStyle(model.voiceJoining ? Theme.fair : model.reconnecting ? Theme.danger : Theme.online)
 
                     Text(voice.name)
                         .font(Theme.mono(10.5))
@@ -136,8 +142,8 @@ struct UserBar: View {
                         )
                 }
                 .buttonStyle(.pointer)
-                .disabled(!model.mine.canVideo)
-                .opacity(model.mine.canVideo ? 1 : 0.4)
+                .disabled(!model.mine.canVideo || model.voiceJoining)
+                .opacity(model.mine.canVideo && !model.voiceJoining ? 1 : 0.4)
                 .help(model.mine.camera ? "Desligar a câmera" : "Ligar a câmera")
 
                 shareButton

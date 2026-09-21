@@ -172,12 +172,15 @@ struct ChatPanel: View {
 
     /// Aparecer no topo da lista é ter rolado até lá: é a hora de buscar as mais antigas.
     private var older: some View {
-        Text(chat.loadingOlder ? "carregando…" : "")
-            .font(Theme.mono(10.5))
-            .foregroundStyle(Theme.inkDim)
-            .frame(maxWidth: .infinity)
-            .frame(height: 14)
-            .onAppear {
+        HStack(spacing: 10) {
+            Circle().fill(Color.white.opacity(0.07)).frame(width: 28, height: 28)
+            Skeleton(height: 40, width: 220)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: chat.loadingOlder ? 48 : 14, alignment: .top)
+        .opacity(chat.loadingOlder ? 1 : 0)
+        .clipped()
+        .onAppear {
                 Task { _ = await chat.loadOlder() }
             }
     }

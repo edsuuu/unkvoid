@@ -243,7 +243,11 @@ private struct VoiceChannelRow: View {
                         .foregroundStyle(me ? Theme.inkBody : Theme.inkIcon)
                         .lineLimit(1)
 
-                    if person.muted == true {
+                    // O fone cortado fica por cima do microfone cortado: quem não ouve também
+                    // não conversa, e um ícone só diz as duas coisas.
+                    if me, model.deafened {
+                        Icon(name: .headphonesOff, size: 12).foregroundStyle(Theme.danger).help("Áudio mutado")
+                    } else if person.muted == true {
                         Icon(name: .micOff, size: 12).foregroundStyle(Theme.danger).help("Microfone mutado")
                     }
 
