@@ -315,7 +315,24 @@ struct EndToEndTests {
 
         #expect(tiles.count == 1 && tiles.first?["label"] as? String == "Ada")
 
+        // "Ver o que a sala vê": o SFU não avisa a Ada do producer dela, e mesmo assim ela
+        // tem de conseguir assistir à própria tela.
+        try ada.app("selfView", ["wanted": true])
+
+        var own = 0
+
+        for _ in 0 ..< 80 where own < 5 {
+            if let media = ada.nextMedia(), case .video = media.kind {
+                own += 1
+            }
+        }
+
+        #expect(own >= 5, "a Ada recebeu só \(own) quadros da própria tela")
+        #expect((try ada.app("room")["tiles"] as? [[String: Any]])?.first?["mine"] as? Bool == true)
+
         try ada.app("stopSharing")
+
+        #expect((try ada.app("room")["tiles"] as? [[String: Any]])?.isEmpty == true, "parou de transmitir e o cartão dela ficou")
         try ada.app("leaveRoom")
         try grace.app("leaveRoom")
     }

@@ -295,8 +295,10 @@ private struct StreamTile: View {
             model.toggleFullscreen(tile)
         }
 
-        button(.close, tile.mine == true ? "Ocultar minha tela" : "Fechar esta transmissão (continua ao vivo para os outros)") {
-            if tile.mine == true {
+        button(.close, tile.mine == true ? (tile.camera ? "Desligar a câmera" : "Ocultar minha tela") : "Fechar esta transmissão (continua ao vivo para os outros)") {
+            if tile.mine == true, tile.camera {
+                await model.toggleCamera()
+            } else if tile.mine == true {
                 await model.toggleSelfView()
             } else {
                 await model.close(tile)
