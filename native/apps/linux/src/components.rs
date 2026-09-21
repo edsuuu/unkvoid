@@ -279,6 +279,15 @@ pub fn spacer() -> gtk::Box {
     spacer
 }
 
+/// Uma coluna da tela: painel de vidro com a folga de dentro do React.
+pub fn panel_box(spacing: i32) -> gtk::Box {
+    let panel = column(spacing);
+
+    panel.add_css_class("panel");
+
+    panel
+}
+
 /// Uma fila de chips que quebra a linha em vez de esticar o cartão. Numa `Box` horizontal o
 /// quarto código empurraria o cartão para além dos 420 do desenho.
 pub fn chip_wrap() -> gtk::FlowBox {

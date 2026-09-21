@@ -123,6 +123,24 @@ window {
     padding: 0;
 }
 
+/* `.row-item`: a linha larga de clicar — servidor, canal, conversa, aba da Home. */
+button.wide {
+    background-color: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 9px 11px;
+}
+
+button.wide:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+button.wide.on,
+button.wide.on:hover {
+    background-color: rgba(138, 124, 245, 0.12);
+    border-color: rgba(138, 124, 245, 0.32);
+}
+
 /* A linha de quem está na sala: `rounded-[10px] p-2` do React. */
 .person {
     border-radius: 10px;

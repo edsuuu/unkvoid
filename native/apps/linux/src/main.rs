@@ -106,6 +106,8 @@ fn open(application: &Application) {
 
                     if landing == Screen::Hub {
                         bridge.load_servers();
+                        bridge.load_conversations();
+                        hub.refresh_recent(&bridge);
                     } else {
                         entry.focus();
                     }
@@ -121,11 +123,17 @@ fn open(application: &Application) {
                     room.set_status(&message);
                 }
                 Update::LoginComplaint(message) => entry.set_login_error(&message),
-                Update::Servers(servers) => hub.set_servers(&servers),
+                Update::Servers(servers) => hub.set_servers(&servers, &bridge),
                 Update::Tree(tree) => hub.set_tree(&tree),
                 Update::Messages(messages) => {
                     hub.set_messages(&messages);
                     hub.focus();
+                }
+                Update::Friends(friends) => hub.set_friends(&friends, &bridge),
+                Update::Conversations(conversations) => hub.set_conversations(&conversations, &bridge),
+                Update::Direct { person, messages } => {
+                    hub.set_direct(&person, &messages);
+                    hub.focus_direct();
                 }
                 Update::Joined { room: code, peers } => {
                     entry.set_error("");

@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use core_app::api::{Api, HttpError};
 use core_app::app::EntryRefusal;
-use core_app::models::{Message, Peer, RoomIdentity, ServerSummary, ServerTree, User};
+use core_app::models::{
+    Conversation, DirectMessage, Friendship, Message, Peer, Person, RoomIdentity, ServerSummary, ServerTree, User,
+};
 use core_app::protocol::{action, local};
 use core_app::reconnect::Backoff;
 use core_app::session::Session;
@@ -43,6 +45,10 @@ pub enum Update {
     Servers(Vec<ServerSummary>),
     Tree(Box<ServerTree>),
     Messages(Vec<Message>),
+    Friends(Vec<Friendship>),
+    Conversations(Vec<Conversation>),
+    /// A conversa aberta: com quem, e o que já foi dito.
+    Direct { person: Person, messages: Vec<DirectMessage> },
     Joined { room: String, peers: Vec<Peer> },
     Peers(Vec<Peer>),
     /// As transmissões que estão sendo assistidas agora, uma por cartão.
@@ -200,6 +206,143 @@ impl Bridge {
                 Err(failure) => {
                     let _ = screen.send(Update::Complaint(said(&failure)));
                 }
+            }
+        });
+    }
+
+    /// Cria um servidor. Ele já nasce com um canal de texto e um de voz — por isso a lista
+    /// é recarregada e a árvore aberta em seguida: é o que o React faz.
+    pub fn create_server(self: &Rc<Self>, name: &str) {
+        let (api, screen, name) = (self.api.clone(), self.to_screen.clone(), name.to_owned());
+
+        self.spawn(async move {
+            match api.create_server(&name).await {
+                Ok(server) => entered(&api, &screen, server.id).await,
+                Err(failure) => {
+                    let _ = screen.send(Update::Complaint(said(&failure)));
+                }
+            }
+        });
+    }
+
+    /// Entra por convite. O código é o que o dono mandou, não o do servidor.
+    pub fn join_invite(self: &Rc<Self>, code: &str) {
+        let (api, screen, code) = (self.api.clone(), self.to_screen.clone(), code.trim().to_owned());
+
+        self.spawn(async move {
+            match api.join_invite(&code).await {
+                Ok(server) => entered(&api, &screen, server.id).await,
+                Err(failure) => {
+                    let _ = screen.send(Update::Complaint(said(&failure)));
+                }
+            }
+        });
+    }
+
+    pub fn load_friends(self: &Rc<Self>) {
+        let (api, screen) = (self.api.clone(), self.to_screen.clone());
+
+        self.spawn(async move {
+            match api.friends().await {
+                Ok(friends) => {
+                    let _ = screen.send(Update::Friends(friends));
+                }
+                Err(failure) => {
+                    let _ = screen.send(Update::Complaint(said(&failure)));
+                }
+            }
+        });
+    }
+
+    /// Pede amizade pelo e-mail. Quem diz se a pessoa existe é o servidor.
+    pub fn add_friend(self: &Rc<Self>, email: &str) {
+        let (api, screen, email) = (self.api.clone(), self.to_screen.clone(), email.trim().to_owned());
+
+        self.spawn(async move {
+            match api.add_friend(&email).await {
+                Ok(_) => match api.friends().await {
+                    Ok(friends) => {
+                        let _ = screen.send(Update::Friends(friends));
+                    }
+                    Err(failure) => {
+                        let _ = screen.send(Update::Complaint(said(&failure)));
+                    }
+                },
+                Err(failure) => {
+                    let _ = screen.send(Update::Complaint(said(&failure)));
+                }
+            }
+        });
+    }
+
+    pub fn answer_friend(self: &Rc<Self>, friendship: i64, accept: bool) {
+        let (api, screen) = (self.api.clone(), self.to_screen.clone());
+
+        self.spawn(async move {
+            if let Err(failure) = api.answer_friend(friendship, accept).await {
+                let _ = screen.send(Update::Complaint(said(&failure)));
+
+                return;
+            }
+
+            if let Ok(friends) = api.friends().await {
+                let _ = screen.send(Update::Friends(friends));
+            }
+        });
+    }
+
+    pub fn load_conversations(self: &Rc<Self>) {
+        let (api, screen) = (self.api.clone(), self.to_screen.clone());
+
+        self.spawn(async move {
+            match api.conversations().await {
+                Ok(conversations) => {
+                    let _ = screen.send(Update::Conversations(conversations));
+                }
+                Err(failure) => {
+                    let _ = screen.send(Update::Complaint(said(&failure)));
+                }
+            }
+        });
+    }
+
+    /// Abre a conversa com alguém e a marca como lida: o contador só zera assim.
+    pub fn open_conversation(self: &Rc<Self>, person: Person) {
+        let (api, screen) = (self.api.clone(), self.to_screen.clone());
+
+        self.spawn(async move {
+            match api.direct_messages(person.id).await {
+                Ok(messages) => {
+                    let _ = api.read_conversation(person.id).await;
+                    let _ = screen.send(Update::Direct { person, messages });
+
+                    if let Ok(conversations) = api.conversations().await {
+                        let _ = screen.send(Update::Conversations(conversations));
+                    }
+                }
+                Err(failure) => {
+                    let _ = screen.send(Update::Complaint(said(&failure)));
+                }
+            }
+        });
+    }
+
+    pub fn send_direct(self: &Rc<Self>, person: Person, body: &str) {
+        let (api, screen, body) = (self.api.clone(), self.to_screen.clone(), body.to_owned());
+
+        self.spawn(async move {
+            if let Err(failure) = api.send_direct(person.id, &body).await {
+                let _ = screen.send(Update::Complaint(said(&failure)));
+
+                return;
+            }
+
+            if let Ok(messages) = api.direct_messages(person.id).await {
+                let _ = screen.send(Update::Direct { person, messages });
+            }
+
+            if let Ok(conversations) = api.conversations().await {
+                let _ = screen.send(Update::Conversations(conversations));
             }
         });
     }
@@ -627,6 +770,23 @@ impl Bridge {
 
 /// Um `Mutex` envenenado aqui é uma tarefa que caiu no meio de uma troca de sessão. O app
 /// continuar com a sala que tem é melhor do que fechar a janela na cara de quem está nela.
+/// Servidor recém-criado ou recém-entrado: a lista muda e a árvore dele abre. Está aqui e
+/// não no `Bridge` porque o `Rc` dele não atravessa a thread do runtime.
+async fn entered(api: &Arc<Api>, screen: &UnboundedSender<Update>, server: i64) {
+    if let Ok(servers) = api.servers().await {
+        let _ = screen.send(Update::Servers(servers));
+    }
+
+    match api.tree(server).await {
+        Ok(tree) => {
+            let _ = screen.send(Update::Tree(Box::new(tree)));
+        }
+        Err(failure) => {
+            let _ = screen.send(Update::Complaint(said(&failure)));
+        }
+    }
+}
+
 fn lock<T>(cell: &Arc<Mutex<T>>) -> MutexGuard<'_, T> {
     cell.lock().unwrap_or_else(PoisonError::into_inner)
 }
