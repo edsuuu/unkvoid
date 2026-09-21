@@ -78,11 +78,11 @@ struct UserBar: View {
     }
 
     private var micOff: Bool {
-        inVoice ? !model.mine.mic || model.mine.micMuted || !model.mine.canSpeak : model.mutedAtRest
+        model.micShownOff
     }
 
     private var speaking: Bool {
-        inVoice && !micOff && model.micLevel > 0.02
+        model.user.map { model.isSpeaking($0.id) } ?? false
     }
 
     private var micHint: String {

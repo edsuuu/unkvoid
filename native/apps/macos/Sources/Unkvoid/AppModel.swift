@@ -168,6 +168,11 @@ final class AppModel: ObservableObject {
     @Published var mine = Mine()
     @Published var reconnecting = false
     @Published var deafened = false
+    /// Entre o clique no canal e o microfone abrir: o botão ainda não tem o que mostrar, e
+    /// pintá-lo de "mudo" nesse meio segundo é o pisca que ninguém pediu.
+    @Published var micOpening = false
+    /// Os producers de microfone de quem está falando agora, medidos no som que chega.
+    @Published var speakingProducers: Set<String> = []
     /// Mudo escolhido fora de uma sala: não há microfone para calar ainda, então fica guardado
     /// e vale no instante em que ele abrir. Dentro da sala quem sabe é o `mine.micMuted`.
     @Published var mutedAtRest = false
@@ -217,6 +222,16 @@ final class AppModel: ObservableObject {
 
         self.core = core
         media = core.map(MediaRouter.init)
+
+        media?.sound.onSpeaking = { [weak self] producer, speaking in
+            Task { @MainActor in
+                if speaking {
+                    self?.speakingProducers.insert(producer)
+                } else {
+                    self?.speakingProducers.remove(producer)
+                }
+            }
+        }
     }
 
     deinit {

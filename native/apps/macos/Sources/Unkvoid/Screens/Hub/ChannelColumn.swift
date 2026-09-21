@@ -237,6 +237,8 @@ private struct VoiceChannelRow: View {
             } label: {
                 HStack(spacing: 8) {
                     Avatar(name: person.name, url: member?.avatar_url, size: 22, mine: me)
+                        .overlay(Circle().strokeBorder(Theme.online, lineWidth: 2).padding(-2).opacity(model.isSpeaking(person.user_id) ? 1 : 0))
+                        .animation(.easeOut(duration: 0.12), value: model.isSpeaking(person.user_id))
 
                     Text(person.name)
                         .font(Theme.sans(12.5))
@@ -247,7 +249,7 @@ private struct VoiceChannelRow: View {
                     // não conversa, e um ícone só diz as duas coisas.
                     if me, model.deafened {
                         Icon(name: .headphonesOff, size: 12).foregroundStyle(Theme.danger).help("Áudio mutado")
-                    } else if person.muted == true {
+                    } else if me ? model.micShownOff : person.muted == true {
                         Icon(name: .micOff, size: 12).foregroundStyle(Theme.danger).help("Microfone mutado")
                     }
 

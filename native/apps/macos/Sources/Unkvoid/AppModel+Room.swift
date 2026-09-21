@@ -38,6 +38,9 @@ extension AppModel {
 
         voiceJoining = true
         voiceTarget = opened.id
+        micOpening = true
+
+        defer { micOpening = false }
 
         let answer = await ask("joinVoice", ["channel": opened.id])
 
@@ -110,6 +113,7 @@ extension AppModel {
         signalBars = nil
         reconnecting = false
         micLevel = 0
+        speakingProducers = []
         focusedTile = nil
         heardTiles = []
         shareOpen = false
@@ -413,6 +417,28 @@ extension AppModel {
         if voicePreferences.muteOnJoin || mutedAtRest {
             _ = await ask("muteMicrophone", ["muted": true])
         }
+    }
+
+    /// O microfone desenhado como desligado: mudo por escolha, sem permissão de falar, ou
+    /// fechado de verdade (e não só ainda abrindo). Fora de uma sala vale o mudo guardado.
+    var micShownOff: Bool {
+        guard screen == .room || voiceChannel != nil else {
+            return mutedAtRest
+        }
+
+        return mine.micMuted || !mine.canSpeak || (!mine.mic && !micOpening)
+    }
+
+    /// Quem está falando agora, para o anel verde. A própria pessoa é medida no microfone
+    /// dela; as outras, no som que chega do microfone de cada uma.
+    func isSpeaking(_ userId: Int) -> Bool {
+        if userId == user?.id {
+            return voiceChannel != nil && !micShownOff && micLevel > 0.02
+        }
+
+        let microphone = peers.first { $0.userId == String(userId) }?.producers.first { $0.source == "mic" }
+
+        return microphone.map { speakingProducers.contains($0.producerId) } ?? false
     }
 
     func toggleMute() async {

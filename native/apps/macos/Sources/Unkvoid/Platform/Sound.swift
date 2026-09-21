@@ -10,6 +10,15 @@ final class Sound: @unchecked Sendable {
     private let output = AVAudioEngine()
     private let input = AVAudioEngine()
     private let gate = NSLock()
+
+    /// Quem está falando, medido no som que chega de cada pessoa. Avisa só na virada, e a
+    /// fala continua "acesa" por 350 ms depois do último pico: o Opus nem manda pacote no
+    /// silêncio, então é o relógio, e não o próximo pacote, que apaga o anel.
+    var onSpeaking: (@Sendable (String, Bool) -> Void)?
+    private let levels = DispatchQueue(label: "unkvoid-speaking")
+    private var lastLoud: [String: Date] = [:]
+    private static let loudness: Float = 0.02
+    private static let tail = 0.35
     private var players: [String: AVAudioPlayerNode] = [:]
     /// Escolhido antes de o primeiro bloco de som chegar: o tocador nasce já nesse volume.
     private var volumes: [String: Float] = [:]
@@ -42,9 +51,16 @@ final class Sound: @unchecked Sendable {
                 return
             }
 
+            var peak: Float = 0
+
             for frame in 0 ..< frames {
                 channels[0][frame] = interleaved[frame * 2]
                 channels[1][frame] = interleaved[frame * 2 + 1]
+                peak = max(peak, abs(interleaved[frame * 2]))
+            }
+
+            if peak > Self.loudness {
+                heard(producer)
             }
         }
 
@@ -177,6 +193,27 @@ final class Sound: @unchecked Sendable {
     }
 
     /// Chamar com o cadeado na mão.
+    private func heard(_ producer: String) {
+        levels.async {
+            let wasQuiet = self.lastLoud[producer] == nil
+
+            self.lastLoud[producer] = Date()
+
+            if wasQuiet {
+                self.onSpeaking?(producer, true)
+            }
+
+            self.levels.asyncAfter(deadline: .now() + Self.tail + 0.05) {
+                guard let last = self.lastLoud[producer], Date().timeIntervalSince(last) >= Self.tail else {
+                    return
+                }
+
+                self.lastLoud[producer] = nil
+                self.onSpeaking?(producer, false)
+            }
+        }
+    }
+
     private func player(for producer: String) -> AVAudioPlayerNode? {
         if let player = players[producer] {
             return player
