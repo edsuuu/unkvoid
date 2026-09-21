@@ -91,6 +91,67 @@ struct PopoverBox<Content: View>: View {
     }
 }
 
+/// O clique fora fecha o que é desenhado à mão (o `.popover` do sistema e o `ModalFrame` já
+/// fecham sozinhos). A conta é por geometria, não por `onHover`: o painel aberto sai dos
+/// limites de quem o abriu, e o clique no próprio botão tem de continuar sendo do botão —
+/// senão ele fecharia aqui e reabriria no `action`.
+struct ClosesOnOutsideClick: ViewModifier {
+    var active: Bool
+    /// Onde está o painel aberto, em coordenadas globais: ele sai dos limites de quem o abriu.
+    var panel: CGRect
+    var close: () -> Void
+
+    @State private var frame = CGRect.zero
+    @State private var monitor: Any?
+
+    func body(content: Content) -> some View {
+        content
+            .reportsFrame(to: $frame)
+            .onChange(of: active, initial: true) { _, watching in
+                watching ? watch() : unwatch()
+            }
+            .onDisappear(perform: unwatch)
+    }
+
+    private func watch() {
+        guard monitor == nil else {
+            return
+        }
+
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
+            if let height = event.window?.contentView?.bounds.height {
+                let point = CGPoint(x: event.locationInWindow.x, y: height - event.locationInWindow.y)
+
+                if !frame.contains(point), !panel.contains(point) {
+                    close()
+                }
+            }
+
+            return event
+        }
+    }
+
+    private func unwatch() {
+        monitor.map(NSEvent.removeMonitor)
+        monitor = nil
+    }
+}
+
+extension View {
+    func closesOnOutsideClick(active: Bool, panel: CGRect, close: @escaping () -> Void) -> some View {
+        modifier(ClosesOnOutsideClick(active: active, panel: panel, close: close))
+    }
+
+    /// Conta a quem desenha onde esta view foi parar, em coordenadas globais.
+    func reportsFrame(to frame: Binding<CGRect>) -> some View {
+        background(GeometryReader { measured in
+            Color.clear
+                .onAppear { frame.wrappedValue = measured.frame(in: .global) }
+                .onChange(of: measured.frame(in: .global)) { _, moved in frame.wrappedValue = moved }
+        })
+    }
+}
+
 /// O item de um menu de popover: ícone à esquerda, texto à direita, a linha inteira clica.
 struct MenuRow: View {
     var icon: IconName
@@ -126,9 +187,17 @@ struct ModalFrame<Body: View, Footer: View>: View {
     var title: String
     var subtitle: String?
     var width: CGFloat = 480
+    /// O modal que pede uma decisão (escolher o apelido) não tem como ser dispensado.
+    var dismissable = true
     var onClose: () -> Void
     @ViewBuilder var content: Body
     @ViewBuilder var footer: Footer
+
+    /// A altura do corpo, medida: o cartão abraça o conteúdo e só rola quando ele não cabe.
+    /// Um `ScrollView` solto ocuparia a janela inteira, e um "tem certeza?" viraria um painel.
+    @State private var bodyHeight: CGFloat = 0
+
+    private static var tallest: CGFloat { 520 }
 
     var body: some View {
         ZStack {
@@ -152,12 +221,14 @@ struct ModalFrame<Body: View, Footer: View>: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Button(action: onClose) {
-                        Icon(name: .close)
-                            .foregroundStyle(Theme.inkDim)
-                            .padding(4)
+                    if dismissable {
+                        Button(action: onClose) {
+                            Icon(name: .close)
+                                .foregroundStyle(Theme.inkDim)
+                                .padding(4)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 24)
@@ -167,7 +238,12 @@ struct ModalFrame<Body: View, Footer: View>: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 24)
                         .padding(.vertical, 20)
+                        .background(GeometryReader { measured in
+                            Color.clear.preference(key: BodyHeight.self, value: measured.size.height)
+                        })
                 }
+                .frame(height: min(max(bodyHeight, 1), Self.tallest))
+                .onPreferenceChange(BodyHeight.self) { bodyHeight = $0 }
 
                 Divider().overlay(Theme.line)
 
@@ -181,5 +257,13 @@ struct ModalFrame<Body: View, Footer: View>: View {
             .glassPanel()
             .padding(24)
         }
+    }
+}
+
+private struct BodyHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }

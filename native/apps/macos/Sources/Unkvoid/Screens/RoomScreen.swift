@@ -2,16 +2,14 @@ import SwiftUI
 
 /// A sala por código, igual a `ui/components/room/RoomScreen.tsx`: a barra de ferramentas
 /// em cima, o aviso de erro quando há um, e o palco embaixo.
-///
-/// O palco está no estado "ninguém está compartilhando" porque é a verdade: quem está na
-/// sala e o vídeo de cada um saem do mapa de peers que o `SfuClient.ts` mantém, e isso é
-/// do `shared/core` — ele ainda não tem. Ver o relatório no `README.md` desta pasta.
 struct RoomScreen: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
         VStack(spacing: 12) {
-            RoomToolbar()
+            if model.fullscreenTile == nil {
+                RoomToolbar()
+            }
 
             if let roomError = model.roomError {
                 HStack(spacing: 12) {
@@ -39,6 +37,11 @@ struct RoomScreen: View {
             Stage()
         }
         .padding(12)
+        .overlay {
+            if model.shareOpen {
+                ShareModal()
+            }
+        }
     }
 }
 
@@ -73,7 +76,7 @@ private struct RoomToolbar: View {
             .buttonStyle(.plain)
             .help("Copiar o código para mandar a alguém")
 
-            PeopleChip()
+            PeopleMenu()
 
             if let since = model.enteredRoomAt {
                 HStack(spacing: 8) {
@@ -120,89 +123,84 @@ private struct RoomToolbar: View {
     }
 }
 
-/// `Stage.tsx` sem nenhuma transmissão: o cartão largo no meio da tela.
-private struct Stage: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                Icon(name: .screen, size: 26)
-                    .foregroundStyle(Theme.lilac2)
-            }
-            .frame(width: 64, height: 64)
-            .background(Theme.brand.opacity(0.15), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .strokeBorder(Theme.brand.opacity(0.3), lineWidth: 1)
-            )
-            .padding(.bottom, 20)
-
-            Text("Ninguém está compartilhando ainda.")
-                .font(Theme.sans(19, .semibold))
-                .tracking(-0.3)
-                .foregroundStyle(Theme.ink)
-                .multilineTextAlignment(.center)
-
-            if let room = model.room {
-                HStack(spacing: 5) {
-                    Text("Mande o código")
-
-                    Text(room).codeChip(size: 12)
-
-                    Text("para quem você quer aqui.")
-                }
-                .font(Theme.sans(13))
-                .foregroundStyle(Theme.inkSoft)
-                .padding(.top, 10)
-            }
-
-        }
-        .padding(36)
-        .frame(maxWidth: 520)
-        .glass(radius: 24, shadowed: true)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-/// Quem está na sala, como o `PeopleMenu.tsx`: os avatares em pílula com a contagem.
-///
-/// A lista de quem está sai do `Roster` do `shared/core`, que existe mas ainda não
-/// atravessa a ABI — então por enquanto a pílula mostra só quem está nesta máquina.
-private struct PeopleChip: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Avatar(name: model.name.isEmpty ? "?" : model.name, size: 26, mine: true)
-
-            Text("1")
-                .font(Theme.sans(12))
-                .foregroundStyle(Theme.inkIcon)
-        }
-        .padding(.leading, 6)
-        .padding(.trailing, 12)
-        .padding(.vertical, 5)
-        .background(Theme.row, in: Capsule())
-        .overlay(Capsule().strokeBorder(Theme.lineStrong, lineWidth: 1))
-        .help("Quem está na sala")
-    }
-}
-
-/// O botão de compartilhar, no lugar que ele ocupa no React — à esquerda do botão de sair.
-///
-/// Fica desligado porque a captura ainda não atravessa a ABI: `shared/capture` existe e
-/// funciona, mas não há ação no núcleo que a ligue. Botão aceso que não transmite seria
-/// pior do que botão apagado que diz por quê.
+/// `ShareButton.tsx`: abre o seletor; com a transmissão no ar vira o menu dela, e o
+/// "Parar" vermelho aparece ao lado.
 private struct ShareButton: View {
+    @EnvironmentObject private var model: AppModel
+
+    @State private var open = false
+
     var body: some View {
         Button {
+            if model.mine.sharing {
+                open.toggle()
+            } else {
+                Task { await model.openShare() }
+            }
         } label: {
-            Icon(name: .screen, size: 16)
+            if model.shareStarting {
+                ProgressView().controlSize(.small)
+            } else {
+                Icon(name: .screen, size: 16)
+            }
         }
-        .buttonStyle(IconButton())
-        .disabled(true)
-        .help("Compartilhar tela — ainda não ligado neste app")
+        .buttonStyle(IconButton(tone: model.mine.sharing ? .on : .idle))
+        .disabled(model.shareStarting || !model.mine.canShare)
+        .help(model.mine.sharing ? "Opções da transmissão" : "Compartilhar tela")
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            PopoverBox(width: 240) {
+                Text("Você está transmitindo")
+                    .labelMono()
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+
+                HStack(spacing: 6) {
+                    Picker("Qualidade", selection: Binding(get: { model.shareQuality }, set: { chosen in Task { await model.changeQuality(chosen, model.shareFps) } })) {
+                        ForEach(["720", "1080", "1440", "2160"], id: \.self) { Text($0 == "2160" ? "4K" : "\($0)p").tag($0) }
+                    }
+
+                    Picker("FPS", selection: Binding(get: { model.shareFps }, set: { chosen in Task { await model.changeQuality(model.shareQuality, chosen) } })) {
+                        ForEach([15, 30, 60], id: \.self) { Text("\($0) fps").tag($0) }
+                    }
+                }
+                .labelsHidden()
+                .padding(.horizontal, 8)
+                .padding(.bottom, 6)
+
+                MenuRow(icon: .eye, label: model.mine.selfView == true ? "Ocultar minha tela" : "Ver o que a sala vê") {
+                    open = false
+
+                    Task { await model.toggleSelfView() }
+                }
+
+                MenuRow(icon: .screen, label: "Mudar monitor ou aplicativo") {
+                    open = false
+
+                    Task { await model.openShare() }
+                }
+
+                MenuRow(icon: .close, label: "Parar de transmitir", tint: Theme.danger) {
+                    open = false
+
+                    Task { await model.stopSharing() }
+                }
+            }
+        }
+
+        if model.mine.sharing {
+            Button {
+                Task { await model.stopSharing() }
+            } label: {
+                Text("Parar")
+                    .font(Theme.sans(12, .semibold))
+                    .foregroundStyle(Theme.inkStrong)
+                    .padding(.horizontal, 12)
+                    .frame(height: 34)
+                    .background(Theme.danger, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .help("Parar de transmitir")
+        }
     }
 }
 

@@ -9,6 +9,30 @@ import Testing
 /// voltava, qualquer que fosse ela. Um teste no núcleo não pega isso; este pega.
 @MainActor
 struct EntryTests {
+    /// O erro de uma tela não atravessa para a outra: o código recusado na entrada não pode
+    /// continuar aceso quando a pessoa vai para o Hub e volta.
+    @Test
+    func anErrorNeverFollowsThePersonToAnotherScreen() async {
+        let model = AppModel(url: "ws://127.0.0.1:1/sfu")
+
+        model.name = "Ada"
+        model.code = "-x-"
+
+        await model.joinRoom()
+
+        #expect(model.codeError != "")
+
+        model.say("um aviso da entrada")
+        model.complain("um erro de sala")
+        model.openHub()
+
+        #expect(model.codeError == "" && model.notice == nil && model.roomError == nil, "o erro da entrada apareceu no Hub")
+
+        model.openEntry()
+
+        #expect(model.codeError == "" && model.entryError == "")
+    }
+
     /// O que o botão "Entrar" ao lado do campo de código faz, com o campo em branco de
     /// várias maneiras. Nenhuma delas pode abrir sala nenhuma.
     @Test(arguments: ["", "   ", "\t", "\n", "-x-"])
@@ -82,16 +106,21 @@ struct EntryTests {
 
     /// Criar sem código **sorteia** um: é o produto, e não um furo de validação. Se isto
     /// quebrar, a regra mudou no núcleo e alguém precisa saber.
-    @Test
+    @Test(.enabled(if: EndToEndTests.stackIsUp))
     func creatingWithoutACodeDrawsOne() async {
-        let model = AppModel(url: "ws://127.0.0.1:1/sfu")
+        #expect(EndToEndTests.isolated)
+
+        let model = AppModel(url: Launch.socketUrl())
+
+        // Criar uma sala é entrar nela de verdade, e para isso o SFU tem de estar ligado.
+        await model.start()
 
         model.name = "Ada"
         model.code = ""
 
         await model.createRoom()
 
-        #expect(model.screen == .room)
+        #expect(model.screen == .room, "não entrou: \(model.entryError) \(model.offlineStatus)")
         #expect(model.room?.isEmpty == false, "abriu a sala sem código nenhum")
         #expect(model.nameError == "" && model.codeError == "")
 

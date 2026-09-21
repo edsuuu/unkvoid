@@ -1,4 +1,5 @@
 import Foundation
+import IOSurface
 import UnkvoidCore
 
 /// O núcleo em Rust, do jeito que o Swift prefere ver: sem ponteiro solto e sem
@@ -8,12 +9,6 @@ import UnkvoidCore
 /// reconectar é o `shared/core`; esta camada traduz tipos e nada mais.
 final class Core: @unchecked Sendable {
     private let handle: OpaquePointer?
-
-    /// `unkvoid_call` pega o `Handle` por `&mut` e `unkvoid_next_event` consome um
-    /// `Receiver`: dois threads ali dentro ao mesmo tempo é corrida de dados no Rust. A
-    /// fila de eventos é lida num laço próprio enquanto uma ação está em voo, então o
-    /// encontro acontece de verdade — o cadeado é o que o torna seguro.
-    private let gate = NSLock()
 
     enum Failure: Error {
         case coreUnavailable
@@ -33,25 +28,18 @@ final class Core: @unchecked Sendable {
         unkvoid_core_free(handle)
     }
 
+    /// Do lado do Rust tudo o que muda vive atrás de cadeado (`ffi.rs`), e é por isso que
+    /// aqui não há nenhum: a fila de eventos e a de mídia são lidas enquanto uma ação está
+    /// em voo, e um cadeado deste lado pararia a imagem a cada clique.
     func connect(to url: String) -> Bool {
-        gate.lock()
-
-        defer { gate.unlock() }
-
-        return unkvoid_connect(handle, url)
+        unkvoid_connect(handle, url)
     }
 
     @discardableResult
     func call(_ action: String, _ data: [String: Any] = [:]) throws -> [String: Any] {
         let payload = try JSONSerialization.data(withJSONObject: data)
 
-        gate.lock()
-
-        let answer = unkvoid_call(handle, action, String(decoding: payload, as: UTF8.self))
-
-        gate.unlock()
-
-        guard let answer else {
+        guard let answer = unkvoid_call(handle, action, String(decoding: payload, as: UTF8.self)) else {
             throw Failure.notConnected
         }
 
@@ -79,9 +67,6 @@ final class Core: @unchecked Sendable {
     func app(_ action: String, _ data: [String: Any] = [:]) throws -> [String: Any] {
         let payload = try JSONSerialization.data(withJSONObject: data)
 
-        gate.lock()
-        defer { gate.unlock() }
-
         guard let answer = unkvoid_app(handle, action, String(decoding: payload, as: UTF8.self)) else {
             throw Failure.notConnected
         }
@@ -94,13 +79,7 @@ final class Core: @unchecked Sendable {
     }
 
     func nextEvent() -> [String: Any]? {
-        gate.lock()
-
-        let raw = unkvoid_next_event(handle)
-
-        gate.unlock()
-
-        guard let raw else {
+        guard let raw = unkvoid_next_event(handle) else {
             return nil
         }
 
@@ -109,6 +88,61 @@ final class Core: @unchecked Sendable {
         let decoded = try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8))
 
         return decoded as? [String: Any]
+    }
+}
+
+/// Um quadro de vídeo ou um bloco de som de uma transmissão que se está assistindo.
+struct IncomingMedia {
+    enum Kind {
+        /// H.264 em Annex-B.
+        case video(keyframe: Bool, timestamp: UInt32)
+        /// PCM `Float` estéreo intercalado a 48 kHz.
+        case audio
+    }
+
+    let producer: String
+    let kind: Kind
+    let data: Data
+}
+
+extension Core {
+    /// Espera até 100 ms pelo próximo. Só a thread da mídia chama isto.
+    func nextMedia() -> IncomingMedia? {
+        var length = 0
+
+        guard let block = unkvoid_next_media(handle, &length) else {
+            return nil
+        }
+
+        defer { unkvoid_bytes_free(block, length) }
+
+        let bytes = UnsafeBufferPointer(start: block, count: length)
+
+        guard length >= 8 else {
+            return nil
+        }
+
+        let idLength = Int(bytes[2]) | Int(bytes[3]) << 8
+        let timestamp = UInt32(bytes[4]) | UInt32(bytes[5]) << 8 | UInt32(bytes[6]) << 16 | UInt32(bytes[7]) << 24
+
+        guard length >= 8 + idLength else {
+            return nil
+        }
+
+        return IncomingMedia(
+            producer: String(decoding: bytes[8 ..< 8 + idLength], as: UTF8.self),
+            kind: bytes[0] == 0 ? .video(keyframe: bytes[1] == 1, timestamp: timestamp) : .audio,
+            data: Data(bytes[(8 + idLength)...])
+        )
+    }
+
+    /// O núcleo fica com a posse do `IOSurface`: daí o `passRetained`.
+    func show(_ surface: IOSurfaceRef, at nanoseconds: UInt64) {
+        unkvoid_show(handle, Unmanaged.passRetained(surface).toOpaque(), nanoseconds)
+    }
+
+    func speak(_ samples: UnsafeBufferPointer<Float>) {
+        unkvoid_speak(handle, samples.baseAddress, samples.count)
     }
 }
 

@@ -9,11 +9,11 @@ struct UnkvoidApp: App {
         WindowGroup("Unkvoid") {
             RootView()
                 .environmentObject(model)
-                .frame(minWidth: 960, minHeight: 640)
+                .frame(minWidth: 940, minHeight: 600)
                 .task { await model.start() }
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1180, height: 760)
+        .defaultSize(width: 1280, height: 800)
     }
 }
 
@@ -32,6 +32,7 @@ struct RootView: View {
             case .updating: UpdatingScreen()
             }
         }
+        .overlay(alignment: .top) { Notice() }
         .preferredColorScheme(.dark)
     }
 }

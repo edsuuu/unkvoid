@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 
 enum Screen {
@@ -14,9 +15,11 @@ enum EntryAction {
     case join
 }
 
-enum HubModal {
+enum HubModal: Equatable {
     case account
     case serverSettings
+    case invite
+    case logs
 }
 
 /// O que a janela desenha, e o caminho de volta para o núcleo.
@@ -26,13 +29,21 @@ enum HubModal {
 /// lá e publica o que voltou.
 @MainActor
 final class AppModel: ObservableObject {
-    @Published private(set) var screen: Screen = .updating
+    /// Trocar de tela apaga o que a anterior estava dizendo: o erro de entrar numa sala não
+    /// pode reaparecer no Hub, nem o aviso do Hub dentro da sala.
+    @Published private(set) var screen: Screen = .updating {
+        didSet {
+            if oldValue != screen {
+                forgetErrors()
+            }
+        }
+    }
     @Published private(set) var busy: EntryAction?
     @Published private(set) var room: String?
     /// Ida e volta até o SFU. Enquanto não há medida a barra mostra `-- ms`, que é o
     /// que o React faz — o espaço já fica reservado e a barra não salta depois.
-    @Published private(set) var ping: Int?
-    @Published private(set) var roomError: String?
+    @Published var ping: Int?
+    @Published var roomError: String?
     @Published private(set) var entryError = ""
     /// O erro fica no campo que errou: o núcleo diz qual é (`nameIsEmpty`, `codeIsInvalid`)
     /// e a tela só o coloca no lugar.
@@ -54,34 +65,139 @@ final class AppModel: ObservableObject {
     @Published var name = ""
     @Published var code = ""
 
-    @Published private(set) var user: User?
-    @Published private(set) var servers: [ServerSummary] = []
+    @Published var user: User?
+    @Published var servers: [ServerSummary] = []
     @Published private(set) var serversLoading = false
     @Published private(set) var serversFailed = false
-    @Published private(set) var tree: ServerTree?
+    @Published var tree: ServerTree?
     @Published private(set) var treeLoading = false
-    @Published private(set) var channel: Channel?
-    @Published private(set) var messages: [Message] = []
-    @Published private(set) var messagesLoading = false
-    @Published private(set) var messagesFailed = false
-    @Published private(set) var sending = false
     @Published private(set) var recentRooms: [String] = []
-    @Published private(set) var enteredRoomAt: Date?
-    @Published private(set) var notice: String?
+    @Published var enteredRoomAt: Date?
+    @Published var notice: String?
+    @Published var imageFilters = ImageFilters() {
+        didSet {
+            if oldValue != imageFilters {
+                remember("unkvoid:image", imageFilters.saved)
+            }
+        }
+    }
+
+    @Published var voicePreferences = VoicePreferences()
+    @Published var noticePreferences = NoticePreferences()
+    @Published var nicknameError = ""
+    @Published var nicknameBusy = false
+    let hotkeys = Hotkeys()
+
+    @Published var abilities = Abilities()
+    @Published var audits: [Audit] = []
+    @Published var auditsLoading = false
+    @Published var auditsFailed = false
+    /// O que a pessoa precisa confirmar antes de acontecer: apagar, sair, expulsar.
+    @Published var confirmation: Confirmation?
+    @Published var channelEditor: ChannelEditor?
+    @Published var roleEditor: RoleEditor?
+    @Published var memberMenu: Member?
+    @Published var homeTab = HomeTab.servers
+    @Published var friends: [Friendship] = []
+    @Published var friendsLoading = false
+    @Published var friendsFailed = false
+    @Published var conversations: [DirectConversation] = []
+    @Published var conversationsFailed = false
+    @Published var directPerson: Person?
+    @Published var directMessages: [DirectMessage] = []
+    @Published var directLoading = false
+    @Published var directFailed = false
+
+    /// Quem está com o app aberto neste servidor, pela presença do tempo real.
+    @Published var online: Set<String> = []
     @Published var home = true
-    @Published var railOpen = true
-    @Published var membersOpen = true
+    @Published var railOpen = true {
+        didSet { remember("unkvoid:rail", railOpen) }
+    }
+
+    @Published var membersOpen = true {
+        didSet { remember("unkvoid:members", membersOpen) }
+    }
+
+    /// A versão mais nova publicada, quando há: o aviso no topo do Hub leva ao instalador.
+    @Published var newerVersion: (version: String, url: URL)?
     @Published var modal: HubModal?
 
-    /// O microfone e a saída escolhidos nesta sessão. Guardar a escolha entre uma abertura
-    /// e outra é do `shared/core` (é preferência, como as do `Voice.ts`), e a ABI ainda não
-    /// tem por onde — por isso aqui ela vive só enquanto a janela estiver aberta.
+    /// O microfone e a saída em uso, como o CoreAudio os numera agora. A escolha que fica
+    /// guardada é o nome do aparelho, em `voicePreferences`.
     @Published private(set) var microphones: [AudioDevice] = []
     @Published private(set) var speakers: [AudioDevice] = []
-    @Published var microphone: AudioDevice.ID?
-    @Published var speaker: AudioDevice.ID?
+    @Published var microphone: AudioDevice.ID? {
+        didSet { Task { await microphoneChanged() } }
+    }
 
-    private let core: Core?
+    @Published var speaker: AudioDevice.ID? {
+        didSet { media?.sound.use(speaker: speaker) }
+    }
+
+    /// O canal de voz em que se está. A sala dele é a mesma `Room` do núcleo, desenhada
+    /// dentro do servidor em vez de tomar a janela.
+    @Published var voiceChannel: Channel?
+    @Published var voiceJoining = false
+    /// O canal em que se está entrando, para a rodinha aparecer no item certo.
+    @Published var voiceTarget: String?
+    /// Os canais de voz seguidos no tempo real, para ver quem entra e sai de cada um.
+    var followedVoice: Set<String> = []
+    @Published var stageOpen = false
+
+    /// A sala aberta, como o núcleo a anuncia. Quem decide cada coisa aqui é ele; a tela
+    /// só redesenha o que chega.
+    @Published var peers: [RoomPeer] = []
+    @Published var tiles: [RoomTile] = []
+    /// O que está ao vivo e a pessoa fechou: volta pelo "Assistir".
+    @Published var pendingTiles: [RoomTile] = []
+    @Published var fullscreenTile: String?
+    /// Quem está assistindo a cada tela, pelo producer dela.
+    @Published var watchers: [String: [String]] = [:]
+    /// A voz tomando o Hub inteiro, com a barra da sala em cima.
+    @Published var focusedRoom = false
+    /// O convite do servidor recém-criado, para mandar a alguém já.
+    @Published var inviteBanner = false
+    /// O volume de cada pessoa na voz, só deste lado, pela chave `user:<id>`.
+    @Published var voiceVolumes: [String: Float] = [:]
+    /// O volume de cada tela, de 0 a 1, só deste lado.
+    @Published var tileVolumes: [String: Float] = [:]
+    @Published var sharePreviews: [String: NSImage] = [:]
+    @Published var mine = Mine()
+    @Published var reconnecting = false
+    @Published var deafened = false
+    @Published var micLevel: Float = 0
+    /// O mesmo nível na escala de 0 a 100 da sensibilidade.
+    @Published var micPercent = 0
+    @Published var focusedTile: String?
+    /// As telas cujo som a pessoa ligou: ele chega mudo por regra.
+    @Published var heardTiles: Set<String> = []
+
+    /// O seletor de "compartilhar tela". A escolha vive só enquanto a janela está aberta.
+    @Published var shareOpen = false
+    @Published var shareLoading = false
+    @Published var shareStarting = false
+    @Published var shareTab = "display"
+    @Published var shareDisplays: [ShareSource] = []
+    @Published var shareWindows: [ShareSource] = []
+    @Published var shareSource: String?
+    @Published var shareQuality = "1080"
+    @Published var shareFps = 60
+    @Published var shareAudio = true
+    @Published var shareMuteCalls = true
+
+    let media: MediaRouter?
+
+    /// O chat do canal de texto aberto, e o do canal de voz em que se está. O que muda neles
+    /// redesenha quem observa este modelo, para a coluna dos canais acender o canal certo.
+    private(set) lazy var chat = watched(ChatRoom(model: self))
+    private(set) lazy var voiceChat = watched(ChatRoom(model: self))
+    /// O painel de chat ao lado do palco da voz.
+    @Published var voiceChatOpen = false
+
+    private var watching: [AnyCancellable] = []
+
+    let core: Core?
     private let url: String
     private var pump: Task<Void, Never>?
 
@@ -91,13 +207,30 @@ final class AppModel: ObservableObject {
 
     init(url: String) {
         self.url = url
-        core = try? Core()
+
+        let core = try? Core()
+
+        self.core = core
+        media = core.map(MediaRouter.init)
     }
 
     deinit {
         pump?.cancel()
     }
 
+    private func watched(_ room: ChatRoom) -> ChatRoom {
+        room.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &watching)
+
+        return room
+    }
+
+    /// O canal de texto aberto. Quem o abre e fecha é o `chat`.
+    var channel: Channel? {
+        chat.channel
+    }
+
+    /// Quem sabe onde o SFU fica é o Laravel. Sem ele (sala por código, servidor fora do ar)
+    /// vale o endereço da linha de comando: esse caminho não pode depender de conta.
     func start() async {
         guard let core else {
             screen = .offline
@@ -106,30 +239,70 @@ final class AppModel: ObservableObject {
             return
         }
 
-        updateStatus = "Conectando em \(url)…"
+        await loadPreferences()
 
-        let connected = await offMain { core.connect(to: self.url) }
+        let reachable = await ask("useServer", ["url": Self.server])["ok"] as? Bool == true
+        let announced = reachable ? await ask("config")["sfu"] as? String : nil
+        let sfu = Launch.chosenSocketUrl() ?? announced ?? url
+
+        updateStatus = "Conectando em \(sfu)…"
+
+        let connected = await offMain { core.connect(to: sfu) }
 
         guard connected else {
             screen = .offline
-            offlineStatus = "o SFU em \(url) não respondeu."
+            offlineStatus = "o servidor de mídia não respondeu."
 
             return
         }
 
         startPump()
-        refreshDevices()
 
         // Quem tem token guardado não devia ver o login de novo, e é o núcleo quem diz em
         // que tela se abre — a regra é dele (`Screen::home`), não desta classe.
-        if await readState(), await ask("useServer", ["url": Self.server])["ok"] as? Bool == true {
-            await loadServers()
+        if await readState(), reachable {
+            await restoreAccount()
         }
+
+        if let join = Launch.autoJoin() {
+            name = join.name
+            code = join.code
+
+            await joinRoom()
+        }
+
+        if let wanted = Launch.autoOpen(), signedIn {
+            await openServer(wanted.server)
+
+            if let channel = tree?.voiceChannels.first(where: { $0.id == wanted.voice }) {
+                await joinVoice(channel)
+            }
+        }
+    }
+
+    /// A conta do token guardado. Se ele não vale mais, o núcleo o apaga e a tela volta
+    /// para onde quem não tem conta começa.
+    private func restoreAccount() async {
+        let answer = await ask("me")
+
+        guard let restored: User = decode(answer["user"]) else {
+            if answer["failed"] as? String == "signedOut" {
+                await readState()
+            }
+
+            return
+        }
+
+        user = restored
+
+        await loadServers()
+        await connectChat()
+        await checkForUpdate()
     }
 
     /// O que o núcleo diz que vale agora: a tela, o nome e se há conta.
     @discardableResult
-    private func readState() async -> Bool {
+    func readState() async -> Bool {
         let state = await ask("state")
 
         name = state["name"] as? String ?? ""
@@ -161,6 +334,8 @@ final class AppModel: ObservableObject {
     }
 
     func leaveRoom() async {
+        closeRoom()
+
         _ = await ask("leaveRoom")
 
         roomError = nil
@@ -217,17 +392,52 @@ final class AppModel: ObservableObject {
         }
 
         user = decode(entered["user"])
-        signedIn = true
         password = ""
-        screen = .hub
 
+        await readState()
         await loadServers()
+        await connectChat()
+        await checkForUpdate()
     }
 
+    /// Abre o navegador na conta do Google e espera a pessoa voltar. O token chega ao núcleo
+    /// por uma porta local; esta classe só abre o endereço e publica quem entrou.
     func googleLogin() async {
+        guard !googleWaiting else {
+            return
+        }
+
+        loginError = ""
+
+        guard await ask("useServer", ["url": Self.server])["ok"] as? Bool == true,
+              let address = await ask("googleStart")["url"] as? String,
+              let url = URL(string: address)
+        else {
+            loginError = Self.sentence(for: "unreachable")
+
+            return
+        }
+
         googleWaiting = true
-        loginError = "O login com Google ainda não está ligado neste app."
+        NSWorkspace.shared.open(url)
+
+        let entered = await ask("googleWait")
+
         googleWaiting = false
+
+        guard let signed: User = decode(entered["user"]) else {
+            loginError = "O login com Google não terminou. Tente de novo."
+
+            return
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+
+        user = signed
+
+        await readState()
+        await loadServers()
+        await connectChat()
     }
 
     /// O motivo que o núcleo devolve, virado em frase. O núcleo não manda texto de tela —
@@ -296,6 +506,8 @@ final class AppModel: ObservableObject {
         roomError = nil
         enteredRoomAt = Date()
         screen = .room
+
+        await openedRoom()
     }
 
     func openRoom(_ code: String) async {
@@ -344,93 +556,59 @@ final class AppModel: ObservableObject {
             return
         }
 
+        if let previous = tree?.id, previous != opened.id {
+            await unfollow("server.\(previous)")
+        }
+
         tree = opened
+        abilities = decode(answer["abilities"]) ?? Abilities()
+        online = []
+
+        await follow("server.\(opened.id)")
+        await followVoiceChannels()
 
         if let first = opened.textChannels.first {
             await openChannel(first)
         } else {
-            channel = nil
-            messages = []
+            await chat.close()
         }
     }
 
     func showHome() async {
         home = true
-        channel = nil
-        messages = []
+
+        await chat.close()
 
         await loadRecentRooms()
     }
 
     func openChannel(_ opened: Channel) async {
-        channel = opened
-        messages = []
-
         guard !opened.isVoice else {
-            // Voz é do `shared/core` e ele ainda não a tem: ver o relatório no `README.md`.
-            notice = "A voz ainda não está ligada neste app."
+            await joinVoice(opened)
 
             return
         }
 
-        messagesLoading = true
+        stageOpen = false
 
-        let answer = await ask("messages", ["channel": opened.id])
-
-        messagesLoading = false
-        messagesFailed = answer["messages"] == nil
-
-        guard channel?.id == opened.id else {
-            return
-        }
-
-        if messagesFailed {
-            warn(answer)
-
-            return
-        }
-
-        messages = decode(answer["messages"]) ?? []
-    }
-
-    func sendMessage(_ body: String) async -> Bool {
-        guard let channel, !sending else {
-            return false
-        }
-
-        sending = true
-
-        let answer = await ask("sendMessage", ["channel": channel.id, "body": body])
-
-        sending = false
-
-        guard let sent: Message = decode(answer["message"]) else {
-            warn(answer)
-
-            return false
-        }
-
-        messages.append(sent)
-
-        return true
+        await chat.open(opened)
     }
 
     func signOut() async {
+        await leaveVoice()
+
         _ = await ask("signOut")
 
         user = nil
         signedIn = false
         servers = []
         tree = nil
-        channel = nil
-        messages = []
         home = true
         modal = nil
-        // ponytail: `signOut` (e `login`) limpam o token no núcleo mas não mexem na tela,
-        // então quem a move é esta classe. Teto: a regra de onde se cai fica em dois
-        // lugares. Saída: o `ffi.rs` chamar `app.show(Screen::home(...))` nas duas ações, e
-        // aqui virar um `readState()`, como em `leaveRoom`.
-        screen = .entry
+
+        await chat.close()
+
+        await readState()
     }
 
     func copy(_ text: String, _ said: String) {
@@ -450,13 +628,29 @@ final class AppModel: ObservableObject {
 
     /// A resposta que não veio virando frase. O motivo é uma palavra do núcleo; caminho,
     /// endereço e status ficam no log dele.
-    private func warn(_ answer: [String: Any]) {
-        notice = answer["invalid"] as? String ?? Self.sentence(for: answer["failed"] as? String ?? "")
+    func warn(_ answer: [String: Any]) {
+        let invalid = (answer["invalid"] as? [String: Any])?["message"] as? String
+
+        notice = invalid ?? Self.sentence(for: answer["failed"] as? String ?? "")
+    }
+
+    /// Tudo o que alguma tela estava avisando. Cada erro tem o lugar dele — o campo, a sala, o
+    /// aviso da tela — e nenhum atravessa para a tela seguinte.
+    func forgetErrors() {
+        notice = nil
+        roomError = nil
+        entryError = ""
+        nameError = ""
+        codeError = ""
+        loginError = ""
+        emailError = ""
+        passwordError = ""
+        nicknameError = ""
     }
 
     /// O JSON do núcleo virando tipo. A lista de um item existe porque `JSONSerialization`
     /// só serializa objeto ou array no topo, e o que vem pode ser qualquer um dos dois.
-    private func decode<Value: Decodable>(_ value: Any?) -> Value? {
+    func decode<Value: Decodable>(_ value: Any?) -> Value? {
         guard let value, !(value is NSNull), let data = try? JSONSerialization.data(withJSONObject: [value]) else {
             return nil
         }
@@ -466,7 +660,7 @@ final class AppModel: ObservableObject {
 
     /// As decisões do app (`unkvoid_app`), que não passam pelo SFU. Sempre fora da thread
     /// que desenha: as ações que falam com o Laravel bloqueiam até ele responder.
-    private func ask(_ action: String, _ data: [String: Any] = [:]) async -> [String: Any] {
+    func ask(_ action: String, _ data: [String: Any] = [:]) async -> [String: Any] {
         guard let core else {
             return ["failed": "unreachable"]
         }
@@ -500,22 +694,32 @@ final class AppModel: ObservableObject {
             return
         }
 
-        while let name = await offMain({ core.nextEvent()?["event"] as? String }) {
-            lastEvent = name
+        while let event = await offMain({ core.nextEvent().map(JSONPayload.init) }) {
+            lastEvent = event.value["event"] as? String
             eventCount += 1
+
+            heard(event.value)
         }
+    }
+
+    func say(_ sentence: String) {
+        notice = sentence
+    }
+
+    func complain(_ sentence: String?) {
+        roomError = sentence
     }
 }
 
 /// `unkvoid_call` entra no runtime do Tokio e espera a resposta do servidor. Chamar isso
 /// na main thread é a janela congelando enquanto a rede pensa.
-private func offMain<Value: Sendable>(_ work: @escaping @Sendable () -> Value) async -> Value {
+func offMain<Value: Sendable>(_ work: @escaping @Sendable () -> Value) async -> Value {
     await Task.detached(priority: .userInitiated, operation: work).value
 }
 
 /// `[String: Any]` não atravessa isolamento de ator; o JSON que ele carrega é imutável e
 /// só um lado o toca por vez, então o `unchecked` aqui é verdade, não promessa vazia.
-private struct JSONPayload: @unchecked Sendable {
+struct JSONPayload: @unchecked Sendable {
     let value: [String: Any]
 
     init(_ value: [String: Any]) {

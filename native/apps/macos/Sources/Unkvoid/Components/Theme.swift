@@ -94,10 +94,12 @@ struct Glass: ViewModifier {
 /// monoespaçada; hoje a fonte é a do resto do app, e a monoespaçada só sobrou onde tem
 /// função — o campo do código da sala, onde ela separa 0 de O.
 struct LabelMono: ViewModifier {
+    var size: CGFloat = 10.5
+
     func body(content: Content) -> some View {
         content
-            .font(Theme.sans(10.5, .semibold))
-            .tracking(0.84)
+            .font(Theme.sans(size, .semibold))
+            .tracking(size * 0.08)
             .textCase(.uppercase)
             .foregroundStyle(Theme.inkDim)
     }
@@ -137,12 +139,16 @@ struct Field: ViewModifier {
 
 /// `.btn-primary`: o degradê da marca, de cima para baixo.
 struct PrimaryButton: ButtonStyle {
+    /// No rodapé de um modal o botão tem o tamanho do texto; num formulário ele ocupa a linha.
+    var wide = true
+    var font: Font = Theme.sans(14.5, .semibold)
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(Theme.sans(14.5, .semibold))
+            .font(font)
             .foregroundStyle(Theme.inkStrong)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
+            .frame(maxWidth: wide ? .infinity : nil)
+            .padding(.vertical, wide ? 12 : 9)
             .padding(.horizontal, 16)
             .background(
                 LinearGradient(colors: [Theme.brand, Theme.brandDark], startPoint: .top, endPoint: .bottom),
@@ -154,20 +160,37 @@ struct PrimaryButton: ButtonStyle {
     }
 }
 
+/// `.btn-danger`: o vermelho translúcido do que apaga, expulsa ou bane.
+struct DangerButton: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Theme.sans(12.5, .medium))
+            .foregroundStyle(Theme.danger)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .background(Theme.danger.opacity(configuration.isPressed ? 0.2 : 0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Theme.danger.opacity(0.35), lineWidth: 1)
+            )
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+    }
+}
+
 /// `.btn-ghost`: sem preenchimento, só a linha.
 struct GhostButton: ButtonStyle {
-    var font: Font = Theme.sans(13.5, .medium)
-    var padding = EdgeInsets(top: 11, leading: 16, bottom: 11, trailing: 16)
+    var font: Font = Theme.sans(12.5)
+    var padding = EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(font)
-            .foregroundStyle(Theme.inkBody)
+            .foregroundStyle(Theme.inkIcon)
             .padding(padding)
-            .background(Theme.fieldFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Theme.fieldLine, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Theme.lineStrong, lineWidth: 1)
             )
             .opacity(configuration.isPressed ? 0.8 : 1)
     }
@@ -274,8 +297,8 @@ extension View {
             .background(Theme.brand.opacity(0.16), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
-    func labelMono() -> some View {
-        modifier(LabelMono())
+    func labelMono(size: CGFloat = 10.5) -> some View {
+        modifier(LabelMono(size: size))
     }
 
     func field(focused: Bool = false, invalid: Bool = false) -> some View {
@@ -299,6 +322,13 @@ extension View {
 }
 
 extension Color {
+    /// `#rrggbb`, que é como o Laravel guarda a cor de um cargo.
+    var hexText: String {
+        let color = NSColor(self).usingColorSpace(.sRGB) ?? .white
+
+        return String(format: "#%02x%02x%02x", Int(color.redComponent * 255), Int(color.greenComponent * 255), Int(color.blueComponent * 255))
+    }
+
     init(hex: UInt32) {
         self.init(
             .sRGB,

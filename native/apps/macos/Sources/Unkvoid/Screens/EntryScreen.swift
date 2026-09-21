@@ -80,7 +80,10 @@ private struct RoomCard: View {
                     .fieldError(model.codeError)
 
                 Button("Entrar", action: join)
-                    .buttonStyle(GhostButton())
+                    .buttonStyle(GhostButton(
+                        font: Theme.sans(13.5, .medium),
+                        padding: EdgeInsets(top: 11, leading: 16, bottom: 11, trailing: 16)
+                    ))
                     .disabled(model.busy != nil)
             }
 
