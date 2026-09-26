@@ -21,6 +21,7 @@ pub mod room_code;
 pub mod routes;
 pub mod session;
 pub mod sharing;
+pub mod speaking;
 pub mod watching;
 
 pub use api::{Api, HttpError};

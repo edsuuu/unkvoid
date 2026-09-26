@@ -875,6 +875,31 @@ fn lock<T>(cell: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Quantas barrinhas de sinal a ida e volta até o SFU merece: 4 é verde, 3 amarelo, 2 laranja
 /// e 1 vermelho. Os cortes são os de uma chamada de voz — até 80 ms ninguém percebe, de 150
 /// em diante a conversa começa a atropelar, e acima de 250 já se fala por cima do outro.
+/// O que esta pessoa manda e pode mandar, como o `room.mine` anuncia.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Mine {
+    pub sharing: bool,
+    pub self_view: bool,
+    pub mic: bool,
+    pub mic_muted: bool,
+    pub camera: bool,
+    pub can_share: bool,
+    pub can_speak: bool,
+    pub can_video: bool,
+}
+
+impl Mine {
+    /// O microfone desenhado como desligado, dentro da sala: mudo por escolha, sem
+    /// permissão de falar, ou fechado de verdade — e não só ainda abrindo. É a conta do
+    /// macOS: entre o clique no canal e o microfone abrir o botão não tem o que mostrar, e
+    /// pintá-lo de mudo nesse meio segundo era o pisca que ninguém pediu. Fora da sala quem
+    /// manda é o mudo guardado, e quem chama escolhe.
+    pub fn mic_shown_off(self, opening: bool) -> bool {
+        self.mic_muted || !self.can_speak || (!self.mic && !opening)
+    }
+}
+
 pub fn signal_bars(round_trip_ms: u64) -> u8 {
     match round_trip_ms {
         0..=80 => 4,
@@ -886,6 +911,41 @@ pub fn signal_bars(round_trip_ms: u64) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_mic_is_drawn_on_while_it_is_still_opening() {
+        let joined = Mine { can_speak: true, ..Mine::default() };
+
+        assert!(!joined.mic_shown_off(true));
+        assert!(joined.mic_shown_off(false));
+    }
+
+    #[test]
+    fn a_muted_or_voiceless_mic_is_drawn_off_even_while_opening() {
+        let muted = Mine { can_speak: true, mic: true, mic_muted: true, ..Mine::default() };
+        let voiceless = Mine { can_speak: false, mic: false, ..Mine::default() };
+
+        assert!(muted.mic_shown_off(true));
+        assert!(voiceless.mic_shown_off(true));
+    }
+
+    #[test]
+    fn an_open_mic_that_can_speak_is_drawn_on() {
+        let open = Mine { can_speak: true, mic: true, ..Mine::default() };
+
+        assert!(!open.mic_shown_off(false));
+    }
+
+    #[test]
+    fn the_announced_mine_is_read_with_its_camel_case_names() {
+        let mine: Mine = serde_json::from_str(
+            r#"{"sharing":true,"selfView":false,"mic":true,"micMuted":true,"camera":false,"canShare":true,"canSpeak":true,"canVideo":false}"#,
+        )
+        .unwrap();
+
+        assert!(mine.sharing && mine.mic && mine.mic_muted && mine.can_share && mine.can_speak);
+        assert!(!mine.camera && !mine.can_video && !mine.self_view);
+    }
+
     #[test]
     fn the_signal_loses_a_bar_at_each_cut() {
         assert_eq!([12, 80, 81, 150, 151, 250, 251, 900].map(super::signal_bars), [4, 4, 3, 3, 2, 2, 1, 1]);
