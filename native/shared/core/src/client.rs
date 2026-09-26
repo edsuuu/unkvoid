@@ -42,6 +42,11 @@ impl SfuClient {
     /// Conecta e devolve o cliente junto com a fila de eventos. A fila é do chamador: o que
     /// ele não consumir se acumula, e é ele quem decide o que fazer com cada evento.
     pub async fn connect(url: &str) -> Result<(Arc<Self>, mpsc::UnboundedReceiver<Event>)> {
+        // O TLS do `wss://` usa o provedor de criptografia padrão do processo, e o projeto traz
+        // dois (o `ring` e o `aws-lc-rs`): sem escolher um, o rustls não escolhe e a conexão
+        // morre em pânico. Instalado já, o segundo pedido volta erro — e está tudo certo.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let (socket, _) = timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(url))
             .await
             .map_err(|_| anyhow!("o servidor não completou a conexão a tempo"))?
