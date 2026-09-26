@@ -265,7 +265,7 @@ final class AppModel: ObservableObject {
         let announced = reachable ? await ask("config")["sfu"] as? String : nil
         let sfu = Launch.chosenSocketUrl() ?? announced ?? url
 
-        updateStatus = "Conectando em \(sfu)…"
+        updateStatus = "Conectando ao servidor de mídia…"
 
         let connected = await offMain { core.connect(to: sfu) }
 
