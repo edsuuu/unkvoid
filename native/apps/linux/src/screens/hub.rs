@@ -8,12 +8,14 @@
 //! (canais, chat, membros). Quem troca é o mesmo clique que troca no React.
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use core_app::models::{
-    Channel, ChannelKind, Conversation, DirectMessage, Friendship, FriendshipStatus, Message, Person, ServerSummary,
-    ServerTree, User,
+    Channel, ChannelKind, Conversation, DirectMessage, Friendship, FriendshipStatus, Member, Message, Person,
+    ProducerInfo, ServerSummary, ServerTree, User,
 };
+use core_app::realtime::{self, Notice};
 use gtk::prelude::*;
 
 use crate::bridge::{Bridge, Peer};
@@ -71,6 +73,10 @@ pub struct HubScreen {
     talking_scroll: gtk::ScrolledWindow,
     talking_composer: gtk::Entry,
     user: Rc<RefCell<Option<User>>>,
+    /// A árvore do servidor aberto e quem está online nele: é deles que saem os grupos de
+    /// membros e quem está nos outros canais de voz.
+    tree: Rc<RefCell<Option<ServerTree>>>,
+    online: Rc<RefCell<HashSet<i64>>>,
     bar: UserBar,
     server_bar: UserBar,
     bridge: Rc<Bridge>,
@@ -241,7 +247,6 @@ impl HubScreen {
         let people = crate::components::panel_box(8);
 
         people.set_size_request(MEMBERS_WIDTH, -1);
-        people.append(&label_mono("Membros"));
         people.append(&scroll(&members));
 
         // A barra de baixo fecha as duas colunas, como no React: o `VoicePanel` é o mesmo
@@ -283,6 +288,7 @@ impl HubScreen {
             move |_| {
                 main.set_visible_child_name("home");
                 home.set_visible_child_name("servers");
+                bridge.leave_server();
                 bridge.load_servers();
                 bridge.load_conversations();
             }
@@ -458,6 +464,8 @@ impl HubScreen {
             talking_scroll,
             talking_composer,
             user,
+            tree: Rc::default(),
+            online: Rc::default(),
             bar,
             server_bar,
             bridge: bridge.clone(),
@@ -525,13 +533,141 @@ impl HubScreen {
         }
 
         self.channel_ids.replace(ordered);
-        self.paint_voice();
 
+        // Outro servidor, outra presença: a lista de online vem de novo no `presence.here`.
+        if self.tree.borrow().as_ref().map(|known| known.id) != Some(tree.id) {
+            self.online.borrow_mut().clear();
+        }
+
+        self.tree.replace(Some(tree.clone()));
+        self.paint_voice();
+        self.paint_members();
+    }
+
+    /// Os grupos do React, decididos pelo núcleo: o cargo mais alto de quem está online, com
+    /// a cor dele, e os offline apagados no fim.
+    fn paint_members(&self) {
         clear_list(&self.members);
 
-        for member in &tree.members {
-            self.members.append(&item(&member_row(&member.name)));
+        let Some(tree) = self.tree.borrow().clone() else {
+            return;
+        };
+        let me = self.user.borrow().as_ref().map(|user| user.id);
+
+        for group in core_app::members::group(&tree, &self.online.borrow()) {
+            let offline = group.key == core_app::members::OFFLINE_KEY;
+            let color = group.color.as_deref().filter(|_| !offline);
+            let head = label_mono(&format!("{} — {}", group.label, group.members.len()));
+
+            if let Some(color) = color {
+                paint_text(&head, color);
+            }
+
+            let heading = item(&head);
+
+            heading.set_activatable(false);
+            heading.set_selectable(false);
+            heading.set_margin_top(10);
+            self.members.append(&heading);
+
+            for member in &group.members {
+                let line = member_row(member, Some(member.user_id) == me, color);
+
+                if offline {
+                    line.set_opacity(0.55);
+                }
+
+                self.members.append(&item(&line));
+            }
         }
+    }
+
+    /// Um evento do tempo real (ou o toque e o aviso da sala), na thread da janela. O que ele
+    /// significa quem diz é o núcleo (`realtime::read`); aqui só se relê e se toca — e o aviso
+    /// volta para a janela mostrar.
+    pub fn heard_live(&self, line: &str) -> Option<Notice> {
+        let update: serde_json::Value = serde_json::from_str(line).ok()?;
+        let (event, channel, data) = (update["event"].as_str().unwrap_or_default(), update["channel"].as_str(), &update["data"]);
+
+        match event {
+            "live.follow" => {
+                self.bridge.follow();
+
+                return None;
+            }
+            "room.chime" => {
+                if let Ok(chime) = serde_json::from_value(data["chime"].clone()) {
+                    self.bridge.chime(chime);
+                }
+
+                return None;
+            }
+            "room.notice" => return Some(Notice::info(data["text"].as_str().unwrap_or_default())),
+            _ => {}
+        }
+
+        // Presença que chega atrasada do servidor anterior não vale para o aberto agora.
+        let opened = self.tree.borrow().as_ref().map(|tree| format!("server.{}", tree.id));
+
+        if event.starts_with("presence.") && channel != opened.as_deref() {
+            return None;
+        }
+
+        let me = self.user.borrow().as_ref()?.id;
+        let talking = self.talking.borrow().clone();
+        let reading = realtime::read(event, channel, data, me, talking.as_ref().map(|person| person.id));
+
+        if let Some(chime) = reading.chime {
+            self.bridge.chime(chime);
+        }
+
+        let open = self.open_channel.borrow().clone();
+
+        if let Some(changed) = &reading.messages_of
+            && open.as_deref() == Some(changed.as_str())
+        {
+            self.bridge.reload_messages(changed);
+        }
+
+        if reading.direct || reading.catch_up {
+            if let Some(person) = talking.filter(|person| reading.direct_with.is_none_or(|with| with == person.id)) {
+                self.bridge.refresh_direct(person);
+            }
+
+            self.bridge.load_conversations();
+        }
+
+        if reading.friends || reading.catch_up {
+            self.bridge.load_friends();
+        }
+
+        if reading.tree || reading.catch_up {
+            self.bridge.refresh_tree();
+        }
+
+        if let Some(server) = reading.removed_from {
+            if self.tree.borrow().as_ref().map(|tree| tree.id) == Some(server) {
+                self.tree.replace(None);
+                self.main.set_visible_child_name("home");
+                self.home.set_visible_child_name("servers");
+                self.bridge.leave_server();
+            }
+
+            self.bridge.load_servers();
+        }
+
+        if let Some(presence) = &reading.presence {
+            presence.apply(&mut self.online.borrow_mut());
+            self.paint_members();
+        }
+
+        if reading.catch_up
+            && let Some(channel) = open
+        {
+            self.bridge.reload_messages(&channel);
+        }
+
+        reading.notice
     }
 
     /// Entrou ou saiu da voz. `Some` traz o canal e o nome dele.
@@ -553,23 +689,43 @@ impl HubScreen {
     }
 
     /// Redesenha a seção de voz: o canal aberto se marca e quem está dentro aparece logo
-    /// abaixo do nome — o `VoiceChannelItem` do React.
+    /// abaixo do nome — o `VoiceChannelItem` do React. No canal em que se está, a lista vem da
+    /// sala; nos outros, da árvore, que o tempo real mantém em dia.
     fn paint_voice(&self) {
         clear_box(&self.voice_channels);
 
         let open = self.voice_open.borrow().clone();
         let people = self.voice_people.borrow().clone();
         let channels = self.channel_ids.borrow().clone();
+        let known = self.tree.borrow().as_ref().map(|tree| tree.voice.clone()).unwrap_or_default();
+        let me = self.user.borrow().as_ref().map(|user| user.id);
 
         for channel in channels.iter().filter(|channel| channel.kind == ChannelKind::Voice) {
             let here = open.as_deref() == Some(channel.id.as_str());
+            let others: Vec<Peer> = known
+                .get(&channel.id)
+                .into_iter()
+                .flatten()
+                .map(|person| Peer {
+                    peer_id: person.user_id.to_string(),
+                    user_id: Some(format!("user:{}", person.user_id)),
+                    name: person.name.clone(),
+                    producers: person
+                        .sources
+                        .iter()
+                        .map(|source| ProducerInfo {
+                            producer_id: source.clone(),
+                            kind: String::new(),
+                            source: source.clone(),
+                            paused: source == "mic" && person.muted,
+                        })
+                        .collect(),
+                    reconnecting: false,
+                    self_peer: Some(person.user_id) == me,
+                })
+                .collect();
 
-            self.voice_channels.append(&voice_row(
-                &self.bridge,
-                channel,
-                here,
-                if here { &people } else { &[] },
-            ));
+            self.voice_channels.append(&voice_row(&self.bridge, channel, here, if here { &people } else { &others }));
         }
     }
 
@@ -628,7 +784,19 @@ impl HubScreen {
     pub fn set_direct(&self, person: &Person, messages: &[DirectMessage]) {
         self.talking.replace(Some(person.clone()));
         self.talking_name.set_text(&person.name);
+        self.paint_direct(messages);
+        self.main.set_visible_child_name("home");
+        self.home.set_visible_child_name("direct");
+    }
 
+    /// A conversa relida pelo tempo real: só as falas mudam, e só se ela ainda é a aberta.
+    pub fn refresh_direct(&self, person: &Person, messages: &[DirectMessage]) {
+        if self.talking.borrow().as_ref().map(|talking| talking.id) == Some(person.id) {
+            self.paint_direct(messages);
+        }
+    }
+
+    fn paint_direct(&self, messages: &[DirectMessage]) {
         clear_box(&self.talking_messages);
 
         for message in messages {
@@ -639,8 +807,6 @@ impl HubScreen {
             ));
         }
 
-        self.main.set_visible_child_name("home");
-        self.home.set_visible_child_name("direct");
         scroll_to_end(&self.talking_scroll);
     }
 
@@ -960,9 +1126,10 @@ fn voice_row(bridge: &Rc<Bridge>, channel: &Channel, here: bool, people: &[Peer]
             line.append(&avatar(&person.name, 22, person.self_peer));
             line.append(&body(&person.name));
 
+            // O selo do React, com o pontinho branco do canal de voz.
             if person.sharing() {
                 line.append(&spacer());
-                line.append(&crate::components::mono("transmitindo"));
+                line.append(&badge("● AO VIVO", "live"));
             }
 
             inside.append(&line);
@@ -999,14 +1166,39 @@ fn open_naming(field: &gtk::Entry, naming: &Rc<RefCell<Option<ChannelKind>>>, ki
     }
 }
 
-fn member_row(name: &str) -> gtk::Box {
+/// Uma pessoa da lista de membros: o rosto, o nome na cor do cargo e a coroa do dono.
+fn member_row(member: &Member, mine: bool, color: Option<&str>) -> gtk::Box {
     let line = row(10);
+    let name = body(core_app::members::display_name(member));
 
     line.add_css_class("person");
-    line.append(&avatar(name, 24, false));
-    line.append(&body(name));
+    line.append(&avatar(core_app::members::display_name(member), 24, mine));
+
+    if let Some(color) = color {
+        paint_text(&name, color);
+    }
+
+    name.set_hexpand(true);
+    name.set_xalign(0.0);
+    line.append(&name);
+
+    if member.is_owner {
+        let crown = icons::icon("crown", 12, icons::LILAC);
+
+        crown.set_tooltip_text(Some("Dono do servidor"));
+        line.append(&crown);
+    }
 
     line
+}
+
+/// A cor de um cargo no texto. Vem do Laravel como `#rrggbb`; o resto não pinta nada.
+fn paint_text(label: &gtk::Label, color: &str) {
+    let valid = color.len() == 7 && color.starts_with('#') && color[1..].chars().all(|digit| digit.is_ascii_hexdigit());
+
+    if valid {
+        label.set_markup(&format!("<span foreground=\"{color}\">{}</span>", gtk::glib::markup_escape_text(&label.text())));
+    }
 }
 
 /// Uma mensagem. O "⋯" tem lugar próprio no fim da linha — o texto quebra antes dele — e só

@@ -7,6 +7,7 @@
 //! Nada aqui decide: tudo que é decisão (o código vale? onde se cai ao sair? quem está na
 //! sala?) é chamada ao `core_app`.
 
+use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -15,11 +16,13 @@ use capture::{CaptureConfig, CaptureEvent, CaptureSource, PlatformCapturer};
 
 use core_app::api::{Api, HttpError};
 use core_app::app::EntryRefusal;
+use core_app::chimes::Chime;
 use core_app::models::{
     ChannelKind, Conversation, DirectMessage, Friendship, Message, Person, RoomIdentity, ServerSummary,
     ServerTree, User,
 };
 pub use core_app::models::Peer;
+use core_app::realtime::Realtime;
 use core_app::reconnect::Backoff;
 use core_app::room::Room;
 use core_app::{App, Failure, Screen};
@@ -33,6 +36,10 @@ use crate::streaming::{self, Mine, Tile};
 use crate::watching::Watch;
 
 const DEFAULT_SERVER: &str = "https://unkvoid.com";
+
+/// Um aviso local na fila do tempo real: a conta entrou no ar, ou a árvore do servidor
+/// chegou — hora de acertar quais canais se segue.
+const FOLLOW: &str = r#"{"event":"live.follow"}"#;
 
 /// O que o trabalho de fundo tem a dizer para a tela.
 pub enum Update {
@@ -51,6 +58,11 @@ pub enum Update {
     Conversations(Vec<Conversation>),
     /// A conversa aberta: com quem, e o que já foi dito.
     Direct { person: Person, messages: Vec<DirectMessage> },
+    /// A conversa aberta relida pelo tempo real: as falas mudam, a tela fica onde está.
+    DirectRefreshed { person: Person, messages: Vec<DirectMessage> },
+    /// Um evento do tempo real, ou o toque e o aviso da sala, na linha de sempre
+    /// (`{event, channel, data}`). Quem o lê é o hub, com o `realtime::read` do núcleo.
+    Live(String),
     /// Entrou numa sala. `voice` diz o nome do canal quando se entrou pela voz de um
     /// servidor: aí a tela continua sendo o hub, como no React.
     Joined { room: String, voice: Option<String>, peers: Vec<Peer> },
@@ -91,6 +103,14 @@ pub struct Bridge {
     in_voice: Arc<AtomicBool>,
     /// Qual servidor está aberto: é nele que um canal novo nasce.
     opened: Arc<Mutex<Option<i64>>>,
+    /// O canal de texto lido e o de voz em que se está. Com o servidor aberto, é o que o
+    /// tempo real segue.
+    reading: Arc<Mutex<Option<String>>>,
+    voice_channel: Arc<Mutex<Option<String>>>,
+    /// O tempo real do chat e da presença, aberto enquanto há conta.
+    live: Arc<Mutex<Option<Arc<Realtime>>>>,
+    /// Os canais que o tempo real segue agora, fora o `user.{id}` da conta.
+    followed: Arc<Mutex<BTreeSet<String>>>,
     install_id: String,
     to_screen: UnboundedSender<Update>,
 }
@@ -101,12 +121,24 @@ impl Bridge {
         let server = std::env::var("UNKVOID_SERVER").unwrap_or_else(|_| DEFAULT_SERVER.to_owned());
         let (to_screen, updates) = unbounded_channel();
         let core = Arc::new(App::new(storage));
+        let api = Arc::new(Api::new(&server)?);
         let install_id = core.install_id();
+
+        // Sessão que acabou sozinha (o token não renovou) leva a janela de volta ao login,
+        // com o motivo no cartão de entrar.
+        core.keep_session(&api, {
+            let screen = to_screen.clone();
+
+            move || {
+                let _ = screen.send(Update::Ready(None));
+                let _ = screen.send(Update::LoginComplaint("Sua sessão terminou. Entre de novo.".into()));
+            }
+        });
 
         let bridge = Rc::new(Self {
             runtime: Runtime::new()?,
             core,
-            api: Arc::new(Api::new(&server)?),
+            api,
             sfu: Arc::new(Mutex::new(None)),
             room: Arc::default(),
             watch: Arc::default(),
@@ -115,6 +147,10 @@ impl Bridge {
             deafened: Arc::default(),
             in_voice: Arc::default(),
             opened: Arc::default(),
+            reading: Arc::default(),
+            voice_channel: Arc::default(),
+            live: Arc::default(),
+            followed: Arc::default(),
             install_id,
             to_screen,
         });
@@ -151,7 +187,7 @@ impl Bridge {
     /// A abertura: o servidor responde? Onde fica o SFU? O token guardado ainda vale?
     pub fn start(self: &Rc<Self>) {
         let (core, api, screen) = (self.core.clone(), self.api.clone(), self.to_screen.clone());
-        let sfu = self.sfu.clone();
+        let (sfu, live) = (self.sfu.clone(), self.live.clone());
 
         self.spawn(async move {
             let mut backoff = Backoff::default();
@@ -178,13 +214,21 @@ impl Bridge {
                 }
             }
 
-            let _ = screen.send(Update::Ready(restore(&core, &api).await));
+            let user = restore(&core, &api).await;
+            let account = user.as_ref().map(|user| user.id);
+
+            let _ = screen.send(Update::Ready(user));
+
+            if let Some(account) = account {
+                go_live(&api, &sfu, &live, &screen, account).await;
+            }
         });
     }
 
     pub fn sign_in(self: &Rc<Self>, email: &str, password: &str, register: bool) {
         let (core, api, screen) = (self.core.clone(), self.api.clone(), self.to_screen.clone());
         let (email, password) = (email.to_owned(), password.to_owned());
+        let (sfu, live) = (self.sfu.clone(), self.live.clone());
         let device = device_name();
 
         self.spawn(async move {
@@ -202,8 +246,13 @@ impl Bridge {
                         Some(user) => Some(user),
                         None => api.me().await.ok(),
                     };
+                    let account = user.as_ref().map(|user| user.id);
 
                     let _ = screen.send(Update::Ready(user));
+
+                    if let Some(account) = account {
+                        go_live(&api, &sfu, &live, &screen, account).await;
+                    }
                 }
                 Err(failure) => {
                     let _ = screen.send(Update::LoginComplaint(said(&failure)));
@@ -212,9 +261,19 @@ impl Bridge {
         });
     }
 
+    /// Sair nunca depende da rede: a tela volta ao login na hora, e os tokens caem no
+    /// servidor em segundo plano.
     pub fn sign_out(self: &Rc<Self>) {
         self.core.set_token(None);
-        self.api.set_token(None);
+        self.spawn(self.api.sign_out());
+
+        if let Some(live) = lock(&self.live).take() {
+            live.close();
+        }
+
+        lock(&self.followed).clear();
+        *lock(&self.opened) = None;
+        *lock(&self.reading) = None;
 
         let _ = self.to_screen.send(Update::Ready(None));
     }
@@ -377,6 +436,7 @@ impl Bridge {
     pub fn open_server(self: &Rc<Self>, server: i64) {
         let (api, screen) = (self.api.clone(), self.to_screen.clone());
         *lock(&self.opened) = Some(server);
+        *lock(&self.reading) = None;
 
         // O que o núcleo já guardou vai para a tela antes do pedido: a coluna de canais não
         // pisca vazia ao trocar de servidor.
@@ -388,12 +448,96 @@ impl Bridge {
             match api.tree(server).await {
                 Ok(tree) => {
                     let _ = screen.send(Update::Tree(Box::new(tree)));
+                    let _ = screen.send(Update::Live(FOLLOW.to_owned()));
                 }
                 Err(failure) => {
                     let _ = screen.send(Update::Complaint(said(&failure)));
                 }
             }
         });
+    }
+
+    /// Voltou à Home: não há servidor aberto, e o tempo real larga os canais dele, como o React.
+    pub fn leave_server(self: &Rc<Self>) {
+        *lock(&self.opened) = None;
+        *lock(&self.reading) = None;
+        self.follow();
+    }
+
+    /// A árvore do servidor aberto mudou (canal, cargo, alguém entrou na voz): relê.
+    pub fn refresh_tree(self: &Rc<Self>) {
+        let Some(server) = *lock(&self.opened) else {
+            return;
+        };
+        let (api, screen) = (self.api.clone(), self.to_screen.clone());
+
+        self.spawn(async move {
+            if let Ok(tree) = api.tree(server).await {
+                let _ = screen.send(Update::Tree(Box::new(tree)));
+                let _ = screen.send(Update::Live(FOLLOW.to_owned()));
+            }
+        });
+    }
+
+    /// A conversa aberta mudou: relê as falas sem trocar a tela, e marca como lida.
+    pub fn refresh_direct(self: &Rc<Self>, person: Person) {
+        let (api, screen) = (self.api.clone(), self.to_screen.clone());
+
+        self.spawn(async move {
+            if let Ok(messages) = api.direct_messages(person.id).await {
+                let _ = api.read_conversation(person.id).await;
+                let _ = screen.send(Update::DirectRefreshed { person, messages });
+            }
+        });
+    }
+
+    /// Acerta os canais que o tempo real segue com o que está aberto: o servidor (presença e
+    /// mudanças), cada canal de voz dele (quem entra e sai), o canal de texto lido e o da voz.
+    pub fn follow(self: &Rc<Self>) {
+        let Some(live) = lock(&self.live).clone() else {
+            return;
+        };
+        let mut wanted = BTreeSet::new();
+
+        if let Some(server) = *lock(&self.opened) {
+            wanted.insert(format!("server.{server}"));
+
+            if let Some(tree) = self.api.known_tree(server) {
+                for channel in tree.channels.iter().filter(|channel| channel.kind == ChannelKind::Voice) {
+                    wanted.insert(format!("channel.{}", channel.id));
+                }
+            }
+        }
+
+        for channel in [lock(&self.reading).clone(), lock(&self.voice_channel).clone()].into_iter().flatten() {
+            wanted.insert(format!("channel.{channel}"));
+        }
+
+        let (gone, fresh): (Vec<String>, Vec<String>) = {
+            let mut followed = lock(&self.followed);
+            let gone = followed.difference(&wanted).cloned().collect();
+            let fresh = wanted.difference(&followed).cloned().collect();
+
+            *followed = wanted;
+
+            (gone, fresh)
+        };
+
+        self.spawn(async move {
+            for channel in gone {
+                live.unsubscribe(&channel).await;
+            }
+
+            for channel in fresh {
+                if let Err(failure) = live.subscribe(&channel).await {
+                    tracing::warn!(%failure, channel, "tempo real: o canal não abriu");
+                }
+            }
+        });
+    }
+
+    pub fn chime(&self, chime: Chime) {
+        crate::watching::chime(chime.samples());
     }
 
     /// Cria um canal no servidor aberto. A árvore volta inteira: é ela que diz a posição
@@ -416,6 +560,13 @@ impl Bridge {
     }
 
     pub fn open_channel(self: &Rc<Self>, channel: &str) {
+        *lock(&self.reading) = Some(channel.to_owned());
+        self.follow();
+        self.reload_messages(channel);
+    }
+
+    /// Relê as mensagens de um canal: ao abrir, e quando o tempo real diz que mudaram.
+    pub fn reload_messages(self: &Rc<Self>, channel: &str) {
         let (api, screen, channel) = (self.api.clone(), self.to_screen.clone(), channel.to_owned());
 
         self.spawn(async move {
@@ -511,12 +662,19 @@ impl Bridge {
             self.leave_voice();
         }
 
+        *lock(&self.voice_channel) = Some(channel.to_owned());
+        self.follow();
+
         self.connect(Ok(channel.to_owned()), Some(channel.to_owned()), Some(name.to_owned()));
     }
 
     /// Sai da voz e continua no servidor. É o fone cortado da barra de baixo.
     pub fn leave_voice(self: &Rc<Self>) {
         let held = self.close_room();
+
+        *lock(&self.voice_channel) = None;
+        self.follow();
+        self.chime(Chime::Left);
 
         let _ = self.to_screen.send(Update::VoiceLeft);
 
@@ -588,6 +746,10 @@ impl Bridge {
             let in_voice = staying.is_some();
             let peers = streaming::peers_of(&opened.peers());
 
+            if in_voice {
+                crate::watching::chime(Chime::Joined.samples());
+            }
+
             let _ = screen.send(Update::Joined { room, voice: staying, peers });
             let _ = screen.send(Update::Tiles(streaming::tiles_of(&opened.tiles())));
             let _ = screen.send(Update::Mine(*lock(&mine)));
@@ -619,16 +781,52 @@ impl Bridge {
         })
     }
 
-    /// Compartilhar a tela. O som dela vai junto, e chega mudo do outro lado.
-    pub fn share_screen(self: &Rc<Self>) {
+    pub fn is_sharing(&self) -> bool {
+        lock(&self.mine).sharing
+    }
+
+    /// A qualidade e o fps com que o seletor abre: a última escolha, ou o palpite do núcleo.
+    pub fn share_quality(&self) -> (String, String) {
+        self.core.share_quality()
+    }
+
+    pub fn remember_share_quality(&self, quality: &str, fps: &str) {
+        self.core.set_share_quality(quality, fps);
+    }
+
+    /// Transmite o que o seletor escolheu. No ar e com o mesmo áudio, troca a fonte sem
+    /// derrubar ninguém (`change_quality`); mudando o áudio, para e recomeça — como o React.
+    /// O som da tela vai junto, e chega mudo do outro lado.
+    pub fn share(self: &Rc<Self>, choice: Value) {
         let Some(room) = lock(&self.room).clone() else {
             return;
         };
 
-        let screen = self.to_screen.clone();
+        let (screen, config) = (self.to_screen.clone(), core_app::sharing::capture_config(&choice));
+        let portal = choice["portal"].as_bool().unwrap_or(false);
 
         self.spawn(async move {
-            let config = screen_config();
+            let live = room.sharing_recipe();
+
+            if live.as_ref().is_some_and(|live| {
+                (live.capture_audio, live.mute_listed_apps) == (config.capture_audio, config.mute_listed_apps)
+            }) {
+                // No Wayland a fonte é a que o sistema deu: trocar de tela é perguntar de novo ao
+                // portal, o que só acontece parando e recomeçando.
+                let source = (!portal).then_some(config.source);
+
+                if let Err(failure) = room.change_quality(config.quality, config.frame_rate, source).await {
+                    tracing::warn!(%failure, "a troca da tela não pegou");
+
+                    let _ = screen.send(Update::Complaint("Não deu para compartilhar a tela.".into()));
+                }
+
+                return;
+            }
+
+            if live.is_some() {
+                room.stop_sharing().await;
+            }
 
             // No Wayland quem escolhe a tela é o seletor do sistema, e ele abre aqui — antes
             // de ligar a captura. Sem esta chamada o `start` não acha sessão nenhuma e o
@@ -853,18 +1051,6 @@ fn lock<T>(cell: &Arc<Mutex<T>>) -> MutexGuard<'_, T> {
     cell.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A tela principal em 1080p60, com o som do sistema e o cursor.
-fn screen_config() -> CaptureConfig {
-    CaptureConfig {
-        quality: capture::Quality::Hd1080,
-        source: CaptureSource::PrimaryDisplay,
-        frame_rate: 60,
-        capture_audio: true,
-        mute_listed_apps: true,
-        show_cursor: true,
-    }
-}
-
 fn camera_config() -> CaptureConfig {
     CaptureConfig {
         source: CaptureSource::Camera(0),
@@ -941,6 +1127,8 @@ fn translate(update: &Value, mine: &Arc<Mutex<Mine>>) -> Option<Update> {
             Update::Mine(now)
         }
         "room.ping" => Update::Ping(data["ms"].as_u64()?),
+        // O toque e o aviso da sala vão para o hub, que sabe tocar e avisar.
+        "room.chime" | "room.notice" => Update::Live(update.to_string()),
         "room.failed" => Update::Complaint(
             match data["what"].as_str()? {
                 "watch" => "Não deu para assistir a uma das transmissões.",
@@ -959,6 +1147,52 @@ fn translate(update: &Value, mine: &Arc<Mutex<Mine>>) -> Option<Update> {
         },
         _ => return None,
     })
+}
+
+/// Abre o tempo real da conta e segue o canal dela (`user.{id}`: amizades, mensagens
+/// diretas, expulsões). Cada evento vira um `Update::Live` para a tela.
+async fn go_live(
+    api: &Arc<Api>,
+    sfu: &Arc<Mutex<Option<String>>>,
+    live: &Arc<Mutex<Option<Arc<Realtime>>>>,
+    screen: &UnboundedSender<Update>,
+    account: i64,
+) {
+    let Some(url) = lock(sfu).clone() else {
+        return;
+    };
+
+    if lock(live).is_some() {
+        return;
+    }
+
+    let (updates, heard) = std::sync::mpsc::channel::<String>();
+    let realtime = match Realtime::connect(&url, api.clone(), updates.clone()).await {
+        Ok(realtime) => realtime,
+        Err(failure) => {
+            tracing::warn!(failure = %format!("{failure:#}"), "tempo real: não conectou");
+
+            return;
+        }
+    };
+
+    if let Err(failure) = realtime.subscribe(&format!("user.{account}")).await {
+        tracing::warn!(%failure, "tempo real: o canal da conta não abriu");
+    }
+
+    *lock(live) = Some(realtime);
+
+    let screen = screen.clone();
+
+    std::thread::spawn(move || {
+        for line in heard {
+            if screen.send(Update::Live(line)).is_err() {
+                return;
+            }
+        }
+    });
+
+    let _ = updates.send(FOLLOW.to_owned());
 }
 
 async fn restore(core: &Arc<App>, api: &Arc<Api>) -> Option<User> {

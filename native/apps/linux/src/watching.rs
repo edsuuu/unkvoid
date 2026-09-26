@@ -237,6 +237,35 @@ fn open(video: bool) -> Result<Player> {
     Ok(Player { child, feed, frame, waiting_keyframe: false, last: Instant::now() })
 }
 
+/// Um toque do app pela saída de som do PulseAudio — a que a pessoa escolheu, que o seletor
+/// de som põe como padrão. O `pacat` vem no mesmo `pulseaudio-utils` do `pactl`.
+pub fn chime(samples: Vec<f32>) {
+    std::thread::spawn(move || {
+        let child = std::process::Command::new("pacat")
+            .args(["--raw", "--format=float32le", "--rate=48000", "--channels=2"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let mut child = match child {
+            Ok(child) => child,
+            Err(failure) => {
+                tracing::warn!(%failure, "som: o toque não tocou");
+
+                return;
+            }
+        };
+
+        if let Some(mut stdin) = child.stdin.take() {
+            let bytes: Vec<u8> = samples.iter().flat_map(|sample| sample.to_le_bytes()).collect();
+
+            let _ = std::io::Write::write_all(&mut stdin, &bytes);
+        }
+
+        let _ = child.wait();
+    });
+}
+
 /// O vídeo entra como H.264 Annex-B e sai RGB no tamanho do cartão; o som entra como PCM
 /// `f32` estéreo a 48 kHz e vai direto para a saída do sistema. O `typefind` é o que dá
 /// ao `h264parse` o tipo que a entrada padrão não traz.

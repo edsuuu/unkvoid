@@ -34,6 +34,7 @@ pub struct UserBar {
     menu_name: gtk::Label,
     microphone: gtk::Button,
     camera: gtk::Button,
+    share: gtk::Button,
     sound: gtk::Button,
     sign_out: gtk::Button,
 }
@@ -128,20 +129,15 @@ impl UserBar {
             move |_| bridge.leave_voice()
         });
 
+        // Abre o seletor de tela; no ar, o "Mudar a transmissão", que também para. O botão só
+        // se acende com o que de fato subiu (`set_mine`), não com o clique.
         share.connect_clicked({
-            let (bridge, sharing) = (bridge.clone(), Rc::new(std::cell::Cell::new(false)));
+            let bridge = bridge.clone();
 
             move |button| {
-                // O botão só reflete o que de fato subiu depois que o núcleo responde; aqui
-                // ele guarda a intenção, que é o que decide entre ligar e desligar.
-                if sharing.get() {
-                    bridge.stop_sharing();
-                } else {
-                    bridge.share_screen();
-                }
+                let parent = button.root().and_downcast::<gtk::Window>();
 
-                sharing.set(!sharing.get());
-                highlight(button, "screen", "screen", sharing.get());
+                crate::share_picker::open(&bridge, parent.as_ref());
             }
         });
 
@@ -180,6 +176,7 @@ impl UserBar {
             menu_name,
             microphone,
             camera,
+            share,
             sound,
             sign_out,
         }
@@ -236,7 +233,7 @@ impl UserBar {
         self.camera.set_visible(mine.can_video);
         self.camera.set_tooltip_text(Some(if mine.camera { "Desligar a câmera" } else { "Ligar a câmera" }));
         highlight(&self.camera, "camera", "cameraOff", mine.camera);
-
+        highlight(&self.share, "screen", "screen", mine.sharing);
     }
 
     pub fn set_deafened(&self, deafened: bool) {

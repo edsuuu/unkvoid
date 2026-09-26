@@ -22,6 +22,9 @@ pub const DIM: &str = "#8a80a6";
 /// O violeta claro do código da sala e das marcas da marca.
 pub const LILAC: &str = "#aeb0ff";
 
+/// O verde do selo de um aviso que deu certo.
+pub const ONLINE: &str = "#34d399";
+
 /// O traço que corta o ícone quando o aparelho está desligado.
 const SLASH: &str = r#"<path d="M4 4l16 16"/>"#;
 
