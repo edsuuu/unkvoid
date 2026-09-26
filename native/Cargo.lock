@@ -9282,6 +9282,7 @@ dependencies = [
  "capture",
  "core-app",
  "media",
+ "serde",
  "serde_json",
  "slint",
  "slint-build",

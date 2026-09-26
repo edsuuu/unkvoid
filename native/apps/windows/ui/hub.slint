@@ -2,6 +2,8 @@ import { ScrollView } from "std-widgets.slint";
 import { Icons, Skin } from "skin.slint";
 import { ChannelRow, Ui } from "state.slint";
 import { Avatar, Danger, Field, GhostButton, Glass, Glyph, IconButton, LabelMono, Muted, PrimaryButton, RowItem, Title } from "widgets.slint";
+import { Stage } from "stage.slint";
+import { VoiceStage, VoiceToolbar } from "voice.slint";
 import { UserBar } from "userbar.slint";
 
 // A tela de quem tem conta: servidores, canais, chat, amigos e mensagens diretas.
@@ -336,11 +338,30 @@ component VoiceItem inherits Rectangle {
             for peer in Ui.peers : HorizontalLayout {
                 spacing: 8px;
 
-                Avatar {
-                    letter: peer.initial;
-                    size: 22px;
-                    mine: peer.mine;
+                // O anel verde de quem fala, por fora do rosto, como no Mac.
+                Rectangle {
+                    width: 22px;
+                    height: 22px;
                     y: (parent.height - self.height) / 2;
+
+                    Avatar {
+                        letter: peer.initial;
+                        size: 22px;
+                        mine: peer.mine;
+                    }
+
+                    Rectangle {
+                        x: -2px;
+                        y: -2px;
+                        width: 26px;
+                        height: 26px;
+                        border-radius: 13px;
+                        border-width: 2px;
+                        border-color: Skin.online;
+                        opacity: peer.speaking ? 1.0 : 0.0;
+
+                        animate opacity { duration: 120ms; easing: ease-out; }
+                    }
                 }
 
                 Text {
@@ -348,10 +369,27 @@ component VoiceItem inherits Rectangle {
                     color: peer.mine ? Skin.ink-body : Skin.ink-icon;
                     font-family: Skin.sans;
                     font-size: 12.5px;
-                    horizontal-stretch: 1;
                     overflow: elide;
                     vertical-alignment: center;
                 }
+
+                // O fone cortado fica por cima do microfone cortado: quem não ouve também não
+                // conversa, e um ícone só diz as duas coisas.
+                if peer.mine && Ui.deafened : Glyph {
+                    commands: Icons.headphones-off;
+                    size: 12px;
+                    tint: Skin.danger;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                if !(peer.mine && Ui.deafened) && peer.muted : Glyph {
+                    commands: Icons.mic-off;
+                    size: 12px;
+                    tint: Skin.danger;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
 
                 if peer.note != "" : Text {
                     text: peer.note;
@@ -500,75 +538,71 @@ component HomeCodes inherits Panel {
     }
 }
 
-// O cartão das salas com conta: nome, se você é dono, e quando entrou pela última vez.
-component HomeRooms inherits Panel {
-    // O `animate-rise` do React: o cartão aparece, não salta pronto.
-    property <bool> shown;
-
-    opacity: root.shown ? 1.0 : 0.0;
-    init => { root.shown = true; }
-
-    animate opacity { duration: 220ms; easing: ease-out; }
-
-    // `flex: 1 1 0` com mínimo de 280: é o que sobra da linha.
-    horizontal-stretch: 1;
-    min-width: 280px;
-
+// O chat do canal de voz, ao lado do palco: o canal de voz também tem mensagens, e o React
+// abre as dele aqui em vez de trocar o chat do servidor.
+component VoiceChat inherits Panel {
     VerticalLayout {
-        padding: 20px;
+        padding: 12px;
         spacing: 8px;
-        alignment: start;
 
-        LabelMono { text: "ÚLTIMAS SALAS"; }
+        HorizontalLayout {
+            height: 24px;
 
-        if Ui.servers.length == 0 : Muted {
-            text: "Nenhuma ainda. Crie uma ao lado ou entre com um convite.";
-            horizontal-alignment: center;
-        }
+            LabelMono {
+                text: "CHAT DA VOZ";
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
 
-        for server[index] in Ui.servers : RowItem {
-            height: 48px;
-            clicked => { Ui.open-server(index); }
+            Rectangle {
+                width: 24px;
+                height: 24px;
+                border-radius: 7px;
+                background: close.has-hover ? Skin.row : transparent;
 
-            HorizontalLayout {
-                padding-left: 8px;
-                padding-right: 11px;
-                spacing: 10px;
-
-                Avatar {
-                    letter: server.initial;
-                    size: 32px;
-                    square: true;
+                Glyph {
+                    commands: Icons.close;
+                    size: 13px;
+                    tint: close.has-hover ? Skin.ink-strong : Skin.ink-dim;
+                    x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
                 }
 
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 2px;
-                    horizontal-stretch: 1;
+                close := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { Ui.voice-chat-open = false; }
+                }
+            }
+        }
 
-                    Text {
-                        text: server.name;
-                        color: Skin.ink-body;
-                        font-family: Skin.sans;
-                        font-size: 13.5px;
-                        font-weight: 600;
-                        overflow: elide;
-                    }
+        ScrollView {
+            vertical-stretch: 1;
 
-                    LabelMono {
-                        text: server.note;
-                        font-size: 9.5px;
-                    }
+            VerticalLayout {
+                spacing: 10px;
+                alignment: start;
+
+                if Ui.voice-messages.length == 0 : Muted {
+                    text: "Nenhuma mensagem nesta voz ainda.";
+                    font-size: 12.5px;
                 }
 
-                Text {
-                    text: server.at;
-                    color: Skin.ink-dim;
-                    font-family: Skin.mono;
-                    font-size: 10.5px;
-                    vertical-alignment: center;
+                for message in Ui.voice-messages : Said {
+                    id: message.id;
+                    author: message.author;
+                    initial: message.initial;
+                    body: message.body;
+                    at: message.at;
+                    mine: message.mine;
                 }
+            }
+        }
+
+        voice-composer := Field {
+            placeholder: "Escreva uma mensagem";
+            accepted => {
+                Ui.send-voice-message(voice-composer.text);
+                voice-composer.text = "";
             }
         }
     }
@@ -811,17 +845,15 @@ export component HubScreen inherits Rectangle {
 
                     // ---- salas ----
                     //
-                    // No React os três cartões são um `flex-wrap`: os dois primeiros cabem
-                    // lado a lado e o terceiro desce. O Slint não embrulha sozinho, então a
-                    // mesma divisão está escrita à mão.
+                    // Os dois cartões lado a lado, como o `flex-wrap` do React. O terceiro,
+                    // "Últimas salas", saiu como no Mac: as salas em que se está já moram na
+                    // trilha da esquerda, e repeti-las ao lado só empurrava o resto.
                     if Ui.home-tab == "servers" : HorizontalLayout {
                         spacing: 12px;
 
                         HomeCreate { }
                         HomeCodes { }
                     }
-
-                    if Ui.home-tab == "servers" : HomeRooms { }
 
                     // ---- amigos ----
                     Panel {
@@ -957,8 +989,29 @@ export component HubScreen inherits Rectangle {
             }
         }
 
+        // ---- a sala focada: a voz toma tudo menos a trilha ----
+        if Ui.in-server && Ui.focused-room && Ui.voice-channel != "" : HorizontalLayout {
+            horizontal-stretch: 1;
+            spacing: 10px;
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 10px;
+
+                VoiceToolbar { }
+
+                Stage {
+                    vertical-stretch: 1;
+                }
+            }
+
+            if Ui.voice-chat-open : VoiceChat {
+                width: 320px;
+            }
+        }
+
         // ---- o servidor aberto ----
-        if Ui.in-server : HorizontalLayout {
+        if Ui.in-server && !(Ui.focused-room && Ui.voice-channel != "") : HorizontalLayout {
             horizontal-stretch: 1;
             spacing: 10px;
 
@@ -1090,10 +1143,11 @@ export component HubScreen inherits Rectangle {
                 horizontal-stretch: 1;
                 spacing: 10px;
 
-                // A faixa do convite, acima do chat — como no `ServerView`.
-                Panel {
-                    visible: Ui.invite-code != "";
-                    height: Ui.invite-code == "" ? 0px : 46px;
+                // A faixa do convite, acima do chat — como no `ServerView`. Só existe com
+                // convite: escondida com altura zero ela ainda levava o espaçamento, e o
+                // chat começava dez pixels abaixo das outras colunas.
+                if Ui.invite-code != "" : Panel {
+                    height: 46px;
 
                     HorizontalLayout {
                         padding-left: 14px;
@@ -1126,7 +1180,11 @@ export component HubScreen inherits Rectangle {
                     }
                 }
 
-                Panel {
+                if Ui.voice-channel != "" && Ui.stage-open : VoiceStage {
+                    vertical-stretch: 1;
+                }
+
+                if !(Ui.voice-channel != "" && Ui.stage-open) : Panel {
                     vertical-stretch: 1;
 
                     VerticalLayout {
@@ -1168,13 +1226,16 @@ export component HubScreen inherits Rectangle {
                     }
                 }
 
-                Danger {
+                if Ui.complaint != "" : Danger {
                     text: Ui.complaint;
-                    height: 18px;
                 }
             }
 
-            Panel {
+            if Ui.voice-channel != "" && Ui.stage-open && Ui.voice-chat-open : VoiceChat {
+                width: 320px;
+            }
+
+            if !(Ui.voice-channel != "" && Ui.stage-open) : Panel {
                 width: 240px;
 
                 VerticalLayout {

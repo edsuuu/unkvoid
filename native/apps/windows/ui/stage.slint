@@ -1,0 +1,617 @@
+import { Slider } from "std-widgets.slint";
+import { Icons, Skin } from "skin.slint";
+import { TileRow, Ui } from "state.slint";
+import { Avatar, CodeChip, GhostButton, Glass, Glyph, LabelMono, PrimaryButton, RowItem } from "widgets.slint";
+
+// O palco: o cartão largo quando ninguém transmite, e a grade de telas quando há. É o
+// `Stage.tsx` do React no desenho que o macOS fixou (`Screens/Room/Stage.swift`).
+
+// Um botão do cartão: 28 de lado, raio 8, como o `IconButton(side: 28)` do Mac.
+component TileButton inherits Rectangle {
+    in property <string> commands;
+    in property <string> hint;
+    // "on" é o violeta da marca; "off" é o vermelho de algo desligado.
+    in property <string> tone: "idle";
+    in property <bool> filled;
+    callback clicked();
+
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: root.tone == "on" ? #8a7cf599 : (root.tone == "off" ? #e2445c59 : (touch.has-hover ? #8a7cf580 : Skin.line-strong));
+    background: root.tone == "on"
+        ? @linear-gradient(180deg, Skin.brand 0%, Skin.brand-dark 100%)
+        : (root.tone == "off" ? #e2445c1a : #100d1acc);
+
+    Glyph {
+        commands: root.commands;
+        size: 13px;
+        filled: root.filled;
+        tint: root.tone == "on" ? Skin.ink-strong : (root.tone == "off" ? Skin.danger : (touch.has-hover ? Skin.ink-strong : Skin.ink-icon));
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    // O `.help` do Mac, o `title` do React: o que o botão faz, sem precisar clicar.
+    if touch.has-hover && root.hint != "" : Rectangle {
+        y: -34px;
+        x: min(0px, 28px - said.preferred-width - 16px);
+        width: said.preferred-width + 16px;
+        height: 26px;
+        border-radius: 7px;
+        border-width: 1px;
+        border-color: Skin.line-strong;
+        background: #100d1afa;
+
+        said := Text {
+            text: root.hint;
+            color: Skin.ink-icon;
+            font-family: Skin.sans;
+            font-size: 11px;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+// `StreamTile.tsx`: a tela de alguém, com o selo, o nome e os botões por cima.
+component StreamTile inherits Rectangle {
+    in property <TileRow> tile;
+    in property <bool> thumb;
+    property <bool> adjusting;
+
+    border-radius: 16px;
+    clip: true;
+    background: #000000;
+
+    if root.tile.has-frame : Image {
+        source: root.tile.frame;
+        width: parent.width;
+        height: parent.height;
+        image-fit: contain;
+    }
+
+    // Até o primeiro quadro, o fundo do React que diz que a tela está abrindo.
+    if !root.tile.has-frame && !root.tile.paused : Rectangle {
+        background: @linear-gradient(135deg, #5a3fd640 0%, #000000 100%);
+
+        Text {
+            text: "abrindo…";
+            color: Skin.lilac-2;
+            font-family: Skin.mono;
+            font-size: 11px;
+        }
+    }
+
+    if root.tile.paused : Rectangle {
+        background: #00000099;
+
+        Text {
+            text: "pausado";
+            color: Skin.ink-icon;
+            font-family: Skin.mono;
+            font-size: 11px;
+        }
+    }
+
+    // A borda por cima da imagem: com `clip`, a de baixo seria cortada junto do canto.
+    Rectangle {
+        border-radius: 16px;
+        border-width: 1px;
+        border-color: root.tile.focused ? #8a7cf599 : Skin.line-strong;
+    }
+
+    // Os botões moram dentro desta área: passar por cima deles continua sendo passar por
+    // cima do cartão, e a barra não pisca ao ir do vídeo para o botão.
+    touch := TouchArea {
+        mouse-cursor: root.thumb ? pointer : default;
+        clicked => {
+            if root.thumb {
+                Ui.toggle-focus(root.tile.producer);
+            }
+        }
+        double-clicked => {
+            if !root.thumb && !root.tile.camera {
+                Ui.toggle-fullscreen(root.tile.producer);
+            }
+        }
+
+        Rectangle {
+            y: parent.height - self.height;
+            height: 48px;
+            background: @linear-gradient(180deg, #00000000 0%, #000000b3 100%);
+
+            HorizontalLayout {
+                padding: 10px;
+                spacing: 6px;
+
+                // O selo no meio da barra: num `HorizontalLayout` o filho estica na altura, e
+                // um `y` escrito nele é ignorado.
+                VerticalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: badge.preferred-width + 12px;
+                        height: 16px;
+                        border-radius: 5px;
+                        background: root.tile.camera || root.tile.mine ? Skin.brand : Skin.danger;
+
+                        badge := Text {
+                            text: root.tile.camera ? "CÂMERA" : (root.tile.mine ? "VOCÊ" : "AO VIVO");
+                            color: Skin.ink-strong;
+                            font-family: Skin.mono;
+                            font-size: 9px;
+                            font-weight: 600;
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.tile.label;
+                    color: Skin.ink-strong;
+                    font-family: Skin.sans;
+                    font-size: 12px;
+                    font-weight: 500;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    max-width: parent.width * 0.4;
+                }
+
+                if root.tile.watchers > 0 : HorizontalLayout {
+                    spacing: 4px;
+
+                    Glyph {
+                        commands: Icons.eye;
+                        size: 11px;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Text {
+                        text: root.tile.watchers;
+                        color: Skin.ink-icon;
+                        font-family: Skin.mono;
+                        font-size: 10px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                if !root.thumb && (touch.has-hover || root.adjusting) : HorizontalLayout {
+                    spacing: 6px;
+
+                    if root.tile.audio : TileButton {
+                        commands: root.tile.heard ? Icons.speaker : Icons.speaker-off;
+                        tone: root.tile.heard ? "idle" : "off";
+                        hint: root.tile.heard ? "Mutar o áudio desta tela" : "Ativar o áudio desta tela";
+                        clicked => { Ui.toggle-heard(root.tile.producer); }
+                    }
+
+                    if root.tile.audio : TileButton {
+                        commands: Icons.sliders;
+                        tone: root.adjusting ? "on" : "idle";
+                        hint: "Volume — só do seu lado, não muda o que os outros ouvem";
+                        clicked => { root.adjusting = !root.adjusting; }
+                    }
+
+                    if !root.tile.mine : TileButton {
+                        commands: root.tile.paused ? Icons.play : Icons.eye;
+                        filled: root.tile.paused;
+                        hint: root.tile.paused ? "Retomar" : "Pausar: para de receber sem sair da sala";
+                        clicked => { Ui.pause-tile(root.tile.producer); }
+                    }
+
+                    TileButton {
+                        commands: Icons.focus;
+                        tone: root.tile.focused ? "on" : "idle";
+                        hint: root.tile.focused ? "Sair do foco" : "Focar esta tela";
+                        clicked => { Ui.toggle-focus(root.tile.producer); }
+                    }
+
+                    if !root.tile.camera : TileButton {
+                        commands: root.tile.full ? Icons.fullscreen-exit : Icons.fullscreen;
+                        hint: root.tile.full ? "Sair da tela cheia" : "Tela cheia";
+                        clicked => { Ui.toggle-fullscreen(root.tile.producer); }
+                    }
+
+                    TileButton {
+                        commands: Icons.close;
+                        hint: root.tile.mine ? "Ocultar minha tela" : "Fechar esta transmissão (continua ao vivo para os outros)";
+                        clicked => {
+                            if root.tile.mine {
+                                Ui.toggle-self-view();
+                            } else {
+                                Ui.close-tile(root.tile.producer);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // O volume desta tela. O Mac põe brilho, contraste, saturação e desfoque junto; o
+        // Slint não tem filtro de imagem, e controle que não muda nada não entra.
+        //
+        // ponytail: sem os filtros de imagem do React. Teto: a imagem sai como o decodificador
+        // a entregou. A saída é aplicar a conta no RGB da conversão, no `windows_decoder.rs`.
+        if root.adjusting && !root.thumb : Rectangle {
+            x: parent.width - self.width - 10px;
+            y: parent.height - self.height - 52px;
+            width: 220px;
+            height: 70px;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Skin.line-strong;
+            background: #100d1afa;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 6px;
+
+                LabelMono { text: "VOLUME"; }
+
+                Slider {
+                    minimum: 0;
+                    maximum: 100;
+                    value: 100;
+                    changed(level) => { Ui.set-volume(root.tile.producer, level / 100); }
+                }
+            }
+        }
+    }
+}
+
+// O cartão largo quando não há tela aberta: o desenho, a frase e o que dá para fazer.
+component EmptyStage inherits Rectangle {
+    in property <string> code;
+
+    Glass {
+        width: min(520px, parent.width - 32px);
+        height: middle.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: 24px;
+        drop-shadow-blur: 60px;
+        drop-shadow-offset-y: 30px;
+        drop-shadow-color: #000000cc;
+
+        middle := VerticalLayout {
+            padding: 36px;
+            spacing: 0px;
+            alignment: center;
+
+            HorizontalLayout {
+                alignment: center;
+                padding-bottom: 20px;
+
+                Rectangle {
+                    height: 64px;
+                    width: 64px;
+                    border-radius: 20px;
+                    border-width: 1px;
+                    border-color: #8a7cf54d;
+                    background: #8a7cf526;
+
+                    Glyph {
+                        commands: Icons.screen;
+                        size: 26px;
+                        tint: Skin.lilac-2;
+                    }
+                }
+            }
+
+            Text {
+                text: Ui.pending-tiles > 0
+                    ? "Alguém está compartilhando, mas a tela não abriu sozinha."
+                    : (Ui.sharing ? "Você está transmitindo." : "Ninguém está compartilhando ainda.");
+                color: Skin.ink;
+                font-family: Skin.sans;
+                font-size: 19px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+
+            if Ui.sharing && Ui.pending-tiles == 0 : VerticalLayout {
+                padding-top: 10px;
+
+                Text {
+                    text: "A sua tela não aparece aqui para não gastar um decoder à toa.";
+                    color: Skin.ink-soft;
+                    font-family: Skin.sans;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            if !Ui.sharing && Ui.pending-tiles == 0 && root.code != "" : HorizontalLayout {
+                padding-top: 10px;
+                spacing: 5px;
+                alignment: center;
+
+                Text {
+                    text: "Mande o código";
+                    color: Skin.ink-soft;
+                    font-family: Skin.sans;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                }
+
+                CodeChip { text: root.code; }
+
+                Text {
+                    text: "para quem você quer aqui.";
+                    color: Skin.ink-soft;
+                    font-family: Skin.sans;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                }
+            }
+
+            HorizontalLayout {
+                padding-top: 20px;
+                spacing: 8px;
+                alignment: center;
+
+                if Ui.pending-tiles > 0 : GhostButton {
+                    text: "Assistir";
+                    font-size: 13px;
+                    height: 41px;
+                    width: 120px;
+                    clicked => { Ui.watch-pending(); }
+                }
+
+                if Ui.sharing : GhostButton {
+                    text: "Ver o que a sala vê";
+                    font-size: 13px;
+                    height: 41px;
+                    width: 170px;
+                    clicked => { Ui.toggle-self-view(); }
+                }
+
+                if Ui.can-share && !Ui.sharing : PrimaryButton {
+                    text: "Iniciar compartilhamento";
+                    width: 220px;
+                    clicked => { Ui.toggle-share(); }
+                }
+            }
+
+            if Ui.reconnecting : VerticalLayout {
+                padding-top: 16px;
+
+                Text {
+                    text: "reconectando…";
+                    color: Skin.danger;
+                    font-family: Skin.mono;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+// `PeopleMenu.tsx`: a pílula com até três rostos e a contagem, que abre quem está na sala.
+// A sala por código, o palco da voz e a sala focada usam a mesma.
+export component PeopleMenu inherits Rectangle {
+    // A largura sai da conta e não do que está dentro: medir o filho aqui faria o filho medir
+    // o pai de volta.
+    property <int> shown: min(3, max(1, Ui.peers.length));
+    property <length> faces-width: shown * 26px + (shown - 1) * 5px;
+
+    width: 6px + faces-width + 46px;
+    height: 32px;
+    border-radius: 999px;
+    border-width: 1px;
+    border-color: touch.has-hover ? #8a7cf580 : Skin.line-strong;
+    background: Skin.row;
+
+    HorizontalLayout {
+        x: 6px;
+        width: root.faces-width;
+        height: parent.height;
+        spacing: 5px;
+        alignment: start;
+
+        for peer[index] in Ui.peers : Rectangle {
+            width: index < 3 ? 26px : 0px;
+            visible: index < 3;
+
+            Avatar {
+                letter: peer.initial;
+                size: 26px;
+                mine: peer.mine;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+    }
+
+    Text {
+        x: 6px + root.faces-width + 8px;
+        text: Ui.peers.length == 0 ? "1" : Ui.peers.length;
+        color: Skin.ink-dim;
+        font-family: Skin.mono;
+        font-size: 10.5px;
+        vertical-alignment: center;
+        height: parent.height;
+    }
+
+    Glyph {
+        x: parent.width - 20px;
+        y: (parent.height - self.height) / 2;
+        commands: Icons.chevron-down;
+        size: 12px;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { list.show(); }
+    }
+
+    list := PopupWindow {
+        x: 0px;
+        y: parent.height + 6px;
+        width: 320px;
+        height: min(360px, Ui.peers.length * 46px + 52px);
+        close-policy: PopupClosePolicy.close-on-click-outside;
+
+        Rectangle {
+            border-radius: 14px;
+            border-width: 1px;
+            border-color: Skin.line-strong;
+            background: #100d1af5;
+
+            VerticalLayout {
+                padding: 8px;
+                spacing: 6px;
+                alignment: start;
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
+
+                    LabelMono { text: "NA SALA"; }
+                }
+
+                for peer in Ui.peers : RowItem {
+                    height: 40px;
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 10px;
+
+                        Avatar {
+                            letter: peer.initial;
+                            size: 24px;
+                            mine: peer.mine;
+                            y: (parent.height - self.height) / 2;
+                        }
+
+                        Text {
+                            text: peer.name;
+                            color: Skin.ink-body;
+                            font-family: Skin.sans;
+                            font-size: 12.5px;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: peer.note;
+                            color: Skin.ink-dim;
+                            font-family: Skin.mono;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component Stage inherits Rectangle {
+    // O código da sala, para a frase do cartão vazio. No canal de voz fica vazio: lá o
+    // convite é outro, e o React não mostra a frase.
+    in property <string> code;
+
+    if Ui.tiles.length == 0 : EmptyStage {
+        code: root.code;
+    }
+
+    if Ui.tiles.length > 0 : VerticalLayout {
+        spacing: 10px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            height: 28px;
+
+            LabelMono {
+                text: "TRANSMISSÕES";
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                width: count.preferred-width + 16px;
+                height: 18px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 9px;
+                border-width: 1px;
+                border-color: #8a7cf54d;
+                background: #8a7cf526;
+
+                count := Text {
+                    text: Ui.tiles.length == 1 ? "1 tela" : Ui.tiles.length + " telas";
+                    color: Skin.lilac-2;
+                    font-family: Skin.mono;
+                    font-size: 10px;
+                }
+            }
+
+            if Ui.reconnecting : Text {
+                text: "reconectando…";
+                color: Skin.danger;
+                font-family: Skin.mono;
+                font-size: 10.5px;
+                vertical-alignment: center;
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            if Ui.pending-tiles > 0 : GhostButton {
+                text: "Assistir quem falta";
+                font-size: 11.5px;
+                height: 28px;
+                width: 140px;
+                clicked => { Ui.watch-pending(); }
+            }
+
+            if Ui.focusing : GhostButton {
+                text: "Sair do foco";
+                font-size: 11.5px;
+                height: 28px;
+                width: 100px;
+                clicked => { Ui.toggle-focus(""); }
+            }
+        }
+
+        grid := Rectangle {
+            vertical-stretch: 1;
+
+            property <length> cell-width: (self.width - (Ui.grid-columns - 1) * 10px) / Ui.grid-columns;
+            property <length> cell-height: (self.height - (Ui.grid-lines - 1) * 10px) / Ui.grid-lines;
+            property <int> others: Ui.tiles.length - 1;
+            property <length> thumb-width: (self.width - (others - 1) * 10px) / max(1, others);
+
+            for tile in Ui.tiles : StreamTile {
+                tile: tile;
+                thumb: Ui.focusing && !tile.focused;
+                visible: !Ui.full-screen || tile.full;
+
+                x: Ui.full-screen || (Ui.focusing && tile.focused)
+                    ? 0px
+                    : (Ui.focusing ? tile.rank * (grid.thumb-width + 10px) : tile.column * (grid.cell-width + 10px));
+                y: Ui.full-screen || (Ui.focusing && tile.focused)
+                    ? 0px
+                    : (Ui.focusing ? grid.height - 104px : tile.line * (grid.cell-height + 10px));
+                width: Ui.full-screen || (Ui.focusing && tile.focused)
+                    ? grid.width
+                    : (Ui.focusing ? grid.thumb-width : grid.cell-width);
+                height: Ui.full-screen
+                    ? grid.height
+                    : (Ui.focusing ? (tile.focused ? grid.height - 114px : 104px) : grid.cell-height);
+            }
+        }
+    }
+}

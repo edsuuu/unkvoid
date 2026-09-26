@@ -47,6 +47,38 @@ export struct PeerRow {
     initial: string,
     note: string,
     mine: bool,
+    /// Falando agora: o anel verde em volta do rosto.
+    speaking: bool,
+    /// Com o microfone desenhado como desligado.
+    muted: bool,
+}
+
+/// Uma transmissão que se está assistindo: um cartão do palco.
+export struct TileRow {
+    /// O producer do vídeo: é ele que volta nos cliques do cartão.
+    producer: string,
+    label: string,
+    initial: string,
+    /// "Ver o que a sala vê": a própria tela.
+    mine: bool,
+    camera: bool,
+    paused: bool,
+    /// Há som de tela para ligar, e se ele está ligado.
+    audio: bool,
+    heard: bool,
+    /// Quantos assistem, e quem, para o balão do olho.
+    watchers: int,
+    watcher-names: string,
+    /// O último quadro. Até o primeiro chegar, o cartão mostra que está abrindo.
+    frame: image,
+    has-frame: bool,
+    /// Onde o cartão cai. A conta é do Rust: a grade é coluna e linha, o foco põe um no
+    /// palco (`focused`) e os outros em fila pela ordem (`rank`), e a tela cheia deixa um.
+    column: int,
+    line: int,
+    rank: int,
+    focused: bool,
+    full: bool,
 }
 
 export struct DeviceRow {
@@ -121,6 +153,12 @@ export global Ui {
     /// dentro do hub que isso aparece, como no React: não se troca de tela para falar.
     in property <string> voice-channel;
     in property <string> voice-name;
+    /// O palco da voz no lugar do chat, e a sala focada que toma tudo menos a trilha.
+    in-out property <bool> stage-open;
+    in-out property <bool> focused-room;
+    /// O chat do canal de voz, ao lado do palco.
+    in-out property <bool> voice-chat-open;
+    in property <[MessageRow]> voice-messages;
 
     in property <string> room-code;
     in property <[PeerRow]> peers;
@@ -135,6 +173,22 @@ export global Ui {
     in property <bool> mic-on;
     in property <bool> can-speak: true;
     in property <bool> deafened;
+    /// Eu falando agora: o anel verde na barra de baixo.
+    in property <bool> speaking;
+
+    /// As telas que se está assistindo, uma por cartão, e quantas estão ao vivo sem estar
+    /// abertas — é o que acende o "Assistir".
+    in property <[TileRow]> tiles;
+    in property <int> pending-tiles;
+    /// A grade do palco, e se um cartão está no foco ou em tela cheia. Só do lado de quem olha.
+    in property <int> grid-columns: 1;
+    in property <int> grid-lines: 1;
+    in property <bool> focusing;
+    in property <bool> full-screen;
+    in property <bool> can-share: true;
+    in property <bool> reconnecting;
+    /// "Ver o que a sala vê": a própria tela aberta no palco.
+    in property <bool> self-view;
     /// As configurações da conta: o modal do React, por cima de tudo.
     in-out property <bool> settings-open;
     in property <[DeviceRow]> microphones;
@@ -173,8 +227,23 @@ export global Ui {
 
     callback leave-room();
     callback leave-voice();
+    /// O servidor tirou esta sessão da sala: "replaced" ou "kicked".
+    callback thrown-out(string);
+    /// Abre ou fecha o chat do canal de voz; abrir relê as mensagens dele.
+    callback toggle-voice-chat();
+    callback send-voice-message(string);
     callback toggle-share();
     callback toggle-camera();
+
+    callback watch-pending();
+    callback toggle-self-view();
+    callback close-tile(string);
+    callback pause-tile(string);
+    callback toggle-heard(string);
+    callback toggle-focus(string);
+    callback toggle-fullscreen(string);
+    /// De 0 a 1, só do lado de quem ouve.
+    callback set-volume(string, float);
 
     callback toggle-mic();
     callback toggle-deafen();

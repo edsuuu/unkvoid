@@ -91,6 +91,7 @@ export component PrimaryButton inherits Rectangle {
 export component GhostButton inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
+    in property <length> font-size: 12.5px;
     callback clicked();
 
     // 8 de respiro em cima e embaixo, como o `.btn-ghost` do CSS.
@@ -106,7 +107,7 @@ export component GhostButton inherits Rectangle {
         text: root.text;
         color: touch.has-hover ? Skin.ink-strong : Skin.ink-icon;
         font-family: Skin.sans;
-        font-size: 12.5px;
+        font-size: root.font-size;
         horizontal-alignment: center;
         vertical-alignment: center;
     }

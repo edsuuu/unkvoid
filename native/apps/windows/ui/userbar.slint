@@ -291,11 +291,30 @@ export component UserBar inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
 
-            Avatar {
-                letter: Ui.user-initial;
-                size: 30px;
-                mine: Ui.signed-in;
+            // O rosto de quem está logado, com o anel verde enquanto se fala.
+            Rectangle {
+                width: 30px;
+                height: 30px;
                 y: (parent.height - self.height) / 2;
+
+                Avatar {
+                    letter: Ui.user-initial;
+                    size: 30px;
+                    mine: Ui.signed-in;
+                }
+
+                Rectangle {
+                    x: -2px;
+                    y: -2px;
+                    width: 34px;
+                    height: 34px;
+                    border-radius: 17px;
+                    border-width: 2px;
+                    border-color: Skin.online;
+                    opacity: Ui.speaking ? 1.0 : 0.0;
+
+                    animate opacity { duration: 120ms; easing: ease-out; }
+                }
             }
 
             Rectangle { width: 2px; }

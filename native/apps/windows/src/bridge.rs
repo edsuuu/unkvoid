@@ -16,27 +16,37 @@ use core_app::models::{
     Channel, ChannelKind, Conversation, DirectMessage, Friendship, FriendshipStatus, Person, RoomIdentity,
     ServerSummary, ServerTree, User,
 };
-use core_app::protocol::local;
 use core_app::reconnect::Backoff;
-use core_app::session::Session;
+use core_app::room::Room;
 use core_app::{App, Failure, Screen};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel, Weak};
+use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel, Weak};
 use storage::Storage;
 use tokio::runtime::Runtime;
 
 use crate::devices::{self, Device};
-use crate::sharing;
+use crate::sound::{Microphone, Speaker};
+use crate::stage::{Stage, Voice, peers_of};
+use crate::watching::Watch;
 use crate::{
-    AppWindow, ChannelRow, ConversationRow, DeviceRow, FriendRow, MemberRow, MessageRow, PeerRow, ServerRow, Ui,
+    AppWindow, ChannelRow, ConversationRow, DeviceRow, FriendRow, MemberRow, MessageRow, PeerRow, ServerRow, TileRow,
+    Ui,
 };
 
 const DEFAULT_SERVER: &str = "https://unkvoid.com";
 
-/// ponytail: a tela sobe, mas o app ainda não **assiste** ao que os outros mandam, e a
-/// câmera e o microfone continuam só como botão. Teto: quem transmite é visto, quem olha
-/// não vê. A saída é portar o `watching` do `apps/linux` e ligar `Source::Mic`/`Camera` ao
-/// mesmo `core_app::sharing` que a tela já usa.
-const NO_CAPTURE: &str = "A captura ainda não está ligada nesta versão do app.";
+/// ponytail: a câmera do Windows ainda não existe — o `capture` não abre webcam aqui, e o
+/// `Room` só aceita câmera no macOS. Teto: quem está no Windows vê a câmera dos outros mas
+/// não liga a dele. A saída é a captura por Media Foundation empurrando `room.show`.
+const NO_CAPTURE: &str = "A câmera ainda não está ligada nesta versão do app.";
+
+/// As falhas que a sala anuncia, na frase do Mac.
+fn room_failure(what: &str) -> &'static str {
+    match what {
+        "watch" => "Não deu para assistir a uma das transmissões.",
+        "mic" => "Não deu para abrir o microfone.",
+        _ => "Não deu para compartilhar a tela.",
+    }
+}
 
 pub struct Bridge {
     runtime: Runtime,
@@ -45,14 +55,21 @@ pub struct Bridge {
     window: Weak<AppWindow>,
     /// De onde sai o WebSocket: vem do `GET /api/config`, e até ele responder não há sala.
     sfu: Arc<Mutex<Option<String>>>,
-    session: Arc<Mutex<Option<Arc<Session>>>>,
+    /// A sala aberta, por código ou canal de voz. É o mesmo `Room` que o macOS usa pela ABI.
+    room: Arc<Mutex<Option<Arc<Room>>>>,
+    /// O que se assiste: a fila de mídia da sala, os decodificadores e o alto-falante.
+    watch: Arc<Mutex<Option<Watch>>>,
+    microphone: Arc<Mutex<Option<Microphone>>>,
+    stage: Arc<Mutex<Stage>>,
+    voice: Arc<Mutex<Voice>>,
+    /// O canal de voz em que se está: o chat da voz lê e escreve nele.
+    voice_channel: Arc<Mutex<Option<String>>>,
+    /// O tique que leva o quadro mais novo de cada tela para a janela.
+    frames: slint::Timer,
     /// Desde quando se está na sala. O relógio da barra conta a partir daqui.
     since: Arc<Mutex<Option<std::time::Instant>>>,
     /// O tique de um segundo que escreve esse relógio. Vive enquanto a janela viver.
     clock: slint::Timer,
-    /// A sessão de mídia: um socket e uma chave SRTP para tudo o que sobe. É a mesma do
-    /// `core_app::sharing` que o app do Tauri usa, e por isso a captura aqui é a de lá.
-    media: Arc<core_app::sharing::ActiveSession>,
     /// O que a tela mostra por índice, e o que o servidor conhece por identificador.
     servers: Arc<Mutex<Vec<ServerSummary>>>,
     channels: Arc<Mutex<Vec<Channel>>>,
@@ -69,8 +86,10 @@ pub struct Bridge {
     /// O que o popover mostrou por último, para o índice clicado virar um aparelho.
     microphones: Arc<Mutex<Vec<Device>>>,
     speakers: Arc<Mutex<Vec<Device>>>,
-    /// ponytail: o aparelho escolhido só vive nesta sessão, porque ainda não há captura
-    /// para consumi-lo. A saída é guardá-lo no `storage` quando ela existir.
+    /// O microfone e a saída escolhidos, pelo id do endpoint. Vazio é o padrão do sistema.
+    ///
+    /// ponytail: a escolha só vive nesta sessão do app. Teto: reabrir o app volta ao padrão.
+    /// A saída é guardá-la no `storage`, como o nome.
     chosen: Arc<Mutex<(Option<String>, Option<String>)>>,
 }
 
@@ -85,10 +104,15 @@ impl Bridge {
             api: Arc::new(Api::new(&server)?),
             window,
             sfu: Arc::default(),
-            session: Arc::default(),
+            room: Arc::default(),
+            watch: Arc::default(),
+            microphone: Arc::default(),
+            stage: Arc::default(),
+            voice: Arc::default(),
+            voice_channel: Arc::default(),
+            frames: slint::Timer::default(),
             since: Arc::default(),
             clock: slint::Timer::default(),
-            media: Arc::default(),
             servers: Arc::default(),
             channels: Arc::default(),
             reading: Arc::default(),
@@ -123,6 +147,40 @@ impl Bridge {
 
                 if let Some(app) = window.upgrade() {
                     app.global::<Ui>().set_elapsed(face.into());
+                }
+            }
+        });
+
+        ui.set_tiles(ModelRc::new(VecModel::<TileRow>::default()));
+
+        self.frames.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(16), {
+            let (window, watch) = (self.window.clone(), self.watch.clone());
+
+            move || {
+                let fresh = match lock(&watch).as_ref() {
+                    Some(watch) => watch.fresh(),
+                    None => return,
+                };
+
+                if fresh.is_empty() {
+                    return;
+                }
+
+                let Some(app) = window.upgrade() else {
+                    return;
+                };
+                let tiles = app.global::<Ui>().get_tiles();
+
+                for (producer, buffer) in fresh {
+                    let found = (0..tiles.row_count()).find_map(|index| {
+                        tiles.row_data(index).filter(|row| row.producer == producer).map(|row| (index, row))
+                    });
+
+                    if let Some((index, mut row)) = found {
+                        row.frame = Image::from_rgb8(buffer);
+                        row.has_frame = true;
+                        tiles.set_row_data(index, row);
+                    }
                 }
             }
         });
@@ -317,26 +375,121 @@ impl Bridge {
 
 
         ui.on_toggle_mic({
-            let window = self.window.clone();
+            let bridge = self.clone();
 
-            move || {
-                paint(&window, |app| {
-                    let ui = app.global::<Ui>();
+            move || bridge.toggle_mic()
+        });
 
-                    ui.set_mic_on(!ui.get_mic_on());
+        ui.on_toggle_voice_chat({
+            let bridge = self.clone();
+
+            move || bridge.toggle_voice_chat()
+        });
+
+        ui.on_send_voice_message({
+            let bridge = self.clone();
+
+            move |body| bridge.send_voice_message(&body)
+        });
+
+        ui.on_thrown_out({
+            let bridge = self.clone();
+
+            move |why| {
+                bridge.thrown_out(if why == "replaced" {
+                    "Esta conta entrou na sala por outro lugar."
+                } else {
+                    "Você foi removido desta sala."
                 });
             }
         });
 
         ui.on_toggle_deafen({
-            let window = self.window.clone();
+            let bridge = self.clone();
+
+            move || bridge.toggle_deafen()
+        });
+
+        ui.on_watch_pending({
+            let bridge = self.clone();
+
+            move || bridge.with_room(|room| async move { room.watch(None).await })
+        });
+
+        ui.on_toggle_self_view({
+            let bridge = self.clone();
 
             move || {
-                paint(&window, |app| {
-                    let ui = app.global::<Ui>();
+                let wanted = !lock(&bridge.voice).mine.self_view;
 
-                    ui.set_deafened(!ui.get_deafened());
-                });
+                bridge.with_room(move |room| async move { room.set_self_view(wanted).await });
+            }
+        });
+
+        ui.on_close_tile({
+            let bridge = self.clone();
+
+            move |producer| {
+                let producer = producer.to_string();
+
+                bridge.with_room(move |room| async move { room.close_watched(&producer).await });
+            }
+        });
+
+        ui.on_pause_tile({
+            let bridge = self.clone();
+
+            move |producer| {
+                let producer = producer.to_string();
+                let paused = lock(&bridge.stage).tile(&producer).is_some_and(|tile| tile.paused);
+
+                bridge.with_room(move |room| async move { room.pause_watched(&producer, !paused).await });
+            }
+        });
+
+        ui.on_toggle_heard({
+            let bridge = self.clone();
+
+            move |producer| {
+                let Some((audio, heard)) = lock(&bridge.stage).toggle_heard(&producer) else {
+                    return;
+                };
+
+                if let Some(room) = lock(&bridge.room).clone() {
+                    room.mute_watched(&audio, !heard);
+                }
+
+                paint_stage(&bridge.window, &bridge.stage);
+            }
+        });
+
+        ui.on_toggle_focus({
+            let bridge = self.clone();
+
+            move |producer| {
+                lock(&bridge.stage).toggle_focus(&producer);
+                paint_stage(&bridge.window, &bridge.stage);
+            }
+        });
+
+        ui.on_toggle_fullscreen({
+            let bridge = self.clone();
+
+            move |producer| {
+                lock(&bridge.stage).toggle_full(&producer);
+                paint_stage(&bridge.window, &bridge.stage);
+            }
+        });
+
+        ui.on_set_volume({
+            let bridge = self.clone();
+
+            move |producer, level| {
+                let audio = lock(&bridge.stage).tile(&producer).and_then(|tile| tile.audio.clone());
+
+                if let (Some(audio), Some(watch)) = (audio, lock(&bridge.watch).as_ref()) {
+                    watch.speaker().set_volume(&audio, level);
+                }
             }
         });
 
@@ -760,7 +913,13 @@ impl Bridge {
         // Compartilhar tela só existe dentro de um canal de voz, e entrar nele é a mesma
         // sala do código — com o token de 60 s no lugar do nome.
         if channel.kind == ChannelKind::Voice {
-            if lock(&self.session).is_some() {
+            if lock(&self.voice_channel).as_deref() == Some(channel.id.as_str()) {
+                paint(&self.window, |app| app.global::<Ui>().set_stage_open(true));
+
+                return;
+            }
+
+            if lock(&self.room).is_some() {
                 self.leave_voice();
             }
 
@@ -869,35 +1028,98 @@ impl Bridge {
     /// fez antes dele. Quem está dentro aparece embaixo do nome do canal, e a tela continua
     /// sendo a do servidor.
     fn join_voice(self: &Rc<Self>, channel: &Channel) {
+        *lock(&self.voice_channel) = Some(channel.id.clone());
         self.connect(Ok(channel.id.clone()), Some(channel.id.clone()), Some(channel.name.clone()));
+    }
+
+    /// Abre ou fecha o chat da voz. Abrir relê o canal: sem tempo real aqui, o que aparece é
+    /// o que o servidor tem agora.
+    fn toggle_voice_chat(self: &Rc<Self>) {
+        let Some(app) = self.window.upgrade() else {
+            return;
+        };
+        let ui = app.global::<Ui>();
+        let open = !ui.get_voice_chat_open();
+
+        ui.set_voice_chat_open(open);
+
+        if let (true, Some(channel)) = (open, lock(&self.voice_channel).clone()) {
+            let (api, window, mine) = (self.api.clone(), self.window.clone(), *lock(&self.me));
+
+            self.spawn(async move { read_voice_chat(&api, &window, &channel, mine).await });
+        }
+    }
+
+    fn send_voice_message(self: &Rc<Self>, body: &str) {
+        let Some(channel) = lock(&self.voice_channel).clone() else {
+            return;
+        };
+
+        if body.trim().is_empty() {
+            return;
+        }
+
+        let (api, window, body) = (self.api.clone(), self.window.clone(), body.to_owned());
+        let mine = *lock(&self.me);
+
+        self.spawn(async move {
+            if let Err(failure) = api.send_message(&channel, &body).await {
+                complain(&window, said(&failure));
+
+                return;
+            }
+
+            read_voice_chat(&api, &window, &channel, mine).await;
+        });
     }
 
     /// Sai da voz e continua no servidor. É o fone cortado da barra de baixo.
     fn leave_voice(self: &Rc<Self>) {
-        let window = self.window.clone();
-        let held = lock(&self.session).take();
+        let held = self.close_room();
 
-        *lock(&self.since) = None;
+        *lock(&self.voice_channel) = None;
 
-        paint(&window, |app| {
+        paint(&self.window, |app| {
             let ui = app.global::<Ui>();
 
             ui.set_voice_channel(SharedString::new());
             ui.set_voice_name(SharedString::new());
-            ui.set_peers(ModelRc::default());
-            ui.set_elapsed("0:00:00".into());
-            ui.set_ping("-- ms".into());
-            ui.set_ping_ms(-1);
-            ui.set_sharing(false);
+            ui.set_stage_open(false);
+            ui.set_focused_room(false);
+            ui.set_voice_chat_open(false);
+            ui.set_voice_messages(ModelRc::default());
         });
 
         self.spawn(async move {
-            if let Some(session) = held
-                && let Err(failure) = session.leave().await
-            {
-                tracing::warn!(%failure, "a saída da voz não foi confirmada");
+            if let Some(room) = held {
+                room.leave().await;
             }
         });
+    }
+
+    /// Fecha deste lado o que a sala abriu — o microfone, o que se assiste, o palco — e
+    /// devolve a sala para quem chama avisar o servidor da saída.
+    fn close_room(self: &Rc<Self>) -> Option<Arc<Room>> {
+        let held = lock(&self.room).take();
+
+        drop(lock(&self.microphone).take());
+        drop(lock(&self.watch).take());
+        lock(&self.stage).clear();
+        lock(&self.voice).leave();
+        *lock(&self.since) = None;
+
+        paint_stage(&self.window, &self.stage);
+        paint_voice(&self.window, &self.voice);
+        paint(&self.window, |app| {
+            let ui = app.global::<Ui>();
+
+            ui.set_elapsed("0:00:00".into());
+            ui.set_ping("-- ms".into());
+            ui.set_ping_ms(-1);
+            ui.set_reconnecting(false);
+        });
+
+        held
     }
 
     fn connect(
@@ -922,20 +1144,34 @@ impl Bridge {
         };
 
         let window = self.window.clone();
-        let held = self.session.clone();
-        let started = self.since.clone();
         let identity = self.identity(&room, voice);
+        let in_voice = staying.is_some();
+        let (held, watch, stage, voice, started) = (
+            self.room.clone(),
+            self.watch.clone(),
+            self.stage.clone(),
+            self.voice.clone(),
+            self.since.clone(),
+        );
+        let microphone = self.microphone.clone();
+        let (microphone_device, speaker_device) = lock(&self.chosen).clone();
 
+        // Da escolha do canal até o microfone abrir, o botão não pinta mudo.
+        lock(&voice).opening = in_voice;
         paint(&window, |app| app.global::<Ui>().set_entry_busy(true));
 
         self.spawn(async move {
-            let joined = Session::join(&url, &room, identity).await;
+            let (updates, heard) = std::sync::mpsc::channel();
+            let entered = Room::enter(&url, &room, identity, updates).await;
 
             paint(&window, |app| app.global::<Ui>().set_entry_busy(false));
 
-            let (session, mut events) = match joined {
-                Ok(joined) => joined,
+            let (opened, media) = match entered {
+                Ok(entered) => entered,
                 Err(failure) => {
+                    lock(&voice).opening = false;
+                    paint_voice(&window, &voice);
+
                     let reason = sentence(Failure::from_error(&failure));
 
                     complain(&window, format!("Não deu para entrar na sala. {reason}"));
@@ -944,24 +1180,59 @@ impl Bridge {
                 }
             };
 
-            *lock(&held) = Some(session.clone());
+            *lock(&held) = Some(opened.clone());
             *lock(&started) = Some(std::time::Instant::now());
 
-            let (code, can_speak) = (room.clone(), session.can("speak"));
-            let peers = peer_rows(&session);
+            {
+                let mut voice = lock(&voice);
+
+                voice.inside = in_voice;
+                voice.mine = serde_json::from_value(opened.mine()).unwrap_or_default();
+                voice.peers = peers_of(&opened.peers());
+
+                // Quem ensurdeceu fora da sala entra surdo: a sala nova nasce ouvindo.
+                if voice.deafened {
+                    opened.deafen(true);
+                }
+            }
+
+            lock(&stage).set_tiles(&opened.tiles());
+
+            let speaker = Arc::new(Speaker::start(speaker_device));
+
+            *lock(&watch) = Some(Watch::start(media, speaker, {
+                let (voice, window) = (voice.clone(), window.clone());
+
+                move |producer, speaking| {
+                    {
+                        let mut voice = lock(&voice);
+
+                        if speaking {
+                            voice.speaking.insert(producer.to_owned());
+                        } else {
+                            voice.speaking.remove(producer);
+                        }
+                    }
+
+                    paint_voice(&window, &voice);
+                }
+            }));
+
+            listen(heard, window.clone(), stage.clone(), voice.clone());
+
+            let code = room.clone();
 
             paint(&window, move |app| {
                 let ui = app.global::<Ui>();
 
                 ui.set_complaint(SharedString::new());
-                ui.set_can_speak(can_speak);
-                ui.set_peers(model(peers));
 
                 match staying {
                     // Canal de voz: o hub continua na tela, e o canal aberto se marca.
                     Some(name) => {
                         ui.set_voice_channel(code.clone().into());
                         ui.set_voice_name(name.into());
+                        ui.set_stage_open(true);
                     }
                     None => {
                         ui.set_room_code(code.into());
@@ -969,76 +1240,117 @@ impl Bridge {
                     }
                 }
             });
+            paint_voice(&window, &voice);
+            paint_stage(&window, &stage);
 
-            // O socket fechado encerra a fila, e é aí que este laço termina.
-            while let Some(event) = events.recv().await {
-                let changed = session.apply(&event);
-
-                match event.name.as_str() {
-                    local::SESSION_LOST => complain(&window, "A sala caiu. Voltando…"),
-                    local::SESSION_REJOINED => complain(&window, ""),
-                    local::SESSION_GONE => complain(
-                        &window,
-                        "A sala não voltou. Entre de novo quando a internet estabilizar.",
-                    ),
-                    local::PING_MEASURED => {
-                        if let Some(milliseconds) = event.data.as_u64() {
-                            let said = format!("{milliseconds} ms");
-                            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-                            let measured = milliseconds as i32;
-
-                            paint(&window, move |app| {
-                                let ui = app.global::<Ui>();
-
-                                ui.set_ping(said.into());
-                                ui.set_ping_ms(measured);
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-
-                if changed {
-                    let peers = peer_rows(&session);
-
-                    paint(&window, move |app| app.global::<Ui>().set_peers(model(peers)));
-                }
+            // Entrar na voz abre o microfone, como no Mac e no React: quem entra já é ouvido.
+            if in_voice {
+                open_microphone(opened, microphone, voice.clone(), window.clone(), microphone_device).await;
             }
+
+            lock(&voice).opening = false;
+            paint_voice(&window, &voice);
         });
     }
 
     /// Liga ou desliga a transmissão da tela. O botão só reflete o que de fato subiu: a
-    /// tela vira violeta depois do `producePlain`, não no clique.
+    /// tela vira violeta depois do `room.mine`, não no clique.
     fn toggle_share(self: &Rc<Self>) {
-        let Some(session) = lock(&self.session).clone() else {
+        let sharing = lock(&self.voice).mine.sharing;
+        let window = self.window.clone();
+
+        self.with_room(move |room| async move {
+            if sharing {
+                room.stop_sharing().await;
+
+                return;
+            }
+
+            // A receita padrão: a tela principal em 1080p60, com o som do sistema.
+            let recipe = core_app::sharing::capture_config(&serde_json::json!({}));
+
+            if let Err(failure) = room.share(recipe).await {
+                tracing::warn!(%failure, "a tela não subiu");
+                complain(&window, room_failure("share"));
+            }
+        });
+    }
+
+    /// O microfone da barra de baixo. Fora de uma voz ele guarda o mudo para a próxima; na
+    /// voz, abre se ainda não abriu, e depois alterna o mudo.
+    fn toggle_mic(self: &Rc<Self>) {
+        let (inside, mine) = {
+            let voice = lock(&self.voice);
+
+            (voice.inside, voice.mine)
+        };
+        let room = lock(&self.room).clone().filter(|_| inside);
+
+        let Some(room) = room else {
+            let mut voice = lock(&self.voice);
+
+            voice.muted_at_rest = !voice.muted_at_rest;
+            drop(voice);
+            paint_voice(&self.window, &self.voice);
+
             return;
         };
 
-        let (media, window) = (self.media.clone(), self.window.clone());
+        if mine.mic {
+            self.spawn(async move { room.mute_microphone(!mine.mic_muted).await });
+
+            return;
+        }
+
+        let (cell, voice, window) = (self.microphone.clone(), self.voice.clone(), self.window.clone());
+        let device = lock(&self.chosen).0.clone();
+
+        lock(&voice).opening = true;
+        paint_voice(&window, &voice);
 
         self.spawn(async move {
-            let sharing = media.0.lock().await.screen.is_some();
+            open_microphone(room, cell, voice.clone(), window.clone(), device).await;
 
-            if sharing {
-                sharing::stop_screen(&session, &media).await;
-            } else if let Err(failure) = sharing::share_screen(&session, &media).await {
-                complain(&window, sharing::said(&failure));
-            }
-
-            let live = media.0.lock().await.screen.is_some();
-
-            paint(&window, move |app| app.global::<Ui>().set_sharing(live));
-
-            // O primeiro relatório sai três segundos depois de ligar: é o que diz, de
-            // dentro, se o quadro saiu pelo socket ou parou no caminho.
-            if live {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-                if let Some(broadcast) = media.0.lock().await.screen.as_ref() {
-                    tracing::info!(stats = %broadcast.stats(), "transmissão: os três primeiros segundos");
-                }
-            }
+            lock(&voice).opening = false;
+            paint_voice(&window, &voice);
         });
+    }
+
+    /// Ensurdecer cala o que chega. Vale fora da sala também: quem entra surdo continua surdo.
+    fn toggle_deafen(self: &Rc<Self>) {
+        let deafened = {
+            let mut voice = lock(&self.voice);
+
+            voice.deafened = !voice.deafened;
+            voice.deafened
+        };
+
+        if let Some(room) = lock(&self.room).clone() {
+            room.deafen(deafened);
+        }
+
+        paint_voice(&self.window, &self.voice);
+    }
+
+    /// Um clique que vira pedido à sala aberta, fora da thread da janela.
+    fn with_room<F, Work>(self: &Rc<Self>, work: F)
+    where
+        F: FnOnce(Arc<Room>) -> Work,
+        Work: std::future::Future<Output = ()> + Send + 'static,
+    {
+        if let Some(room) = lock(&self.room).clone() {
+            self.spawn(work(room));
+        }
+    }
+
+    /// Tirado da sala pelo servidor: sai do que estiver aberto e diz por quê.
+    fn thrown_out(self: &Rc<Self>, message: &'static str) {
+        if lock(&self.voice).inside {
+            self.leave_voice();
+            complain(&self.window, message);
+        } else {
+            self.leave_room_saying(message);
+        }
     }
 
     /// Quem esta pessoa é para o SFU, **perguntado de novo a cada entrada**: o token de voz
@@ -1069,28 +1381,25 @@ impl Bridge {
     }
 
     fn leave_room(self: &Rc<Self>) {
+        self.leave_room_saying("");
+    }
+
+    fn leave_room_saying(self: &Rc<Self>, message: &'static str) {
         self.core.leave_room();
 
         let (window, landing) = (self.window.clone(), self.core.home());
-        let held = lock(&self.session).take();
-
-        *lock(&self.since) = None;
-
-        paint(&window, |app| app.global::<Ui>().set_elapsed("0:00:00".into()));
+        let held = self.close_room();
 
         self.spawn(async move {
-            if let Some(session) = held
-                && let Err(failure) = session.leave().await
-            {
-                tracing::warn!(%failure, "a saída da sala não foi confirmada");
+            if let Some(room) = held {
+                room.leave().await;
             }
 
             paint(&window, move |app| {
                 let ui = app.global::<Ui>();
 
-                ui.set_peers(ModelRc::default());
                 ui.set_room_code(SharedString::new());
-                ui.set_complaint(SharedString::new());
+                ui.set_complaint(message.into());
                 ui.set_screen(named(landing).into());
             });
         });
@@ -1385,23 +1694,38 @@ async fn landed(core: &Arc<App>, api: &Arc<Api>, window: &Weak<AppWindow>, landi
 async fn read_channel(api: &Arc<Api>, window: &Weak<AppWindow>, channel: &str, me: Option<i64>) {
     match api.messages(channel).await {
         Ok(messages) => {
-            #[allow(clippy::cast_possible_truncation)]
-            let rows: Vec<MessageRow> = messages
-                .iter()
-                .map(|message| MessageRow {
-                    id: message.id as i32,
-                    initial: initial(&message.user.name),
-                    author: message.user.name.clone().into(),
-                    body: message.body.clone().into(),
-                    at: message.created_at.get(11..16).unwrap_or_default().into(),
-                    mine: Some(message.user.id) == me,
-                })
-                .collect();
+            let rows = message_rows(&messages, me);
 
             paint(window, move |app| app.global::<Ui>().set_messages(model(rows)));
         }
         Err(failure) => complain(window, said(&failure)),
     }
+}
+
+async fn read_voice_chat(api: &Arc<Api>, window: &Weak<AppWindow>, channel: &str, me: Option<i64>) {
+    match api.messages(channel).await {
+        Ok(messages) => {
+            let rows = message_rows(&messages, me);
+
+            paint(window, move |app| app.global::<Ui>().set_voice_messages(model(rows)));
+        }
+        Err(failure) => complain(window, said(&failure)),
+    }
+}
+
+fn message_rows(messages: &[core_app::models::Message], me: Option<i64>) -> Vec<MessageRow> {
+    #[allow(clippy::cast_possible_truncation)]
+    messages
+        .iter()
+        .map(|message| MessageRow {
+            id: message.id as i32,
+            initial: initial(&message.user.name),
+            author: message.user.name.clone().into(),
+            body: message.body.clone().into(),
+            at: message.created_at.get(11..16).unwrap_or_default().into(),
+            mine: Some(message.user.id) == me,
+        })
+        .collect()
 }
 
 fn rows_of(servers: &[ServerSummary], chosen: Option<usize>, me: Option<i64>) -> Vec<ServerRow> {
@@ -1533,9 +1857,218 @@ fn split_channels(ordered: &[Channel], chosen: Option<usize>) -> (Vec<ChannelRow
     (text, voice)
 }
 
-fn peer_rows(session: &Arc<Session>) -> Vec<PeerRow> {
-    session
-        .peers()
+/// Abre o microfone na sala e a captura do Windows que o alimenta. Quem estava mudo fora
+/// da sala entra mudo, como no Mac.
+async fn open_microphone(
+    room: Arc<Room>,
+    cell: Arc<Mutex<Option<Microphone>>>,
+    voice: Arc<Mutex<Voice>>,
+    window: Weak<AppWindow>,
+    device: Option<String>,
+) {
+    let (can_speak, muted_at_rest) = {
+        let voice = lock(&voice);
+
+        (voice.mine.can_speak, voice.muted_at_rest)
+    };
+
+    if !can_speak {
+        return;
+    }
+
+    if let Err(failure) = room.open_microphone().await {
+        tracing::warn!(%failure, "a sala não abriu o microfone");
+        complain(&window, room_failure("mic"));
+
+        return;
+    }
+
+    let speaking = room.clone();
+    let started = tokio::task::block_in_place(|| Microphone::start(device, move |samples| speaking.speak(samples)));
+
+    match started {
+        Ok(microphone) => {
+            *lock(&cell) = Some(microphone);
+
+            if muted_at_rest {
+                room.mute_microphone(true).await;
+            }
+        }
+        Err(failure) => {
+            tracing::warn!(failure = %format!("{failure:#}"), "o microfone do Windows não abriu");
+            room.close_microphone().await;
+            complain(&window, room_failure("mic"));
+        }
+    }
+}
+
+/// Os avisos da sala, numa thread só deles: cada um muda o estado guardado e repinta o que
+/// mudou. A fila fecha quando a sala acaba, e a thread acaba junto.
+fn listen(heard: std::sync::mpsc::Receiver<String>, window: Weak<AppWindow>, stage: Arc<Mutex<Stage>>, voice: Arc<Mutex<Voice>>) {
+    let spawned = std::thread::Builder::new().name("unkvoid-sala".into()).spawn(move || {
+        for said in heard {
+            let Ok(update) = serde_json::from_str::<serde_json::Value>(&said) else {
+                continue;
+            };
+            let data = &update["data"];
+
+            match update["event"].as_str().unwrap_or_default() {
+                "room.peers" => {
+                    lock(&voice).peers = peers_of(data);
+                    paint_voice(&window, &voice);
+                }
+                "room.mine" => {
+                    lock(&voice).mine = serde_json::from_value(data.clone()).unwrap_or_default();
+                    paint_voice(&window, &voice);
+                }
+                "room.tiles" => {
+                    lock(&stage).set_tiles(data);
+                    paint_stage(&window, &stage);
+                }
+                "room.watchers" => {
+                    lock(&stage).set_watchers(data);
+                    paint_stage(&window, &stage);
+                }
+                "room.level" => {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let level = data["level"].as_f64().unwrap_or(0.0) as f32;
+                    let changed = {
+                        let mut voice = lock(&voice);
+                        let before = voice.speaking_myself();
+
+                        voice.level = level;
+                        before != voice.speaking_myself()
+                    };
+
+                    if changed {
+                        paint_voice(&window, &voice);
+                    }
+                }
+                "room.ping" => {
+                    if let Some(milliseconds) = data["ms"].as_u64() {
+                        let said = format!("{milliseconds} ms");
+                        let measured = i32::try_from(milliseconds).unwrap_or(i32::MAX);
+
+                        paint(&window, move |app| {
+                            let ui = app.global::<Ui>();
+
+                            ui.set_ping(said.into());
+                            ui.set_ping_ms(measured);
+                        });
+                    }
+                }
+                "room.session" => match data["state"].as_str().unwrap_or_default() {
+                    "lost" => paint(&window, |app| app.global::<Ui>().set_reconnecting(true)),
+                    "rejoined" => {
+                        paint(&window, |app| app.global::<Ui>().set_reconnecting(false));
+                        complain(&window, "");
+                    }
+                    "gone" => {
+                        paint(&window, |app| app.global::<Ui>().set_reconnecting(false));
+                        complain(&window, "A sala não voltou. Entre de novo quando a internet estabilizar.");
+                    }
+                    "replaced" => paint(&window, |app| app.global::<Ui>().invoke_thrown_out("replaced".into())),
+                    "kicked" => paint(&window, |app| app.global::<Ui>().invoke_thrown_out("kicked".into())),
+                    _ => {}
+                },
+                "room.failed" => complain(&window, room_failure(data["what"].as_str().unwrap_or_default())),
+                _ => {}
+            }
+        }
+    });
+
+    if let Err(failure) = spawned {
+        tracing::warn!(%failure, "a thread dos avisos da sala não subiu");
+    }
+}
+
+/// Pinta quem está na sala e a barra de baixo a partir do estado da voz.
+fn paint_voice(window: &Weak<AppWindow>, voice: &Arc<Mutex<Voice>>) {
+    let (rows, mic_off, speaking, deafened, inside, mine) = {
+        let voice = lock(voice);
+
+        (peer_rows(&voice), voice.mic_shown_off(), voice.speaking_myself(), voice.deafened, voice.inside, voice.mine)
+    };
+
+    paint(window, move |app| {
+        let ui = app.global::<Ui>();
+
+        ui.set_peers(model(rows));
+        ui.set_mic_on(!mic_off);
+        ui.set_speaking(speaking);
+        ui.set_deafened(deafened);
+        // Fora da sala o microfone é o mudo guardado, e esse sempre se clica.
+        ui.set_can_speak(!inside || mine.can_speak);
+        ui.set_can_share(mine.can_share);
+        ui.set_sharing(mine.sharing);
+        ui.set_self_view(mine.self_view);
+    });
+}
+
+/// Pinta o palco. Com os mesmos cartões na mesma ordem, cada linha é trocada no lugar: o
+/// cartão não é recriado, e não perde o hover nem o painel do volume aberto.
+fn paint_stage(window: &Weak<AppWindow>, stage: &Arc<Mutex<Stage>>) {
+    let (placed, (columns, lines), focusing, full, pending) = {
+        let stage = lock(stage);
+
+        (stage.placed(), stage.grid(), stage.focusing(), stage.full_screen(), stage.pending())
+    };
+
+    paint(window, move |app| {
+        let ui = app.global::<Ui>();
+        let current = ui.get_tiles();
+        let before: Vec<TileRow> = (0..current.row_count()).filter_map(|index| current.row_data(index)).collect();
+        let rows: Vec<TileRow> = placed
+            .into_iter()
+            .map(|placed| {
+                let frame = before
+                    .iter()
+                    .find(|row| row.producer == placed.tile.producer_id.as_str() && row.has_frame)
+                    .map(|row| row.frame.clone());
+
+                TileRow {
+                    producer: placed.tile.producer_id.as_str().into(),
+                    label: placed.tile.label.as_str().into(),
+                    initial: initial(&placed.tile.label),
+                    mine: placed.tile.mine,
+                    camera: placed.tile.camera,
+                    paused: placed.tile.paused,
+                    audio: placed.tile.audio.is_some(),
+                    heard: placed.heard,
+                    watchers: i32::try_from(placed.watchers.len()).unwrap_or(i32::MAX),
+                    watcher_names: placed.watchers.join(", ").into(),
+                    has_frame: frame.is_some(),
+                    frame: frame.unwrap_or_default(),
+                    column: i32::try_from(placed.column).unwrap_or_default(),
+                    line: i32::try_from(placed.line).unwrap_or_default(),
+                    rank: i32::try_from(placed.rank).unwrap_or_default(),
+                    focused: placed.focused,
+                    full: placed.full,
+                }
+            })
+            .collect();
+
+        let same = before.len() == rows.len() && before.iter().zip(&rows).all(|(old, new)| old.producer == new.producer);
+
+        if same {
+            for (index, row) in rows.into_iter().enumerate() {
+                current.set_row_data(index, row);
+            }
+        } else {
+            ui.set_tiles(model(rows));
+        }
+
+        ui.set_grid_columns(i32::try_from(columns).unwrap_or(1));
+        ui.set_grid_lines(i32::try_from(lines).unwrap_or(1));
+        ui.set_focusing(focusing);
+        ui.set_full_screen(full);
+        ui.set_pending_tiles(i32::try_from(pending).unwrap_or_default());
+    });
+}
+
+fn peer_rows(voice: &Voice) -> Vec<PeerRow> {
+    voice
+        .peers
         .iter()
         .map(|peer| PeerRow {
             initial: initial(&peer.name),
@@ -1549,6 +2082,12 @@ fn peer_rows(session: &Arc<Session>) -> Vec<PeerRow> {
             }
             .into(),
             mine: peer.self_peer,
+            speaking: voice.is_speaking(peer),
+            muted: if peer.self_peer {
+                voice.mic_shown_off()
+            } else {
+                !peer.producers.iter().any(|producer| producer.source == "mic" && !producer.paused)
+            },
         })
         .collect()
 }
