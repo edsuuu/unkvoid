@@ -102,6 +102,17 @@ final class Sound: @unchecked Sendable {
         }
     }
 
+    /// Um toque do app, já sintetizado, pela mesma saída das vozes.
+    func chime(_ buffer: AVAudioPCMBuffer) {
+        gate.lock()
+
+        defer { gate.unlock() }
+
+        player(for: Self.chimePlayer)?.scheduleBuffer(buffer, completionHandler: nil)
+    }
+
+    private static let chimePlayer = "unkvoid:chime"
+
     /// A saída escolhida na barra de baixo. `nil` é a do sistema.
     func use(speaker: AudioDeviceID?) {
         gate.lock()

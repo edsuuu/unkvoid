@@ -57,14 +57,28 @@ extension AppModel {
         stageOpen = true
         enteredRoomAt = Date()
 
+        if noticePreferences.sounds {
+            Sounds.joined()
+        }
+
         await openedRoom()
         await voiceChat.open(opened)
         await openMicrophone()
     }
 
+    /// As telas que as outras pessoas estão transmitindo: é a diferença entre um elenco e o
+    /// seguinte que toca "começou" e "parou" de transmitir, como o React faz no `newProducer`.
+    private var othersScreens: Set<String> {
+        Set(peers.filter { !$0.selfPeer }.flatMap { $0.producers.filter { $0.source == "screen" }.map(\.producerId) })
+    }
+
     func leaveVoice() async {
         guard voiceChannel != nil else {
             return
+        }
+
+        if noticePreferences.sounds {
+            Sounds.left()
         }
 
         closeRoom()
@@ -127,6 +141,7 @@ extension AppModel {
         switch event["event"] as? String {
         case "room.peers":
             let before = Set(peers.map(\.id))
+            let screensBefore = othersScreens
 
             peers = decode(data["peers"]) ?? peers
 
@@ -137,6 +152,10 @@ extension AppModel {
                     Sounds.joined()
                 } else if !before.subtracting(now).isEmpty {
                     Sounds.left()
+                } else if !othersScreens.subtracting(screensBefore).isEmpty {
+                    Sounds.streamStarted()
+                } else if !screensBefore.subtracting(othersScreens).isEmpty {
+                    Sounds.streamStopped()
                 }
             }
         case "room.tiles":

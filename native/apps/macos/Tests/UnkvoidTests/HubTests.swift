@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 
@@ -122,5 +123,18 @@ struct HubTests {
         second.setVoice { $0 = VoicePreferences() }
 
         try? await Task.sleep(for: .milliseconds(200))
+    }
+
+    /// Os toques são os do React, sintetizados: um toque tem som de verdade, nunca estoura o
+    /// volume dele, e começa e termina em silêncio — senão faria "clique" no fone.
+    @Test @MainActor
+    func aChimeIsAudibleSoftAndClickFree() throws {
+        let buffer = try #require(Sounds.render([.init(hertz: 523, startsAt: 0), .init(hertz: 784, startsAt: 0.08)]))
+        let samples = UnsafeBufferPointer(start: buffer.floatChannelData?[0], count: Int(buffer.frameLength))
+        let peak = samples.map(abs).max() ?? 0
+
+        #expect(peak > 0.03 && peak <= Sounds.volume + 0.001, "pico de \(peak)")
+        #expect(abs(samples.first ?? 1) < 0.001 && abs(samples.last ?? 1) < 0.002)
+        #expect(buffer.frameLength == AVAudioFrameCount((0.08 + 0.09 + 0.02) * 48_000))
     }
 }

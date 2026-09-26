@@ -223,6 +223,7 @@ final class AppModel: ObservableObject {
         self.core = core
         media = core.map(MediaRouter.init)
 
+        Sounds.output = media?.sound
         media?.sound.onSpeaking = { [weak self] producer, speaking in
             Task { @MainActor in
                 if speaking {
