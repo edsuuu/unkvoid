@@ -476,7 +476,9 @@ final class AppModel: ObservableObject {
 
     static let device = "macOS"
 
-    static let server = ProcessInfo.processInfo.environment["UNKVOID_SERVER"] ?? "http://127.0.0.1:8000"
+    /// O site de verdade, salvo quem desenvolve: o `run.sh` passa `UNKVOID_SERVER` com o
+    /// Laravel local. O `.app` instalado pelo site não tem variável nenhuma.
+    static let server = ProcessInfo.processInfo.environment["UNKVOID_SERVER"] ?? "https://unkvoid.com"
 
     func openHub() {
         screen = .hub
