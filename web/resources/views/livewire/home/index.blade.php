@@ -292,7 +292,7 @@
                 </div>
                 <div>
                     <h3 style="font-size:19px;font-weight:600;letter-spacing:-0.02em;margin:0">macOS</h3>
-                    <p style="font-size:13px;color:var(--lp-muted);margin:6px 0 0">Apple Silicon.</p>
+                    <p style="font-size:13px;color:var(--lp-muted);margin:6px 0 0">Apple Silicon. Na primeira abertura, libere em Ajustes do Sistema › Privacidade e Segurança › "Abrir mesmo assim".</p>
                 </div>
                 <div style="margin-top:auto;display:flex;flex-direction:column;gap:8px">
                     @if (is_null($links['macOS']))
