@@ -106,6 +106,31 @@ impl Speaker {
     }
 }
 
+/// Um toque do app pela saída escolhida, numa saída só dele, aberta pelo tempo do toque: a da
+/// sala pode já ter fechado — é o caso do "saiu da voz". Sem o teto de atraso da voz, que
+/// cortaria um toque inteiro de uma vez.
+pub fn chime(device: Option<String>, samples: Vec<f32>) {
+    let spawned = std::thread::Builder::new().name("unkvoid-toque".into()).spawn(move || {
+        let speaker = Speaker::start(device);
+        let length = Duration::from_millis((samples.len() / PER_MILLISECOND) as u64);
+
+        lock(&speaker.mix).insert(
+            "toque".to_owned(),
+            Lane {
+                samples: samples.into(),
+                primed: true,
+                volume: 1.0,
+            },
+        );
+
+        std::thread::sleep(length + Duration::from_millis(250));
+    });
+
+    if let Err(failure) = spawned {
+        tracing::warn!(%failure, "som: o toque não tocou");
+    }
+}
+
 impl Drop for Speaker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);

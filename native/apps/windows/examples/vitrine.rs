@@ -107,6 +107,8 @@ fn peer(name: &str, mine: bool, speaking: bool) -> PeerRow {
         mine,
         speaking,
         muted: false,
+        sharing: false,
+        reconnecting: false,
     }
 }
 
@@ -123,6 +125,7 @@ fn channel(index: i32, name: &str, voice: bool) -> ChannelRow {
         name: name.into(),
         voice,
         current: index == 0,
+        people: slint::ModelRc::default(),
     }
 }
 

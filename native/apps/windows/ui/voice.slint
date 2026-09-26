@@ -93,12 +93,26 @@ export component VoiceStage inherits Glass {
                 y: (parent.height - self.height) / 2;
             }
 
-            SmallGhost {
-                commands: Icons.chat;
-                text: "Chat da voz";
-                on: Ui.voice-chat-open;
+            Rectangle {
+                width: chat.width;
+                height: chat.height;
                 y: (parent.height - self.height) / 2;
-                clicked => { Ui.toggle-voice-chat(); }
+
+                chat := SmallGhost {
+                    commands: Icons.chat;
+                    text: "Chat da voz";
+                    on: Ui.voice-chat-open;
+                    clicked => { Ui.toggle-voice-chat(); }
+                }
+
+                if Ui.voice-chat-unread > 0 : Rectangle {
+                    x: parent.width - 6px;
+                    y: -4px;
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 5px;
+                    background: Skin.danger;
+                }
             }
 
             SmallGhost {
@@ -193,11 +207,25 @@ export component VoiceToolbar inherits Glass {
             clicked => { Ui.toggle-deafen(); }
         }
 
-        IconButton {
-            commands: Icons.chat;
-            active: Ui.voice-chat-open;
+        Rectangle {
+            width: talk.width;
+            height: talk.height;
             y: (parent.height - self.height) / 2;
-            clicked => { Ui.toggle-voice-chat(); }
+
+            talk := IconButton {
+                commands: Icons.chat;
+                active: Ui.voice-chat-open;
+                clicked => { Ui.toggle-voice-chat(); }
+            }
+
+            if Ui.voice-chat-unread > 0 : Rectangle {
+                x: parent.width - 6px;
+                y: -4px;
+                width: 10px;
+                height: 10px;
+                border-radius: 5px;
+                background: Skin.danger;
+            }
         }
 
         IconButton {
@@ -205,7 +233,7 @@ export component VoiceToolbar inherits Glass {
             active: Ui.sharing;
             enabled: Ui.can-share;
             y: (parent.height - self.height) / 2;
-            clicked => { Ui.toggle-share(); }
+            clicked => { Ui.open-share(); }
         }
 
         IconButton {

@@ -37,10 +37,14 @@ pub struct Watch {
 
 impl Watch {
     /// `on_speaking` recebe o producer e se ele começou (`true`) ou parou de falar.
+    /// `on_frame` avisa que há quadro novo. É aviso e não relógio: arrastar a janela no
+    /// Windows prende o laço de eventos num laço modal do sistema, e relógio nenhum bate
+    /// ali — a fila de eventos, sim, continua sendo despachada.
     pub fn start(
         queue: Receiver<Media>,
         speaker: Arc<Speaker>,
         on_speaking: impl Fn(&str, bool) + Send + 'static,
+        on_frame: impl Fn() + Send + 'static,
     ) -> Self {
         let (fresh, drawn, stop) = (Fresh::default(), Drawn::default(), Arc::new(AtomicBool::new(false)));
         let thread = std::thread::Builder::new()
@@ -48,7 +52,7 @@ impl Watch {
             .spawn({
                 let (fresh, drawn, speaker, stop) = (fresh.clone(), drawn.clone(), speaker.clone(), stop.clone());
 
-                move || route(&queue, (&fresh, &drawn), &speaker, &stop, &on_speaking)
+                move || route(&queue, (&fresh, &drawn), &speaker, &stop, (&on_speaking, &on_frame))
             })
             .ok();
 
@@ -87,7 +91,7 @@ fn route(
     (fresh, drawn): (&Fresh, &Drawn),
     speaker: &Speaker,
     stop: &AtomicBool,
-    on_speaking: &impl Fn(&str, bool),
+    (on_speaking, on_frame): (&impl Fn(&str, bool), &impl Fn()),
 ) {
     let mut screens: HashMap<String, media::H264Decoder> = HashMap::new();
     let mut speaking = Speaking::default();
@@ -101,6 +105,8 @@ fn route(
                         let counted = drawn.entry(item.producer_id.clone()).or_default();
 
                         *counted = (counted.0 + 1, height);
+                        drop(drawn);
+                        on_frame();
                     }
                 }
                 MediaKind::Audio => {
@@ -228,7 +234,7 @@ mod tests {
         let (room, media) = runtime
             .block_on(core_app::room::Room::enter(&url, &code, identity, updates))
             .expect("entrou na sala");
-        let watch = Watch::start(media, Arc::new(Speaker::start(None)), |_, _| {});
+        let watch = Watch::start(media, Arc::new(Speaker::start(None)), |_, _| {}, || {});
         let (mut frames, mut size) = (0_u32, (0, 0));
         let until = Instant::now() + Duration::from_secs(10);
 

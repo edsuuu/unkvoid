@@ -1,7 +1,7 @@
 import { Slider } from "std-widgets.slint";
 import { Icons, Skin } from "skin.slint";
 import { TileRow, Ui } from "state.slint";
-import { Avatar, CodeChip, GhostButton, Glass, Glyph, LabelMono, PrimaryButton, RowItem } from "widgets.slint";
+import { Avatar, CodeChip, GhostButton, Glass, Glyph, LabelMono, LiveBadge, PrimaryButton, RowItem } from "widgets.slint";
 
 // O palco: o cartão largo quando ninguém transmite, e a grade de telas quando há. É o
 // `Stage.tsx` do React no desenho que o macOS fixou (`Screens/Room/Stage.swift`).
@@ -387,7 +387,7 @@ component EmptyStage inherits Rectangle {
                 if Ui.can-share && !Ui.sharing : PrimaryButton {
                     text: "Iniciar compartilhamento";
                     width: 220px;
-                    clicked => { Ui.toggle-share(); }
+                    clicked => { Ui.open-share(); }
                 }
             }
 
@@ -486,12 +486,41 @@ export component PeopleMenu inherits Rectangle {
                     padding-right: 8px;
                     padding-top: 6px;
                     padding-bottom: 6px;
+                    spacing: 4px;
 
-                    LabelMono { text: "NA SALA"; }
+                    LabelMono {
+                        text: "NA SALA";
+                        horizontal-stretch: 1;
+                    }
+
+                    // "Procurar de novo quem está transmitindo", como o React.
+                    Glyph {
+                        commands: Icons.refresh;
+                        size: 12px;
+                        tint: again.has-hover ? Skin.ink-strong : Skin.ink-dim;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Text {
+                        text: "Atualizar";
+                        color: again.has-hover ? Skin.ink-strong : Skin.ink-dim;
+                        font-family: Skin.sans;
+                        font-size: 11px;
+                        vertical-alignment: center;
+
+                        again := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { Ui.watch-pending(); }
+                        }
+                    }
                 }
 
-                for peer in Ui.peers : RowItem {
+                // A linha do React: o rosto, o nome, o microfone cortado, o selo "AO VIVO" de
+                // quem transmite e, no fim, "você", a latência ou "parado". A sua tem o verde.
+                for peer in Ui.peers : Rectangle {
                     height: 40px;
+                    border-radius: 10px;
+                    background: peer.mine ? #34d3991a : transparent;
 
                     HorizontalLayout {
                         padding-left: 8px;
@@ -507,7 +536,7 @@ export component PeopleMenu inherits Rectangle {
 
                         Text {
                             text: peer.name;
-                            color: Skin.ink-body;
+                            color: peer.reconnecting ? Skin.ink-dim : Skin.ink-body;
                             font-family: Skin.sans;
                             font-size: 12.5px;
                             horizontal-stretch: 1;
@@ -515,8 +544,19 @@ export component PeopleMenu inherits Rectangle {
                             vertical-alignment: center;
                         }
 
+                        if peer.muted : Glyph {
+                            commands: Icons.mic-off;
+                            size: 13px;
+                            tint: Skin.danger;
+                            y: (parent.height - self.height) / 2;
+                        }
+
+                        if peer.sharing : LiveBadge {
+                            y: (parent.height - self.height) / 2;
+                        }
+
                         Text {
-                            text: peer.note;
+                            text: peer.mine ? "você" : (peer.reconnecting ? "parado" : Ui.ping);
                             color: Skin.ink-dim;
                             font-family: Skin.mono;
                             font-size: 10px;

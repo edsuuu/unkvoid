@@ -3,15 +3,17 @@ import { Ui } from "state.slint";
 import { EntryScreen } from "entry.slint";
 import { HubScreen } from "hub.slint";
 import { RoomScreen } from "room.slint";
-import { Halo, OfflineScreen, UpdatingScreen } from "shell.slint";
+import { Halo, OfflineScreen, Toast, UpdatingScreen } from "shell.slint";
 import { SettingsModal } from "settings.slint";
+import { ShareModal } from "share.slint";
 
 export { Ui }
-export { ChannelRow, DeviceRow, MemberRow, MessageRow, PeerRow, ServerRow } from "state.slint";
+export { ChannelRow, DeviceRow, MemberGroupRow, MemberRow, MessageRow, PeerRow, ServerRow, SourceRow, ToastRow, VoicePersonRow } from "state.slint";
 
 // A janela é a pilha das cinco telas, e quem diz qual está valendo é o núcleo.
 export component AppWindow inherits Window {
     title: "Unkvoid";
+    icon: @image-url("../../desktop/src-tauri/icons/128x128.png");
     background: Skin.back;
     default-font-family: Skin.sans;
     // Os números do `expand_window` do Tauri, que o macOS também usa: com menos largura os
@@ -32,4 +34,19 @@ export component AppWindow inherits Window {
     // O modal mora acima das telas: ele cobre a janela inteira, como o `fixed inset-0` do
     // React, e por isso não pode nascer dentro de nenhuma delas.
     if Ui.settings-open : SettingsModal { }
+    if Ui.share-open : ShareModal { }
+
+    // Os avisos ficam acima de tudo, no pé da janela e no meio, um embaixo do outro.
+    if Ui.toasts.length > 0 : VerticalLayout {
+        width: min(448px, root.width - 32px);
+        // Sem altura própria o bloco ocuparia a janela inteira, e os avisos subiriam ao topo.
+        height: self.preferred-height;
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - 20px;
+        spacing: 8px;
+
+        for toast in Ui.toasts : Toast {
+            item: toast;
+        }
+    }
 }

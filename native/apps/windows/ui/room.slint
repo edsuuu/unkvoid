@@ -25,6 +25,16 @@ export component RoomScreen inherits Rectangle {
                 padding-right: 12px;
                 spacing: 8px;
 
+                // A casinha do React, antes do "SALA". Aqui ela não sai da sala: a Home (ou a
+                // entrada, sem conta) abre com a transmissão no ar, e mostra o caminho de volta.
+                IconButton {
+                    commands: Icons.home;
+                    size: 30px;
+                    glyph-size: 14px;
+                    y: (parent.height - self.height) / 2;
+                    clicked => { Ui.visit-home(); }
+                }
+
                 LabelMono {
                     text: "SALA";
                     vertical-alignment: center;
@@ -119,7 +129,7 @@ export component RoomScreen inherits Rectangle {
                     commands: Icons.screen;
                     active: Ui.sharing;
                     y: (parent.height - self.height) / 2;
-                    clicked => { Ui.toggle-share(); }
+                    clicked => { Ui.open-share(); }
                 }
 
                 IconButton {

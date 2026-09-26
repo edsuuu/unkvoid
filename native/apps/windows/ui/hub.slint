@@ -1,7 +1,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { Icons, Skin } from "skin.slint";
 import { ChannelRow, Ui } from "state.slint";
-import { Avatar, Danger, Field, GhostButton, Glass, Glyph, IconButton, LabelMono, Muted, PrimaryButton, RowItem, Title } from "widgets.slint";
+import { Avatar, Danger, Field, GhostButton, Glass, Glyph, IconButton, LabelMono, LiveBadge, Muted, PrimaryButton, RowItem, Title } from "widgets.slint";
 import { Stage } from "stage.slint";
 import { VoiceStage, VoiceToolbar } from "voice.slint";
 import { UserBar } from "userbar.slint";
@@ -391,12 +391,68 @@ component VoiceItem inherits Rectangle {
 
                 Rectangle { horizontal-stretch: 1; }
 
-                if peer.note != "" : Text {
-                    text: peer.note;
+                // Quem transmite ganha o selo do React; clicar abre o palco com a tela dele.
+                if peer.sharing && !peer.mine : LiveBadge {
+                    dot: true;
+                    y: (parent.height - self.height) / 2;
+                    clicked => { Ui.stage-open = true; }
+                }
+
+                if peer.reconnecting : Text {
+                    text: "voltando";
                     color: Skin.ink-dim;
                     font-family: Skin.mono;
                     font-size: 9.5px;
                     vertical-alignment: center;
+                }
+            }
+        }
+
+        // Nos canais em que você não está, quem está lá vem do Laravel, e muda pelo tempo real.
+        if !root.here && root.item.people.length > 0 : VerticalLayout {
+            padding-left: 20px;
+            spacing: 6px;
+
+            for person in root.item.people : HorizontalLayout {
+                spacing: 8px;
+
+                Avatar {
+                    letter: person.initial;
+                    size: 22px;
+                    mine: person.mine;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                Text {
+                    text: person.name;
+                    color: person.mine ? Skin.ink-body : Skin.ink-icon;
+                    font-family: Skin.sans;
+                    font-size: 12.5px;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+
+                if person.muted : Glyph {
+                    commands: Icons.mic-off;
+                    size: 12px;
+                    tint: Skin.danger;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                if person.camera : Glyph {
+                    commands: Icons.camera;
+                    size: 12px;
+                    tint: Skin.ink-dim;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                // Num canal em que você não está, o selo entra na voz — e a tela abre ao lado.
+                if person.live : LiveBadge {
+                    dot: true;
+                    y: (parent.height - self.height) / 2;
+                    clicked => { Ui.open-channel(root.item.index); }
                 }
             }
         }
@@ -628,6 +684,54 @@ export component HubScreen inherits Rectangle {
             VerticalLayout {
                 padding: 12px;
                 spacing: 8px;
+
+                // A sala por código que continua no ar enquanto se anda pela Home: o ponto
+                // verde, o código, e o clique que volta para ela.
+                if Ui.room-code != "" : Rectangle {
+                    height: 38px;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: #34d39959;
+                    background: back.has-hover ? #34d39926 : #34d39914;
+
+                    HorizontalLayout {
+                        padding-left: 11px;
+                        padding-right: 11px;
+                        spacing: 8px;
+
+                        Rectangle {
+                            width: 7px;
+                            height: 7px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 3.5px;
+                            background: Skin.online;
+                        }
+
+                        Text {
+                            text: "Voltar à sala";
+                            color: Skin.ink-body;
+                            font-family: Skin.sans;
+                            font-size: 12.5px;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: Ui.room-code;
+                            color: Skin.lilac-2;
+                            font-family: Skin.mono;
+                            font-size: 10.5px;
+                            horizontal-stretch: 1;
+                            horizontal-alignment: right;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    back := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Ui.back-to-room(); }
+                    }
+                }
 
                 WideRow {
                     commands: Icons.home;
@@ -1242,43 +1346,56 @@ export component HubScreen inherits Rectangle {
                     padding: 12px;
                     spacing: 8px;
 
-                    LabelMono { text: "MEMBROS"; }
-
                     ScrollView {
                         vertical-stretch: 1;
 
                         VerticalLayout {
-                            spacing: 4px;
+                            spacing: 16px;
                             alignment: start;
 
-                            for member in Ui.members : RowItem {
-                                HorizontalLayout {
-                                    padding-left: 8px;
-                                    padding-right: 11px;
-                                    spacing: 8px;
+                            // Os grupos do React: o cargo mais alto de quem está online, com a
+                            // cor dele, e os offline apagados no fim.
+                            for group in Ui.member-groups : VerticalLayout {
+                                spacing: 2px;
 
-                                    Avatar {
-                                        letter: member.initial;
-                                        size: 24px;
-                                        y: (parent.height - self.height) / 2;
-                                    }
+                                LabelMono {
+                                    text: group.label + " — " + group.members.length;
+                                    color: group.colored ? group.color : Skin.ink-dim;
+                                }
 
-                                    Text {
-                                        text: member.name;
-                                        color: Skin.ink-body;
-                                        font-family: Skin.sans;
-                                        font-size: 13px;
-                                        horizontal-stretch: 1;
-                                        overflow: elide;
-                                        vertical-alignment: center;
-                                    }
+                                Rectangle { height: 6px; }
 
-                                    Text {
-                                        text: member.note;
-                                        color: Skin.ink-faint;
-                                        font-family: Skin.sans;
-                                        font-size: 11px;
-                                        vertical-alignment: center;
+                                for member in group.members : RowItem {
+                                    opacity: group.offline ? 0.55 : 1.0;
+
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 11px;
+                                        spacing: 8px;
+
+                                        Avatar {
+                                            letter: member.initial;
+                                            size: 24px;
+                                            mine: member.mine;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+
+                                        Text {
+                                            text: member.name;
+                                            color: group.colored && !group.offline ? group.color : Skin.ink-body;
+                                            font-family: Skin.sans;
+                                            font-size: 12.5px;
+                                            horizontal-stretch: 1;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+
+                                        if member.owner : Glyph {
+                                            commands: Icons.crown;
+                                            size: 12px;
+                                            tint: Skin.lilac-2;
+                                            y: (parent.height - self.height) / 2;
+                                        }
                                     }
                                 }
                             }

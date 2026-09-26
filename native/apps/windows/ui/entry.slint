@@ -13,9 +13,12 @@ component RoomCard inherits Glass {
     width: Skin.card;
     border-radius: 22px;
 
+    // O cartão tem a altura do cartão ao lado; a sobra fica embaixo, como no React, e não
+    // entre o rótulo e o campo do nome.
     VerticalLayout {
         padding: 32px;
         spacing: 0px;
+        alignment: start;
 
         Title {
             text: "Criar uma sala";
@@ -99,11 +102,56 @@ component RoomCard inherits Glass {
             }
         }
 
+        // As três últimas salas, criadas ou visitadas: um clique entra de novo no mesmo
+        // código, com o nome digitado acima — como no Linux e no Mac.
+        if Ui.recent-rooms.length > 0 : VerticalLayout {
+            padding-top: 12px;
+            spacing: 6px;
+
+            LabelMono { text: "ÚLTIMAS SALAS"; }
+
+            for line in Ui.recent-rooms : HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+
+                for visited in line : Rectangle {
+                    width: chip.preferred-width + 20px;
+                    height: 28px;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: again.has-hover ? #8a7cf580 : Skin.line-strong;
+                    background: #8a7cf51a;
+
+                    chip := Text {
+                        text: visited;
+                        color: Skin.lilac-2;
+                        font-family: Skin.mono;
+                        font-size: 12px;
+                    }
+
+                    again := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Ui.join-room(root.chosen-name, visited); }
+                    }
+                }
+            }
+        }
+
         Rectangle { height: 12px; }
 
         Danger {
             text: Ui.complaint;
             min-height: 20px;
+        }
+
+        // A sala continua no ar enquanto se está aqui pela casinha: o caminho de volta.
+        if Ui.room-code != "" : VerticalLayout {
+            padding-top: 4px;
+
+            GhostButton {
+                text: "Voltar à sala " + Ui.room-code;
+                clicked => { Ui.back-to-room(); }
+            }
         }
 
         if Ui.signed-in : VerticalLayout {
