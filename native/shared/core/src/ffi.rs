@@ -1012,6 +1012,33 @@ pub unsafe extern "C" fn unkvoid_bytes_free(block: *mut u8, length: usize) {
     drop(unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(block, length)) });
 }
 
+/// O toque de um `room.chime` — ou o de mensagem — em PCM `f32` estéreo intercalado a 48 kHz,
+/// para a interface que não fala Rust tocar pelo mesmo caminho das vozes. Nome desconhecido
+/// devolve nulo. Liberar com `unkvoid_bytes_free`, com o mesmo `length`.
+///
+/// # Safety
+/// `name` é uma C string válida; `length` aponta para um `usize` gravável.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn unkvoid_chime(name: *const c_char, length: *mut usize) -> *mut u8 {
+    if name.is_null() || length.is_null() {
+        return ptr::null_mut();
+    }
+
+    let name = unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned();
+    let Ok(chime) = serde_json::from_value::<crate::chimes::Chime>(Value::String(name)) else {
+        return ptr::null_mut();
+    };
+    let block: Box<[u8]> = chime
+        .samples()
+        .iter()
+        .flat_map(|sample| sample.to_ne_bytes())
+        .collect();
+
+    unsafe { *length = block.len() };
+
+    Box::into_raw(block).cast()
+}
+
 /// O som do microfone que a interface captura: PCM `f32` estéreo intercalado a 48 kHz.
 /// Sem sala ou sem microfone aberto, não faz nada.
 ///

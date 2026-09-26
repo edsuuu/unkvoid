@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 
@@ -122,5 +123,19 @@ struct HubTests {
         second.setVoice { $0 = VoicePreferences() }
 
         try? await Task.sleep(for: .milliseconds(200))
+    }
+
+    /// O toque chega do núcleo pela ABI: tem som de verdade, nunca estoura o volume, e começa
+    /// em silêncio — senão faria "clique" no fone. Nome que não existe não toca nada.
+    @Test
+    func aChimeComesFromTheCoreAudibleAndClickFree() throws {
+        let samples = try #require(Core.chime("joined"))
+        let floats = samples.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        let peak = floats.map(abs).max() ?? 0
+
+        #expect(floats.count == 9_120 * 2)
+        #expect(peak > 0.03 && peak <= 0.071, "pico de \(peak)")
+        #expect(abs(floats[0]) < 0.001)
+        #expect(Core.chime("inexistente") == nil)
     }
 }
