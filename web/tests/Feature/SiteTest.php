@@ -79,6 +79,20 @@ it('o latest.json deixa de fora a plataforma que ficou numa versão antiga', fun
         ->assertJsonMissingPath('platforms.windows-x86_64');
 });
 
+it('uma beta é publicada e passa na frente das versões antigas no latest.json', function (): void {
+    Release::query()->create(['version' => '0.0.40', 'platform' => ReleasePlatformEnum::WindowsNsis, 'file_name' => 'a.exe', 'path' => 'releases/0.0.40/a.exe', 'size' => 1, 'signature' => 'assinatura-tauri', 'published_at' => now()->subDay()]);
+    $file = UploadedFile::fake()->create('Unkvoid_0.1.0-beta_x64-setup.exe', 100);
+
+    $this->postJson('/api/releases', ['version' => '0.1.0-beta', 'platform' => 'windows-x86_64-nsis', 'file' => $file, 'signature' => 'assinatura-nativa'], signedHeaders('/api/releases', $file))
+        ->assertCreated();
+
+    $this->getJson('/downloads/latest.json')
+        ->assertOk()
+        ->assertJsonPath('version', '0.1.0-beta')
+        ->assertJsonPath('platforms.windows-x86_64-nsis.signature', 'assinatura-nativa')
+        ->assertJsonPath('platforms.windows-x86_64.signature', 'assinatura-nativa');
+});
+
 it('a landing mostra a versão e os links das plataformas publicadas', function (): void {
     Release::query()->create(['version' => '0.0.8', 'platform' => ReleasePlatformEnum::LinuxDeb, 'file_name' => 'a.deb', 'path' => 'releases/0.0.8/a.deb', 'size' => 1, 'signature' => null, 'published_at' => now()]);
 

@@ -21,6 +21,7 @@ final class AppLoginController
         // app novo para `127.0.0.1:0` em vez de abrir o `unkvoid://`.
         $request->session()->put('app_port', $request->filled('port') ? $request->integer('port') : null);
         $request->session()->put('app_state', $request->string('state')->toString());
+        $request->session()->put('app_refresh', $request->boolean('refresh'));
 
         return to_route('oauth2.google');
     }

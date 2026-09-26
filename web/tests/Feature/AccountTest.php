@@ -68,6 +68,73 @@ it('cria a conta pela API e revoga o token no logout', function (): void {
     $this->assertDatabaseCount('personal_access_tokens', 0);
 });
 
+it('o app que sabe renovar recebe o par, e o de renovação só serve para trocar o par', function (): void {
+    User::factory()->create(['email' => 'ada@unkvoid.test', 'password' => 'senha-forte-123']);
+
+    $login = $this->postJson('/api/auth/login', ['email' => 'ada@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'd', 'refresh' => true])
+        ->assertOk()
+        ->assertJsonStructure(['data' => ['token', 'refresh_token', 'expires_at']]);
+
+    [$access, $refresh] = [$login->json('data.token'), $login->json('data.refresh_token')];
+
+    $this->withToken($access)->getJson('/api/me')->assertOk();
+    $this->app['auth']->forgetGuards();
+    $this->withToken($refresh)->getJson('/api/me')->assertUnauthorized();
+    $this->app['auth']->forgetGuards();
+
+    $renewed = $this->postJson('/api/auth/refresh', ['refresh_token' => $refresh])->assertOk();
+
+    expect($renewed->json('data.refresh_token'))->not->toBe($refresh);
+
+    $this->postJson('/api/auth/refresh', ['refresh_token' => $refresh])
+        ->assertStatus(401)
+        ->assertJsonPath('message', 'Sua sessão terminou. Entre de novo.');
+    $this->withToken($renewed->json('data.token'))->getJson('/api/me')->assertOk();
+});
+
+it('o token de acesso vence em um dia e o de renovação o traz de volta', function (): void {
+    User::factory()->create(['email' => 'ada@unkvoid.test', 'password' => 'senha-forte-123']);
+
+    $login = $this->postJson('/api/auth/login', ['email' => 'ada@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'd', 'refresh' => true]);
+
+    $this->travel(25)->hours();
+
+    $this->withToken($login->json('data.token'))->getJson('/api/me')->assertUnauthorized();
+    $this->app['auth']->forgetGuards();
+
+    $renewed = $this->postJson('/api/auth/refresh', ['refresh_token' => $login->json('data.refresh_token')])->assertOk();
+
+    $this->withToken($renewed->json('data.token'))->getJson('/api/me')->assertOk();
+
+    $this->travel(61)->days();
+
+    $this->postJson('/api/auth/refresh', ['refresh_token' => $renewed->json('data.refresh_token')])->assertStatus(401);
+});
+
+it('o app antigo, que não pede renovação, continua com o token que não vence', function (): void {
+    User::factory()->create(['email' => 'ada@unkvoid.test', 'password' => 'senha-forte-123']);
+
+    $login = $this->postJson('/api/auth/login', ['email' => 'ada@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'd'])
+        ->assertOk()
+        ->assertJsonPath('data.refresh_token', null);
+
+    $this->travel(400)->days();
+
+    $this->withToken($login->json('data.token'))->getJson('/api/me')->assertOk();
+});
+
+it('sair da conta derruba também o token de renovação', function (): void {
+    User::factory()->create(['email' => 'ada@unkvoid.test', 'password' => 'senha-forte-123']);
+
+    $login = $this->postJson('/api/auth/login', ['email' => 'ada@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'd', 'refresh' => true]);
+
+    $this->withToken($login->json('data.token'))
+        ->postJson('/api/auth/logout', ['refresh_token' => $login->json('data.refresh_token')])
+        ->assertNoContent();
+
+    $this->assertDatabaseCount('personal_access_tokens', 0);
+});
+
 it('exige token para o /api/me', function (): void {
     $this->getJson('/api/me')->assertUnauthorized();
 });
@@ -244,6 +311,17 @@ it('devolve o token para o app pelo unkvoid:// quando ele não manda porta', fun
         ->assertSee('unkvoid://login?token=', false);
 
     $this->assertDatabaseCount('personal_access_tokens', 1);
+});
+
+it('o login do Google entrega o par ao app que sabe renovar', function (): void {
+    Socialite::shouldReceive('driver->user')->andReturn(googleUser('g-6', 'par@unkvoid.test', 'App'));
+
+    $this->get(route('oauth2.app', ['port' => 43123, 'state' => 'c0ffee42', 'refresh' => 1]))->assertRedirect(route('oauth2.google'));
+
+    $location = $this->get(route('oauth2.google.callback'))->headers->get('Location');
+
+    expect($location)->toContain('&refresh_token=')->toEndWith('&state=c0ffee42');
+    $this->assertDatabaseCount('personal_access_tokens', 2);
 });
 
 it('quem entra com o e-mail do dono vira administrador', function (): void {

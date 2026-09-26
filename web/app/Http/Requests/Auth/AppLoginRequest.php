@@ -18,6 +18,8 @@ final class AppLoginRequest extends FormRequest
             // esquema `unkvoid://` e não manda porta nenhuma.
             'port' => ['sometimes', 'integer', 'min:1024', 'max:65535'],
             'state' => ['required', 'string', 'max:64', 'regex:/^[0-9a-fA-F]+$/'],
+            // O app que sabe renovar pede o par, como no login por senha.
+            'refresh' => ['sometimes', 'boolean'],
         ];
     }
 }

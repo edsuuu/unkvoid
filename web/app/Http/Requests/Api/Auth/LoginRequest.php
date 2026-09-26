@@ -17,6 +17,9 @@ final class LoginRequest extends FormRequest
             'email' => ['required', 'string', 'email', 'max:255'],
             'password' => ['required', 'string'],
             'device' => ['required', 'string', 'max:60'],
+            // O app que sabe renovar pede o par de tokens; o antigo não manda nada e fica
+            // com o token que não vence.
+            'refresh' => ['sometimes', 'boolean'],
         ];
     }
 }
