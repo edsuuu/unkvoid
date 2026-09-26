@@ -19,7 +19,11 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 thiserror.workspace = true
 futures-util = "0.3.34"
-tokio-tungstenite = "0.30.0"
+# `wss://` com as raízes do webpki: sem TLS o app só falava com o SFU local em `ws://`, e em
+# produção nenhuma sala abria.
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+# O provedor de criptografia do `wss://` (ver `client.rs`).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rand = "0.8"
 # O mesmo do `src-tauri`: uma entrada só no lock, e TLS sem OpenSSL do sistema.
 reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls"] }

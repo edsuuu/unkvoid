@@ -1027,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "capture"
-version = "0.1.0-beta"
+version = "0.1.0-beta.1"
 dependencies = [
  "anyhow",
  "apple-cf",
@@ -1381,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "core-app"
-version = "0.1.0-beta"
+version = "0.1.0-beta.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1391,6 +1391,7 @@ dependencies = [
  "minisign-verify",
  "rand 0.8.8",
  "reqwest",
+ "rustls",
  "semver",
  "serde",
  "serde_json",
@@ -4741,7 +4742,7 @@ dependencies = [
 
 [[package]]
 name = "media"
-version = "0.1.0-beta"
+version = "0.1.0-beta.1"
 dependencies = [
  "anyhow",
  "apple-cf",
@@ -7869,7 +7870,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage"
-version = "0.1.0-beta"
+version = "0.1.0-beta.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -8773,8 +8774,12 @@ checksum = "17a073bfed563fa236697a068031408a93cd9522e08abf9933ead3e73411bd71"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -9075,6 +9080,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.10.2",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.11.0",
  "thiserror 2.0.20",
 ]
@@ -9231,7 +9238,7 @@ dependencies = [
 
 [[package]]
 name = "unkvoid-desktop"
-version = "0.1.0-beta"
+version = "0.1.0-beta.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -9259,7 +9266,7 @@ dependencies = [
 
 [[package]]
 name = "unkvoid-linux"
-version = "0.1.0-beta"
+version = "0.1.0-beta.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -9278,7 +9285,7 @@ dependencies = [
 
 [[package]]
 name = "unkvoid-windows"
-version = "0.1.0-beta"
+version = "0.1.0-beta.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -9759,6 +9766,24 @@ name = "webpki-root-certs"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
+dependencies = [
+ "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.9",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
 dependencies = [
  "rustls-pki-types",
 ]
