@@ -64,6 +64,7 @@ chega, sem interface.
 | `Platform/` | o que só o macOS tem — ver abaixo |
 | `Info.plist` | embutido no executável pelo linker: sem o texto de uso, o sistema mata o processo ao pedir microfone ou câmera |
 | `bundle.sh` | monta o `Unkvoid.app`. Num `.app` a permissão de tela, microfone e câmera é do Unkvoid, e não do terminal |
+| `dmg.sh` | empacota o `Unkvoid.app` num `.dmg` com o atalho para Aplicativos, que o `publish-release.sh` registra no site como `darwin-aarch64-dmg` |
 | `Tests/UnkvoidTests/` | a verificação que quebra se a ponte para o Rust quebrar |
 
 ## A mídia, e quem faz o quê
@@ -107,7 +108,7 @@ Duas regras que valem para qualquer tela nova:
 | Falta | Por quê |
 |---|---|
 | instalar a atualização sozinho | o app **avisa** que há versão nova (`/downloads/latest.json`) e abre o instalador; baixar, conferir a assinatura e trocar o `.app` sem a pessoa fazer nada depende de o `release.yml` publicar o app nativo (`darwin-aarch64`), que hoje publica o do Tauri |
-| assinatura com Developer ID e notarização | o `bundle.sh` assina ad-hoc; `--sign` resolve a assinatura, e a notarização é um passo do `release.yml` |
+| assinatura com Developer ID e notarização — **decidido não pagar por ora**: o `.dmg` sai assinado ad-hoc pelo `dmg.sh` e a pessoa libera na primeira abertura | o `bundle.sh` assina ad-hoc; `--sign` resolve a assinatura, e a notarização é um passo do `release.yml` |
 
 ## O que é do macOS, e não do núcleo
 

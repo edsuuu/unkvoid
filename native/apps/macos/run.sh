@@ -13,6 +13,7 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 native=$(cd "$here/../.." && pwd)
 server=${UNKVOID_SERVER:-http://127.0.0.1:8000}
+export UNKVOID_SERVER="$server"
 
 for tool in cargo swift; do
     command -v "$tool" >/dev/null || { echo "falta o '$tool' no PATH"; exit 1; }
