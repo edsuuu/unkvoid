@@ -14,7 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 enum Launch {
-    static let defaultSocketUrl = "ws://127.0.0.1:3000/sfu"
+    static let defaultSocketUrl = "wss://unkvoid.com/sfu"
 
     /// O endereço do SFU vem do `GET /api/config` do Laravel; este é o de quando ele não
     /// responde, e pode vir pela linha de comando.
