@@ -56,6 +56,8 @@ pub struct Room {
     shared: Mutex<Option<CaptureConfig>>,
     /// Os cartões do último aviso: a interface só redesenha o palco quando eles mudam.
     shown: Mutex<Value>,
+    /// O elenco do último aviso, para saber o que mudou e qual toque tocar.
+    cast: Mutex<Vec<crate::models::Peer>>,
     updates: Sender<String>,
 }
 
@@ -85,6 +87,7 @@ impl Room {
             self_view: std::sync::atomic::AtomicBool::new(false),
             shared: Mutex::default(),
             shown: Mutex::default(),
+            cast: Mutex::default(),
             updates,
         });
 
@@ -382,6 +385,12 @@ impl Room {
         }
 
         changed
+    }
+
+    /// A receita da tela no ar. É ela que diz se uma troca no seletor cabe no
+    /// `change_quality` (mesmo áudio) ou se a transmissão tem de parar e recomeçar.
+    pub fn sharing_recipe(&self) -> Option<CaptureConfig> {
+        lock(&self.shared).clone()
     }
 
     /// Compartilhar a tela. Abre a origem no servidor e só então captura: sem o
@@ -864,8 +873,22 @@ impl Room {
         lock(&self.watching).stop(None);
     }
 
+    /// O elenco, o toque da troca — `room.chime` com `joined`, `left`, `streamStarted` ou
+    /// `streamStopped` (ver `chimes.rs`) — e o aviso dela, `room.notice`. A interface só toca
+    /// e mostra.
     fn announce_peers(&self) {
-        self.tell("room.peers", self.peers());
+        let peers = self.session.peers();
+        let before = std::mem::replace(&mut *lock(&self.cast), peers.clone());
+
+        self.tell("room.peers", json!({ "peers": peers }));
+
+        if let Some(chime) = crate::chimes::Chime::after(&before, &peers) {
+            self.tell("room.chime", json!({ "chime": chime }));
+        }
+
+        if let Some(text) = crate::chimes::Chime::notice_after(&before, &peers) {
+            self.tell("room.notice", json!({ "text": text }));
+        }
     }
 
     fn announce_tiles(&self) {

@@ -39,7 +39,8 @@ const MEDIA_PATIENCE: Duration = Duration::from_millis(100);
 /// é a topologia que ela precisa ter para não travar a tela —, e com `&mut` isso seria
 /// corrida de dados: comportamento indefinido, do tipo que derruba o app sem padrão.
 pub struct Handle {
-    app: App,
+    /// `Arc` porque a sessão da `Api` guarda o par renovado nele, de outra thread.
+    app: Arc<App>,
     api: Mutex<Option<Arc<Api>>>,
     runtime: Runtime,
     /// `Arc` porque a tarefa que traz o socket de volta também o troca.
@@ -235,7 +236,7 @@ pub extern "C" fn unkvoid_core_new() -> *mut Handle {
     };
 
     Box::into_raw(Box::new(Handle {
-        app: App::new(storage),
+        app: Arc::new(App::new(storage)),
         api: Mutex::new(None),
         runtime,
         client: Arc::default(),
@@ -597,6 +598,14 @@ pub unsafe extern "C" fn unkvoid_app(
                         api.set_token(Some(token));
                     }
 
+                    // A sessão que acaba sozinha (o par não renovou) chega à interface como
+                    // `session.ended`, e ela volta ao login.
+                    let sender = handle.sender.clone();
+
+                    handle.app.keep_session(&api, move || {
+                        let _ = sender.send(json!({ "event": "session.ended", "channel": null, "data": {} }).to_string());
+                    });
+
                     *handle.api.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(api));
                     *handle.server.lock().unwrap_or_else(PoisonError::into_inner) = Some(field("url"));
                     report_last_failure(&handle.runtime, field("url"));
@@ -612,10 +621,8 @@ pub unsafe extern "C" fn unkvoid_app(
         }
         // Há versão mais nova publicada para esta plataforma? A interface avisa e abre o endereço.
         "update" => handle.with_api(|api, runtime| {
-            let platform = if cfg!(target_os = "macos") { "darwin-aarch64" } else if cfg!(target_os = "windows") { "windows-x86_64" } else { "linux-x86_64-deb" };
-
-            Ok(match runtime.block_on(api.newer_release(platform)) {
-                Some((version, url)) => json!({ "version": version, "url": url }),
+            Ok(match runtime.block_on(api.newer_release(crate::update::PLATFORM)) {
+                Some(release) => json!({ "version": release.version, "url": release.url }),
                 None => json!({ "upToDate": true }),
             })
         }),
@@ -671,12 +678,12 @@ pub unsafe extern "C" fn unkvoid_app(
             let waiting = handle.google.lock().unwrap_or_else(PoisonError::into_inner).take();
 
             match waiting.map(|login| handle.runtime.block_on(login.wait())) {
-                Some(Ok(token)) => {
+                Some(Ok((token, refresh))) => {
                     handle.app.set_token(Some(&token));
                     handle.app.show(handle.app.home());
 
                     handle.with_api(|api, runtime| {
-                        api.set_token(Some(token.clone()));
+                        api.adopt(&token, refresh.as_deref());
 
                         Ok(json!({ "ok": true, "user": runtime.block_on(api.me())? }))
                     })
@@ -690,8 +697,9 @@ pub unsafe extern "C" fn unkvoid_app(
             handle.app.set_token(None);
             handle.app.show(handle.app.home());
 
+            // A tela sai na hora; os tokens caem no servidor em segundo plano.
             if let Some(api) = handle.api() {
-                api.set_token(None);
+                handle.runtime.spawn(api.sign_out());
             }
 
             json!({ "ok": true })

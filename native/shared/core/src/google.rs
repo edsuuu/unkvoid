@@ -37,7 +37,7 @@ impl GoogleLogin {
             .map(|_| format!("{:x}", rand::thread_rng().gen_range(0..16)))
             .collect();
         let url = format!(
-            "{}/oauth2/app?port={port}&state={state}",
+            "{}/oauth2/app?port={port}&state={state}&refresh=1",
             server.trim_end_matches('/')
         );
 
@@ -48,9 +48,9 @@ impl GoogleLogin {
         })
     }
 
-    /// Espera o navegador voltar e devolve o token. Pedido com o `state` errado é ignorado, e
-    /// a espera continua: pode ser outra coisa na máquina batendo na porta.
-    pub async fn wait(self) -> Result<String> {
+    /// Espera o navegador voltar e devolve o token e o de renovação. Pedido com o `state`
+    /// errado é ignorado, e a espera continua: pode ser outra coisa na máquina batendo na porta.
+    pub async fn wait(self) -> Result<(String, Option<String>)> {
         tokio::time::timeout(PATIENCE, async {
             loop {
                 let (mut browser, _) = self.listener.accept().await?;
@@ -73,8 +73,9 @@ impl GoogleLogin {
     }
 }
 
-/// O token da primeira linha do pedido (`GET /?token=…&state=… HTTP/1.1`), se o `state` bate.
-fn token_of(request: &str, expected: &str) -> Option<String> {
+/// O token da primeira linha do pedido (`GET /?token=…&refresh_token=…&state=… HTTP/1.1`),
+/// com o de renovação quando o site o manda, se o `state` bate.
+fn token_of(request: &str, expected: &str) -> Option<(String, Option<String>)> {
     let query = request
         .lines()
         .next()?
@@ -93,8 +94,9 @@ fn token_of(request: &str, expected: &str) -> Option<String> {
     }
 
     let token = decode(field("token")?);
+    let refresh = field("refresh_token").map(decode).filter(|refresh| !refresh.is_empty());
 
-    (!token.is_empty()).then_some(token)
+    (!token.is_empty()).then_some((token, refresh))
 }
 
 /// O token do Sanctum vem com `|`, que o Laravel manda como `%7C`.
@@ -133,7 +135,12 @@ mod tests {
     fn the_token_is_read_only_when_the_state_matches() {
         let request = "GET /?token=12%7Cabc&state=f00d HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
 
-        assert_eq!(token_of(request, "f00d").as_deref(), Some("12|abc"));
+        assert_eq!(token_of(request, "f00d"), Some(("12|abc".to_owned(), None)));
+        assert_eq!(
+            token_of("GET /?token=12%7Cabc&refresh_token=13%7Cdef&state=f00d HTTP/1.1\r\n\r\n", "f00d"),
+            Some(("12|abc".to_owned(), Some("13|def".to_owned()))),
+            "o de renovação vem junto quando o site o manda"
+        );
         assert_eq!(
             token_of(request, "beef"),
             None,
@@ -182,6 +189,6 @@ mod tests {
             let _ = browser.read_to_string(&mut answer).await;
         }
 
-        assert_eq!(waiting.await.expect("join").expect("token"), "9|xyz");
+        assert_eq!(waiting.await.expect("join").expect("token"), ("9|xyz".to_owned(), None));
     }
 }

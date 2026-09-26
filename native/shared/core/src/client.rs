@@ -136,6 +136,12 @@ impl SfuClient {
         .into())
     }
 
+    /// Pede ao servidor para fechar: o socket termina dos dois lados, e a fila de eventos com
+    /// ele.
+    pub fn close(&self) {
+        let _ = self.outgoing.send(Message::Close(None));
+    }
+
     pub async fn identify(&self, token: &str) -> Result<Value> {
         self.call(crate::protocol::action::IDENTIFY, json!({ "token": token }))
             .await

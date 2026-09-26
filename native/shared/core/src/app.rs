@@ -5,7 +5,7 @@
 //! primeiro ajuste. Aqui é uma.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use storage::{Cipher, Storage};
 
@@ -22,7 +22,16 @@ const ROOM_KEY: &str = "unkvoid:last-room";
 
 const RECENT_KEY: &str = "unkvoid:recent-rooms";
 
+/// As chaves do React (`Sharing.ts`): quem trocar de app leva a escolha junto.
+const QUALITY_KEY: &str = "unkvoid:quality";
+const FPS_KEY: &str = "unkvoid:fps";
+
+/// O que o seletor de tela oferece, na ordem do React.
+pub const QUALITIES: [&str; 4] = ["720", "1080", "1440", "2160"];
+pub const FRAME_RATES: [&str; 2] = ["30", "60"];
+
 const TOKEN_KEY: &str = "unkvoid:token";
+const REFRESH_KEY: &str = "unkvoid:refresh";
 
 const INSTALL_KEY: &str = "unkvoid.instalacao";
 
@@ -197,12 +206,14 @@ impl App {
     /// Uma preferência guardada (microfone, qualidade, teclas…). As chaves são as que o app
     /// de hoje já grava (`unkvoid:voice`, `unkvoid:quality`…), e o token **não** sai por
     /// aqui: ele é cifrado e tem o caminho dele.
+    /// Preferência qualquer, menos os dois tokens: eles só entram e saem cifrados, pelo
+    /// `token` e pelo `keep_session`.
     pub fn preference(&self, key: &str) -> Option<serde_json::Value> {
-        (key != TOKEN_KEY).then(|| self.storage.get(key)).flatten()
+        (key != TOKEN_KEY && key != REFRESH_KEY).then(|| self.storage.get(key)).flatten()
     }
 
     pub fn set_preference(&self, key: &str, value: serde_json::Value) {
-        if key == TOKEN_KEY {
+        if key == TOKEN_KEY || key == REFRESH_KEY {
             return;
         }
 
@@ -223,12 +234,49 @@ impl App {
         self.storage.get_secret(TOKEN_KEY, self.cipher()?)
     }
 
+    pub fn refresh_token(&self) -> Option<String> {
+        self.storage.get_secret(REFRESH_KEY, self.cipher()?)
+    }
+
+    fn set_refresh_token(&self, refresh: &str) {
+        let Some(cipher) = self.cipher() else {
+            return;
+        };
+
+        if let Err(failure) = self.storage.set_secret(REFRESH_KEY, refresh, cipher) {
+            tracing::warn!(%failure, "o token de renovação não foi guardado");
+        }
+    }
+
+    /// Liga a sessão da `Api` ao disco: o par renovado vai para o chaveiro, e a sessão que
+    /// acabou sai dele — e aí `ended` leva a interface de volta ao login. Chamado uma vez, na
+    /// abertura, antes de qualquer pedido com conta.
+    pub fn keep_session(self: &Arc<Self>, api: &crate::api::Api, ended: impl Fn() + Send + Sync + 'static) {
+        api.set_refresh(self.refresh_token());
+
+        let app = Arc::clone(self);
+
+        api.on_session(move |renewal| match renewal {
+            crate::api::Renewal::Renewed { token, refresh } => {
+                app.set_token(Some(token));
+                app.set_refresh_token(refresh);
+            }
+            crate::api::Renewal::Ended => {
+                app.set_token(None);
+                ended();
+            }
+        });
+    }
+
+    /// Sem token não há par: apagar um apaga o outro.
     pub fn set_token(&self, token: Option<&str>) {
         self.signed_in.store(token.is_some(), Ordering::Relaxed);
 
         let Some(token) = token else {
-            if let Err(failure) = self.storage.remove(TOKEN_KEY) {
-                tracing::warn!(%failure, "não deu para apagar o token");
+            for key in [TOKEN_KEY, REFRESH_KEY] {
+                if let Err(failure) = self.storage.remove(key) {
+                    tracing::warn!(%failure, key, "não deu para apagar o token");
+                }
             }
 
             return;
@@ -243,6 +291,26 @@ impl App {
         if let Err(failure) = self.storage.set_secret(TOKEN_KEY, token, cipher) {
             tracing::warn!(%failure, "não deu para guardar o token");
         }
+    }
+
+    /// A qualidade e o fps com que o seletor de tela abre: a última escolha, ou o palpite do
+    /// React pelo número de núcleos.
+    pub fn share_quality(&self) -> (String, String) {
+        let cores = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+        let (quality, fps) = guessed_quality(cores, cfg!(target_os = "linux"));
+        let saved = |key: &str, allowed: &[&str], guess: &str| {
+            self.storage
+                .get_string(key)
+                .filter(|value| allowed.contains(&value.as_str()))
+                .unwrap_or_else(|| guess.to_owned())
+        };
+
+        (saved(QUALITY_KEY, &QUALITIES, quality), saved(FPS_KEY, &FRAME_RATES, fps))
+    }
+
+    pub fn set_share_quality(&self, quality: &str, fps: &str) {
+        self.set_preference(QUALITY_KEY, serde_json::json!(quality));
+        self.set_preference(FPS_KEY, serde_json::json!(fps));
     }
 
     fn cipher(&self) -> Option<&Cipher> {
@@ -276,9 +344,47 @@ impl App {
     }
 }
 
+/// O palpite do React: máquina com mais de oito núcleos aguenta 1080p60; com até quatro, 720p30;
+/// no meio, 1080p60 — menos no Linux, onde o encoder costuma ser o do processador e fica em 30.
+fn guessed_quality(cores: usize, linux: bool) -> (&'static str, &'static str) {
+    if cores > 8 {
+        return ("1080", "60");
+    }
+
+    if cores <= 4 {
+        return ("720", "30");
+    }
+
+    ("1080", if linux { "30" } else { "60" })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_share_quality_guess_is_the_react_one_and_a_choice_sticks() {
+        assert_eq!(guessed_quality(16, false), ("1080", "60"));
+        assert_eq!(guessed_quality(4, false), ("720", "30"));
+        assert_eq!(guessed_quality(6, true), ("1080", "30"));
+        assert_eq!(guessed_quality(6, false), ("1080", "60"));
+
+        let (app, _dir) = app();
+
+        app.set_share_quality("1440", "30");
+
+        assert_eq!(app.share_quality(), ("1440".to_owned(), "30".to_owned()));
+    }
+
+    #[test]
+    fn the_tokens_never_leave_through_the_preferences() {
+        let (app, _dir) = app();
+
+        app.set_preference(REFRESH_KEY, serde_json::json!("trocado"));
+
+        assert_eq!(app.preference(REFRESH_KEY), None);
+        assert_eq!(app.preference(TOKEN_KEY), None);
+    }
 
     fn app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");

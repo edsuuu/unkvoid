@@ -1027,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "capture"
-version = "0.1.0"
+version = "0.1.0-beta"
 dependencies = [
  "anyhow",
  "apple-cf",
@@ -1381,15 +1381,17 @@ dependencies = [
 
 [[package]]
 name = "core-app"
-version = "0.1.0"
+version = "0.1.0-beta"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "capture",
  "futures-util",
  "media",
+ "minisign-verify",
  "rand 0.8.8",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "storage",
@@ -4739,7 +4741,7 @@ dependencies = [
 
 [[package]]
 name = "media"
-version = "0.1.0"
+version = "0.1.0-beta"
 dependencies = [
  "anyhow",
  "apple-cf",
@@ -7867,7 +7869,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage"
-version = "0.1.0"
+version = "0.1.0-beta"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -9229,7 +9231,7 @@ dependencies = [
 
 [[package]]
 name = "unkvoid-desktop"
-version = "0.1.0"
+version = "0.1.0-beta"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -9257,7 +9259,7 @@ dependencies = [
 
 [[package]]
 name = "unkvoid-linux"
-version = "0.1.0"
+version = "0.1.0-beta"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -9276,18 +9278,20 @@ dependencies = [
 
 [[package]]
 name = "unkvoid-windows"
-version = "0.1.0"
+version = "0.1.0-beta"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "capture",
  "core-app",
+ "image",
  "media",
  "serde",
  "serde_json",
  "slint",
  "slint-build",
  "storage",
+ "tauri-winres",
  "tokio",
  "tracing",
  "tracing-subscriber",
