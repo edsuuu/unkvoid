@@ -436,6 +436,47 @@ impl Room {
         self.retire(Source::Screen).await;
     }
 
+    /// A câmera que a própria captura abre e codifica: no Linux o GStreamer lê a webcam e já
+    /// entrega H.264. No macOS a câmera vem pronta da interface, por `open_camera`.
+    #[cfg(target_os = "linux")]
+    pub async fn open_captured_camera(&self, config: CaptureConfig) -> Result<()> {
+        if lock(&self.sending).camera.is_some() {
+            return Ok(());
+        }
+
+        let producers = self.open(&[Some(Source::Camera)]).await?;
+        let started = tokio::task::block_in_place(|| {
+            let mut sending = lock(&self.sending);
+            let broadcast = sending.start(config, Some(Source::Camera), None)?;
+
+            sending.camera = Some(broadcast);
+
+            anyhow::Ok(())
+        });
+
+        if let Err(failure) = started {
+            self.close(producers).await;
+
+            return Err(failure);
+        }
+
+        lock(&self.producers).insert(Source::Camera, producers);
+        self.announce_mine();
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub async fn close_captured_camera(&self) {
+        let broadcast = lock(&self.sending).camera.take();
+
+        if let Some(mut broadcast) = broadcast {
+            let _ = tokio::task::block_in_place(|| broadcast.stop());
+        }
+
+        self.retire(Source::Camera).await;
+    }
+
     /// Abre o microfone no servidor. Quem captura é a interface, e o som entra por `speak`.
     pub async fn open_microphone(&self) -> Result<()> {
         if lock(&self.microphone).is_some() {

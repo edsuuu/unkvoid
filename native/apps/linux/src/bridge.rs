@@ -8,7 +8,10 @@
 //! sala?) é chamada ao `core_app`.
 
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use capture::{CaptureConfig, CaptureEvent, CaptureSource, PlatformCapturer};
 
 use core_app::api::{Api, HttpError};
 use core_app::app::EntryRefusal;
@@ -17,20 +20,17 @@ use core_app::models::{
     ServerTree, User,
 };
 pub use core_app::models::Peer;
-use core_app::protocol::{action, local};
 use core_app::reconnect::Backoff;
-use core_app::session::Session;
+use core_app::room::Room;
 use core_app::{App, Failure, Screen};
-use media::Source;
-use serde_json::json;
+use serde_json::Value;
 use storage::Storage;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::devices;
-use crate::sending::{self, Sending};
 use crate::streaming::{self, Mine, Tile};
-use crate::watching::Watching;
+use crate::watching::Watch;
 
 const DEFAULT_SERVER: &str = "https://unkvoid.com";
 
@@ -65,6 +65,8 @@ pub enum Update {
     Ping(u64),
     /// Trocar de tela sem nada novo para mostrar: sair da sala, ir para os servidores.
     Show(Screen),
+    /// O servidor tirou esta sessão da sala, com a frase de por quê.
+    ThrownOut(&'static str),
 }
 
 pub struct Bridge {
@@ -74,11 +76,21 @@ pub struct Bridge {
     /// De onde sai o WebSocket: vem do `GET /api/config`, e até ele responder não há sala.
     /// Em `Mutex` porque quem o descobre é o runtime e quem o usa é a tela.
     sfu: Arc<Mutex<Option<String>>>,
-    session: Arc<Mutex<Option<Arc<Session>>>>,
+    /// A sala aberta, por código ou canal de voz: o `Room` do núcleo, o mesmo do macOS e do
+    /// Windows.
+    room: Arc<Mutex<Option<Arc<Room>>>>,
+    /// O que se assiste: os decodificadores e os tocadores de cada transmissão.
+    watch: Arc<Mutex<Option<Watch>>>,
+    /// A captura do microfone, que sobe pela sala com `speak`.
+    microphone: Arc<Mutex<Option<PlatformCapturer>>>,
+    /// O último `room.mine`: é dele que o microfone e a câmera sabem se alternam ou abrem.
+    mine: Arc<Mutex<Mine>>,
+    /// Surdo vale fora da sala também: quem entra surdo continua surdo.
+    deafened: Arc<AtomicBool>,
+    /// A sala aberta é a de um canal de voz, e não uma sala por código.
+    in_voice: Arc<AtomicBool>,
     /// Qual servidor está aberto: é nele que um canal novo nasce.
     opened: Arc<Mutex<Option<i64>>>,
-    sending: Arc<Mutex<Sending>>,
-    watching: Arc<Mutex<Watching>>,
     install_id: String,
     to_screen: UnboundedSender<Update>,
 }
@@ -96,10 +108,13 @@ impl Bridge {
             core,
             api: Arc::new(Api::new(&server)?),
             sfu: Arc::new(Mutex::new(None)),
-            session: Arc::new(Mutex::new(None)),
+            room: Arc::default(),
+            watch: Arc::default(),
+            microphone: Arc::default(),
+            mine: Arc::default(),
+            deafened: Arc::default(),
+            in_voice: Arc::default(),
             opened: Arc::default(),
-            sending: Arc::default(),
-            watching: Arc::default(),
             install_id,
             to_screen,
         });
@@ -492,7 +507,7 @@ impl Bridge {
     /// Entrar num canal de voz **sem sair do hub**: é o que o React faz, e o que o Discord
     /// fez antes dele. Quem está dentro aparece embaixo do nome do canal.
     pub fn join_voice(self: &Rc<Self>, channel: &str, name: &str) {
-        if lock(&self.session).is_some() {
+        if lock(&self.room).is_some() {
             self.leave_voice();
         }
 
@@ -501,16 +516,13 @@ impl Bridge {
 
     /// Sai da voz e continua no servidor. É o fone cortado da barra de baixo.
     pub fn leave_voice(self: &Rc<Self>) {
-        let held = lock(&self.session).take();
-        let screen = self.to_screen.clone();
+        let held = self.close_room();
 
-        let _ = screen.send(Update::VoiceLeft);
+        let _ = self.to_screen.send(Update::VoiceLeft);
 
         self.spawn(async move {
-            if let Some(session) = held
-                && let Err(failure) = session.leave().await
-            {
-                tracing::warn!(%failure, "a saída da voz não foi confirmada");
+            if let Some(room) = held {
+                room.leave().await;
             }
         });
     }
@@ -543,13 +555,16 @@ impl Bridge {
         };
 
         let screen = self.to_screen.clone();
-        let (sending, watching) = (self.sending.clone(), self.watching.clone());
-        let held = self.session.clone();
+        let (held, watch, microphone, mine) = (self.room.clone(), self.watch.clone(), self.microphone.clone(), self.mine.clone());
+        let deafened = self.deafened.load(Ordering::Relaxed);
         let identity = self.identity(&room, voice);
 
+        self.in_voice.store(staying.is_some(), Ordering::Relaxed);
+
         self.spawn(async move {
-            let (session, mut events) = match Session::join(&url, &room, identity).await {
-                Ok(joined) => joined,
+            let (updates, heard) = std::sync::mpsc::channel();
+            let (opened, media) = match Room::enter(&url, &room, identity, updates).await {
+                Ok(entered) => entered,
                 Err(failure) => {
                     let reason = sentence(Failure::from_error(&failure));
 
@@ -560,63 +575,27 @@ impl Bridge {
                 }
             };
 
-            *lock(&held) = Some(session.clone());
+            if deafened {
+                opened.deafen(true);
+            }
 
-            let _ = screen.send(Update::Joined { room, voice: staying, peers: session.peers() });
+            *lock(&held) = Some(opened.clone());
+            *lock(&watch) = Some(Watch::start(media, |_, _| {}));
+            *lock(&mine) = streaming::mine_of(&opened.mine());
 
-            settle(&session, &sending, &watching, &screen).await;
+            listen(heard, screen.clone(), mine.clone());
 
-            let mut shown = Vec::new();
+            let in_voice = staying.is_some();
+            let peers = streaming::peers_of(&opened.peers());
 
-            // O socket fechado encerra a fila, e é aí que este laço termina.
-            while let Some(event) = events.recv().await {
-                let changed = session.apply(&event);
+            let _ = screen.send(Update::Joined { room, voice: staying, peers });
+            let _ = screen.send(Update::Tiles(streaming::tiles_of(&opened.tiles())));
+            let _ = screen.send(Update::Mine(*lock(&mine)));
 
-                match event.name.as_str() {
-                    "newProducer" => consume_all(&session, &watching, &screen).await,
-                    "producerClosed" => {
-                        let producer_id = event.data["producerId"].as_str().unwrap_or_default();
-
-                        lock(&watching).stop(Some(producer_id));
-                    }
-                    local::SESSION_LOST => {
-                        let _ = screen.send(Update::Complaint("A sala caiu. Voltando…".into()));
-                    }
-                    local::SESSION_REJOINED => {
-                        let _ = screen.send(Update::Complaint(String::new()));
-
-                        // Entrada nova (a carência do servidor expirou) perdeu tudo o que
-                        // estava aberto lá: o que ficou aqui só atrapalha.
-                        if !session.resumed() {
-                            republish(&session, &sending, &watching).await;
-                        }
-
-                        settle(&session, &sending, &watching, &screen).await;
-                    }
-                    local::SESSION_GONE => {
-                        let _ = screen.send(Update::Complaint(
-                            "A sala não voltou. Entre de novo quando a internet estabilizar.".into(),
-                        ));
-                    }
-                    local::PING_MEASURED => {
-                        if let Some(milliseconds) = event.data.as_u64() {
-                            let _ = screen.send(Update::Ping(milliseconds));
-                        }
-                    }
-                    _ => {}
-                }
-
-                if changed {
-                    let _ = screen.send(Update::Peers(session.peers()));
-                }
-
-                let tiles = streaming::tiles(&session, &watching);
-
-                if tiles != shown {
-                    shown = tiles.clone();
-
-                    let _ = screen.send(Update::Tiles(tiles));
-                }
+            // Entrar na voz abre o microfone, como no Mac e no React: quem entra já é ouvido.
+            // A sala por código é só a tela.
+            if in_voice && lock(&mine).can_speak {
+                open_microphone(&opened, &microphone, &screen).await;
             }
         });
     }
@@ -642,14 +621,14 @@ impl Bridge {
 
     /// Compartilhar a tela. O som dela vai junto, e chega mudo do outro lado.
     pub fn share_screen(self: &Rc<Self>) {
-        let Some(session) = lock(&self.session).clone() else {
+        let Some(room) = lock(&self.room).clone() else {
             return;
         };
 
-        let (sending, screen) = (self.sending.clone(), self.to_screen.clone());
+        let screen = self.to_screen.clone();
 
         self.spawn(async move {
-            let config = sending::screen_config(capture::Quality::Hd1080, 60, true);
+            let config = screen_config();
 
             // No Wayland quem escolhe a tela é o seletor do sistema, e ele abre aqui — antes
             // de ligar a captura. Sem esta chamada o `start` não acha sessão nenhuma e o
@@ -661,110 +640,67 @@ impl Bridge {
                     tracing::warn!(%failure, "o seletor de tela não abriu");
 
                     let _ = screen.send(Update::Complaint("Não deu para escolher a tela.".into()));
-                    let _ = screen.send(Update::Mine(streaming::mine(&session, &sending)));
 
                     return;
                 }
             };
 
-            let published = streaming::publish(
-                &session,
-                &sending,
-                Source::Screen,
-                config,
-                Some(Source::Screen),
-                Some(Source::ScreenAudio),
-            )
-            .await;
+            let shared = room.share(config).await;
 
-            // O `start` consome a sessão escolhida; largá-la antes disso fecharia o que o
-            // seletor abriu, e o sistema ficaria dizendo que a tela está sendo compartilhada.
+            // A captura consumiu a sessão escolhida; largá-la antes fecharia o que o seletor
+            // abriu, e o sistema ficaria dizendo que a tela está sendo compartilhada.
             drop(prepared);
 
-            if let Err(failure) = published {
+            if let Err(failure) = shared {
                 tracing::warn!(%failure, "a tela não subiu");
 
                 let _ = screen.send(Update::Complaint(
                     "Não deu para compartilhar a tela. Confira se o GStreamer está instalado.".into(),
                 ));
             }
-
-            let _ = screen.send(Update::Mine(streaming::mine(&session, &sending)));
         });
     }
 
     pub fn stop_sharing(self: &Rc<Self>) {
-        self.unpublish(Source::Screen);
+        self.with_room(|room| async move { room.stop_sharing().await });
     }
 
     /// Procura de novo quem está transmitindo. O `newProducer` já faz isso sozinho; este
     /// caminho existe para quando o evento se perdeu, e é o "Atualizar" da lista de pessoas.
     pub fn refresh_watch(self: &Rc<Self>) {
-        let Some(session) = lock(&self.session).clone() else {
-            return;
-        };
-
-        let (watching, screen) = (self.watching.clone(), self.to_screen.clone());
-
-        self.spawn(async move {
-            consume_all(&session, &watching, &screen).await;
-        });
+        self.with_room(|room| async move { room.watch(None).await });
     }
 
     pub fn toggle_camera(self: &Rc<Self>) {
-        if lock(&self.sending).is_live(Source::Camera) {
-            self.unpublish(Source::Camera);
+        let on = lock(&self.mine).camera;
+        let screen = self.to_screen.clone();
 
-            return;
-        }
+        self.with_room(move |room| async move {
+            if on {
+                room.close_captured_camera().await;
 
-        let Some(session) = lock(&self.session).clone() else {
-            return;
-        };
+                return;
+            }
 
-        let (sending, screen) = (self.sending.clone(), self.to_screen.clone());
-
-        self.spawn(async move {
-            let published = streaming::publish(
-                &session,
-                &sending,
-                Source::Camera,
-                sending::camera_config(0),
-                Some(Source::Camera),
-                None,
-            )
-            .await;
-
-            if let Err(failure) = published {
+            if let Err(failure) = room.open_captured_camera(camera_config()).await {
                 tracing::warn!(%failure, "a câmera não subiu");
 
                 let _ = screen.send(Update::Complaint("Não deu para abrir a câmera.".into()));
             }
-
-            let _ = screen.send(Update::Mine(streaming::mine(&session, &sending)));
         });
     }
 
-    /// Mudo é mandar silêncio **e** avisar a sala: sem o silêncio o relógio de 30 s do SFU
-    /// mataria o producer, e sem o aviso ninguém veria o microfone fechado.
+    /// Com o microfone aberto, alterna o mudo; fechado, abre. O mudo é do núcleo: manda
+    /// silêncio e avisa a sala, e é o `room.mine` que redesenha o botão.
     pub fn toggle_mic(self: &Rc<Self>) {
-        let Some(session) = lock(&self.session).clone() else {
-            return;
-        };
+        let (screen, microphone, mine) = (self.to_screen.clone(), self.microphone.clone(), *lock(&self.mine));
 
-        let muted = !lock(&self.sending).is_muted(Source::Mic);
-        let (sending, screen) = (self.sending.clone(), self.to_screen.clone());
-
-        lock(&self.sending).set_muted(Source::Mic, muted);
-
-        self.spawn(async move {
-            if !lock(&sending).is_live(Source::Mic) {
-                open_mic(&session, &sending, &screen).await;
+        self.with_room(move |room| async move {
+            if mine.mic {
+                room.mute_microphone(!mine.mic_muted).await;
             } else {
-                pause_mic(&session, &sending, muted).await;
+                open_microphone(&room, &microphone, &screen).await;
             }
-
-            let _ = screen.send(Update::Mine(streaming::mine(&session, &sending)));
         });
     }
 
@@ -777,10 +713,23 @@ impl Bridge {
             return;
         }
 
-        if let Err(failure) = lock(&self.sending).restart(Source::Mic, None, Some(Source::Mic)) {
-            tracing::warn!(%failure, "o microfone novo não abriu");
+        let Some(room) = lock(&self.room).clone() else {
+            return;
+        };
 
-            let _ = self.to_screen.send(Update::Complaint("O microfone escolhido não abriu.".into()));
+        let mut held = lock(&self.microphone);
+
+        if let Some(mut capturer) = held.take() {
+            let _ = capturer.stop();
+
+            match capture_microphone(&room) {
+                Ok(capturer) => *held = Some(capturer),
+                Err(failure) => {
+                    tracing::warn!(%failure, "o microfone novo não abriu");
+
+                    let _ = self.to_screen.send(Update::Complaint("O microfone escolhido não abriu.".into()));
+                }
+            }
         }
     }
 
@@ -793,76 +742,84 @@ impl Bridge {
             return;
         }
 
-        lock(&self.watching).use_new_output();
+        if let Some(watch) = lock(&self.watch).as_ref() {
+            watch.reopen_sound();
+        }
     }
 
     /// Ensurdecer cala só o áudio que chega: pausar o vídeo faria esperar keyframe na volta.
     pub fn toggle_deafen(self: &Rc<Self>) -> bool {
-        let mut watching = lock(&self.watching);
-        let deafened = !watching.is_deafened();
+        let deafened = !self.deafened.load(Ordering::Relaxed);
 
-        watching.deafen(deafened);
+        self.deafened.store(deafened, Ordering::Relaxed);
+
+        if let Some(room) = lock(&self.room).as_ref() {
+            room.deafen(deafened);
+        }
 
         deafened
     }
 
     pub fn is_deafened(&self) -> bool {
-        lock(&self.watching).is_deafened()
+        self.deafened.load(Ordering::Relaxed)
     }
 
     /// O que chegou de vídeo desde o último desenho. É a janela que chama, no relógio dela.
     pub fn fresh_frames(&self) -> Vec<(String, Vec<u8>)> {
-        lock(&self.watching).fresh_frames()
+        lock(&self.watch).as_ref().map(Watch::fresh_frames).unwrap_or_default()
     }
 
-    fn unpublish(self: &Rc<Self>, source: Source) {
-        let Some(session) = lock(&self.session).clone() else {
-            return;
-        };
+    /// Tirado da sala pelo servidor: sai do que estiver aberto e diz por quê.
+    pub fn thrown_out(self: &Rc<Self>, message: &str) {
+        if self.in_voice.load(Ordering::Relaxed) {
+            self.leave_voice();
+        } else {
+            self.leave_room();
+        }
 
-        let (sending, screen) = (self.sending.clone(), self.to_screen.clone());
-
-        self.spawn(async move {
-            streaming::unpublish(&session, &sending, source).await;
-
-            let _ = screen.send(Update::Mine(streaming::mine(&session, &sending)));
-        });
+        let _ = self.to_screen.send(Update::Complaint(message.to_owned()));
     }
 
     pub fn leave_room(self: &Rc<Self>) {
         self.core.leave_room();
 
         let (screen, landing) = (self.to_screen.clone(), self.home());
-
-        // Cada origem é um `gst-launch` filho: sair da tela não o mata sozinho.
-        lock(&self.watching).stop(None);
+        let held = self.close_room();
 
         let _ = screen.send(Update::Tiles(Vec::new()));
-
-        let (sending, held) = (self.sending.clone(), lock(&self.session).take());
+        let _ = screen.send(Update::Mine(Mine::default()));
+        let _ = screen.send(Update::Show(landing));
 
         self.spawn(async move {
-            let Some(session) = held else {
-                lock(&sending).stop_all();
-
-                let _ = screen.send(Update::Show(landing));
-
-                return;
-            };
-
-            let live = lock(&sending).live_sources();
-
-            for source in live {
-                streaming::unpublish(&session, &sending, source).await;
+            if let Some(room) = held {
+                room.leave().await;
             }
-
-            if let Err(failure) = session.leave().await {
-                tracing::warn!(%failure, "a saída da sala não foi confirmada");
-            }
-
-            let _ = screen.send(Update::Mine(Mine::default()));
-            let _ = screen.send(Update::Show(landing));
         });
+    }
+
+    /// Fecha deste lado o que a sala abriu — o microfone e os tocadores — e devolve a sala
+    /// para quem chama avisar o servidor da saída.
+    fn close_room(&self) -> Option<Arc<Room>> {
+        if let Some(mut capturer) = lock(&self.microphone).take() {
+            let _ = capturer.stop();
+        }
+
+        drop(lock(&self.watch).take());
+        *lock(&self.mine) = Mine::default();
+        self.in_voice.store(false, Ordering::Relaxed);
+
+        lock(&self.room).take()
+    }
+
+    /// Um clique que vira pedido à sala aberta, fora da thread da janela.
+    fn with_room<F, Work>(&self, work: F)
+    where
+        F: FnOnce(Arc<Room>) -> Work,
+        Work: std::future::Future<Output = ()> + Send + 'static,
+    {
+        if let Some(room) = lock(&self.room).clone() {
+            self.spawn(work(room));
+        }
     }
 
     fn spawn<F>(&self, work: F)
@@ -896,114 +853,112 @@ fn lock<T>(cell: &Arc<Mutex<T>>) -> MutexGuard<'_, T> {
     cell.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// O que fazer assim que a sala abre, e de novo a cada volta: assistir a quem já está
-/// transmitindo e abrir o microfone.
-async fn settle(
-    session: &Arc<Session>,
-    sending: &Arc<Mutex<Sending>>,
-    watching: &Arc<Mutex<Watching>>,
-    screen: &UnboundedSender<Update>,
-) {
-    consume_all(session, watching, screen).await;
-
-    // Microfone aberto por padrão: quem entra na voz já é ouvido, como no app de hoje.
-    if session.can("speak") && !lock(sending).is_live(Source::Mic) {
-        open_mic(session, sending, screen).await;
-    }
-
-    let _ = screen.send(Update::Tiles(streaming::tiles(session, watching)));
-    let _ = screen.send(Update::Mine(streaming::mine(session, sending)));
-}
-
-/// Assiste a tudo o que ainda não está sendo assistido. É idempotente de propósito: o
-/// evento de producer novo e a volta depois de uma queda chamam a mesma coisa.
-async fn consume_all(
-    session: &Arc<Session>,
-    watching: &Arc<Mutex<Watching>>,
-    screen: &UnboundedSender<Update>,
-) {
-    let peers = session.peers();
-
-    for producer in peers.iter().filter(|peer| !peer.self_peer).flat_map(|peer| &peer.producers) {
-        if let Err(failure) = streaming::consume(session, watching, producer).await {
-            tracing::warn!(%failure, producer = %producer.producer_id, "não deu para assistir");
-
-            let _ = screen
-                .send(Update::Complaint("Não deu para assistir a uma das transmissões.".into()));
-        }
+/// A tela principal em 1080p60, com o som do sistema e o cursor.
+fn screen_config() -> CaptureConfig {
+    CaptureConfig {
+        quality: capture::Quality::Hd1080,
+        source: CaptureSource::PrimaryDisplay,
+        frame_rate: 60,
+        capture_audio: true,
+        mute_listed_apps: true,
+        show_cursor: true,
     }
 }
 
-/// Entrada nova depois de uma queda longa: o servidor não tem mais nada desta pessoa, e o
-/// que estava capturando aqui precisa ser publicado do zero.
-async fn republish(
-    session: &Arc<Session>,
-    sending: &Arc<Mutex<Sending>>,
-    watching: &Arc<Mutex<Watching>>,
-) {
-    // O que se estava assistindo também morreu do lado de lá.
-    lock(watching).stop(None);
-
-    let sources = lock(sending).live_sources();
-    let live: Vec<(Source, capture::CaptureConfig)> = sources
-        .into_iter()
-        .filter_map(|source| lock(sending).config_of(source).map(|config| (source, config)))
-        .collect();
-
-    for (source, _) in &live {
-        lock(sending).stop(*source);
-    }
-
-    // A chave vai junto: o remetente novo recomeça a numeração, e a mesma chave com o
-    // contador reiniciado repetiria o keystream.
-    lock(sending).renew_key();
-
-    for (source, config) in live {
-        let (video, audio) = match source {
-            Source::Screen => (Some(Source::Screen), Some(Source::ScreenAudio)),
-            Source::Camera => (Some(Source::Camera), None),
-            _ => (None, Some(Source::Mic)),
-        };
-
-        if let Err(failure) = streaming::publish(session, sending, source, config, video, audio).await {
-            tracing::warn!(%failure, ?source, "a transmissão não voltou");
-        }
+fn camera_config() -> CaptureConfig {
+    CaptureConfig {
+        source: CaptureSource::Camera(0),
+        capture_audio: false,
+        ..CaptureConfig::default()
     }
 }
 
-async fn open_mic(
-    session: &Arc<Session>,
-    sending: &Arc<Mutex<Sending>>,
-    screen: &UnboundedSender<Update>,
-) {
-    let published = streaming::publish(
-        session,
-        sending,
-        Source::Mic,
-        sending::microphone_config(),
-        None,
-        Some(Source::Mic),
-    )
-    .await;
-
-    if let Err(failure) = published {
-        tracing::warn!(%failure, "o microfone não subiu");
-
-        let _ = screen.send(Update::Complaint("Não deu para abrir o microfone.".into()));
-    }
-}
-
-/// Mutar também pausa o producer: é o que faz a sala desenhar o microfone fechado.
-async fn pause_mic(session: &Arc<Session>, sending: &Arc<Mutex<Sending>>, muted: bool) {
-    let Some(producer_id) = lock(sending).producer_of(Source::Mic) else {
-        return;
+/// O microfone do sistema, capturado pelo GStreamer, subindo pela sala.
+fn capture_microphone(room: &Arc<Room>) -> Result<PlatformCapturer, capture::CaptureError> {
+    let speaking = Arc::clone(room);
+    let config = CaptureConfig {
+        source: CaptureSource::Microphone,
+        capture_audio: true,
+        ..CaptureConfig::default()
     };
 
-    let acted = if muted { action::PAUSE_PRODUCER } else { action::RESUME_PRODUCER };
+    PlatformCapturer::start(&config, move |event| {
+        if let CaptureEvent::Audio(block) = event {
+            speaking.speak(&block.samples);
+        }
+    })
+}
 
-    if let Err(failure) = session.client().call(acted, json!({ "producerId": producer_id })).await {
-        tracing::warn!(%failure, muted, "a sala não soube do microfone");
+/// Abre o microfone na sala e a captura que o alimenta.
+async fn open_microphone(room: &Arc<Room>, cell: &Arc<Mutex<Option<PlatformCapturer>>>, screen: &UnboundedSender<Update>) {
+    if let Err(failure) = room.open_microphone().await {
+        tracing::warn!(%failure, "a sala não abriu o microfone");
+
+        let _ = screen.send(Update::Complaint("Não deu para abrir o microfone.".into()));
+
+        return;
     }
+
+    // Abrir o `gst-launch` bloqueia; o tokio é avisado para não esperar esta thread.
+    match tokio::task::block_in_place(|| capture_microphone(room)) {
+        Ok(capturer) => *lock(cell) = Some(capturer),
+        Err(failure) => {
+            tracing::warn!(%failure, "a captura do microfone não abriu");
+            room.close_microphone().await;
+
+            let _ = screen.send(Update::Complaint("Não deu para abrir o microfone.".into()));
+        }
+    }
+}
+
+/// Os avisos da sala, numa thread só deles, virando os `Update` que as telas já entendem.
+/// A fila fecha quando a sala acaba, e a thread acaba junto.
+fn listen(heard: std::sync::mpsc::Receiver<String>, screen: UnboundedSender<Update>, mine: Arc<Mutex<Mine>>) {
+    std::thread::spawn(move || {
+        for said in heard {
+            let Ok(update) = serde_json::from_str::<Value>(&said) else {
+                continue;
+            };
+
+            if let Some(update) = translate(&update, &mine) {
+                let _ = screen.send(update);
+            }
+        }
+    });
+}
+
+fn translate(update: &Value, mine: &Arc<Mutex<Mine>>) -> Option<Update> {
+    let data = &update["data"];
+
+    Some(match update["event"].as_str()? {
+        "room.peers" => Update::Peers(streaming::peers_of(data)),
+        "room.tiles" => Update::Tiles(streaming::tiles_of(data)),
+        "room.mine" => {
+            let now = streaming::mine_of(data);
+
+            *lock(mine) = now;
+
+            Update::Mine(now)
+        }
+        "room.ping" => Update::Ping(data["ms"].as_u64()?),
+        "room.failed" => Update::Complaint(
+            match data["what"].as_str()? {
+                "watch" => "Não deu para assistir a uma das transmissões.",
+                "mic" => "Não deu para abrir o microfone.",
+                _ => "Não deu para compartilhar a tela.",
+            }
+            .into(),
+        ),
+        "room.session" => match data["state"].as_str()? {
+            "lost" => Update::Complaint("A sala caiu. Voltando…".into()),
+            "rejoined" => Update::Complaint(String::new()),
+            "gone" => Update::Complaint("A sala não voltou. Entre de novo quando a internet estabilizar.".into()),
+            "replaced" => Update::ThrownOut("Esta conta entrou na sala por outro lugar."),
+            "kicked" => Update::ThrownOut("Você foi removido desta sala."),
+            _ => return None,
+        },
+        _ => return None,
+    })
 }
 
 async fn restore(core: &Arc<App>, api: &Arc<Api>) -> Option<User> {

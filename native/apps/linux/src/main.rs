@@ -8,6 +8,7 @@ mod components;
 mod devices;
 mod icons;
 mod screens;
+#[cfg(test)]
 mod sending;
 mod streaming;
 mod user_bar;
@@ -169,6 +170,7 @@ fn open(application: &Application) {
                     hub.set_mine(mine);
                     hub.set_deafened(bridge.is_deafened());
                 }
+                Update::ThrownOut(message) => bridge.thrown_out(message),
                 Update::Show(screen) => {
                     if screen == Screen::Hub {
                         bridge.load_servers();

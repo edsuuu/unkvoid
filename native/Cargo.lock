@@ -9265,6 +9265,7 @@ dependencies = [
  "core-app",
  "gtk4",
  "media",
+ "serde",
  "serde_json",
  "storage",
  "tempfile",
