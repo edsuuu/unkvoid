@@ -93,7 +93,42 @@ rm -f native/target/release/bundle/macos/rw.*.dmg
 
 ## Windows
 
-### De onde sai a release
+### O app nativo, da 0.1.0-beta em diante
+
+O Windows passou a ser o app nativo (`native/apps/windows`, Slint), e não o Tauri. O
+instalador é o `native/apps/windows/installer.nsi`, um NSIS que ocupa o lugar exato do Tauri:
+a mesma pasta em Arquivos de Programas, o mesmo `unkvoid-desktop.exe`, a mesma chave de
+desinstalação. É isso que migra quem ainda tem o Tauri — o atualizador dele acha a versão
+nova no manifesto, confere a assinatura com a mesma chave e abre o instalador com
+`/P /UPDATE /R /ARGS …`, que o `installer.nsi` entende. O mesmo nome de `.exe` mantém o
+atalho do menu Iniciar e o app fixado na barra de tarefas valendo.
+
+O nativo se atualiza do mesmo jeito, pelo `native/shared/core/src/update.rs`: na abertura lê
+o manifesto, compara pelo semver (`0.1.0` vem depois de `0.1.0-beta`), baixa com a barra na
+tela, confere a assinatura com a mesma pública do `tauri.conf.json` e abre o instalador com
+`/P /UPDATE /R`. Recusar o aviso do administrador só deixa a versão que está.
+
+Compilar e empacotar, no PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File native\apps\windows\build-installer.ps1
+```
+
+Assinar e publicar, no WSL — a chave não sai de lá:
+
+```bash
+cd native/apps/desktop
+EXE=/mnt/c/Users/edsu/unkvoid/native/target/release/bundle/windows/Unkvoid_0.1.0-beta_x64-setup.exe
+npx tauri signer sign -f ~/auxilos/unkvoid.key -p "" "$EXE"
+node check-signature.mjs "$EXE.sig"
+RELEASE_VERSION=0.1.0-beta RELEASE_SECRET="$(grep -h . ~/auxilos/release-secret.env | cut -d= -f2)" ./publish-release.sh windows-x86_64-nsis "$EXE" "$EXE.sig"
+```
+
+O nativo não tem `.msi`: quem instalou o Tauri pelo `.msi` não migra sozinho, e precisa do
+`.exe` uma vez. O `release.yml` e o `build-windows.ps1` ainda compilam o Tauri — não solte
+tag por eles, ou o Tauri volta por cima do nativo.
+
+### De onde saía a release do Tauri
 
 **Do `release.yml`, num runner do GitHub, a partir do próprio repositório** — e não da máquina
 de ninguém. É o que a assinatura de código exige (a SignPath Foundation só assina build
@@ -183,6 +218,20 @@ registra cada um com a sua chave. A pasta de saída guarda build de todas as
 versões, e o filtro existe para não subir o `.msi` de ontem com o número de hoje.
 
 ## Linux
+
+Da 0.1.0-beta em diante o `.deb` é o do app nativo (`native/apps/linux`, GTK4), com o mesmo
+nome de pacote, `unkvoid`: quem tem o Tauri recebe o nativo no próximo `apt upgrade`. Ele
+sai do `native/apps/linux/build-deb.sh`, compilado dentro de um Debian 12
+(`Dockerfile.deb`), e vai para o APT pelo mesmo `apt-publish.sh`, na VPS:
+
+```bash
+native/apps/linux/build-deb.sh     # native/target/deb12/Unkvoid_<versão>_amd64.deb
+scp native/target/deb12/Unkvoid_0.1.0-beta_amd64.deb vps:/tmp/
+ssh vps 'cd /var/www/projects/unkvoid/native/apps/desktop && ./apt-publish.sh /tmp/Unkvoid_0.1.0-beta_amd64.deb'
+```
+
+A versão do Cargo `0.1.0-beta` vira `0.1.0~beta` no Debian: com o til, a `0.1.0` final vem
+depois da beta. O `build-vps.sh` e o `build-linux.yml` ainda geram o `.deb` do Tauri.
 
 **Instala e atualiza pelo APT**, e nada mais. O atualizador embutido está
 desligado neste sistema: pedir senha de root com `pkexec` no meio da abertura
