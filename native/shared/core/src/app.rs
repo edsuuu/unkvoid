@@ -230,8 +230,19 @@ impl App {
 
     /// O token do Sanctum, decifrado. Sem chaveiro não há token guardado, e o app pede
     /// login de novo — que é melhor do que deixá-lo legível no disco.
+    ///
+    /// Token guardado que não abre — cifrado por outro build, com outra chave, ou num chaveiro
+    /// que sumiu — não é sessão: sai do disco na hora. Sem isto a tela contava a conta pela
+    /// chave no arquivo, abria o hub sem conta, e a pessoa ficava presa lá sem voltar ao login.
     pub fn token(&self) -> Option<String> {
-        self.storage.get_secret(TOKEN_KEY, self.cipher()?)
+        let token = self.cipher().and_then(|cipher| self.storage.get_secret(TOKEN_KEY, cipher));
+
+        if token.is_none() && self.has_token() {
+            tracing::info!("o token guardado não abre: a sessão volta para a entrada");
+            self.set_token(None);
+        }
+
+        token
     }
 
     pub fn refresh_token(&self) -> Option<String> {
@@ -391,6 +402,20 @@ mod tests {
         let storage = Storage::open_at(dir.path()).expect("open");
 
         (App::new(storage), dir)
+    }
+
+    #[test]
+    fn a_stored_token_that_does_not_open_lands_on_the_entry() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let storage = Storage::open_at(dir.path()).expect("open");
+
+        storage.set(TOKEN_KEY, serde_json::json!("cifrado-por-outra-chave")).expect("write");
+
+        let app = App::new(storage);
+
+        assert_eq!(app.token(), None);
+        assert!(!app.has_token(), "a chave no disco não é sessão");
+        assert_eq!(app.home(), Screen::Entry);
     }
 
     #[test]
