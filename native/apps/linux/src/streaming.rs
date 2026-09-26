@@ -144,6 +144,7 @@ pub async fn consume(
         payload_type,
         ssrc,
         always_muted: source == "screenAudio",
+        rtx: core_app::watching::rtx_of(&answer),
     });
 
     if let Err(failure) = started {

@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow};
-use media::PlainReceiver;
+use media::{PlainReceiver, Rtx, Stream};
 
 /// O tamanho do cartão. Fixo para o quadro ter sempre o mesmo número de bytes: é isso que
 /// permite ler a saída do GStreamer sem procurar separador nenhum.
@@ -45,6 +45,8 @@ pub struct Incoming<'a> {
     pub ssrc: Option<u32>,
     /// Som de tela compartilhada, que chega mudo por regra.
     pub always_muted: bool,
+    /// A retransmissão do servidor: é por ela que pacote perdido volta.
+    pub rtx: Option<Rtx>,
 }
 
 struct Watch {
@@ -81,7 +83,7 @@ impl Watching {
 
     /// Abre o tocador de uma transmissão e passa a encaminhar o que chegar dela.
     pub fn start(&mut self, incoming: Incoming<'_>) -> Result<()> {
-        let Incoming { producer_id, kind, address, server_key, payload_type, ssrc, always_muted } =
+        let Incoming { producer_id, kind, address, server_key, payload_type, ssrc, always_muted, rtx } =
             incoming;
 
         // Outro endereço é outra sessão no servidor: o que estava aberto já morreu lá.
@@ -123,7 +125,14 @@ impl Watching {
         }
 
         if let Some(receiver) = self.receiver.as_ref() {
-            receiver.route(producer_id.clone(), payload_type, to, ssrc);
+            receiver.route(Stream {
+                id: producer_id.clone(),
+                payload_type,
+                to,
+                ssrc,
+                video: kind == "video",
+                rtx,
+            });
         }
 
         if always_muted || self.deafened {

@@ -62,6 +62,12 @@ export class ConsumerController {
         this.track(room, peer, consumer, owner);
 
         const codec = consumer.rtpParameters.codecs[0];
+        const repair = consumer.rtpParameters.codecs.find(
+            (candidate) =>
+                candidate.mimeType.toLowerCase().endsWith('/rtx') &&
+                candidate.parameters?.apt === codec?.payloadType,
+        );
+        const repairSsrc = consumer.rtpParameters.encodings?.[0]?.rtx?.ssrc;
 
         return {
             consumerId: consumer.id,
@@ -70,6 +76,8 @@ export class ConsumerController {
             payloadType: codec?.payloadType ?? null,
             clockRate: codec?.clockRate ?? null,
             ssrc: consumer.rtpParameters.encodings?.[0]?.ssrc ?? null,
+            rtx:
+                repair && repairSsrc ? { ssrc: repairSsrc, payloadType: repair.payloadType } : null,
             ip: transport.tuple.localAddress,
             port: transport.tuple.localPort,
             srtpParameters: transport.srtpParameters,

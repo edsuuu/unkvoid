@@ -41,22 +41,28 @@ pub struct Watches {
     active: HashMap<String, Watch>,
 }
 
+/// O que o `consumePlain` respondeu sobre uma transmissão, já com a chave aberta.
+pub struct Consumed {
+    pub producer_id: String,
+    pub kind: String,
+    pub address: String,
+    pub server_key: Vec<u8>,
+    pub payload_type: u8,
+    /// O que o servidor devolveu; sem ele o receptor aprende no primeiro pacote.
+    pub ssrc: Option<u32>,
+    /// A retransmissão: é por ela que pacote perdido volta.
+    pub rtx: Option<media::Rtx>,
+}
+
 impl Watches {
     pub fn key(&mut self) -> [u8; 30] {
         *self.key.get_or_insert_with(|| std::array::from_fn(|_| rand::random()))
     }
 
-    /// `ssrc` é o que o servidor devolveu no `consumePlain`; sem ele o receptor aprende
-    /// no primeiro pacote (servidor antigo).
-    pub fn start(
-        &mut self,
-        producer_id: String,
-        kind: &str,
-        address: &str,
-        server_key: &[u8],
-        payload_type: u8,
-        ssrc: Option<u32>,
-    ) -> Result<u16> {
+    pub fn start(&mut self, consumed: Consumed) -> Result<u16> {
+        let Consumed { producer_id, kind, address, server_key, payload_type, ssrc, rtx } = consumed;
+        let (kind, address, server_key) = (kind.as_str(), address.as_str(), server_key.as_slice());
+
         // Outro endereço é outra sessão no servidor: o que estava aberto já morreu lá —
         // inclusive um producer de mesmo id que ainda conste como ativo.
         if self.receiver.as_ref().is_some_and(|receiver| media::resolve(address).ok() != Some(receiver.server())) {
@@ -136,7 +142,14 @@ impl Watches {
         };
 
         if let Some(receiver) = self.receiver.as_ref() {
-            receiver.route(producer_id.clone(), payload_type, to, ssrc);
+            receiver.route(media::Stream {
+                id: producer_id.clone(),
+                payload_type,
+                to,
+                ssrc,
+                video: kind == "video",
+                rtx,
+            });
         }
 
         tracing::info!(producer = %producer_id, kind, %address, port, "assistindo por RTP puro");

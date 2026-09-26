@@ -161,6 +161,15 @@ sobre `ts\nMÉTODO\ncaminho\ncorpo`, janela de 300 s — como o `kick` de hoje):
 `consumePlain` devolve também `ssrc` do consumer: o receptor nativo do Linux separa os
 producers de uma mesma porta por SSRC, sem adivinhar pelo primeiro pacote.
 
+E devolve `rtx: { ssrc, payloadType } | null` — o fluxo de retransmissão do consumer
+(RFC 4588), quando o codec tem um. É por ele que o receptor nativo (`media::PlainReceiver`,
+usado pelo macOS, pelo Windows e pelo Linux) recupera pacote perdido: manda um NACK
+(RTCP PT 205, FMT 1) com os números que faltaram, o SFU reenvia pelo `rtx.ssrc` com o
+número original nos dois primeiros bytes do payload, e o quadro sai inteiro. Quando a
+espera passa de 250 ms o buraco é largado e vai um PLI (PT 206, FMT 1) pedindo keyframe.
+Os dois RTCP saem cifrados (SRTCP) pelo mesmo socket e com a mesma chave do `consumePlain`.
+Sem `rtx`, o receptor ainda reordena e pede keyframe; só não recebe o reenvio.
+
 Webhook do SFU para o Laravel, **fora do caminho do `join`**, fire-and-forget, para conta
 (`user:`) e visitante da sala por código (`guest:<installId>`, `room` com o código de 3 a
 32 caracteres). Em sala por código (qualquer `room` que não tenha 26 caracteres) o aviso só vira linha
@@ -596,7 +605,7 @@ Tauri converte para o snake_case do Rust. Mudou um comando, mude aqui e em `ui/c
 | `start_voice` / `stop_voice` / `set_voice_muted` | — / — / `muted` | — | o mic pelo Rust (Linux). De `start_voice` a `stop_voice` sai o evento `voice:level` com `{ level }` (RMS linear de 0 a 1, o maior de cada janela de 100 ms): é o que a detecção de voz da interface mede, já que ali o áudio não passa pela janela. Sai **mesmo mutado** — é ele que reabre o portão. Mutado, o Rust manda silêncio em Opus em vez de nenhum pacote: sem pacote o relógio de 30 s do SFU mataria o producer |
 | `start_camera` / `stop_camera` | `device` / — | — | a câmera pelo Rust (Linux) |
 | `watch_key` | — | chave SRTP em base64 | a chave de recepção do `consumePlain` |
-| `watch_native` | `producerId, kind, address, serverKey, payloadType, ssrc` | porta do MJPEG em 127.0.0.1 (0 no áudio) | assistir por RTP puro onde a janela não tem WebRTC (Linux) |
+| `watch_native` | `consumer: { producerId, kind, address, serverKey, payloadType, ssrc, rtx }` | porta do MJPEG em 127.0.0.1 (0 no áudio) | assistir por RTP puro onde a janela não tem WebRTC (Linux); `rtx` é o do `consumePlain`, para o reenvio de pacote perdido |
 | `stop_watch` | `producerId`, ou `null` para tudo | — | só o `null` fecha o socket de recepção: o `comedia` do SFU aprendeu aquele endereço |
 | `watch_mute` | `producerId, muted` | — | o Rust para de repassar o áudio da tela |
 | `watch_stats` | — | pacotes recebidos | registrado; a interface não chama hoje |

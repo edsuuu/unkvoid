@@ -188,11 +188,11 @@ mod tests {
     /// quadro chega pelo `Room`, o Media Foundation decodifica e ele vira imagem para a janela.
     /// Sem janela nenhuma, então roda com quem estiver na frente do computador jogando:
     ///
-    /// `UNKVOID_SALA=<código> cargo test -p unkvoid-windows a_live_screen -- --ignored --nocapture`
+    /// `UNKVOID_ROOM=<código> cargo test -p unkvoid-windows a_live_screen -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn a_live_screen_becomes_images_for_the_window() {
-        let code = std::env::var("UNKVOID_SALA").expect("UNKVOID_SALA com o código de uma sala transmitindo");
+        let code = std::env::var("UNKVOID_ROOM").expect("UNKVOID_ROOM com o código de uma sala transmitindo");
         let url = std::env::var("UNKVOID_SFU").unwrap_or_else(|_| "ws://127.0.0.1:3000/sfu".into());
         let runtime = tokio::runtime::Runtime::new().expect("o tokio subiu");
         let identity: core_app::Identity = Arc::new({

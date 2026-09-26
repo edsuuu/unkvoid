@@ -13,7 +13,8 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use media::{AudioUnpacker, PlainReceiver, VideoUnpacker};
+use media::{AudioUnpacker, Counters, PlainReceiver, Rtx, Stream, VideoUnpacker};
+use serde_json::Value;
 
 /// Quadros e blocos de som esperando a interface. Dois segundos de uma tela a 60 fps com o
 /// som junto; passou disso a interface não está acompanhando, e guardar mais só atrasaria.
@@ -52,6 +53,16 @@ pub struct Incoming<'a> {
     pub ssrc: Option<u32>,
     /// Som de tela compartilhada, que chega mudo por regra.
     pub always_muted: bool,
+    /// A retransmissão do servidor: é por ela que pacote perdido volta.
+    pub rtx: Option<Rtx>,
+}
+
+/// O `rtx` da resposta do `consumePlain`, quando o servidor anuncia um.
+pub fn rtx_of(answer: &Value) -> Option<Rtx> {
+    Some(Rtx {
+        ssrc: u32::try_from(answer["rtx"]["ssrc"].as_u64()?).ok()?,
+        payload_type: u8::try_from(answer["rtx"]["payloadType"].as_u64()?).ok()?,
+    })
 }
 
 struct Watch {
@@ -107,6 +118,7 @@ impl Watching {
             payload_type,
             ssrc,
             always_muted,
+            rtx,
         } = incoming;
 
         // Outro endereço é outra sessão no servidor: o que estava aberto já morreu lá.
@@ -147,7 +159,14 @@ impl Watching {
         )?;
 
         if let Some(receiver) = self.receiver.as_ref() {
-            receiver.route(producer_id.clone(), payload_type, to, ssrc);
+            receiver.route(Stream {
+                id: producer_id.clone(),
+                payload_type,
+                to,
+                ssrc,
+                video,
+                rtx,
+            });
         }
 
         if always_muted || (self.deafened && !video) {
@@ -210,6 +229,11 @@ impl Watching {
 
     pub fn is_deafened(&self) -> bool {
         self.deafened
+    }
+
+    /// O que aconteceu com o vídeo de uma transmissão: recebidos, recuperados e perdidos.
+    pub fn counters(&self, producer_id: &str) -> Option<Counters> {
+        self.receiver.as_ref()?.counters(producer_id)
     }
 }
 

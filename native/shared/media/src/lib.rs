@@ -10,6 +10,7 @@ mod audio;
 mod governor;
 mod plain;
 mod receiver;
+mod recovery;
 mod unpack;
 
 #[cfg(target_os = "macos")]
@@ -24,7 +25,8 @@ mod windows_decoder;
 pub use audio::{AudioEncoder, FRAME_MS};
 pub use governor::BitrateGovernor;
 pub use plain::{Feedback, PlainSender, Source};
-pub use receiver::{PlainReceiver, resolve};
+pub use receiver::{PlainReceiver, Rtx, Stream, resolve};
+pub use recovery::Counters;
 pub use unpack::{AccessUnit, AudioUnpacker, VideoUnpacker, nals};
 
 #[cfg(target_os = "macos")]

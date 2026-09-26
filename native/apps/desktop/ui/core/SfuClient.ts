@@ -106,6 +106,7 @@ export type PlainConsumerResponse = {
     kind: MediaKind;
     payloadType: number | null;
     ssrc: number | null;
+    rtx: { ssrc: number; payloadType: number } | null;
     ip: string;
     port: number;
     srtpParameters: SrtpParameters;

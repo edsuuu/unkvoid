@@ -233,6 +233,7 @@ impl Room {
             payload_type: answer["payloadType"].as_u64().unwrap_or_default() as u8,
             ssrc: answer["ssrc"].as_u64().map(|ssrc| ssrc as u32),
             always_muted: source == "screenAudio",
+            rtx: crate::watching::rtx_of(&answer),
         });
 
         if let Err(failure) = started {
@@ -599,6 +600,12 @@ impl Room {
         if let Err(failure) = self.session.leave().await {
             tracing::warn!(%failure, "a sala não soube da saída");
         }
+    }
+
+    /// O que aconteceu com o vídeo de uma transmissão assistida: recebidos, recuperados
+    /// e perdidos. É a linha de números do cartão.
+    pub fn counters(&self, producer_id: &str) -> Option<media::Counters> {
+        lock(&self.watching).counters(producer_id)
     }
 
     pub fn peers(&self) -> Value {
