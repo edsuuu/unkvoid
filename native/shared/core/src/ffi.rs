@@ -203,6 +203,16 @@ impl Handle {
 
         match work(&api, &self.runtime) {
             Ok(answer) => answer,
+            // Token vencido ou revogado não é a falha de uma chamada: é o fim da sessão, em
+            // qualquer chamada. O token sai do disco e a tela volta a ser a de entrada — a
+            // interface só lê o estado; sem isto ela ficava no hub, sem conta, presa.
+            Err(HttpError::Failed(Failure::SignedOut)) => {
+                self.app.set_token(None);
+                api.set_token(None);
+                self.app.show(self.app.home());
+
+                json!({ "failed": Failure::SignedOut })
+            }
             Err(HttpError::Failed(failure)) => json!({ "failed": failure }),
             Err(HttpError::Invalid { field, message }) => {
                 json!({ "invalid": { "field": field, "message": message } })
@@ -623,16 +633,7 @@ pub unsafe extern "C" fn unkvoid_app(
         "config" => handle.with_api(|api, runtime| Ok(json!({ "sfu": runtime.block_on(api.config())?.sfu }))),
         // Quem é a conta do token guardado. Token vencido ou revogado não é falha: é login
         // de novo, e o token sai do disco para a próxima abertura não tentar outra vez.
-        "me" => handle.with_api(|api, runtime| match runtime.block_on(api.me()) {
-            Ok(user) => Ok(json!({ "ok": true, "user": user })),
-            Err(HttpError::Failed(Failure::SignedOut)) => {
-                handle.app.set_token(None);
-                api.set_token(None);
-
-                Err(HttpError::Failed(Failure::SignedOut))
-            }
-            Err(failure) => Err(failure),
-        }),
+        "me" => handle.with_api(|api, runtime| Ok(json!({ "ok": true, "user": runtime.block_on(api.me())? }))),
         // Entrar e criar conta só diferem no caminho; as duas guardam o token e abrem a
         // sessão do mesmo jeito.
         "login" | "register" => handle.with_api(|api, runtime| {
@@ -1417,6 +1418,63 @@ mod tests {
             unsafe { unkvoid_connect(handle, url.as_ptr()) },
             "o SFU de mentira não atendeu"
         );
+    }
+
+    /// Um Laravel de mentira para quem o token venceu: 401 em tudo.
+    fn a_laravel_that_expired_the_token() -> String {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+
+        std::thread::spawn(move || {
+            for socket in listener.incoming().flatten() {
+                let mut socket = socket;
+                let mut request = [0_u8; 2048];
+                let _ = socket.read(&mut request);
+                let body = r#"{"message":"Unauthenticated."}"#;
+                let _ = socket.write_all(
+                    format!("HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len())
+                        .as_bytes(),
+                );
+            }
+        });
+
+        format!("http://{address}")
+    }
+
+    /// Token vencido em qualquer chamada leva de volta à entrada — e não só no `me` da
+    /// abertura. Era assim que o app ficava preso no hub sem conta.
+    #[test]
+    fn an_expired_token_lands_on_the_entry_screen_from_any_call() {
+        let (handle, _dir) = isolated_core();
+
+        assert_eq!(
+            app_call(
+                handle,
+                "useServer",
+                &format!(r#"{{"url":"{}"}}"#, a_laravel_that_expired_the_token())
+            )["ok"],
+            true
+        );
+
+        unsafe { (*handle).app.set_token(Some("vencido")) };
+        assert_eq!(
+            app_call(handle, "state", "{}")["signedIn"],
+            true,
+            "com token a conta conta como entrada"
+        );
+
+        let answer = app_call(handle, "servers", "{}");
+
+        assert_eq!(answer["failed"], "signedOut", "{answer}");
+
+        let state = app_call(handle, "state", "{}");
+
+        assert_eq!(state["signedIn"], false);
+        assert_eq!(state["screen"], "entry", "{state}");
+
+        unsafe { unkvoid_core_free(handle) };
     }
 
     fn isolated_core() -> (*mut Handle, tempfile::TempDir) {
