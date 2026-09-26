@@ -18,6 +18,17 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
 cp .build/release/Unkvoid "$app/Contents/MacOS/Unkvoid"
 
+# O núcleo é um dylib, e o executável sai ligado a ele pelo caminho absoluto da pasta de
+# build — noutra máquina o app abre e morre no dyld. Ele vai dentro do .app, em Frameworks,
+# e o executável passa a procurá-lo ali.
+mkdir -p "$app/Contents/Frameworks"
+cp ../../target/release/libcore_app.dylib "$app/Contents/Frameworks/libcore_app.dylib"
+install_name_tool -id @rpath/libcore_app.dylib "$app/Contents/Frameworks/libcore_app.dylib"
+otool -L "$app/Contents/MacOS/Unkvoid" | awk '/libcore_app\.dylib/ { print $1 }' | while read -r linked; do
+    install_name_tool -change "$linked" @rpath/libcore_app.dylib "$app/Contents/MacOS/Unkvoid"
+done
+install_name_tool -add_rpath @executable_path/../Frameworks "$app/Contents/MacOS/Unkvoid"
+
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' ../../Cargo.toml | head -1)
 
 cat > "$app/Contents/Info.plist" <<PLIST
@@ -39,12 +50,18 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# O hardened runtime só é exigido pela notarização, e com ele o sistema só carrega dylib do
+# mesmo Team ID — assinado ad-hoc não há Team ID nenhum, e o app morre no dyld ao abrir.
+# Então ele só entra junto com um Developer ID de verdade.
 identity="-"
+hardened=""
 
 if [ "${1:-}" = "--sign" ]; then
     identity="$2"
+    hardened="--options runtime"
 fi
 
-codesign --force --deep --options runtime --sign "$identity" "$app"
+# shellcheck disable=SC2086
+codesign --force --deep $hardened --sign "$identity" "$app"
 
 echo "pronto: $app"
