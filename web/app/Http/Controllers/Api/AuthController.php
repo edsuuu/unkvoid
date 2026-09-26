@@ -6,11 +6,13 @@ namespace App\Http\Controllers\Api;
 
 use App\Exceptions\InvalidCredentialsException;
 use App\Http\Requests\Api\Auth\LoginRequest;
+use App\Http\Requests\Api\Auth\LogoutRequest;
+use App\Http\Requests\Api\Auth\RefreshRequest;
 use App\Http\Requests\Api\Auth\RegisterRequest;
 use App\Http\Resources\Api\AuthTokenResource;
 use App\Models\User;
 use App\Notifications\WelcomeNotification;
-use Illuminate\Http\Request;
+use App\Services\Auth\AppTokens;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
@@ -19,10 +21,14 @@ use Laravel\Sanctum\PersonalAccessToken;
 use Throwable;
 
 /**
- * Entrar, criar conta e sair, do app. O site tem as telas dele em Livewire.
+ * Entrar, criar conta, renovar a sessão e sair, do app. O site tem as telas dele em Livewire.
  */
-final class AuthController
+final readonly class AuthController
 {
+    public function __construct(
+        private AppTokens $tokens,
+    ) {}
+
     /**
      * @throws InvalidCredentialsException
      */
@@ -36,7 +42,7 @@ final class AuthController
         $device = $request->string('device')->toString();
         $user->notifyNewLoginIfUnknown('app: '.$device, (string) $request->ip(), (string) $request->userAgent());
 
-        return new AuthTokenResource($user, $user->createToken($device)->plainTextToken);
+        return new AuthTokenResource($user, $this->tokens->issue($user, $device, $request->boolean('refresh')));
     }
 
     /**
@@ -67,15 +73,33 @@ final class AuthController
 
         $user->notifyQuietly(new WelcomeNotification);
 
-        return new AuthTokenResource($user, $user->createToken($request->string('device')->toString())->plainTextToken);
+        return new AuthTokenResource($user, $this->tokens->issue($user, $request->string('device')->toString(), $request->boolean('refresh')));
     }
 
-    public function logout(Request $request): Response
+    /**
+     * Troca o token de renovação por um par novo. Sem conta na requisição: quem chega aqui é
+     * justamente o app cujo token de acesso venceu.
+     *
+     * @throws Throwable
+     */
+    public function refresh(RefreshRequest $request): AuthTokenResource
     {
-        $token = $request->user()?->currentAccessToken();
+        $renewed = $this->tokens->renew($request->string('refresh_token')->toString());
+
+        return new AuthTokenResource($renewed['user'], $renewed);
+    }
+
+    public function logout(LogoutRequest $request): Response
+    {
+        $user = $request->user();
+        $token = $user?->currentAccessToken();
 
         if ($token instanceof PersonalAccessToken) {
             $token->delete();
+        }
+
+        if ($user instanceof User) {
+            $this->tokens->revoke($user, $request->filled('refresh_token') ? $request->string('refresh_token')->toString() : null);
         }
 
         return response()->noContent();

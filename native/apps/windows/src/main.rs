@@ -8,7 +8,11 @@
 
 mod bridge;
 mod devices;
+#[cfg(test)]
 mod sharing;
+mod sound;
+mod stage;
+mod watching;
 
 use slint::ComponentHandle;
 

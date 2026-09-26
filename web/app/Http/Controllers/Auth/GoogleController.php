@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Auth;
 
 use App\Models\User;
 use App\Notifications\WelcomeNotification;
+use App\Services\Auth\AppTokens;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -18,8 +19,12 @@ use Throwable;
 /**
  * Entrar pelo Google: a ida e a volta.
  */
-final class GoogleController
+final readonly class GoogleController
 {
+    public function __construct(
+        private AppTokens $tokens,
+    ) {}
+
     public function redirect(): SocialiteRedirect
     {
         return Socialite::driver('google')->redirect();
@@ -86,19 +91,22 @@ final class GoogleController
         // ele recebe um token do Sanctum e o `state` de volta, e a página some. Ver AppLoginController.
         $port = $request->session()->pull('app_port');
         $state = $request->session()->pull('app_state');
+        $renewable = $request->session()->pull('app_refresh') === true;
 
         if (is_string($state)) {
-            $token = $user->createToken('app')->plainTextToken;
+            $tokens = $this->tokens->issue($user, 'app', $renewable);
+            $token = $tokens['token'];
+            $refresh = is_null($tokens['refresh_token']) ? '' : '&refresh_token='.urlencode($tokens['refresh_token']);
 
             // O app até a 0.0.28 espera numa porta local; do 0.0.29 em diante ele registra
             // o esquema `unkvoid://` e não manda porta. Atender os dois é o que impede o
             // login de quebrar para quem ainda não atualizou.
             if (is_int($port)) {
-                return redirect()->away("http://127.0.0.1:{$port}/?token=".urlencode($token).'&state='.$state);
+                return redirect()->away("http://127.0.0.1:{$port}/?token=".urlencode($token).$refresh.'&state='.$state);
             }
 
             return response()->view('auth.app-return', [
-                'link' => 'unkvoid://login?token='.urlencode($token).'&state='.$state,
+                'link' => 'unkvoid://login?token='.urlencode($token).$refresh.'&state='.$state,
                 'name' => $user->name,
             ]);
         }

@@ -10,7 +10,7 @@
 //! `failure.rs`.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -26,6 +26,9 @@ use crate::models::{
 /// Dez segundos, o mesmo do app de hoje. Passar disto a pessoa já desistiu e clicou de novo.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+/// O instalador inteiro numa conexão lenta passa dos dez segundos, e ali ninguém clica de novo.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// O que a chamada devolve quando falha: ou um motivo que a interface traduz, ou o texto de
 /// validação que o Laravel escreveu para quem está digitando.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +43,15 @@ pub enum HttpError {
     },
 }
 
+/// O que acontece com a sessão por conta própria, fora de um login: o par foi trocado (e tem
+/// de ir para o disco), ou acabou (e a interface volta ao login).
+pub enum Renewal<'tokens> {
+    Renewed { token: &'tokens str, refresh: &'tokens str },
+    Ended,
+}
+
+type SessionHook = Arc<dyn Fn(Renewal<'_>) + Send + Sync>;
+
 impl From<Failure> for HttpError {
     fn from(failure: Failure) -> Self {
         Self::Failed(failure)
@@ -49,6 +61,11 @@ impl From<Failure> for HttpError {
 pub struct Api {
     base: String,
     token: Mutex<Option<String>>,
+    refresh: Mutex<Option<String>>,
+    /// Uma renovação por vez: duas em paralelo gastariam o mesmo token de renovação, e a
+    /// segunda derrubaria a sessão que a primeira acabou de salvar.
+    renewing: tokio::sync::Mutex<()>,
+    session: Mutex<Option<SessionHook>>,
     /// A última árvore vista de cada servidor. Trocar de servidor desenha os canais daqui,
     /// na hora, e a resposta fresca chega por cima: o que espera a rede são só as mensagens.
     trees: Mutex<HashMap<i64, ServerTree>>,
@@ -60,6 +77,9 @@ impl Api {
         Ok(Self {
             base: base.trim_end_matches('/').to_owned(),
             token: Mutex::new(None),
+            refresh: Mutex::new(None),
+            renewing: tokio::sync::Mutex::new(()),
+            session: Mutex::new(None),
             trees: Mutex::new(HashMap::new()),
             http: reqwest::Client::builder().timeout(TIMEOUT).build()?,
         })
@@ -142,6 +162,118 @@ impl Api {
             .clone()
     }
 
+    pub fn set_refresh(&self, refresh: Option<String>) {
+        *self.refresh.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = refresh;
+    }
+
+    pub fn refresh_token(&self) -> Option<String> {
+        self.refresh.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    /// Quem guarda a sessão no disco e leva a tela ao login quando ela acaba. Ver
+    /// `App::keep_session`.
+    pub fn on_session(&self, hook: impl Fn(Renewal<'_>) + Send + Sync + 'static) {
+        *self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(hook));
+    }
+
+    /// Sai da conta: esquece os tokens agora — a tela não espera a rede — e devolve o pedido
+    /// que os derruba no servidor, para rodar em segundo plano. Sem rede, o de acesso vence
+    /// sozinho num dia e o de renovação em sessenta.
+    pub fn sign_out(&self) -> impl Future<Output = ()> + Send + 'static {
+        let (token, refresh) = (self.token(), self.refresh_token());
+        let (http, url) = (self.http.clone(), self.url("/api/auth/logout"));
+
+        self.set_token(None);
+        self.set_refresh(None);
+
+        async move {
+            let Some(token) = token else {
+                return;
+            };
+
+            let sent = http
+                .post(url)
+                .bearer_auth(token)
+                .header("accept", "application/json")
+                .json(&serde_json::json!({ "refresh_token": refresh }))
+                .send()
+                .await;
+
+            if let Err(failure) = sent {
+                tracing::info!(%failure, "sair: o servidor não soube, e os tokens vencem sozinhos");
+            }
+        }
+    }
+
+    /// Troca o par com o token de renovação. `stale` é o token que levou o 401: se ele já não
+    /// é o atual, outra chamada renovou primeiro, e basta tentar de novo.
+    async fn renew(&self, stale: &str) -> bool {
+        let _turn = self.renewing.lock().await;
+
+        if self.token().as_deref() != Some(stale) {
+            return self.token().is_some();
+        }
+
+        let Some(refresh) = self.refresh_token() else {
+            return false;
+        };
+
+        let answer = self
+            .http
+            .post(self.url("/api/auth/refresh"))
+            .header("accept", "application/json")
+            .json(&serde_json::json!({ "refresh_token": refresh }))
+            .send()
+            .await;
+        let renewed = match answer {
+            Ok(answer) if answer.status().is_success() => answer.json::<Value>().await.ok(),
+            Ok(answer) => {
+                tracing::info!(status = answer.status().as_u16(), "a renovação foi recusada");
+
+                None
+            }
+            Err(failure) => {
+                tracing::warn!(%failure, "a renovação não chegou ao servidor");
+
+                // Sem rede não é sessão acabada: o par continua valendo para quando ela voltar.
+                return false;
+            }
+        };
+        let pair = renewed.and_then(|body| serde_json::from_value::<AuthToken>(body["data"].clone()).ok());
+
+        let Some(AuthToken { token, refresh_token: Some(refresh), .. }) = pair else {
+            self.end(stale);
+
+            return false;
+        };
+
+        self.set_token(Some(token.clone()));
+        self.set_refresh(Some(refresh.clone()));
+        self.tell(Renewal::Renewed { token: &token, refresh: &refresh });
+
+        true
+    }
+
+    /// A sessão acabou de vez: sai da memória, e a interface volta ao login. Só se o token
+    /// que falhou ainda é o atual — quem já saiu ou entrou de novo não é derrubado.
+    fn end(&self, stale: &str) {
+        if self.token().as_deref() != Some(stale) {
+            return;
+        }
+
+        self.set_token(None);
+        self.set_refresh(None);
+        self.tell(Renewal::Ended);
+    }
+
+    fn tell(&self, renewal: Renewal<'_>) {
+        let hook = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+
+        if let Some(hook) = hook {
+            hook(renewal);
+        }
+    }
+
     pub async fn config(&self) -> Result<Config, HttpError> {
         self.get("/api/config").await
     }
@@ -168,13 +300,23 @@ impl Api {
         let answer: AuthToken = self
             .post(
                 path,
-                &serde_json::json!({ "email": email, "password": password, "device": device }),
+                &serde_json::json!({ "email": email, "password": password, "device": device, "refresh": true }),
             )
             .await?;
 
-        self.set_token(Some(answer.token.clone()));
+        self.adopt(&answer.token, answer.refresh_token.as_deref());
 
         Ok(answer)
+    }
+
+    /// Um login novo, por senha ou pelo Google: o par vai para a memória e para o disco.
+    pub fn adopt(&self, token: &str, refresh: Option<&str>) {
+        self.set_token(Some(token.to_owned()));
+        self.set_refresh(refresh.map(str::to_owned));
+
+        if let Some(refresh) = refresh {
+            self.tell(Renewal::Renewed { token, refresh });
+        }
     }
 
     pub async fn me(&self) -> Result<User, HttpError> {
@@ -340,10 +482,10 @@ impl Api {
             .map(|_| ())
     }
 
-    /// A versão publicada mais nova do que esta, com o endereço do instalador desta
-    /// plataforma (`darwin-aarch64`, `windows-x86_64`…). `None` quando não há nada mais novo —
-    /// inclusive quando nada foi publicado ainda, que é o 404 do `latest.json`.
-    pub async fn newer_release(&self, platform: &str) -> Option<(String, String)> {
+    /// A versão publicada mais nova do que esta, com o instalador desta plataforma
+    /// (`darwin-aarch64`, `windows-x86_64-nsis`…) e a assinatura dele. `None` quando não há
+    /// nada mais novo — inclusive quando nada foi publicado ainda, que é o 404 do `latest.json`.
+    pub async fn newer_release(&self, platform: &str) -> Option<crate::update::Release> {
         let manifest: Value = self
             .http
             .get(self.url("/downloads/latest.json"))
@@ -354,9 +496,41 @@ impl Api {
             .await
             .ok()?;
         let version = manifest["version"].as_str()?;
-        let url = manifest["platforms"][platform]["url"].as_str()?;
+        let installer = &manifest["platforms"][platform];
 
-        is_newer(version, env!("CARGO_PKG_VERSION")).then(|| (version.to_owned(), url.to_owned()))
+        crate::update::is_newer(version, env!("CARGO_PKG_VERSION")).then(|| crate::update::Release {
+            version: version.to_owned(),
+            url: installer["url"].as_str().unwrap_or_default().to_owned(),
+            signature: installer["signature"].as_str().unwrap_or_default().to_owned(),
+        })
+        .filter(|release| !release.url.is_empty())
+    }
+
+    /// Um arquivo inteiro, com o caminho contado: `progress` recebe o baixado e o total, quando
+    /// o servidor o diz.
+    pub async fn download(
+        &self,
+        url: &str,
+        mut progress: impl FnMut(u64, Option<u64>),
+    ) -> Option<Vec<u8>> {
+        let mut answer = self
+            .http
+            .get(url)
+            .timeout(DOWNLOAD_TIMEOUT)
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?;
+        let total = answer.content_length();
+        let mut bytes = Vec::new();
+
+        while let Some(chunk) = answer.chunk().await.ok()? {
+            bytes.extend_from_slice(&chunk);
+            progress(bytes.len() as u64, total);
+        }
+
+        Some(bytes)
     }
 
     /// Uma rota do mapa de `routes.rs`, pelo nome. É por onde passa tudo o que não tem
@@ -470,14 +644,50 @@ impl Api {
         format!("{}{path}", self.base)
     }
 
+    /// Manda com o token da sessão. Um 401 com sessão aberta renova o par e repete o pedido
+    /// uma vez; sem como renovar, a sessão acaba e a interface volta ao login.
     async fn send<T: DeserializeOwned>(
         &self,
         request: reqwest::RequestBuilder,
         path: &str,
     ) -> Result<T, HttpError> {
+        let again = request.try_clone();
+        let sent = self.token();
+        let answer = self.exchange(request, sent.as_deref(), path).await;
+
+        let answer = match (answer, sent) {
+            (Err(HttpError::Failed(Failure::SignedOut)), Some(stale)) if !path.starts_with("/api/auth/") => {
+                if !self.renew(&stale).await {
+                    return Err(Failure::SignedOut.into());
+                }
+
+                // Envio de arquivo não se repete (o corpo já foi); a próxima tentativa já sai
+                // com o token novo.
+                let Some(again) = again else {
+                    return Err(Failure::Unreachable.into());
+                };
+
+                self.exchange(again, self.token().as_deref(), path).await
+            }
+            (answer, _) => answer,
+        }?;
+
+        serde_json::from_value(answer).map_err(|failure| {
+            tracing::warn!(%failure, path, "a resposta não tem o formato esperado");
+
+            Failure::ServerBroke.into()
+        })
+    }
+
+    async fn exchange(
+        &self,
+        request: reqwest::RequestBuilder,
+        token: Option<&str>,
+        path: &str,
+    ) -> Result<Value, HttpError> {
         let request = request.header("accept", "application/json");
 
-        let request = match self.token() {
+        let request = match token {
             Some(token) => request.bearer_auth(token),
             None => request,
         };
@@ -498,31 +708,13 @@ impl Api {
             return Err(refusal(status, &body, path));
         }
 
-        let payload = match body.as_object() {
+        Ok(match body.as_object() {
             Some(object) if object.len() == 1 && object.contains_key("data") => {
                 body["data"].clone()
             }
             _ => body,
-        };
-
-        serde_json::from_value(payload).map_err(|failure| {
-            tracing::warn!(%failure, path, "a resposta não tem o formato esperado");
-
-            Failure::ServerBroke.into()
         })
     }
-}
-
-/// `1.10.0` é mais novo que `1.9.3`: compara número a número, e não letra a letra.
-fn is_newer(candidate: &str, current: &str) -> bool {
-    let numbers = |version: &str| {
-        version
-            .split('.')
-            .map(|part| part.parse::<u64>().unwrap_or(0))
-            .collect::<Vec<_>>()
-    };
-
-    numbers(candidate) > numbers(current)
 }
 
 /// O tipo de uma imagem pelo nome do arquivo. O Laravel valida pelo conteúdo; isto só evita
@@ -546,6 +738,15 @@ fn refusal(status: u16, body: &Value, path: &str) -> HttpError {
         return HttpError::Invalid { field, message };
     }
 
+    // No login o 401 é senha errada, e não sessão vencida: a frase do Laravel ("E-mail ou
+    // senha não conferem.") vai para o campo do e-mail.
+    if status == 401
+        && (path == "/api/auth/login" || path == "/api/auth/register")
+        && let Some(message) = body["message"].as_str()
+    {
+        return HttpError::Invalid { field: "email".to_owned(), message: message.to_owned() };
+    }
+
     tracing::warn!(status, path, message = %body["message"], "o servidor recusou");
 
     HttpError::Failed(Failure::from_status(status))
@@ -567,6 +768,87 @@ fn first_field_error(body: &Value) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Um Laravel de mentira para a renovação: o token `a2` vale, qualquer outro é 401; a
+    /// primeira renovação entrega o par `a2`/`r2`, e as seguintes são recusadas.
+    async fn serve_renewals() -> String {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("porta");
+        let base = format!("http://{}", listener.local_addr().expect("endereço"));
+        let renewals = Arc::new(AtomicUsize::new(0));
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buffer = vec![0; 8192];
+                let size = socket.read(&mut buffer).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..size]).to_string();
+                let (status, body) = if request.starts_with("POST /api/auth/refresh") {
+                    if renewals.fetch_add(1, Ordering::SeqCst) == 0 {
+                        (200, serde_json::json!({ "data": { "token": "a2", "refresh_token": "r2", "user": null } }))
+                    } else {
+                        (401, serde_json::json!({ "message": "Sua sessão terminou. Entre de novo." }))
+                    }
+                } else if request.to_lowercase().contains("authorization: bearer a2") {
+                    (200, serde_json::json!({ "data": { "id": 1, "name": "Ana", "email": "ana@local.test", "avatar_url": null } }))
+                } else {
+                    (401, serde_json::json!({ "message": "Unauthenticated." }))
+                };
+                let body = body.to_string();
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+
+                let _ = socket.write_all(reply.as_bytes()).await;
+            }
+        });
+
+        base
+    }
+
+    #[tokio::test]
+    async fn an_expired_token_is_renewed_once_and_the_call_goes_through() {
+        let api = Api::new(&serve_renewals().await).expect("api");
+        let told = Arc::new(Mutex::new(Vec::new()));
+
+        api.set_token(Some("a1".into()));
+        api.set_refresh(Some("r1".into()));
+        api.on_session({
+            let told = told.clone();
+
+            move |renewal| {
+                told.lock().expect("lista").push(match renewal {
+                    Renewal::Renewed { token, refresh } => format!("{token}/{refresh}"),
+                    Renewal::Ended => "acabou".to_owned(),
+                });
+            }
+        });
+
+        let user = api.me().await.expect("renovou e repetiu o pedido");
+
+        assert_eq!(user.name, "Ana");
+        assert_eq!((api.token().as_deref(), api.refresh_token().as_deref()), (Some("a2"), Some("r2")));
+        assert_eq!(*told.lock().expect("lista"), ["a2/r2"]);
+
+        api.set_token(Some("a3".into()));
+
+        assert_eq!(api.me().await.err(), Some(HttpError::Failed(Failure::SignedOut)));
+        assert_eq!((api.token(), api.refresh_token()), (None, None), "a sessão que não renova sai da memória");
+        assert_eq!(told.lock().expect("lista").last().map(String::as_str), Some("acabou"));
+    }
+
+    #[tokio::test]
+    async fn a_wrong_password_says_so_instead_of_ending_a_session() {
+        let api = Api::new(&serve_renewals().await).expect("api");
+        let refused = api.login("ana@local.test", "errada", "teste").await;
+
+        assert!(
+            matches!(&refused, Err(HttpError::Invalid { field, .. }) if field == "email"),
+            "saiu {refused:?}"
+        );
+    }
 
     /// Um Laravel de mentira que responde a mesma árvore a quantos pedidos vierem.
     async fn serve_a_tree() -> String {
@@ -617,14 +899,6 @@ mod tests {
             api.known_tree(7).is_none(),
             "a árvore de quem saiu não fica para quem entra"
         );
-    }
-
-    #[test]
-    fn versions_compare_by_number_and_not_by_letter() {
-        assert!(is_newer("1.10.0", "1.9.3"));
-        assert!(is_newer("0.0.41", "0.0.40"));
-        assert!(!is_newer("0.0.40", "0.0.40"));
-        assert!(!is_newer("0.9.9", "1.0.0"));
     }
 
     use serde_json::json;

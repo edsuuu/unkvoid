@@ -1,7 +1,9 @@
 import { ScrollView } from "std-widgets.slint";
 import { Icons, Skin } from "skin.slint";
 import { ChannelRow, Ui } from "state.slint";
-import { Avatar, Danger, Field, GhostButton, Glass, Glyph, IconButton, LabelMono, Muted, PrimaryButton, RowItem, Title } from "widgets.slint";
+import { Avatar, Danger, Field, GhostButton, Glass, Glyph, IconButton, LabelMono, LiveBadge, Muted, PrimaryButton, RowItem, Title } from "widgets.slint";
+import { Stage } from "stage.slint";
+import { VoiceStage, VoiceToolbar } from "voice.slint";
 import { UserBar } from "userbar.slint";
 
 // A tela de quem tem conta: servidores, canais, chat, amigos e mensagens diretas.
@@ -336,11 +338,30 @@ component VoiceItem inherits Rectangle {
             for peer in Ui.peers : HorizontalLayout {
                 spacing: 8px;
 
-                Avatar {
-                    letter: peer.initial;
-                    size: 22px;
-                    mine: peer.mine;
+                // O anel verde de quem fala, por fora do rosto, como no Mac.
+                Rectangle {
+                    width: 22px;
+                    height: 22px;
                     y: (parent.height - self.height) / 2;
+
+                    Avatar {
+                        letter: peer.initial;
+                        size: 22px;
+                        mine: peer.mine;
+                    }
+
+                    Rectangle {
+                        x: -2px;
+                        y: -2px;
+                        width: 26px;
+                        height: 26px;
+                        border-radius: 13px;
+                        border-width: 2px;
+                        border-color: Skin.online;
+                        opacity: peer.speaking ? 1.0 : 0.0;
+
+                        animate opacity { duration: 120ms; easing: ease-out; }
+                    }
                 }
 
                 Text {
@@ -348,17 +369,90 @@ component VoiceItem inherits Rectangle {
                     color: peer.mine ? Skin.ink-body : Skin.ink-icon;
                     font-family: Skin.sans;
                     font-size: 12.5px;
-                    horizontal-stretch: 1;
                     overflow: elide;
                     vertical-alignment: center;
                 }
 
-                if peer.note != "" : Text {
-                    text: peer.note;
+                // O fone cortado fica por cima do microfone cortado: quem não ouve também não
+                // conversa, e um ícone só diz as duas coisas.
+                if peer.mine && Ui.deafened : Glyph {
+                    commands: Icons.headphones-off;
+                    size: 12px;
+                    tint: Skin.danger;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                if !(peer.mine && Ui.deafened) && peer.muted : Glyph {
+                    commands: Icons.mic-off;
+                    size: 12px;
+                    tint: Skin.danger;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                // Quem transmite ganha o selo do React; clicar abre o palco com a tela dele.
+                if peer.sharing && !peer.mine : LiveBadge {
+                    dot: true;
+                    y: (parent.height - self.height) / 2;
+                    clicked => { Ui.stage-open = true; }
+                }
+
+                if peer.reconnecting : Text {
+                    text: "voltando";
                     color: Skin.ink-dim;
                     font-family: Skin.mono;
                     font-size: 9.5px;
                     vertical-alignment: center;
+                }
+            }
+        }
+
+        // Nos canais em que você não está, quem está lá vem do Laravel, e muda pelo tempo real.
+        if !root.here && root.item.people.length > 0 : VerticalLayout {
+            padding-left: 20px;
+            spacing: 6px;
+
+            for person in root.item.people : HorizontalLayout {
+                spacing: 8px;
+
+                Avatar {
+                    letter: person.initial;
+                    size: 22px;
+                    mine: person.mine;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                Text {
+                    text: person.name;
+                    color: person.mine ? Skin.ink-body : Skin.ink-icon;
+                    font-family: Skin.sans;
+                    font-size: 12.5px;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+
+                if person.muted : Glyph {
+                    commands: Icons.mic-off;
+                    size: 12px;
+                    tint: Skin.danger;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                if person.camera : Glyph {
+                    commands: Icons.camera;
+                    size: 12px;
+                    tint: Skin.ink-dim;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                // Num canal em que você não está, o selo entra na voz — e a tela abre ao lado.
+                if person.live : LiveBadge {
+                    dot: true;
+                    y: (parent.height - self.height) / 2;
+                    clicked => { Ui.open-channel(root.item.index); }
                 }
             }
         }
@@ -500,75 +594,71 @@ component HomeCodes inherits Panel {
     }
 }
 
-// O cartão das salas com conta: nome, se você é dono, e quando entrou pela última vez.
-component HomeRooms inherits Panel {
-    // O `animate-rise` do React: o cartão aparece, não salta pronto.
-    property <bool> shown;
-
-    opacity: root.shown ? 1.0 : 0.0;
-    init => { root.shown = true; }
-
-    animate opacity { duration: 220ms; easing: ease-out; }
-
-    // `flex: 1 1 0` com mínimo de 280: é o que sobra da linha.
-    horizontal-stretch: 1;
-    min-width: 280px;
-
+// O chat do canal de voz, ao lado do palco: o canal de voz também tem mensagens, e o React
+// abre as dele aqui em vez de trocar o chat do servidor.
+component VoiceChat inherits Panel {
     VerticalLayout {
-        padding: 20px;
+        padding: 12px;
         spacing: 8px;
-        alignment: start;
 
-        LabelMono { text: "ÚLTIMAS SALAS"; }
+        HorizontalLayout {
+            height: 24px;
 
-        if Ui.servers.length == 0 : Muted {
-            text: "Nenhuma ainda. Crie uma ao lado ou entre com um convite.";
-            horizontal-alignment: center;
-        }
+            LabelMono {
+                text: "CHAT DA VOZ";
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
 
-        for server[index] in Ui.servers : RowItem {
-            height: 48px;
-            clicked => { Ui.open-server(index); }
+            Rectangle {
+                width: 24px;
+                height: 24px;
+                border-radius: 7px;
+                background: close.has-hover ? Skin.row : transparent;
 
-            HorizontalLayout {
-                padding-left: 8px;
-                padding-right: 11px;
-                spacing: 10px;
-
-                Avatar {
-                    letter: server.initial;
-                    size: 32px;
-                    square: true;
+                Glyph {
+                    commands: Icons.close;
+                    size: 13px;
+                    tint: close.has-hover ? Skin.ink-strong : Skin.ink-dim;
+                    x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
                 }
 
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 2px;
-                    horizontal-stretch: 1;
+                close := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { Ui.voice-chat-open = false; }
+                }
+            }
+        }
 
-                    Text {
-                        text: server.name;
-                        color: Skin.ink-body;
-                        font-family: Skin.sans;
-                        font-size: 13.5px;
-                        font-weight: 600;
-                        overflow: elide;
-                    }
+        ScrollView {
+            vertical-stretch: 1;
 
-                    LabelMono {
-                        text: server.note;
-                        font-size: 9.5px;
-                    }
+            VerticalLayout {
+                spacing: 10px;
+                alignment: start;
+
+                if Ui.voice-messages.length == 0 : Muted {
+                    text: "Nenhuma mensagem nesta voz ainda.";
+                    font-size: 12.5px;
                 }
 
-                Text {
-                    text: server.at;
-                    color: Skin.ink-dim;
-                    font-family: Skin.mono;
-                    font-size: 10.5px;
-                    vertical-alignment: center;
+                for message in Ui.voice-messages : Said {
+                    id: message.id;
+                    author: message.author;
+                    initial: message.initial;
+                    body: message.body;
+                    at: message.at;
+                    mine: message.mine;
                 }
+            }
+        }
+
+        voice-composer := Field {
+            placeholder: "Escreva uma mensagem";
+            accepted => {
+                Ui.send-voice-message(voice-composer.text);
+                voice-composer.text = "";
             }
         }
     }
@@ -594,6 +684,54 @@ export component HubScreen inherits Rectangle {
             VerticalLayout {
                 padding: 12px;
                 spacing: 8px;
+
+                // A sala por código que continua no ar enquanto se anda pela Home: o ponto
+                // verde, o código, e o clique que volta para ela.
+                if Ui.room-code != "" : Rectangle {
+                    height: 38px;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: #34d39959;
+                    background: back.has-hover ? #34d39926 : #34d39914;
+
+                    HorizontalLayout {
+                        padding-left: 11px;
+                        padding-right: 11px;
+                        spacing: 8px;
+
+                        Rectangle {
+                            width: 7px;
+                            height: 7px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 3.5px;
+                            background: Skin.online;
+                        }
+
+                        Text {
+                            text: "Voltar à sala";
+                            color: Skin.ink-body;
+                            font-family: Skin.sans;
+                            font-size: 12.5px;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: Ui.room-code;
+                            color: Skin.lilac-2;
+                            font-family: Skin.mono;
+                            font-size: 10.5px;
+                            horizontal-stretch: 1;
+                            horizontal-alignment: right;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    back := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Ui.back-to-room(); }
+                    }
+                }
 
                 WideRow {
                     commands: Icons.home;
@@ -811,17 +949,15 @@ export component HubScreen inherits Rectangle {
 
                     // ---- salas ----
                     //
-                    // No React os três cartões são um `flex-wrap`: os dois primeiros cabem
-                    // lado a lado e o terceiro desce. O Slint não embrulha sozinho, então a
-                    // mesma divisão está escrita à mão.
+                    // Os dois cartões lado a lado, como o `flex-wrap` do React. O terceiro,
+                    // "Últimas salas", saiu como no Mac: as salas em que se está já moram na
+                    // trilha da esquerda, e repeti-las ao lado só empurrava o resto.
                     if Ui.home-tab == "servers" : HorizontalLayout {
                         spacing: 12px;
 
                         HomeCreate { }
                         HomeCodes { }
                     }
-
-                    if Ui.home-tab == "servers" : HomeRooms { }
 
                     // ---- amigos ----
                     Panel {
@@ -957,8 +1093,29 @@ export component HubScreen inherits Rectangle {
             }
         }
 
+        // ---- a sala focada: a voz toma tudo menos a trilha ----
+        if Ui.in-server && Ui.focused-room && Ui.voice-channel != "" : HorizontalLayout {
+            horizontal-stretch: 1;
+            spacing: 10px;
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 10px;
+
+                VoiceToolbar { }
+
+                Stage {
+                    vertical-stretch: 1;
+                }
+            }
+
+            if Ui.voice-chat-open : VoiceChat {
+                width: 320px;
+            }
+        }
+
         // ---- o servidor aberto ----
-        if Ui.in-server : HorizontalLayout {
+        if Ui.in-server && !(Ui.focused-room && Ui.voice-channel != "") : HorizontalLayout {
             horizontal-stretch: 1;
             spacing: 10px;
 
@@ -1090,10 +1247,11 @@ export component HubScreen inherits Rectangle {
                 horizontal-stretch: 1;
                 spacing: 10px;
 
-                // A faixa do convite, acima do chat — como no `ServerView`.
-                Panel {
-                    visible: Ui.invite-code != "";
-                    height: Ui.invite-code == "" ? 0px : 46px;
+                // A faixa do convite, acima do chat — como no `ServerView`. Só existe com
+                // convite: escondida com altura zero ela ainda levava o espaçamento, e o
+                // chat começava dez pixels abaixo das outras colunas.
+                if Ui.invite-code != "" : Panel {
+                    height: 46px;
 
                     HorizontalLayout {
                         padding-left: 14px;
@@ -1126,7 +1284,11 @@ export component HubScreen inherits Rectangle {
                     }
                 }
 
-                Panel {
+                if Ui.voice-channel != "" && Ui.stage-open : VoiceStage {
+                    vertical-stretch: 1;
+                }
+
+                if !(Ui.voice-channel != "" && Ui.stage-open) : Panel {
                     vertical-stretch: 1;
 
                     VerticalLayout {
@@ -1168,56 +1330,72 @@ export component HubScreen inherits Rectangle {
                     }
                 }
 
-                Danger {
+                if Ui.complaint != "" : Danger {
                     text: Ui.complaint;
-                    height: 18px;
                 }
             }
 
-            Panel {
+            if Ui.voice-channel != "" && Ui.stage-open && Ui.voice-chat-open : VoiceChat {
+                width: 320px;
+            }
+
+            if !(Ui.voice-channel != "" && Ui.stage-open) : Panel {
                 width: 240px;
 
                 VerticalLayout {
                     padding: 12px;
                     spacing: 8px;
 
-                    LabelMono { text: "MEMBROS"; }
-
                     ScrollView {
                         vertical-stretch: 1;
 
                         VerticalLayout {
-                            spacing: 4px;
+                            spacing: 16px;
                             alignment: start;
 
-                            for member in Ui.members : RowItem {
-                                HorizontalLayout {
-                                    padding-left: 8px;
-                                    padding-right: 11px;
-                                    spacing: 8px;
+                            // Os grupos do React: o cargo mais alto de quem está online, com a
+                            // cor dele, e os offline apagados no fim.
+                            for group in Ui.member-groups : VerticalLayout {
+                                spacing: 2px;
 
-                                    Avatar {
-                                        letter: member.initial;
-                                        size: 24px;
-                                        y: (parent.height - self.height) / 2;
-                                    }
+                                LabelMono {
+                                    text: group.label + " — " + group.members.length;
+                                    color: group.colored ? group.color : Skin.ink-dim;
+                                }
 
-                                    Text {
-                                        text: member.name;
-                                        color: Skin.ink-body;
-                                        font-family: Skin.sans;
-                                        font-size: 13px;
-                                        horizontal-stretch: 1;
-                                        overflow: elide;
-                                        vertical-alignment: center;
-                                    }
+                                Rectangle { height: 6px; }
 
-                                    Text {
-                                        text: member.note;
-                                        color: Skin.ink-faint;
-                                        font-family: Skin.sans;
-                                        font-size: 11px;
-                                        vertical-alignment: center;
+                                for member in group.members : RowItem {
+                                    opacity: group.offline ? 0.55 : 1.0;
+
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 11px;
+                                        spacing: 8px;
+
+                                        Avatar {
+                                            letter: member.initial;
+                                            size: 24px;
+                                            mine: member.mine;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+
+                                        Text {
+                                            text: member.name;
+                                            color: group.colored && !group.offline ? group.color : Skin.ink-body;
+                                            font-family: Skin.sans;
+                                            font-size: 12.5px;
+                                            horizontal-stretch: 1;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+
+                                        if member.owner : Glyph {
+                                            commands: Icons.crown;
+                                            size: 12px;
+                                            tint: Skin.lilac-2;
+                                            y: (parent.height - self.height) / 2;
+                                        }
                                     }
                                 }
                             }

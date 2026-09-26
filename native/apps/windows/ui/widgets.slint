@@ -91,6 +91,7 @@ export component PrimaryButton inherits Rectangle {
 export component GhostButton inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
+    in property <length> font-size: 12.5px;
     callback clicked();
 
     // 8 de respiro em cima e embaixo, como o `.btn-ghost` do CSS.
@@ -106,7 +107,7 @@ export component GhostButton inherits Rectangle {
         text: root.text;
         color: touch.has-hover ? Skin.ink-strong : Skin.ink-icon;
         font-family: Skin.sans;
-        font-size: 12.5px;
+        font-size: root.font-size;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
@@ -124,10 +125,6 @@ export component Glyph inherits Rectangle {
     in property <length> size: 17px;
     // Os desenhos do React são de linha, menos dois: o fone do "sair" e o triângulo do
     // "assistir" são preenchidos, e um contorno no lugar deles vira outro ícone.
-    //
-    // ponytail: o React ainda gira o fone em 135°, e o `Path` do Slint não tem rotação. Em
-    // cima do vermelho cheio o fone de pé já se lê como "sair da chamada"; para ficar igual,
-    // o caminho teria de vir girado do `skin.slint`.
     in property <bool> filled;
 
     width: root.size;
@@ -138,7 +135,12 @@ export component Glyph inherits Rectangle {
         viewbox-width: 24;
         viewbox-height: 24;
         stroke: root.filled ? transparent : root.tint;
-        stroke-width: 1.8px;
+        // O `strokeWidth="1.8"` do React vale dentro do `viewBox` de 24, então encolhe junto
+        // com o ícone — como o Mac faz. Em pixels fixos o ícone pequeno virava uma mancha,
+        // e sem as pontas redondas cada traço saía cortado.
+        stroke-width: root.size * 1.8 / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
         fill: root.filled ? root.tint : transparent;
     }
 }
@@ -239,12 +241,22 @@ export component Field inherits VerticalLayout {
             ? Skin.danger
             : (input.has-focus ? #8a7cf580 : #ffffff1a);
         opacity: root.enabled ? 1.0 : 0.55;
+        clip: true;
 
-        HorizontalLayout {
-            padding-left: 13px;
-            padding-right: 13px;
+        // O texto longo rola dentro do campo e segue o cursor, como no input do navegador. O
+        // `TextInput` não rola sozinho: é a conta do `LineEdit` do próprio Slint, feita aqui
+        // para o campo manter o desenho do React.
+        Rectangle {
+            x: 13px;
+            width: parent.width - 26px;
+            clip: true;
 
             input := TextInput {
+                property <length> shift;
+
+                x: min(0px, max(parent.width - self.width, self.shift));
+                width: max(parent.width, self.preferred-width + 2px);
+                height: parent.height;
                 color: Skin.ink-strong;
                 font-family: root.mono ? Skin.mono : Skin.sans;
                 font-size: 14px;
@@ -254,6 +266,13 @@ export component Field inherits VerticalLayout {
                 input-type: root.password ? InputType.password : InputType.text;
                 accepted => { root.accepted(); }
                 edited => { root.edited(); }
+                cursor-position-changed(position) => {
+                    if position.x + self.shift < 0px {
+                        self.shift = -position.x;
+                    } else if position.x + self.shift > parent.width - 2px {
+                        self.shift = parent.width - 2px - position.x;
+                    }
+                }
             }
         }
 
@@ -274,6 +293,48 @@ export component Field inherits VerticalLayout {
         font-family: Skin.sans;
         font-size: 11.5px;
         wrap: word-wrap;
+    }
+}
+
+// O `live-badge` do React: vermelho cheio, mono miúdo e espaçado. No canal de voz ele leva
+// o pontinho branco e é clicável (abre a transmissão); no menu de pessoas, não.
+export component LiveBadge inherits Rectangle {
+    in property <bool> dot;
+    callback clicked();
+
+    width: inside.preferred-width + 12px;
+    height: 17px;
+    border-radius: 5px;
+    background: Skin.danger;
+    opacity: touch.has-hover && root.dot ? 0.9 : 1.0;
+
+    inside := HorizontalLayout {
+        x: 6px;
+        spacing: 5px;
+
+        if root.dot : Rectangle {
+            width: 5px;
+            height: 5px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 2.5px;
+            background: #ffffff;
+        }
+
+        Text {
+            text: "AO VIVO";
+            color: Skin.ink-strong;
+            font-family: Skin.mono;
+            font-size: 8.5px;
+            font-weight: 600;
+            letter-spacing: 0.85px;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.dot;
+        mouse-cursor: root.dot ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
     }
 }
 

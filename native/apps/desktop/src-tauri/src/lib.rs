@@ -289,20 +289,12 @@ fn watch_key(state: State<'_, NativeWatches>) -> Result<String, String> {
 
 /// Recebe um producer de alguém por RTP puro e devolve a porta do MJPEG em 127.0.0.1
 /// para o cartão desenhar (zero para áudio). É o jeito de assistir onde o webview não
-/// tem WebRTC. `ssrc` é o que o `consumePlain` devolveu; sem ele o receptor aprende no
-/// primeiro pacote.
+/// tem WebRTC.
 #[tauri::command(async)]
-fn watch_native(
-    state: State<'_, NativeWatches>,
-    producer_id: String,
-    kind: String,
-    address: String,
-    server_key: String,
-    payload_type: u8,
-    ssrc: Option<u32>,
-) -> Result<u16, String> {
+fn watch_native(state: State<'_, NativeWatches>, consumer: NativeConsumer) -> Result<u16, String> {
     use base64::Engine;
 
+    let NativeConsumer { producer_id, kind, address, server_key, payload_type, ssrc, rtx } = consumer;
     let server_key = base64::engine::general_purpose::STANDARD
         .decode(server_key)
         .map_err(|error| format!("chave do servidor ilegível: {error}"))?;
@@ -312,8 +304,39 @@ fn watch_native(
     tracing::info!(producer = %producer_id, %kind, "watch: pedido");
 
     // Abrir o `gst-launch` bloqueia; o tokio é avisado para não esperar esta thread.
-    tokio::task::block_in_place(|| watches.start(producer_id, &kind, &address, &server_key, payload_type, ssrc))
-        .map_err(|error| error.to_string())
+    let consumed = watch::Consumed {
+        producer_id,
+        kind,
+        address,
+        server_key,
+        payload_type,
+        ssrc,
+        rtx: rtx.map(|rtx| media::Rtx { ssrc: rtx.ssrc, payload_type: rtx.payload_type }),
+    };
+
+    tokio::task::block_in_place(|| watches.start(consumed)).map_err(|error| error.to_string())
+}
+
+/// O que o webview repassa do `consumePlain`. `ssrc` sem valor é servidor antigo: o
+/// receptor aprende no primeiro pacote.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeConsumer {
+    producer_id: String,
+    kind: String,
+    address: String,
+    server_key: String,
+    payload_type: u8,
+    ssrc: Option<u32>,
+    rtx: Option<RtxArgument>,
+}
+
+/// O `rtx` do `consumePlain`, como o webview o repassa.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RtxArgument {
+    ssrc: u32,
+    payload_type: u8,
 }
 
 /// Fecha um producer assistido, ou todos quando `producer_id` vem vazio.

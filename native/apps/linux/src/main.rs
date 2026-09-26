@@ -8,7 +8,9 @@ mod components;
 mod devices;
 mod icons;
 mod screens;
+#[cfg(test)]
 mod sending;
+mod share_picker;
 mod streaming;
 mod user_bar;
 mod watching;
@@ -18,6 +20,7 @@ use gtk::{Application, ApplicationWindow, CssProvider, Stack, gdk, glib};
 
 use bridge::{Bridge, Update};
 use core_app::Screen;
+use core_app::realtime::Notice;
 use screens::{EntryScreen, HubScreen, OfflineScreen, RoomScreen, UpdatingScreen};
 
 const APP_ID: &str = "com.unkvoid.desktop";
@@ -80,6 +83,17 @@ fn open(application: &Application) {
     stack.add_named(offline.root(), Some("offline"));
     stack.add_named(updating.root(), Some("updating"));
 
+    // Os avisos ficam acima de tudo, no pé da janela e no meio, um embaixo do outro — o
+    // `Toasts.tsx` do React.
+    let toasts = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let layered = gtk::Overlay::new();
+
+    toasts.set_halign(gtk::Align::Center);
+    toasts.set_valign(gtk::Align::End);
+    toasts.set_margin_bottom(20);
+    layered.set_child(Some(&stack));
+    layered.add_overlay(&toasts);
+
     let window = ApplicationWindow::builder()
         .application(application)
         .title("Unkvoid")
@@ -87,7 +101,7 @@ fn open(application: &Application) {
         // menos largura os cartões da Home quebram em outra ordem.
         .default_width(1280)
         .default_height(800)
-        .child(&stack)
+        .child(&layered)
         .build();
 
     window.set_size_request(940, 600);
@@ -139,6 +153,12 @@ fn open(application: &Application) {
                     hub.set_direct(&person, &messages);
                     hub.focus_direct();
                 }
+                Update::DirectRefreshed { person, messages } => hub.refresh_direct(&person, &messages),
+                Update::Live(line) => {
+                    if let Some(notice) = hub.heard_live(&line) {
+                        toast(&toasts, &notice);
+                    }
+                }
                 // Canal de voz: a tela continua sendo o hub, e quem está dentro aparece
                 // embaixo do nome do canal — como no React.
                 Update::Joined { room: code, voice: Some(name), peers } => {
@@ -169,6 +189,7 @@ fn open(application: &Application) {
                     hub.set_mine(mine);
                     hub.set_deafened(bridge.is_deafened());
                 }
+                Update::ThrownOut(message) => bridge.thrown_out(message),
                 Update::Show(screen) => {
                     if screen == Screen::Hub {
                         bridge.load_servers();
@@ -176,6 +197,51 @@ fn open(application: &Application) {
 
                     show(&stack, screen);
                 }
+            }
+        }
+    });
+}
+
+/// Um aviso no pé da janela, que some sozinho: 3,5 s, ou 6 s o de erro — os tempos do React.
+fn toast(toasts: &gtk::Box, notice: &Notice) {
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let said = gtk::Label::builder().label(&notice.text).wrap(true).max_width_chars(52).xalign(0.0).build();
+    let dismiss = gtk::Button::new();
+
+    line.add_css_class("toast");
+
+    if notice.error {
+        line.add_css_class("error");
+    }
+
+    line.append(&icons::icon(
+        if notice.error { "close" } else { "check" },
+        14,
+        if notice.error { icons::DANGER } else { icons::ONLINE },
+    ));
+    line.append(&said);
+    dismiss.set_child(Some(&icons::icon("close", 12, icons::DIM)));
+    dismiss.add_css_class("toast-close");
+    dismiss.set_tooltip_text(Some("Dispensar"));
+    line.append(&dismiss);
+    toasts.append(&line);
+
+    dismiss.connect_clicked({
+        let (toasts, line) = (toasts.clone(), line.clone());
+
+        move |_| {
+            if line.parent().is_some() {
+                toasts.remove(&line);
+            }
+        }
+    });
+
+    glib::timeout_add_local_once(std::time::Duration::from_millis(if notice.error { 6_000 } else { 3_500 }), {
+        let toasts = toasts.clone();
+
+        move || {
+            if line.parent().is_some() {
+                toasts.remove(&line);
             }
         }
     });

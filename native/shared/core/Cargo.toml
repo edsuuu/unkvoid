@@ -29,6 +29,10 @@ storage = { path = "../storage" }
 capture = { path = "../capture" }
 media = { path = "../media" }
 base64 = "0.22"
+# O atualizador: a ordem das versões com `-beta`, e a assinatura do instalador. Os dois já
+# estão no lock pelo atualizador do Tauri.
+semver = "1"
+minisign-verify = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

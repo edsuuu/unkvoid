@@ -56,6 +56,8 @@ pub struct Room {
     shared: Mutex<Option<CaptureConfig>>,
     /// Os cartões do último aviso: a interface só redesenha o palco quando eles mudam.
     shown: Mutex<Value>,
+    /// O elenco do último aviso, para saber o que mudou e qual toque tocar.
+    cast: Mutex<Vec<crate::models::Peer>>,
     updates: Sender<String>,
 }
 
@@ -85,6 +87,7 @@ impl Room {
             self_view: std::sync::atomic::AtomicBool::new(false),
             shared: Mutex::default(),
             shown: Mutex::default(),
+            cast: Mutex::default(),
             updates,
         });
 
@@ -233,6 +236,7 @@ impl Room {
             payload_type: answer["payloadType"].as_u64().unwrap_or_default() as u8,
             ssrc: answer["ssrc"].as_u64().map(|ssrc| ssrc as u32),
             always_muted: source == "screenAudio",
+            rtx: crate::watching::rtx_of(&answer),
         });
 
         if let Err(failure) = started {
@@ -383,6 +387,12 @@ impl Room {
         changed
     }
 
+    /// A receita da tela no ar. É ela que diz se uma troca no seletor cabe no
+    /// `change_quality` (mesmo áudio) ou se a transmissão tem de parar e recomeçar.
+    pub fn sharing_recipe(&self) -> Option<CaptureConfig> {
+        lock(&self.shared).clone()
+    }
+
     /// Compartilhar a tela. Abre a origem no servidor e só então captura: sem o
     /// `producePlain` não há porta para onde mandar, e o quadro sairia no vazio.
     pub async fn share(&self, config: CaptureConfig) -> Result<()> {
@@ -433,6 +443,47 @@ impl Room {
         }
 
         self.retire(Source::Screen).await;
+    }
+
+    /// A câmera que a própria captura abre e codifica: no Linux o GStreamer lê a webcam e já
+    /// entrega H.264. No macOS a câmera vem pronta da interface, por `open_camera`.
+    #[cfg(target_os = "linux")]
+    pub async fn open_captured_camera(&self, config: CaptureConfig) -> Result<()> {
+        if lock(&self.sending).camera.is_some() {
+            return Ok(());
+        }
+
+        let producers = self.open(&[Some(Source::Camera)]).await?;
+        let started = tokio::task::block_in_place(|| {
+            let mut sending = lock(&self.sending);
+            let broadcast = sending.start(config, Some(Source::Camera), None)?;
+
+            sending.camera = Some(broadcast);
+
+            anyhow::Ok(())
+        });
+
+        if let Err(failure) = started {
+            self.close(producers).await;
+
+            return Err(failure);
+        }
+
+        lock(&self.producers).insert(Source::Camera, producers);
+        self.announce_mine();
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub async fn close_captured_camera(&self) {
+        let broadcast = lock(&self.sending).camera.take();
+
+        if let Some(mut broadcast) = broadcast {
+            let _ = tokio::task::block_in_place(|| broadcast.stop());
+        }
+
+        self.retire(Source::Camera).await;
     }
 
     /// Abre o microfone no servidor. Quem captura é a interface, e o som entra por `speak`.
@@ -599,6 +650,12 @@ impl Room {
         if let Err(failure) = self.session.leave().await {
             tracing::warn!(%failure, "a sala não soube da saída");
         }
+    }
+
+    /// O que aconteceu com o vídeo de uma transmissão assistida: recebidos, recuperados
+    /// e perdidos. É a linha de números do cartão.
+    pub fn counters(&self, producer_id: &str) -> Option<media::Counters> {
+        lock(&self.watching).counters(producer_id)
     }
 
     pub fn peers(&self) -> Value {
@@ -816,8 +873,22 @@ impl Room {
         lock(&self.watching).stop(None);
     }
 
+    /// O elenco, o toque da troca — `room.chime` com `joined`, `left`, `streamStarted` ou
+    /// `streamStopped` (ver `chimes.rs`) — e o aviso dela, `room.notice`. A interface só toca
+    /// e mostra.
     fn announce_peers(&self) {
-        self.tell("room.peers", self.peers());
+        let peers = self.session.peers();
+        let before = std::mem::replace(&mut *lock(&self.cast), peers.clone());
+
+        self.tell("room.peers", json!({ "peers": peers }));
+
+        if let Some(chime) = crate::chimes::Chime::after(&before, &peers) {
+            self.tell("room.chime", json!({ "chime": chime }));
+        }
+
+        if let Some(text) = crate::chimes::Chime::notice_after(&before, &peers) {
+            self.tell("room.notice", json!({ "text": text }));
+        }
     }
 
     fn announce_tiles(&self) {
@@ -875,6 +946,31 @@ fn lock<T>(cell: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Quantas barrinhas de sinal a ida e volta até o SFU merece: 4 é verde, 3 amarelo, 2 laranja
 /// e 1 vermelho. Os cortes são os de uma chamada de voz — até 80 ms ninguém percebe, de 150
 /// em diante a conversa começa a atropelar, e acima de 250 já se fala por cima do outro.
+/// O que esta pessoa manda e pode mandar, como o `room.mine` anuncia.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Mine {
+    pub sharing: bool,
+    pub self_view: bool,
+    pub mic: bool,
+    pub mic_muted: bool,
+    pub camera: bool,
+    pub can_share: bool,
+    pub can_speak: bool,
+    pub can_video: bool,
+}
+
+impl Mine {
+    /// O microfone desenhado como desligado, dentro da sala: mudo por escolha, sem
+    /// permissão de falar, ou fechado de verdade — e não só ainda abrindo. É a conta do
+    /// macOS: entre o clique no canal e o microfone abrir o botão não tem o que mostrar, e
+    /// pintá-lo de mudo nesse meio segundo era o pisca que ninguém pediu. Fora da sala quem
+    /// manda é o mudo guardado, e quem chama escolhe.
+    pub fn mic_shown_off(self, opening: bool) -> bool {
+        self.mic_muted || !self.can_speak || (!self.mic && !opening)
+    }
+}
+
 pub fn signal_bars(round_trip_ms: u64) -> u8 {
     match round_trip_ms {
         0..=80 => 4,
@@ -886,6 +982,41 @@ pub fn signal_bars(round_trip_ms: u64) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_mic_is_drawn_on_while_it_is_still_opening() {
+        let joined = Mine { can_speak: true, ..Mine::default() };
+
+        assert!(!joined.mic_shown_off(true));
+        assert!(joined.mic_shown_off(false));
+    }
+
+    #[test]
+    fn a_muted_or_voiceless_mic_is_drawn_off_even_while_opening() {
+        let muted = Mine { can_speak: true, mic: true, mic_muted: true, ..Mine::default() };
+        let voiceless = Mine { can_speak: false, mic: false, ..Mine::default() };
+
+        assert!(muted.mic_shown_off(true));
+        assert!(voiceless.mic_shown_off(true));
+    }
+
+    #[test]
+    fn an_open_mic_that_can_speak_is_drawn_on() {
+        let open = Mine { can_speak: true, mic: true, ..Mine::default() };
+
+        assert!(!open.mic_shown_off(false));
+    }
+
+    #[test]
+    fn the_announced_mine_is_read_with_its_camel_case_names() {
+        let mine: Mine = serde_json::from_str(
+            r#"{"sharing":true,"selfView":false,"mic":true,"micMuted":true,"camera":false,"canShare":true,"canSpeak":true,"canVideo":false}"#,
+        )
+        .unwrap();
+
+        assert!(mine.sharing && mine.mic && mine.mic_muted && mine.can_share && mine.can_speak);
+        assert!(!mine.camera && !mine.can_video && !mine.self_view);
+    }
+
     #[test]
     fn the_signal_loses_a_bar_at_each_cut() {
         assert_eq!([12, 80, 81, 150, 151, 250, 251, 900].map(super::signal_bars), [4, 4, 3, 3, 2, 2, 1, 1]);

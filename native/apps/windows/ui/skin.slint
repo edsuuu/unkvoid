@@ -47,8 +47,9 @@ export global Icons {
     out property <string> chevron-down: "M7 10l5 5 5-5";
     out property <string> screen: "M5 4h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M8 20h8 M12 16v4";
     out property <string> copy: "M10 8h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2z M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3";
-    // O fone cortado do "sair da sala": o mesmo traçado do React, girado 135 graus.
-    out property <string> phone-off: "M6.6 10.8c1.2 2.4 3.2 4.4 5.6 5.6l2-2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.5.6.6 0 1 .4 1 1V19c0 .6-.4 1-1 1-8.3 0-15-6.7-15-15 0-.6.4-1 1-1h3.2c.6 0 1 .4 1 1 0 1.2.2 2.4.6 3.5.1.4 0 .8-.3 1l-1.6 1.3z";
+    // O fone de "sair da sala": o traçado do React com o `rotate(135 12 12)` já aplicado nas
+    // coordenadas — o `Path` do Slint não gira, e o fone de pé parecia outro ícone.
+    out property <string> phone-off: "M16.67 9.03 C14.12 8.18 11.29 8.18 8.75 9.03 L8.75 11.86 C8.75 12.28 8.54 12.64 8.18 12.71 C7.12 13.2 6.13 13.91 5.28 14.76 C4.86 15.18 4.29 15.18 3.87 14.76 L1.61 12.49 C1.18 12.07 1.18 11.51 1.61 11.08 C7.47 5.21 16.95 5.21 22.82 11.08 C23.24 11.51 23.24 12.07 22.82 12.49 L20.56 14.76 C20.13 15.18 19.57 15.18 19.14 14.76 C18.29 13.91 17.3 13.2 16.24 12.71 C15.89 12.49 15.68 12.14 15.75 11.79 L15.96 9.74 Z";
     out property <string> refresh: "M20 11a8 8 0 1 0-2.3 5.7 M20 5v6h-6";
     out property <string> stop: "M8 6h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z";
     out property <string> home: "M4 11l8-7 8 7 M6 10v10h12V10 M10 20v-5h4v5";
@@ -58,9 +59,23 @@ export global Icons {
     // conhece `circle`.
     out property <string> dots: "M4.7 12a1.3 1.3 0 1 1 2.6 0 1.3 1.3 0 1 1-2.6 0 M10.7 12a1.3 1.3 0 1 1 2.6 0 1.3 1.3 0 1 1-2.6 0 M16.7 12a1.3 1.3 0 1 1 2.6 0 1.3 1.3 0 1 1-2.6 0";
     out property <string> close: "M6 6l12 12 M18 6L6 18";
+    out property <string> check: "M5 12l5 5L19 7";
+    out property <string> crown: "M4 18h16 M4 8l4 4 4-7 4 7 4-4-2 10H6z";
     out property <string> signal: "M5 19v-3 M10 19v-7 M15 19v-11 M20 19V5";
     out property <string> camera-off: "M5 6h9a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 14 18H5a2.5 2.5 0 0 1-2.5-2.5v-7A2.5 2.5 0 0 1 5 6z M16.5 10.5l4.5-3v9l-4.5-3z M4 4l16 16";
     out property <string> gear: "M10.3 4.3a1 1 0 0 1 1-.8h1.4a1 1 0 0 1 1 .8l.3 1.6a7 7 0 0 1 1.7 1l1.5-.6a1 1 0 0 1 1.2.4l.7 1.2a1 1 0 0 1-.2 1.3l-1.2 1a7 7 0 0 1 0 2l1.2 1a1 1 0 0 1 .2 1.3l-.7 1.2a1 1 0 0 1-1.2.4l-1.5-.6a7 7 0 0 1-1.7 1l-.3 1.6a1 1 0 0 1-1 .8h-1.4a1 1 0 0 1-1-.8l-.3-1.6a7 7 0 0 1-1.7-1l-1.5.6a1 1 0 0 1-1.2-.4l-.7-1.2a1 1 0 0 1 .2-1.3l1.2-1a7 7 0 0 1 0-2l-1.2-1a1 1 0 0 1-.2-1.3l.7-1.2a1 1 0 0 1 1.2-.4l1.5.6a7 7 0 0 1 1.7-1z M9.5 12a2.5 2.5 0 1 1 5 0 2.5 2.5 0 1 1-5 0";
     out property <string> logout: "M15 5V4a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-1 M11 12h10 M18 9l3 3-3 3";
     out property <string> camera: "M5 6h9a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 14 18H5a2.5 2.5 0 0 1-2.5-2.5v-7A2.5 2.5 0 0 1 5 6z M16.5 10.5l4.5-3v9l-4.5-3z";
+    // Os do cartão de uma transmissão. Onde o React mistura linha e preenchimento (o foco,
+    // os botões dos ajustes), o ponto cheio virou um anel pequeno: o `Path` pinta um só.
+    out property <string> eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z M9 12a3 3 0 1 1 6 0 3 3 0 1 1-6 0";
+    out property <string> speaker-off: "M4 9h4l5-4v14l-5-4H4z M17 9l5 6 M22 9l-5 6";
+    out property <string> sliders: "M4 6h3 M11 6h9 M4 12h9 M17 12h3 M4 18h2 M10 18h10 M7 6a2 2 0 1 1 4 0 2 2 0 1 1-4 0 M13 12a2 2 0 1 1 4 0 2 2 0 1 1-4 0 M6 18a2 2 0 1 1 4 0 2 2 0 1 1-4 0";
+    out property <string> play: "M8 5v14l11-7z";
+    out property <string> pause: "M9 6v12 M15 6v12";
+    out property <string> focus: "M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M10.5 10.5h3v3h-3z";
+    out property <string> fullscreen: "M4 9V4h5 M20 9V4h-5 M4 15v5h5 M20 15v5h-5";
+    out property <string> fullscreen-exit: "M9 4v5H4 M15 4v5h5 M9 20v-5H4 M15 20v-5h5";
+    out property <string> chat: "M4 5h16v11H9l-4 4v-4H4z";
+    out property <string> arrow-left: "M19 12H5 M11 6l-6 6 6 6";
 }

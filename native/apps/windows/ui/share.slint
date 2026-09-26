@@ -1,0 +1,480 @@
+import { ScrollView } from "std-widgets.slint";
+import { Icons, Skin } from "skin.slint";
+import { SourceRow, Ui } from "state.slint";
+import { Glyph, LabelMono, Muted, PrimaryButton, Title } from "widgets.slint";
+
+// O seletor de tela do React (`ShareModal.tsx`): as telas e os aplicativos com a prévia, o
+// áudio, e embaixo a qualidade, o fps, Cancelar e Transmitir.
+
+// O `<select class="field">` do React: o valor escolhido e a lista que abre embaixo. O
+// rótulo segue a regra do React — `2160` é "4K (2160p)", o resto ganha o `suffix`.
+component Choice inherits Rectangle {
+    in property <[string]> options;
+    in property <string> suffix;
+    in-out property <string> value;
+
+    pure function label(option: string) -> string {
+        return option == "2160" ? "4K (2160p)" : option + root.suffix;
+    }
+
+    height: 36px;
+    min-width: 116px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: open.has-hover ? #8a7cf580 : #ffffff1a;
+    background: #ffffff08;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 10px;
+        spacing: 8px;
+
+        Text {
+            text: root.label(root.value);
+            color: Skin.ink-strong;
+            font-family: Skin.sans;
+            font-size: 13px;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+
+        Glyph {
+            commands: Icons.chevron-down;
+            size: 14px;
+            tint: Skin.ink-dim;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+
+    open := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { list.show(); }
+    }
+
+    list := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: root.width;
+
+        Rectangle {
+            background: #16131f;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: #ffffff1f;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #000000b3;
+
+            VerticalLayout {
+                padding: 4px;
+
+                for option in root.options : Rectangle {
+                    height: 30px;
+                    border-radius: 7px;
+                    background: pick.has-hover ? Skin.row : transparent;
+
+                    Text {
+                        x: 8px;
+                        text: root.label(option);
+                        color: option == root.value ? Skin.lilac-2 : Skin.ink-icon;
+                        font-family: Skin.sans;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                    }
+
+                    pick := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.value = option; }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A caixinha de marcar com o violeta da marca, como o `accent-brand` do React.
+component Check inherits HorizontalLayout {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in-out property <bool> checked;
+
+    spacing: 8px;
+    opacity: root.enabled ? 1.0 : 0.5;
+
+    Rectangle {
+        width: 16px;
+        height: 16px;
+        y: (parent.height - self.height) / 2;
+        border-radius: 4px;
+        border-width: root.checked ? 0px : 1px;
+        border-color: #ffffff4d;
+        background: root.checked ? Skin.brand : transparent;
+
+        if root.checked : Glyph {
+            commands: Icons.check;
+            size: 12px;
+            tint: Skin.ink-strong;
+            x: 2px;
+            y: 2px;
+        }
+    }
+
+    Text {
+        text: root.text;
+        color: Skin.ink-icon;
+        font-family: Skin.sans;
+        font-size: 13px;
+        vertical-alignment: center;
+    }
+
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.checked = !root.checked; }
+    }
+}
+
+// A aba do topo, o `tab-soft` do React.
+component Tab inherits Rectangle {
+    in property <string> text;
+    in property <bool> on;
+    callback clicked();
+
+    width: label.preferred-width + 28px;
+    height: 32px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: root.on ? #8a7cf566 : transparent;
+    background: root.on ? #8a7cf526 : (touch.has-hover ? Skin.row : transparent);
+
+    label := Text {
+        text: root.text;
+        color: root.on ? Skin.ink-strong : Skin.ink-dim;
+        font-family: Skin.sans;
+        font-size: 13px;
+        font-weight: root.on ? 500 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Uma tela ou um aplicativo: a prévia em 16:10, o nome e o detalhe em mono.
+component SourceCard inherits Rectangle {
+    in property <SourceRow> item;
+    in property <bool> chosen;
+    callback clicked();
+
+    border-radius: 14px;
+    border-width: 1px;
+    border-color: root.chosen ? #8a7cf573 : (touch.has-hover ? #8a7cf54d : #ffffff17);
+    background: #ffffff08;
+    clip: true;
+
+    VerticalLayout {
+        Rectangle {
+            height: root.width * 10 / 16;
+            background: @linear-gradient(135deg, #5a3fd64d 0%, #000000 100%);
+
+            if root.item.has-preview : Image {
+                source: root.item.preview;
+                width: parent.width;
+                height: parent.height;
+                image-fit: contain;
+            }
+
+            if !root.item.has-preview : Text {
+                text: "sem prévia";
+                color: Skin.ink-dim;
+                font-family: Skin.mono;
+                font-size: 10px;
+            }
+        }
+
+        VerticalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            spacing: 2px;
+
+            Text {
+                text: root.item.label;
+                color: Skin.ink-strong;
+                font-family: Skin.sans;
+                font-size: 13.5px;
+                font-weight: 500;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.item.detail;
+                color: Skin.ink-dim;
+                font-family: Skin.mono;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component ShareModal inherits Rectangle {
+    property <bool> shown;
+    property <string> tab: Ui.share-tab;
+    property <[SourceRow]> items: Ui.share-tab == "window" ? Ui.share-windows : Ui.share-displays;
+    property <int> columns: 3;
+    property <length> gap: 12px;
+    property <length> card-width: (grid.width - (root.columns - 1) * root.gap) / root.columns;
+    property <length> card-height: root.card-width * 10 / 16 + 56px;
+
+    background: #06050abd;
+    opacity: root.shown ? 1.0 : 0.0;
+    init => {
+        root.shown = true;
+        focus.focus();
+    }
+
+    animate opacity { duration: 180ms; easing: ease-out; }
+
+    // A outra aba começa do topo, e não de onde a rolagem da anterior parou.
+    changed tab => { scroll.content-y = 0; }
+
+    // Clicar fora fecha, e o Esc também. O painel come o clique dele.
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Ui.share-open = false; }
+    }
+
+    focus := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                Ui.share-open = false;
+
+                return accept;
+            }
+
+            return reject;
+        }
+    }
+
+    Rectangle {
+        width: min(560px, root.width - 32px);
+        height: panel.preferred-height;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2 + (root.shown ? 0px : 10px);
+        background: #100d1af7;
+        border-radius: 22px;
+        border-width: 1px;
+        border-color: #ffffff1a;
+        drop-shadow-blur: 45px;
+        drop-shadow-offset-y: 20px;
+        drop-shadow-color: #000000f2;
+
+        animate y { duration: 220ms; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
+
+        TouchArea { }
+
+        panel := VerticalLayout {
+            padding: 24px;
+            spacing: 0px;
+
+            Title { text: Ui.sharing ? "Mudar a transmissão" : "Compartilhar tela"; }
+
+            Rectangle { height: 4px; }
+
+            Muted { text: "Escolha o que a sala vai ver."; }
+
+            Rectangle { height: 18px; }
+
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+
+                Tab {
+                    text: "Telas";
+                    on: Ui.share-tab == "display";
+                    clicked => { Ui.pick-share-tab("display"); }
+                }
+
+                Tab {
+                    text: "Aplicativos";
+                    on: Ui.share-tab == "window";
+                    clicked => { Ui.pick-share-tab("window"); }
+                }
+            }
+
+            Rectangle { height: 16px; }
+
+            scroll := ScrollView {
+                height: 340px;
+
+                grid := Rectangle {
+                    width: parent.width - 6px;
+                    height: max(340px, ceil(root.items.length / root.columns) * (root.card-height + root.gap));
+
+                    if Ui.share-loading : HorizontalLayout {
+                        y: 0;
+                        height: root.card-height;
+                        spacing: root.gap;
+                        alignment: start;
+
+                        for index in 2 : Rectangle {
+                            width: root.card-width;
+                            border-radius: 14px;
+                            background: #ffffff0a;
+                        }
+                    }
+
+                    if !Ui.share-loading && root.items.length == 0 : Text {
+                        y: 0;
+                        x: 0;
+                        width: parent.width;
+                        text: Ui.share-tab == "window"
+                            ? "Nenhuma janela aberta para compartilhar."
+                            : "Nenhuma tela encontrada.";
+                        color: Skin.ink-soft;
+                        font-family: Skin.sans;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                    }
+
+                    if !Ui.share-loading : Rectangle {
+                        for item[index] in root.items : SourceCard {
+                            x: mod(index, root.columns) * (root.card-width + root.gap);
+                            y: floor(index / root.columns) * (root.card-height + root.gap);
+                            width: root.card-width;
+                            height: root.card-height;
+                            item: item;
+                            chosen: Ui.share-source == item.value;
+                            clicked => { Ui.share-source = item.value; }
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: 20px; }
+
+            HorizontalLayout {
+                spacing: 20px;
+                alignment: start;
+
+                Check {
+                    text: "Transmitir o áudio";
+                    checked <=> Ui.share-audio;
+                }
+
+                Check {
+                    text: "Sem o áudio do Discord";
+                    enabled: Ui.share-audio;
+                    checked <=> Ui.share-mute-calls;
+                }
+            }
+
+            Rectangle { height: 22px; }
+
+            HorizontalLayout {
+                spacing: 12px;
+
+                VerticalLayout {
+                    spacing: 6px;
+                    alignment: end;
+
+                    LabelMono { text: "QUALIDADE"; }
+
+                    Choice {
+                        options: ["720", "1080", "1440", "2160"];
+                        suffix: "p";
+                        value <=> Ui.share-quality;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 6px;
+                    alignment: end;
+
+                    LabelMono { text: "FPS"; }
+
+                    Choice {
+                        min-width: 76px;
+                        options: ["30", "60"];
+                        value <=> Ui.share-fps;
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                // No ar, o seletor é o "Mudar a transmissão" — e é daqui que ela para, como o
+                // "Parar de transmitir" do menu do React.
+                if Ui.sharing : VerticalLayout {
+                    alignment: end;
+
+                    Rectangle {
+                        width: stop.preferred-width + 24px;
+                        height: 41px;
+                        border-radius: 12px;
+                        background: halt.has-hover ? #e2445c1f : transparent;
+
+                        stop := Text {
+                            text: "Parar de transmitir";
+                            color: Skin.danger;
+                            font-family: Skin.sans;
+                            font-size: 13.5px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        halt := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                Ui.share-open = false;
+                                Ui.toggle-share();
+                            }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: end;
+
+                    Rectangle {
+                        width: cancel.preferred-width + 28px;
+                        height: 41px;
+
+                        cancel := Text {
+                            text: "Cancelar";
+                            color: back.has-hover ? Skin.ink-strong : Skin.ink-dim;
+                            font-family: Skin.sans;
+                            font-size: 13.5px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        back := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { Ui.share-open = false; }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: end;
+
+                    PrimaryButton {
+                        text: "Transmitir";
+                        width: 120px;
+                        enabled: Ui.share-source != "";
+                        clicked => { Ui.confirm-share(); }
+                    }
+                }
+            }
+        }
+    }
+}

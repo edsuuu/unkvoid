@@ -164,15 +164,14 @@ impl RoomScreen {
             move |copy| copy.clipboard().set_text(&room.borrow())
         });
 
+        // Abre o seletor de tela; no ar, o "Mudar a transmissão". Parar é o botão ao lado.
         share.connect_clicked({
-            let (bridge, sharing) = (bridge.clone(), sharing.clone());
+            let bridge = bridge.clone();
 
-            move |_| {
-                if *sharing.borrow() {
-                    bridge.stop_sharing();
-                } else {
-                    bridge.share_screen();
-                }
+            move |button| {
+                let parent = button.root().and_downcast::<gtk::Window>();
+
+                crate::share_picker::open(&bridge, parent.as_ref());
             }
         });
 

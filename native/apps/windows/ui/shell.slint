@@ -1,6 +1,6 @@
-import { Skin } from "skin.slint";
-import { Ui } from "state.slint";
-import { Muted, Title } from "widgets.slint";
+import { Icons, Skin } from "skin.slint";
+import { ToastRow, Ui } from "state.slint";
+import { Glyph, Muted, Title } from "widgets.slint";
 
 // O halo violeta do `body` do CSS. É ele que faz o vidro dos cartões aparecer: sem o halo,
 // um fundo translúcido sobre preto é só preto.
@@ -20,6 +20,7 @@ export component Halo inherits Rectangle {
 // uma é a abertura, a outra é a desistência. O que muda é o título.
 component Waiting inherits Rectangle {
     in property <string> title;
+    in property <float> progress: -1;
 
     VerticalLayout {
         alignment: center;
@@ -28,6 +29,26 @@ component Waiting inherits Rectangle {
         Title {
             text: root.title;
             horizontal-alignment: center;
+        }
+
+        // A barra do download da atualização, a mesma do React: 224 por 6, do violeta ao verde.
+        if root.progress >= 0 : HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 224px;
+                height: 6px;
+                border-radius: 3px;
+                background: Skin.row;
+                clip: true;
+
+                Rectangle {
+                    x: 0;
+                    width: parent.width * min(root.progress, 100) / 100;
+                    border-radius: 3px;
+                    background: @linear-gradient(90deg, Skin.brand 0%, Skin.online 100%);
+                }
+            }
         }
 
         Muted {
@@ -43,4 +64,66 @@ export component OfflineScreen inherits Waiting {
 
 export component UpdatingScreen inherits Waiting {
     title: "Unkvoid";
+    progress: Ui.update-progress;
+}
+
+// Um aviso do React: vidro escuro, o selo verde (ou o x vermelho do erro), a frase e o x de
+// dispensar. Some sozinho — quem conta o tempo é a ponte.
+export component Toast inherits Rectangle {
+    in property <ToastRow> item;
+
+    height: line.preferred-height;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: root.item.error ? #e2445c73 : #8a7cf559;
+    background: #100d1af0;
+    drop-shadow-blur: 30px;
+    drop-shadow-offset-y: 12px;
+    drop-shadow-color: #000000cc;
+
+    line := HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 8px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 10px;
+
+        Glyph {
+            commands: root.item.error ? Icons.close : Icons.check;
+            tint: root.item.error ? Skin.danger : Skin.online;
+            size: 14px;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            text: root.item.text;
+            color: Skin.ink-body;
+            font-family: Skin.sans;
+            font-size: 13px;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+
+        Rectangle {
+            width: 28px;
+            height: 28px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 6px;
+            background: dismiss.has-hover ? Skin.row : transparent;
+
+            Glyph {
+                commands: Icons.close;
+                tint: dismiss.has-hover ? Skin.ink-strong : Skin.ink-dim;
+                size: 12px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+
+            dismiss := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { Ui.dismiss-toast(root.item.id); }
+            }
+        }
+    }
 }

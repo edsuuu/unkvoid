@@ -706,3 +706,77 @@ tooltip {
     border-radius: 10px;
     color: #ece9f3;
 }
+
+/* Os avisos do React (`Toasts.tsx`): vidro escuro no pé da janela, o selo verde — ou o x
+   vermelho do erro — e o x de dispensar. */
+.toast {
+    background-color: rgba(16, 13, 26, 0.94);
+    border: 1px solid rgba(138, 124, 245, 0.35);
+    border-radius: 12px;
+    box-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.95);
+    color: #e6e1f2;
+    font-size: 13px;
+    padding: 10px 8px 10px 16px;
+}
+
+.toast.error {
+    border-color: rgba(226, 68, 92, 0.45);
+}
+
+.toast-close {
+    background: none;
+    border: none;
+    border-radius: 6px;
+    min-height: 28px;
+    min-width: 28px;
+    padding: 0;
+}
+
+.toast-close:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+/* O seletor de tela: as abas `tab-soft`, os cartões com a prévia e o esqueleto do React. */
+button.tab-soft {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    color: #8a80a6;
+    font-size: 13px;
+    padding: 6px 14px;
+}
+
+button.tab-soft:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+button.tab-soft.on {
+    background-color: rgba(138, 124, 245, 0.15);
+    border-color: rgba(138, 124, 245, 0.4);
+    color: #ffffff;
+}
+
+button.source-card {
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 14px;
+    padding: 0;
+}
+
+button.source-card:hover {
+    border-color: rgba(138, 124, 245, 0.3);
+}
+
+button.source-card.on {
+    border-color: rgba(138, 124, 245, 0.45);
+}
+
+.source-preview {
+    background-image: linear-gradient(135deg, rgba(90, 63, 214, 0.3), #000000);
+    border-radius: 13px 13px 0 0;
+}
+
+.skeleton {
+    background-color: rgba(255, 255, 255, 0.04);
+    border-radius: 14px;
+}

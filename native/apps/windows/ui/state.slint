@@ -13,6 +13,16 @@ export struct ServerRow {
     at: string,
 }
 
+/// Quem está num canal de voz em que você não está, pelo que o Laravel sabe.
+export struct VoicePersonRow {
+    name: string,
+    initial: string,
+    mine: bool,
+    muted: bool,
+    camera: bool,
+    live: bool,
+}
+
 export struct ChannelRow {
     /// A posição na lista inteira do servidor: é ela que volta em `open-channel`, porque a
     /// tela mostra texto e voz em duas colunas mas o núcleo só conhece uma.
@@ -22,12 +32,41 @@ export struct ChannelRow {
     name: string,
     voice: bool,
     current: bool,
+    people: [VoicePersonRow],
 }
 
 export struct MemberRow {
     name: string,
     initial: string,
-    note: string,
+    owner: bool,
+    mine: bool,
+}
+
+/// Um grupo da lista de membros, como o React: o cargo mais alto de quem está online, e os
+/// offline no fim. `colored` diz se o cargo tem cor.
+export struct MemberGroupRow {
+    label: string,
+    color: color,
+    colored: bool,
+    offline: bool,
+    members: [MemberRow],
+}
+
+/// Uma tela ou um aplicativo do seletor. `value` é `display:<id>` ou `window:<id>`, o que o
+/// núcleo lê no `capture_config`.
+export struct SourceRow {
+    value: string,
+    label: string,
+    detail: string,
+    preview: image,
+    has-preview: bool,
+}
+
+/// Um aviso no pé da janela. `error` pinta de vermelho.
+export struct ToastRow {
+    id: int,
+    text: string,
+    error: bool,
 }
 
 export struct MessageRow {
@@ -47,6 +86,45 @@ export struct PeerRow {
     initial: string,
     note: string,
     mine: bool,
+    /// Falando agora: o anel verde em volta do rosto.
+    speaking: bool,
+    /// Com o microfone desenhado como desligado.
+    muted: bool,
+    /// Transmitindo a tela: o selo vermelho "AO VIVO" do menu de pessoas.
+    sharing: bool,
+    /// Caiu e está na carência: o nome apaga e a latência vira "parado".
+    reconnecting: bool,
+}
+
+/// Uma transmissão que se está assistindo: um cartão do palco.
+export struct TileRow {
+    /// O producer do vídeo: é ele que volta nos cliques do cartão.
+    producer: string,
+    label: string,
+    initial: string,
+    /// "Ver o que a sala vê": a própria tela.
+    mine: bool,
+    camera: bool,
+    paused: bool,
+    /// Há som de tela para ligar, e se ele está ligado.
+    audio: bool,
+    heard: bool,
+    /// Quantos assistem, e quem, para o balão do olho.
+    watchers: int,
+    watcher-names: string,
+    /// `1080p · 60 fps · 0,0%`, e se a perda passou de 2% — aí o número fica vermelho.
+    stats: string,
+    loss-high: bool,
+    /// O último quadro. Até o primeiro chegar, o cartão mostra que está abrindo.
+    frame: image,
+    has-frame: bool,
+    /// Onde o cartão cai. A conta é do Rust: a grade é coluna e linha, o foco põe um no
+    /// palco (`focused`) e os outros em fila pela ordem (`rank`), e a tela cheia deixa um.
+    column: int,
+    line: int,
+    rank: int,
+    focused: bool,
+    full: bool,
 }
 
 export struct DeviceRow {
@@ -77,6 +155,8 @@ export global Ui {
     // Qual das cinco telas está valendo. Quem escolhe é o núcleo.
     in property <string> screen: "updating";
     in property <string> status: "Abrindo o Unkvoid";
+    // Quanto da atualização já desceu, de 0 a 100; negativo enquanto não há barra.
+    in property <float> update-progress: -1;
 
     in property <string> user-name;
     in property <string> user-initial;
@@ -98,7 +178,10 @@ export global Ui {
     in property <[ServerRow]> servers;
     in property <[ChannelRow]> text-channels;
     in property <[ChannelRow]> voice-channels;
-    in property <[MemberRow]> members;
+    in property <[MemberGroupRow]> member-groups;
+    in property <[ToastRow]> toasts;
+    // Mensagens de outras pessoas no chat da voz enquanto ele está fechado.
+    in property <int> voice-chat-unread;
     in property <[MessageRow]> messages;
     /// O convite do servidor aberto. Só quem pode convidar recebe.
     in property <string> invite-code;
@@ -121,6 +204,12 @@ export global Ui {
     /// dentro do hub que isso aparece, como no React: não se troca de tela para falar.
     in property <string> voice-channel;
     in property <string> voice-name;
+    /// O palco da voz no lugar do chat, e a sala focada que toma tudo menos a trilha.
+    in-out property <bool> stage-open;
+    in-out property <bool> focused-room;
+    /// O chat do canal de voz, ao lado do palco.
+    in-out property <bool> voice-chat-open;
+    in property <[MessageRow]> voice-messages;
 
     in property <string> room-code;
     in property <[PeerRow]> peers;
@@ -135,6 +224,22 @@ export global Ui {
     in property <bool> mic-on;
     in property <bool> can-speak: true;
     in property <bool> deafened;
+    /// Eu falando agora: o anel verde na barra de baixo.
+    in property <bool> speaking;
+
+    /// As telas que se está assistindo, uma por cartão, e quantas estão ao vivo sem estar
+    /// abertas — é o que acende o "Assistir".
+    in property <[TileRow]> tiles;
+    in property <int> pending-tiles;
+    /// A grade do palco, e se um cartão está no foco ou em tela cheia. Só do lado de quem olha.
+    in property <int> grid-columns: 1;
+    in property <int> grid-lines: 1;
+    in property <bool> focusing;
+    in property <bool> full-screen;
+    in property <bool> can-share: true;
+    in property <bool> reconnecting;
+    /// "Ver o que a sala vê": a própria tela aberta no palco.
+    in property <bool> self-view;
     /// As configurações da conta: o modal do React, por cima de tudo.
     in-out property <bool> settings-open;
     in property <[DeviceRow]> microphones;
@@ -173,8 +278,48 @@ export global Ui {
 
     callback leave-room();
     callback leave-voice();
+    /// A casinha da sala: vai para a Home com a sala viva — quem transmite continua
+    /// transmitindo. `back-to-room` é o caminho de volta, pela trilha da Home.
+    callback visit-home();
+    callback back-to-room();
+    /// O servidor tirou esta sessão da sala: "replaced" ou "kicked".
+    callback thrown-out(string);
+    /// Abre ou fecha o chat do canal de voz; abrir relê as mensagens dele.
+    callback toggle-voice-chat();
+    callback dismiss-toast(int);
+
+    // O seletor de tela: o que ele lista, o que está escolhido e com que qualidade.
+    in-out property <bool> share-open;
+    in property <bool> share-loading;
+    in property <string> share-tab: "display";
+    in property <[SourceRow]> share-displays;
+    in property <[SourceRow]> share-windows;
+    in-out property <string> share-source;
+    in-out property <string> share-quality: "1080";
+    in-out property <string> share-fps: "60";
+    in-out property <bool> share-audio: true;
+    in-out property <bool> share-mute-calls: true;
+    /// O botão da tela: abre o seletor — ou, no ar, o seletor de trocar a transmissão.
+    callback open-share();
+    callback pick-share-tab(string);
+    callback confirm-share();
+    /// A sessão acabou sozinha (o token não renovou): a janela volta ao login.
+    callback session-ended();
+    /// Um evento do tempo real, entregue na thread da janela: é por aqui que ele chega à ponte.
+    callback heard-live(string);
+    callback send-voice-message(string);
     callback toggle-share();
     callback toggle-camera();
+
+    callback watch-pending();
+    callback toggle-self-view();
+    callback close-tile(string);
+    callback pause-tile(string);
+    callback toggle-heard(string);
+    callback toggle-focus(string);
+    callback toggle-fullscreen(string);
+    /// De 0 a 1, só do lado de quem ouve.
+    callback set-volume(string, float);
 
     callback toggle-mic();
     callback toggle-deafen();

@@ -1,0 +1,21 @@
+# A distro mais velha que o .deb precisa rodar: um binário fica preso à glibc da máquina que o
+# compila. O Debian 12 traz o GTK 4.8, e é ele o piso do `v4_6` do Cargo.toml.
+FROM debian:12
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# `libdbus-1-dev` é do chaveiro (o token da conta mora no Secret Service); `dpkg-dev` traz o
+# `dpkg-shlibdeps`, que escreve as dependências de biblioteca do pacote.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential curl ca-certificates pkg-config cmake dpkg-dev \
+        libgtk-4-dev libdbus-1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# O toolchain fica em /usr/local, legível por qualquer usuário: o build roda com o uid de quem
+# chama, para os arquivos gerados não ficarem de root no disco.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    PATH=/usr/local/cargo/bin:$PATH
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | CARGO_HOME=/usr/local/cargo sh -s -- -y --no-modify-path --profile minimal \
+    && chmod -R a+rwX /usr/local/rustup /usr/local/cargo

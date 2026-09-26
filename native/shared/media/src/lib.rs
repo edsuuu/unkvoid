@@ -10,6 +10,7 @@ mod audio;
 mod governor;
 mod plain;
 mod receiver;
+mod recovery;
 mod unpack;
 
 #[cfg(target_os = "macos")]
@@ -18,10 +19,14 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
+#[cfg(target_os = "windows")]
+mod windows_decoder;
+
 pub use audio::{AudioEncoder, FRAME_MS};
 pub use governor::BitrateGovernor;
 pub use plain::{Feedback, PlainSender, Source};
-pub use receiver::{PlainReceiver, resolve};
+pub use receiver::{PlainReceiver, Rtx, Stream, resolve};
+pub use recovery::Counters;
 pub use unpack::{AccessUnit, AudioUnpacker, VideoUnpacker, nals};
 
 #[cfg(target_os = "macos")]
@@ -29,6 +34,33 @@ pub use macos::VideoToolboxEncoder as PlatformEncoder;
 
 #[cfg(target_os = "windows")]
 pub use windows::MediaFoundationEncoder as PlatformEncoder;
+
+#[cfg(target_os = "windows")]
+pub use windows_decoder::H264Decoder;
+
+/// Um quadro decodificado, pronto para desenhar: RGB de 8 bits, sem padding entre as linhas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedFrame {
+    pub width: u32,
+    pub height: u32,
+    pub rgb: Vec<u8>,
+}
+
+/// Fora do Windows quem assiste decodifica pelo sistema dele — VideoToolbox no macOS,
+/// GStreamer no Linux —, e este existe só para o app do Windows compilar em qualquer lugar.
+#[cfg(not(target_os = "windows"))]
+pub struct H264Decoder;
+
+#[cfg(not(target_os = "windows"))]
+impl H264Decoder {
+    pub fn new() -> anyhow::Result<Self> {
+        Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
+    }
+
+    pub fn decode(&mut self, _annex_b: &[u8], _timestamp: u32) -> anyhow::Result<Vec<DecodedFrame>> {
+        Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
+    }
+}
 
 /// O buffer de GPU que o encoder recebe. No macOS é um `IOSurface`; no Windows é a
 /// textura do Direct3D com o device que a criou. Em ambos, quem o produz é a captura —

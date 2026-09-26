@@ -25,6 +25,7 @@ Route::name('api.')->group(function (): void {
     Route::prefix('auth')->name('auth.')->group(function (): void {
         Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login')->name('login');
         Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:6,1')->name('register');
+        Route::post('/refresh', [AuthController::class, 'refresh'])->middleware('throttle:30,1')->name('refresh');
         Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth:sanctum')->name('logout');
     });
 

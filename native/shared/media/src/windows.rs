@@ -947,7 +947,7 @@ fn variant(vt: VARENUM, value: VARIANT_0_0_0) -> VARIANT {
     }
 }
 
-unsafe fn start_media_foundation() -> Result<(), EncoderError> {
+pub(crate) unsafe fn start_media_foundation() -> Result<(), EncoderError> {
     let mut failure = None;
 
     MF_STARTUP.call_once(|| {

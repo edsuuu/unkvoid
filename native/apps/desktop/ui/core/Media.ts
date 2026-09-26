@@ -876,12 +876,15 @@ export class Media {
             this.nativeWatching.set(producerId, tileKey);
 
             const port = await Tauri.invoke<number>('watch_native', {
-                producerId,
-                kind: media,
-                address: `${consumer.ip}:${consumer.port}`,
-                serverKey: consumer.srtpParameters.keyBase64,
-                payloadType: consumer.payloadType,
-                ssrc: consumer.ssrc ?? null,
+                consumer: {
+                    producerId,
+                    kind: media,
+                    address: `${consumer.ip}:${consumer.port}`,
+                    serverKey: consumer.srtpParameters.keyBase64,
+                    payloadType: consumer.payloadType,
+                    ssrc: consumer.ssrc ?? null,
+                    rtx: consumer.rtx ?? null,
+                },
             });
 
             await this.sfu!.request('resumeConsumer', { consumerId: consumer.consumerId });

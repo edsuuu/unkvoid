@@ -3,7 +3,7 @@ resolver = "3"
 members = ["shared/capture", "shared/media", "shared/storage", "shared/core", "apps/desktop/src-tauri", "apps/linux", "apps/windows"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-beta"
 edition = "2024"
 license = "MIT"
 

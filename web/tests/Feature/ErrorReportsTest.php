@@ -35,8 +35,9 @@ it('erro de outra versão ou de outro sistema não se mistura', function (): voi
     $this->postJson('/api/errors', ['version' => '0.0.22', 'platform' => 'windows', 'log' => crashLog()])->assertCreated();
     $this->postJson('/api/errors', ['version' => '0.0.22', 'platform' => 'linux', 'log' => crashLog()])->assertCreated();
     $this->postJson('/api/errors', ['version' => '0.0.21', 'platform' => 'windows', 'log' => crashLog()])->assertCreated();
+    $this->postJson('/api/errors', ['version' => '0.1.0-beta', 'platform' => 'windows', 'log' => crashLog()])->assertCreated();
 
-    expect(ErrorReport::query()->count())->toBe(3);
+    expect(ErrorReport::query()->count())->toBe(4);
 });
 
 it('recusa o que não é relatório de erro', function (): void {

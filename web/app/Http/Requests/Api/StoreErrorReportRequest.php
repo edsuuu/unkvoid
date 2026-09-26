@@ -20,7 +20,7 @@ final class StoreErrorReportRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'version' => ['required', 'string', 'regex:/^\d+\.\d+\.\d+$/'],
+            'version' => ['required', 'string', 'regex:/^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/'],
             'platform' => ['required', 'string', Rule::in(self::PLATFORMS)],
             'log' => ['required', 'string', 'max:20000'],
         ];

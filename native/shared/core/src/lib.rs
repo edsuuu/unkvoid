@@ -7,20 +7,25 @@
 
 pub mod api;
 pub mod app;
+pub mod chimes;
 pub mod client;
 pub mod failure;
 pub mod ffi;
 pub mod google;
 pub mod keymap;
+pub mod members;
 pub mod models;
 pub mod permissions;
 pub mod protocol;
+pub mod realtime;
 pub mod reconnect;
 pub mod room;
 pub mod room_code;
 pub mod routes;
 pub mod session;
 pub mod sharing;
+pub mod speaking;
+pub mod update;
 pub mod watching;
 
 pub use api::{Api, HttpError};

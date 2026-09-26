@@ -559,12 +559,16 @@ const AUDIO_TAIL: &str = "audioconvert ! audioresample \
 
 /// O microfone padrão, limpo pelo `webrtcdsp` quando a distro o tem (plugins bad).
 ///
-/// ponytail: sem `webrtcechoprobe` o cancelamento de eco não tem o que cancelar — o som
-/// dos outros toca em outro processo (`watch.rs`). Ficam a supressão de ruído e o ganho.
+/// O cancelamento de eco fica desligado: ele exige um `webrtcechoprobe` no mesmo pipeline,
+/// e o som dos outros toca em outro processo (`watch.rs`). Ligado sem a sonda, o
+/// `webrtcdsp` se recusa a iniciar e derruba o microfone inteiro — era o que acontecia.
+///
+/// ponytail: sem eco cancelado, quem usa caixa de som em vez de fone devolve a voz dos
+/// outros. Teto: tocar o som da sala e capturar o microfone no mesmo pipeline, com a sonda.
 fn microphone_pipeline() -> String {
     let cleanup = if has_webrtcdsp() {
         "! audioconvert ! audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved \
-         ! webrtcdsp echo-cancel=true noise-suppression=true gain-control=true "
+         ! webrtcdsp echo-cancel=false noise-suppression=true gain-control=true "
     } else {
         ""
     };
@@ -592,6 +596,12 @@ const HARDWARE_H264_ENCODERS: [&str; 3] = ["nvh264enc", "vah264enc", "vaapih264e
 /// Quanto a sondagem espera por um encoder. Um elemento que não existe falha em
 /// milissegundos; um driver que pendura na abertura não pode segurar a transmissão.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Quanto uma pergunta ao X espera. Todo comando do `text` — `xrandr`, `xdpyinfo` — abre
+/// uma conexao com o servidor grafico, e um X que nao responde nao devolve erro: ele
+/// pendura. Sem isto o `xrandr` de uma sessao sem X levou cinco minutos para desistir, e
+/// nesse tempo quem clicou em compartilhar so ve o app travado.
+const X_QUERY_TIMEOUT: &str = "3";
 
 /// O formato cru que o encoder quer e o pipeline dele até o pipe.
 ///
@@ -881,7 +891,9 @@ fn region(source: CaptureSource) -> Option<Monitor> {
 }
 
 fn text(program: &str, args: &[&str]) -> Option<String> {
-    Command::new(program)
+    Command::new("timeout")
+        .arg(X_QUERY_TIMEOUT)
+        .arg(program)
         .args(args)
         .stderr(Stdio::null())
         .output()

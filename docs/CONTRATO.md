@@ -161,6 +161,15 @@ sobre `ts\nMÉTODO\ncaminho\ncorpo`, janela de 300 s — como o `kick` de hoje):
 `consumePlain` devolve também `ssrc` do consumer: o receptor nativo do Linux separa os
 producers de uma mesma porta por SSRC, sem adivinhar pelo primeiro pacote.
 
+E devolve `rtx: { ssrc, payloadType } | null` — o fluxo de retransmissão do consumer
+(RFC 4588), quando o codec tem um. É por ele que o receptor nativo (`media::PlainReceiver`,
+usado pelo macOS, pelo Windows e pelo Linux) recupera pacote perdido: manda um NACK
+(RTCP PT 205, FMT 1) com os números que faltaram, o SFU reenvia pelo `rtx.ssrc` com o
+número original nos dois primeiros bytes do payload, e o quadro sai inteiro. Quando a
+espera passa de 250 ms o buraco é largado e vai um PLI (PT 206, FMT 1) pedindo keyframe.
+Os dois RTCP saem cifrados (SRTCP) pelo mesmo socket e com a mesma chave do `consumePlain`.
+Sem `rtx`, o receptor ainda reordena e pede keyframe; só não recebe o reenvio.
+
 Webhook do SFU para o Laravel, **fora do caminho do `join`**, fire-and-forget, para conta
 (`user:`) e visitante da sala por código (`guest:<installId>`, `room` com o código de 3 a
 32 caracteres). Em sala por código (qualquer `room` que não tenha 26 caracteres) o aviso só vira linha
@@ -201,12 +210,25 @@ Conta:
 
 | rota | corpo | resposta |
 |---|---|---|
-| `POST /api/auth/register` (público) | `{ email, password, device }` | `{ token, user }`. O apelido nasce de `User::freeNickname` sobre o e-mail, com `nickname_confirmed: false` |
-| `POST /api/auth/login` (público) | `{ email, password, device }` | `{ token, user }` |
+| `POST /api/auth/register` (público) | `{ email, password, device, refresh? }` | `{ token, refresh_token, expires_at, user }`. O apelido nasce de `User::freeNickname` sobre o e-mail, com `nickname_confirmed: false` |
+| `POST /api/auth/login` (público) | `{ email, password, device, refresh? }` | `{ token, refresh_token, expires_at, user }`. Senha errada é 401 com `"E-mail ou senha não conferem."` |
+| `POST /api/auth/refresh` (público) | `{ refresh_token }` | o par novo, no mesmo formato; o token de renovação usado morre na hora. Vencido, usado ou de outra coisa: 401 `"Sua sessão terminou. Entre de novo."` |
+| `POST /api/auth/logout` | `{ refresh_token? }` | 204; derruba o token de acesso da requisição e, se vier, o de renovação da mesma conta |
 | `GET /api/me` | — | `{ id, name, email, avatar_url, avatar_uploaded, admin, nickname_confirmed }` |
 | `PATCH /api/me` | `{ name }` (3 a 32 caracteres, `[A-Za-z0-9._]`, único; pode repetir o atual) | o mesmo `user`, agora com `nickname_confirmed: true`. Só enquanto `nickname_confirmed` for `false`: depois é 403 |
 | `POST /api/me/avatar` | `multipart`, campo `avatar` (jpeg/png/webp, ≤ 2 MB) | o mesmo `user`, com a foto nova; guarda no bucket privado e apaga a foto anterior |
 | `DELETE /api/me/avatar` | — | o mesmo `user` (200, não 204): tirar a foto enviada faz voltar a valer a do Google, e o app precisa do link novo |
+
+**A renovação.** Quem manda `refresh: true` (o núcleo nativo manda sempre) recebe o par: o
+token de acesso vence em **24 h** (`expires_at`) e o de renovação em **60 dias**, e esse só
+serve para trocar o par em `/api/auth/refresh` — como `Bearer` ele não abre rota nenhuma. Quem
+não manda (o app do Tauri até a 0.0.40) recebe o token de sempre, que não vence, e
+`refresh_token`/`expires_at` nulos. O login do Google faz o mesmo com `refresh=1` em
+`/oauth2/app`: o `refresh_token` volta na porta local ou no `unkvoid://` ao lado do `token`.
+
+No núcleo, um 401 com sessão aberta renova o par uma vez (uma renovação por vez) e repete o
+pedido; se a renovação falha, a sessão acaba: os tokens saem do disco e a interface volta à
+entrada com "Sua sessão terminou. Entre de novo." Sair da conta nunca espera a rede.
 
 `avatar_url` é a foto que a pessoa enviou, pré-assinada e vencendo em 2 h; sem foto enviada é o link permanente do Google, e sem nenhuma das duas vem `null`.
 `avatar_uploaded` diz qual das duas é, e é o que decide se o app mostra "remover a foto". Toda
@@ -418,6 +440,12 @@ mais recentes do canal e da conversa abertos, emendando com o que já estava na 
 O nome do canal perdeu os prefixos `private-` e `presence-` do Pusher: é `channel.`, `server.`
 e `user.`, o mesmo nome dos dois lados.
 
+Nos apps nativos o cliente é o `core_app::realtime::Realtime`: ele se apresenta, reassina
+sozinho cada canal quando o socket volta (e avisa `realtime.back`), e emite `presence.here`
+com quem já estava num canal de presença ao assinar. O que cada evento significa — reler o
+canal, a conversa, a árvore, o toque de mensagem, o aviso — é o `realtime::read`, e as
+interfaces só executam.
+
 ### Expulsar e banir cortam a pessoa de tudo
 
 Vale a partir do momento em que acontece; quem já tinha saído antes não é reprocessado.
@@ -559,7 +587,10 @@ sala aberta não têm canal:
 | `room.failed` | `{what: "watch" \| "share" \| "mic"}` |
 | `room.ping` | `{ms}`: a ida e volta da sinalização, a cada 5 s |
 | `room.level` | `{level, percent}`: o nível do microfone — de 0 a 1, e na escala de 0 a 100 da sensibilidade —, uns dez por segundo |
+| `room.chime` | `{chime: "joined" \| "left" \| "streamStarted" \| "streamStopped"}`: o toque de uma troca do elenco (`chimes.rs`); a interface só toca `Chime::samples()` |
+| `room.notice` | `{text}`: o aviso do React junto com o toque — "fulano entrou", "saiu", "começou a transmitir" |
 | `realtime.lost`, `realtime.back` | `{}`: na volta a interface se apresenta e se inscreve de novo |
+| `session.ended` | `{}`: o par não renovou e a sessão acabou; a interface volta à entrada |
 
 **Falha nunca atravessa com detalhe técnico.** Vem `{failed: "<motivo>"}` — `unreachable`,
 `signedOut`, `notAllowed`, `gone`, `invalid`, `serverBroke`, `tooFast` — e a interface
@@ -596,7 +627,7 @@ Tauri converte para o snake_case do Rust. Mudou um comando, mude aqui e em `ui/c
 | `start_voice` / `stop_voice` / `set_voice_muted` | — / — / `muted` | — | o mic pelo Rust (Linux). De `start_voice` a `stop_voice` sai o evento `voice:level` com `{ level }` (RMS linear de 0 a 1, o maior de cada janela de 100 ms): é o que a detecção de voz da interface mede, já que ali o áudio não passa pela janela. Sai **mesmo mutado** — é ele que reabre o portão. Mutado, o Rust manda silêncio em Opus em vez de nenhum pacote: sem pacote o relógio de 30 s do SFU mataria o producer |
 | `start_camera` / `stop_camera` | `device` / — | — | a câmera pelo Rust (Linux) |
 | `watch_key` | — | chave SRTP em base64 | a chave de recepção do `consumePlain` |
-| `watch_native` | `producerId, kind, address, serverKey, payloadType, ssrc` | porta do MJPEG em 127.0.0.1 (0 no áudio) | assistir por RTP puro onde a janela não tem WebRTC (Linux) |
+| `watch_native` | `consumer: { producerId, kind, address, serverKey, payloadType, ssrc, rtx }` | porta do MJPEG em 127.0.0.1 (0 no áudio) | assistir por RTP puro onde a janela não tem WebRTC (Linux); `rtx` é o do `consumePlain`, para o reenvio de pacote perdido |
 | `stop_watch` | `producerId`, ou `null` para tudo | — | só o `null` fecha o socket de recepção: o `comedia` do SFU aprendeu aquele endereço |
 | `watch_mute` | `producerId, muted` | — | o Rust para de repassar o áudio da tela |
 | `watch_stats` | — | pacotes recebidos | registrado; a interface não chama hoje |

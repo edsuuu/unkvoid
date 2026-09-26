@@ -18,6 +18,9 @@ final class RegisterRequest extends FormRequest
             'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
             'password' => ['required', 'string', Password::min(8)],
             'device' => ['required', 'string', 'max:60'],
+            // O app que sabe renovar pede o par de tokens; o antigo não manda nada e fica
+            // com o token que não vence.
+            'refresh' => ['sometimes', 'boolean'],
         ];
     }
 }

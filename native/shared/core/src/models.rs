@@ -216,6 +216,9 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuthToken {
     pub token: String,
+    /// O token que troca o par quando o de acesso vence. Só vem para quem pede (`refresh`).
+    #[serde(default)]
+    pub refresh_token: Option<String>,
     pub user: Option<User>,
 }
 

@@ -1,7 +1,8 @@
 import { ScrollView } from "std-widgets.slint";
 import { Icons, Skin } from "skin.slint";
 import { Ui } from "state.slint";
-import { Avatar, CodeChip, Danger, Glass, Glyph, IconButton, LabelMono, Muted, Pill, PrimaryButton, RowItem } from "widgets.slint";
+import { Avatar, CodeChip, Danger, Glass, Glyph, IconButton, LabelMono, Pill, RowItem } from "widgets.slint";
+import { PeopleMenu, Stage } from "stage.slint";
 
 // A sala: o código para mandar a alguém, quem está dentro, e o que está sendo transmitido.
 //
@@ -11,9 +12,6 @@ import { Avatar, CodeChip, Danger, Glass, Glyph, IconButton, LabelMono, Muted, P
 // **A sala por código não tem voz.** Nada de microfone, som, câmera ou barra de baixo: ela é
 // só a tela compartilhada, como no React (`RoomToolbar` só desenha isso no modo `voice`).
 export component RoomScreen inherits Rectangle {
-    // Quem está na sala abre na setinha, e não numa coluna que rouba metade da tela.
-    property <bool> showing-people;
-
     VerticalLayout {
         padding: 12px;
         spacing: 12px;
@@ -26,6 +24,16 @@ export component RoomScreen inherits Rectangle {
                 padding-left: 12px;
                 padding-right: 12px;
                 spacing: 8px;
+
+                // A casinha do React, antes do "SALA". Aqui ela não sai da sala: a Home (ou a
+                // entrada, sem conta) abre com a transmissão no ar, e mostra o caminho de volta.
+                IconButton {
+                    commands: Icons.home;
+                    size: 30px;
+                    glyph-size: 14px;
+                    y: (parent.height - self.height) / 2;
+                    clicked => { Ui.visit-home(); }
+                }
 
                 LabelMono {
                     text: "SALA";
@@ -40,55 +48,8 @@ export component RoomScreen inherits Rectangle {
                     y: (parent.height - self.height) / 2;
                 }
 
-                people := Pill {
-                    // Até três rostos, como no React. A largura sai da conta e não do que
-                    // está dentro: medir o filho aqui faria o filho medir o pai de volta.
-                    property <int> shown: min(3, max(1, Ui.peers.length));
-                    property <length> faces-width: shown * 26px + (shown - 1) * 5px;
-
-                    width: 6px + faces-width + 46px;
+                PeopleMenu {
                     y: (parent.height - self.height) / 2;
-
-                    HorizontalLayout {
-                        x: 6px;
-                        width: parent.faces-width;
-                        height: parent.height;
-                        spacing: 5px;
-                        alignment: start;
-
-                        for peer[index] in Ui.peers : Rectangle {
-                            width: index < 3 ? 26px : 0px;
-                            visible: index < 3;
-
-                            Avatar {
-                                letter: peer.initial;
-                                size: 26px;
-                                mine: peer.mine;
-                            }
-                        }
-                    }
-
-                    Text {
-                        x: 6px + parent.faces-width + 8px;
-                        text: Ui.peers.length == 0 ? "1" : Ui.peers.length;
-                        color: Skin.ink-dim;
-                        font-family: Skin.mono;
-                        font-size: 10.5px;
-                        vertical-alignment: center;
-                        height: parent.height;
-                    }
-
-                    Glyph {
-                        x: parent.width - 20px;
-                        y: (parent.height - self.height) / 2;
-                        commands: Icons.chevron-down;
-                        size: 12px;
-                    }
-
-                    TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { showing-people = !showing-people; }
-                    }
                 }
 
                 Pill {
@@ -168,7 +129,7 @@ export component RoomScreen inherits Rectangle {
                     commands: Icons.screen;
                     active: Ui.sharing;
                     y: (parent.height - self.height) / 2;
-                    clicked => { Ui.toggle-share(); }
+                    clicked => { Ui.open-share(); }
                 }
 
                 IconButton {
@@ -182,154 +143,20 @@ export component RoomScreen inherits Rectangle {
             }
         }
 
-        // O cartão do meio quando não há nada para assistir: o desenho, a frase e o botão
-        // que começa a transmissão — nessa ordem, como no React.
+        // O palco: o cartão largo quando ninguém transmite, e as telas quando há.
         Rectangle {
             vertical-stretch: 1;
 
-            Glass {
-                width: 520px;
-                // A `preferred-height` do layout já conta a folga de dentro: somar os 36 de
-                // novo deixava um vazio no pé do cartão.
-                height: middle.preferred-height;
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
-                border-radius: 24px;
-
-                middle := VerticalLayout {
-                    padding: 36px;
-                    spacing: 0px;
-                    alignment: center;
-
-                    HorizontalLayout {
-                        alignment: center;
-                        padding-bottom: 20px;
-
-                        Rectangle {
-                            height: 64px;
-                            width: 64px;
-                            border-radius: 20px;
-                            border-width: 1px;
-                            border-color: #8a7cf54d;
-                            background: #8a7cf526;
-
-                            Glyph {
-                                commands: Icons.screen;
-                                size: 26px;
-                                tint: Skin.lilac-2;
-                            }
-                        }
-                    }
-
-                    Text {
-                        text: Ui.sharing
-                            ? "Você está transmitindo."
-                            : "Ninguém está compartilhando ainda.";
-                        color: Skin.ink;
-                        font-family: Skin.sans;
-                        font-size: 19px;
-                        font-weight: 600;
-                        horizontal-alignment: center;
-                        wrap: word-wrap;
-                    }
-
-                    // O `mt-2.5` do React entre o título e a frase. `padding` não vale em
-                    // `Text`, e a folga do layout seria a mesma entre todos os filhos.
-                    Rectangle { height: 10px; }
-
-                    Muted {
-                        text: Ui.sharing
-                            ? "A sua tela não aparece aqui para não gastar um decoder à toa."
-                            : "Mande o código " + Ui.room-code + " para quem você quer aqui.";
-                        horizontal-alignment: center;
-                        wrap: word-wrap;
-                    }
-
-                    HorizontalLayout {
-                        alignment: center;
-                        padding-top: Ui.sharing ? 0px : 20px;
-
-                        PrimaryButton {
-                            text: "Iniciar compartilhamento";
-                            visible: !Ui.sharing;
-                            height: Ui.sharing ? 0px : 41px;
-                            width: 240px;
-                            clicked => { Ui.toggle-share(); }
-                        }
-                    }
-
-                    Danger {
-                        text: Ui.complaint;
-                        min-height: 20px;
-                        horizontal-alignment: center;
-                    }
-                }
+            Stage {
+                width: parent.width;
+                height: parent.height;
+                code: Ui.room-code;
             }
 
-            // O popover de quem está na sala: 320 de largura, colado embaixo da pílula.
-            Rectangle {
-                visible: showing-people;
-                x: 190px;
-                y: 0px;
-                width: 320px;
-                height: list.preferred-height + 16px;
-                border-radius: 14px;
-                border-width: 1px;
-                border-color: Skin.line-strong;
-                background: #100d1af5;
+        }
 
-                list := VerticalLayout {
-                    padding: 8px;
-                    spacing: 6px;
-
-                    HorizontalLayout {
-                        padding-left: 8px;
-                        padding-right: 8px;
-                        padding-top: 6px;
-                        padding-bottom: 6px;
-
-                        LabelMono {
-                            text: "NA SALA";
-                            horizontal-stretch: 1;
-                        }
-                    }
-
-                    for peer in Ui.peers : RowItem {
-                        height: 40px;
-
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            spacing: 10px;
-
-                            Avatar {
-                                letter: peer.initial;
-                                size: 24px;
-                                mine: peer.mine;
-                                y: (parent.height - self.height) / 2;
-                            }
-
-                            Text {
-                                text: peer.name;
-                                color: Skin.ink-body;
-                                font-family: Skin.sans;
-                                font-size: 12.5px;
-                                horizontal-stretch: 1;
-                                overflow: elide;
-                                vertical-alignment: center;
-                            }
-
-                            Text {
-                                text: peer.note;
-                                color: Skin.ink-dim;
-                                font-family: Skin.mono;
-                                font-size: 10px;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                }
-            }
+        if Ui.complaint != "" : Danger {
+            text: Ui.complaint;
         }
     }
 }

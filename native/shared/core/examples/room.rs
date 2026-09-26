@@ -70,6 +70,7 @@ async fn main() -> anyhow::Result<()> {
         let until = Instant::now() + Duration::from_secs(seconds);
         let (mut frames, mut keyframes, mut video_bytes, mut audio_blocks) =
             (0_u32, 0_u32, 0_usize, 0_u32);
+        let mut screens = std::collections::BTreeSet::new();
 
         while Instant::now() < until {
             let Ok(next) =
@@ -80,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
 
             match next.kind {
                 MediaKind::Video { keyframe, .. } => {
+                    screens.insert(next.producer_id.clone());
                     frames += 1;
                     keyframes += u32::from(keyframe);
                     video_bytes += next.data.len();
@@ -91,6 +93,15 @@ async fn main() -> anyhow::Result<()> {
         println!(
             "chegou: {frames} quadros ({keyframes} keyframes, {video_bytes} bytes) e {audio_blocks} blocos de som"
         );
+
+        for screen in &screens {
+            if let Some(counters) = room.counters(screen) {
+                println!(
+                    "pacotes da tela {screen}: {} recebidos, {} recuperados por reenvio, {} perdidos",
+                    counters.received, counters.recovered, counters.lost
+                );
+            }
+        }
     }
 
     room.leave().await;
