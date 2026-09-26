@@ -66,6 +66,9 @@ pub struct Bridge {
     voice_channel: Arc<Mutex<Option<String>>>,
     /// O tique que leva o quadro mais novo de cada tela para a janela.
     frames: slint::Timer,
+    /// O tique de um segundo da linha de números, e os contadores da última volta dele.
+    numbers: slint::Timer,
+    counted: Arc<Mutex<std::collections::HashMap<String, media::Counters>>>,
     /// Desde quando se está na sala. O relógio da barra conta a partir daqui.
     since: Arc<Mutex<Option<std::time::Instant>>>,
     /// O tique de um segundo que escreve esse relógio. Vive enquanto a janela viver.
@@ -111,6 +114,8 @@ impl Bridge {
             voice: Arc::default(),
             voice_channel: Arc::default(),
             frames: slint::Timer::default(),
+            numbers: slint::Timer::default(),
+            counted: Arc::default(),
             since: Arc::default(),
             clock: slint::Timer::default(),
             servers: Arc::default(),
@@ -181,6 +186,42 @@ impl Bridge {
                         row.has_frame = true;
                         tiles.set_row_data(index, row);
                     }
+                }
+            }
+        });
+
+        self.numbers.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(1), {
+            let (window, watch, room, counted) = (self.window.clone(), self.watch.clone(), self.room.clone(), self.counted.clone());
+
+            move || {
+                let (Some(app), Some(room)) = (window.upgrade(), lock(&room).clone()) else {
+                    return;
+                };
+                let drawn = match lock(&watch).as_ref() {
+                    Some(watch) => watch.drawn(),
+                    None => return,
+                };
+                let tiles = app.global::<Ui>().get_tiles();
+                let mut counted = lock(&counted);
+
+                for index in 0..tiles.row_count() {
+                    let Some(mut row) = tiles.row_data(index) else {
+                        continue;
+                    };
+                    let producer = row.producer.to_string();
+                    let now = room.counters(&producer).unwrap_or_default();
+                    let before = counted.insert(producer.clone(), now).unwrap_or_default();
+                    let (frames, height) = drawn.get(&producer).copied().unwrap_or_default();
+                    let (said, high) = crate::stage::stats_line(
+                        frames,
+                        height,
+                        now.received.saturating_sub(before.received),
+                        now.lost.saturating_sub(before.lost),
+                    );
+
+                    row.stats = said.into();
+                    row.loss_high = high;
+                    tiles.set_row_data(index, row);
                 }
             }
         });
@@ -2037,6 +2078,15 @@ fn paint_stage(window: &Weak<AppWindow>, stage: &Arc<Mutex<Stage>>) {
                     heard: placed.heard,
                     watchers: i32::try_from(placed.watchers.len()).unwrap_or(i32::MAX),
                     watcher_names: placed.watchers.join(", ").into(),
+                    stats: before
+                        .iter()
+                        .find(|row| row.producer == placed.tile.producer_id.as_str())
+                        .map(|row| row.stats.clone())
+                        .unwrap_or_default(),
+                    loss_high: before
+                        .iter()
+                        .find(|row| row.producer == placed.tile.producer_id.as_str())
+                        .is_some_and(|row| row.loss_high),
                     has_frame: frame.is_some(),
                     frame: frame.unwrap_or_default(),
                     column: i32::try_from(placed.column).unwrap_or_default(),

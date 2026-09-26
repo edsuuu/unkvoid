@@ -147,6 +147,8 @@ fn tile(label: &str, column: i32, line: i32, width: u32, height: u32, watchers: 
         heard: false,
         watchers,
         watcher_names: SharedString::new(),
+        stats: format!("{height}p · 60 fps · 0,0%").into(),
+        loss_high: false,
         frame: Image::from_rgb8(buffer),
         has_frame: true,
         column,

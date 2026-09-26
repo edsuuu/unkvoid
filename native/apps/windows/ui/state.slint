@@ -69,6 +69,9 @@ export struct TileRow {
     /// Quantos assistem, e quem, para o balão do olho.
     watchers: int,
     watcher-names: string,
+    /// `1080p · 60 fps · 0,0%`, e se a perda passou de 2% — aí o número fica vermelho.
+    stats: string,
+    loss-high: bool,
     /// O último quadro. Até o primeiro chegar, o cartão mostra que está abrindo.
     frame: image,
     has-frame: bool,

@@ -163,6 +163,14 @@ component StreamTile inherits Rectangle {
                     max-width: parent.width * 0.4;
                 }
 
+                if root.tile.stats != "" && !root.tile.camera : Text {
+                    text: root.tile.paused ? "pausado" : root.tile.stats;
+                    color: root.tile.loss-high && !root.tile.paused ? Skin.danger : Skin.ink-dim;
+                    font-family: Skin.mono;
+                    font-size: 9.5px;
+                    vertical-alignment: center;
+                }
+
                 if root.tile.watchers > 0 : HorizontalLayout {
                     spacing: 4px;
 

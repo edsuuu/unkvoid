@@ -24,8 +24,12 @@ const PATIENCE: Duration = Duration::from_millis(100);
 /// O quadro mais novo de cada tela que a janela ainda não desenhou.
 type Fresh = Arc<Mutex<HashMap<String, SharedPixelBuffer<Rgb8Pixel>>>>;
 
+/// Quantos quadros cada tela decodificou desde a última pergunta, e a altura do último.
+type Drawn = Arc<Mutex<HashMap<String, (u32, u32)>>>;
+
 pub struct Watch {
     fresh: Fresh,
+    drawn: Drawn,
     speaker: Arc<Speaker>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -38,17 +42,23 @@ impl Watch {
         speaker: Arc<Speaker>,
         on_speaking: impl Fn(&str, bool) + Send + 'static,
     ) -> Self {
-        let (fresh, stop) = (Fresh::default(), Arc::new(AtomicBool::new(false)));
+        let (fresh, drawn, stop) = (Fresh::default(), Drawn::default(), Arc::new(AtomicBool::new(false)));
         let thread = std::thread::Builder::new()
             .name("unkvoid-assistir".into())
             .spawn({
-                let (fresh, speaker, stop) = (fresh.clone(), speaker.clone(), stop.clone());
+                let (fresh, drawn, speaker, stop) = (fresh.clone(), drawn.clone(), speaker.clone(), stop.clone());
 
-                move || route(&queue, &fresh, &speaker, &stop, &on_speaking)
+                move || route(&queue, (&fresh, &drawn), &speaker, &stop, &on_speaking)
             })
             .ok();
 
-        Self { fresh, speaker, stop, thread }
+        Self { fresh, drawn, speaker, stop, thread }
+    }
+
+    /// Quadros decodificados de cada tela desde a última pergunta, e a altura do último.
+    /// Perguntado de segundo em segundo, é o fps.
+    pub fn drawn(&self) -> HashMap<String, (u32, u32)> {
+        std::mem::take(&mut *lock(&self.drawn))
     }
 
     /// O último quadro de cada tela desde a última pergunta. Quadro que a janela não chegou
@@ -74,7 +84,7 @@ impl Drop for Watch {
 
 fn route(
     queue: &Receiver<Media>,
-    fresh: &Fresh,
+    (fresh, drawn): (&Fresh, &Drawn),
     speaker: &Speaker,
     stop: &AtomicBool,
     on_speaking: &impl Fn(&str, bool),
@@ -86,7 +96,12 @@ fn route(
         match queue.recv_timeout(PATIENCE) {
             Ok(item) => match item.kind {
                 MediaKind::Video { keyframe, timestamp } => {
-                    show(&mut screens, fresh, &item.producer_id, &item.data, keyframe, timestamp);
+                    if let Some(height) = show(&mut screens, fresh, &item.producer_id, &item.data, (keyframe, timestamp)) {
+                        let mut drawn = lock(drawn);
+                        let counted = drawn.entry(item.producer_id.clone()).or_default();
+
+                        *counted = (counted.0 + 1, height);
+                    }
                 }
                 MediaKind::Audio => {
                     let samples = pcm(&item.data);
@@ -109,18 +124,18 @@ fn route(
 }
 
 /// Um quadro de uma tela. O decodificador só nasce num keyframe: quadro P sem o I de antes
-/// só desenharia lixo. Se ele falhar, morre e renasce no próximo keyframe.
+/// só desenharia lixo. Se ele falhar, morre e renasce no próximo keyframe. Devolve a altura
+/// do quadro que ficou pronto.
 fn show(
     screens: &mut HashMap<String, media::H264Decoder>,
     fresh: &Fresh,
     producer: &str,
     data: &[u8],
-    keyframe: bool,
-    timestamp: u32,
-) {
+    (keyframe, timestamp): (bool, u32),
+) -> Option<u32> {
     if !screens.contains_key(producer) {
         if !keyframe {
-            return;
+            return None;
         }
 
         match media::H264Decoder::new() {
@@ -130,26 +145,27 @@ fn show(
             Err(failure) => {
                 tracing::warn!(%failure, producer, "assistir: o decodificador não abriu");
 
-                return;
+                return None;
             }
         }
     }
 
-    let Some(decoder) = screens.get_mut(producer) else {
-        return;
-    };
+    let decoder = screens.get_mut(producer)?;
 
     match decoder.decode(data, timestamp) {
         Ok(frames) => {
-            if let Some(frame) = frames.into_iter().last() {
-                let buffer = SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(&frame.rgb, frame.width, frame.height);
+            let frame = frames.into_iter().last()?;
+            let buffer = SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(&frame.rgb, frame.width, frame.height);
 
-                lock(fresh).insert(producer.to_owned(), buffer);
-            }
+            lock(fresh).insert(producer.to_owned(), buffer);
+
+            Some(frame.height)
         }
         Err(failure) => {
             tracing::warn!(failure = %format!("{failure:#}"), producer, "assistir: quadro recusado, esperando o próximo keyframe");
             screens.remove(producer);
+
+            None
         }
     }
 }
@@ -238,7 +254,9 @@ mod tests {
         let mut screens = HashMap::new();
         let fresh = Fresh::default();
 
-        show(&mut screens, &fresh, "tela", &[0, 0, 0, 1, 0x09, 0x10], false, 0);
+        let drawn = show(&mut screens, &fresh, "tela", &[0, 0, 0, 1, 0x09, 0x10], (false, 0));
+
+        assert!(drawn.is_none());
 
         assert!(screens.is_empty(), "um quadro P abriu decodificador");
         assert!(lock(&fresh).is_empty());
