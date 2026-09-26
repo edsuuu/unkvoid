@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import Unkvoid
@@ -125,5 +126,34 @@ struct EntryTests {
         #expect(model.nameError == "" && model.codeError == "")
 
         await model.leaveRoom()
+    }
+
+    /// O token vence (ou é revogado noutro aparelho) com o app aberto: a próxima chamada
+    /// devolve à entrada, com o aviso, em vez de deixar o hub na tela sem conta.
+    @Test(.enabled(if: HubTests.ready))
+    func anExpiredTokenLandsOnTheEntryScreen() async throws {
+        #expect(EndToEndTests.isolated)
+
+        let model = AppModel(url: Launch.socketUrl())
+
+        await model.start()
+
+        model.email = "grace@teste.local"
+        model.password = ProcessInfo.processInfo.environment["UNKVOID_TEST_PASSWORD"] ?? ""
+
+        await model.signIn(registering: false)
+
+        try #require(model.signedIn, "a Grace não entrou: \(model.loginError)")
+        #expect(model.screen == .hub)
+
+        // Revoga o token no servidor sem o núcleo saber: é o que "vencer" parece daqui.
+        #expect(await model.ask("api", ["name": "signOut", "params": [:], "body": [:]])["failed"] == nil)
+
+        await model.loadServers()
+
+        #expect(model.screen == .entry)
+        #expect(!model.signedIn)
+        #expect(model.user == nil)
+        #expect(model.notice == "Sua sessão expirou. Entre de novo.")
     }
 }

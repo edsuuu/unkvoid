@@ -306,10 +306,6 @@ final class AppModel: ObservableObject {
         let answer = await ask("me")
 
         guard let restored: User = decode(answer["user"]) else {
-            if answer["failed"] as? String == "signedOut" {
-                await readState()
-            }
-
             return
         }
 
@@ -632,6 +628,12 @@ final class AppModel: ObservableObject {
 
         _ = await ask("signOut")
 
+        await forgetAccount()
+    }
+
+    /// Solta o que era da conta e lê do núcleo em que tela se fica — a regra de qual tela
+    /// é dele.
+    private func forgetAccount() async {
         user = nil
         signedIn = false
         servers = []
@@ -702,6 +704,15 @@ final class AppModel: ObservableObject {
 
         let answered: JSONPayload = await offMain {
             JSONPayload((try? core.app(action, payload.value)) ?? ["failed": "unreachable"])
+        }
+
+        // O núcleo já apagou o token e voltou a tela para a entrada; aqui só se solta o que
+        // era da conta. Sem isto o hub ficava na tela, sem conta, e nada mais respondia.
+        if answered.value["failed"] as? String == "signedOut", signedIn {
+            await leaveVoice()
+            await forgetAccount()
+
+            notice = Self.sentence(for: "signedOut")
         }
 
         return answered.value
