@@ -60,7 +60,6 @@ pub struct HubScreen {
     status: gtk::Label,
     greeting: gtk::Label,
     /// A Home: criar servidor, conversas, amigos.
-    servers_list: gtk::Box,
     conversations: gtk::Box,
     friends_list: gtk::Box,
     pending_badge: gtk::Label,
@@ -111,7 +110,6 @@ impl HubScreen {
         // ---- a Home: coluna de conversas + o miolo ----
         let conversations = column(6);
         let friends_list = column(6);
-        let servers_list = column(6);
         let pending_badge = badge("", "live");
         let new_server = field("Nome da sala");
         let friend_email = field("e-mail de quem você quer adicionar");
@@ -143,7 +141,7 @@ impl HubScreen {
         left.append(&direct_panel);
         left.append(bar.root());
 
-        home.add_named(&servers_home(bridge, &greeting, &new_server, &servers_list, &recent), Some("servers"));
+        home.add_named(&servers_home(bridge, &greeting, &new_server, &recent), Some("servers"));
         home.add_named(&friends_home(&friend_email, &friends_list), Some("friends"));
 
         let talking_name = strong("");
@@ -450,7 +448,6 @@ impl HubScreen {
             invite,
             status,
             greeting,
-            servers_list,
             conversations,
             friends_list,
             pending_badge,
@@ -506,17 +503,9 @@ impl HubScreen {
         self.server_ids.replace(servers.iter().map(|server| server.id).collect());
 
         clear_box(&self.rail);
-        clear_box(&self.servers_list);
-
-        if servers.is_empty() {
-            self.servers_list.append(&muted("Nenhuma ainda. Crie uma ao lado ou entre com um convite."));
-        }
-
-        let mine = self.user.borrow().as_ref().map(|person| person.id);
 
         for server in servers {
             self.rail.append(&server_button(server, bridge));
-            self.servers_list.append(&server_line(server, mine, bridge));
         }
     }
 
@@ -689,17 +678,18 @@ fn servers_home(
     bridge: &Rc<Bridge>,
     greeting: &gtk::Label,
     name: &gtk::Entry,
-    servers: &gtk::Box,
     recent: &gtk::FlowBox,
 ) -> gtk::Box {
-    // Os três cartões quebram a linha em vez de esticar a janela, como o `flex-wrap` do
-    // React: numa janela estreita eles empilham, e a janela nunca manda na largura.
+    // Os dois cartões quebram a linha em vez de esticar a janela, como o `flex-wrap` do
+    // React: numa janela estreita eles empilham, e a janela nunca manda na largura. O
+    // terceiro, "Últimas salas", saiu como no Mac: as salas em que se está já moram na
+    // trilha da esquerda, e repeti-las ao lado só empurrava o resto.
     let cards = gtk::FlowBox::new();
 
     cards.set_selection_mode(gtk::SelectionMode::None);
     cards.set_row_spacing(10);
     cards.set_column_spacing(10);
-    cards.set_max_children_per_line(3);
+    cards.set_max_children_per_line(2);
     cards.set_homogeneous(false);
 
     let create = crate::components::panel_box(10);
@@ -779,15 +769,8 @@ fn servers_home(
         move |_| bridge.show(core_app::Screen::Entry)
     });
 
-    let list = crate::components::panel_box(8);
-
-    list.set_size_request(320, -1);
-    list.append(&label_mono("Últimas salas"));
-    list.append(&scroll(servers));
-
     cards.insert(&create, -1);
     cards.insert(&code, -1);
-    cards.insert(&list, -1);
 
     let holder = column(0);
 
@@ -845,29 +828,6 @@ fn server_button(server: &ServerSummary, bridge: &Rc<Bridge>) -> gtk::Button {
     line.set_child(Some(&inside));
     line.add_css_class("wide");
     line.set_tooltip_text(Some(&server.name));
-    crate::components::clickable(&line);
-
-    line.connect_clicked({
-        let (bridge, id) = (bridge.clone(), server.id);
-
-        move |_| bridge.open_server(id)
-    });
-
-    line
-}
-
-fn server_line(server: &ServerSummary, mine: Option<i64>, bridge: &Rc<Bridge>) -> gtk::Button {
-    let line = gtk::Button::new();
-    let inside = row(10);
-    let texts = column(2);
-
-    texts.append(&strong(&server.name));
-    texts.append(&label_mono(if Some(server.owner_id) == mine { "dono" } else { "membro" }));
-    inside.append(&avatar(&server.name, 32, false));
-    inside.append(&texts);
-    inside.append(&spacer());
-    line.set_child(Some(&inside));
-    line.add_css_class("wide");
     crate::components::clickable(&line);
 
     line.connect_clicked({
