@@ -150,6 +150,7 @@ impl Watching {
         let stop = Arc::new(AtomicBool::new(false));
 
         socket.set_read_timeout(Some(PATIENCE))?;
+        media::grow_receive_buffer(&socket);
         pump(
             socket,
             producer_id.clone(),

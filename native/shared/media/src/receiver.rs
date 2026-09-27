@@ -42,6 +42,17 @@ const TICK: Duration = Duration::from_millis(10);
 /// quadro mais caro do encoder, e pedir de novo antes de ele chegar só gera outro.
 const PLI_INTERVAL: Duration = Duration::from_millis(300);
 
+/// Quanto um socket de chegada guarda até a thread que o lê acordar. Um keyframe a
+/// 10 Mbps são algumas centenas de pacotes que chegam — e são repassados — de uma vez; o
+/// padrão do Windows é 64 KB e o do Linux 208 KB, menos que um keyframe. O excedente some
+/// sem aviso, o quadro chega furado, e a imagem de quem assiste fica parada esperando o
+/// keyframe seguinte, que cai do mesmo jeito. É o espelho do `SEND_BUFFER` do `plain.rs`.
+///
+/// 16 MB são 2,6 s de 50 Mbps pelo mesmo socket — todas as telas somadas. O que enche o
+/// buffer não é a taxa, é a thread que lê ficar parada; e é teto, não reserva: o sistema
+/// só gasta o que está esperando. Bem mais que isso não salva quadro, só atrasa a imagem.
+const RECEIVE_BUFFER: usize = 16 * 1024 * 1024;
+
 /// A retransmissão de um fluxo, como o servidor a anuncia no `consumePlain`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rtx {
@@ -107,6 +118,7 @@ impl PlainReceiver {
 
         socket.connect(server).context("could not point the socket at the SFU")?;
         socket.set_read_timeout(Some(TICK))?;
+        grow_receive_buffer(&socket);
 
         let mut outgoing = context(key)?;
         let mut incoming = context(server_key)?;
@@ -324,6 +336,23 @@ fn pick_route(routes: &mut Routes, ssrc: u32, payload_type: u8) -> Option<usize>
     routes.active[index].ssrc = Some(ssrc);
 
     Some(index)
+}
+
+/// Amplia o buffer de chegada do socket, se o sistema deixar. Não é fatal, e o tamanho que
+/// ficou vai para o log: o Linux apara o pedido no `net.core.rmem_max` sem dizer nada.
+pub fn grow_receive_buffer(socket: &UdpSocket) {
+    let socket = socket2::SockRef::from(socket);
+
+    if let Err(error) = socket.set_recv_buffer_size(RECEIVE_BUFFER) {
+        tracing::warn!(error = %error, "recepção: o buffer de chegada ficou no padrão");
+
+        return;
+    }
+
+    match socket.recv_buffer_size() {
+        Ok(size) => tracing::info!(bytes = size, "recepção: buffer de chegada"),
+        Err(error) => tracing::warn!(error = %error, "recepção: buffer de chegada desconhecido"),
+    }
 }
 
 pub fn resolve(server: impl ToSocketAddrs) -> Result<SocketAddr> {

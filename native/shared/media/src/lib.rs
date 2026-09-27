@@ -25,7 +25,7 @@ mod windows_decoder;
 pub use audio::{AudioEncoder, FRAME_MS};
 pub use governor::BitrateGovernor;
 pub use plain::{Feedback, PlainSender, Source};
-pub use receiver::{PlainReceiver, Rtx, Stream, resolve};
+pub use receiver::{PlainReceiver, Rtx, Stream, grow_receive_buffer, resolve};
 pub use recovery::Counters;
 pub use unpack::{AccessUnit, AudioUnpacker, VideoUnpacker, nals};
 
