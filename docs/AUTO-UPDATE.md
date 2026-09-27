@@ -108,6 +108,19 @@ o manifesto, compara pelo semver (`0.1.0` vem depois de `0.1.0-beta`), baixa com
 tela, confere a assinatura com a mesma pública do `tauri.conf.json` e abre o instalador com
 `/P /UPDATE /R`.
 
+Com o app aberto ele não pergunta ao site de tempos em tempos: quem avisa é o servidor. Publicar
+(`POST /api/releases`) manda `ReleasePublished { version, platform }` pelo canal público
+`releases` do tempo real do SFU (ver `CONTRATO.md`), que todo app aberto ouve, com conta ou sem.
+Sendo da plataforma dele e mais nova, o app anota a versão na configuração
+(`unkvoid:update-announced`, que sai de lá quando ela estiver rodando), baixa calado, confere a
+assinatura e mostra o botão verde na barra, ao lado do minimizar — a moldura é do app
+(`ui/frame.slint`, `src/frame.rs`) para caber esse botão. Quem escolhe a hora de reiniciar é a
+pessoa: ninguém cai da sala porque saiu uma versão. O clique guarda onde ela está
+(`native/shared/core/src/resume.rs`: a sala por código ou o canal de voz, e a tela no ar com a
+mesma origem e qualidade), se despede da sala e abre o instalador; a versão nova volta para lá.
+O guardado vale por 10 minutos e uma vez só. App fechado quando o aviso passou fica sabendo na
+abertura, como sempre.
+
 Com os Clips o app roda com o nível mais alto da conta (ver `DECISOES.md`). Numa conta de
 administrador ele já está elevado, e o instalador aberto por ele herda o nível: a troca acontece
 **sem aviso do UAC**, e o instalador reabre o app direto, não mais pelo Explorer. Numa conta

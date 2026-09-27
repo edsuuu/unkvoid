@@ -42,7 +42,15 @@ export component AppWindow inherits Window {
         height: root.height - root.bar;
 
         VerticalLayout {
-            if ClipsUi.available : SectionTabs { }
+            // Na sala as abas moram na barra dela, no lugar da casinha (`room.slint`): a faixa
+            // só aparece nas outras telas e nos Clips — que é por onde se volta à sala.
+            if ClipsUi.available && (ClipsUi.open || Ui.screen != "room") : HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 10px;
+
+                SectionTabs { }
+            }
 
             Rectangle {
                 vertical-stretch: 1;

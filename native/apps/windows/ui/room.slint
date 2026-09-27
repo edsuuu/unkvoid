@@ -3,6 +3,7 @@ import { Icons, Skin } from "skin.slint";
 import { Ui } from "state.slint";
 import { Avatar, CodeChip, Danger, Glass, Glyph, IconButton, LabelMono, Pill, RowItem } from "widgets.slint";
 import { PeopleMenu, Stage } from "stage.slint";
+import { ClipsUi, SectionTabs } from "clips.slint";
 
 // A sala: o código para mandar a alguém, quem está dentro, e o que está sendo transmitido.
 //
@@ -34,6 +35,17 @@ export component RoomScreen inherits Rectangle {
                     glyph-size: 14px;
                     y: (parent.height - self.height) / 2;
                     clicked => { Ui.visit-home(); }
+                }
+
+                // As abas Unkvoid e Clips na barra da sala, à direita da casinha, e não numa
+                // faixa só delas em cima: a sala ganha a altura da faixa.
+                // Sem esticar: esticado, o bloco dividia a sobra com o espaçador e empurrava o
+                // "SALA" para o meio da barra.
+                if ClipsUi.available : VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 0;
+
+                    SectionTabs { }
                 }
 
                 LabelMono {

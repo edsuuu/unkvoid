@@ -346,12 +346,10 @@ export global ClipsUi {
 
 }
 
-// As duas partes do app, no alto da janela e em todas as telas: o Unkvoid (salas, servidores,
-// voz) e os Clips, que funcionam sem conta e sem internet.
+// As duas partes do app, em todas as telas: o Unkvoid (salas, servidores, voz) e os Clips,
+// que funcionam sem conta e sem internet. Sem margem própria: na sala elas moram dentro da
+// barra dela, e nas outras telas numa faixa no alto (`app.slint`).
 export component SectionTabs inherits HorizontalLayout {
-    padding-left: 12px;
-    padding-right: 12px;
-    padding-top: 10px;
     spacing: 4px;
     alignment: start;
 

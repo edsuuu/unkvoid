@@ -66,6 +66,9 @@ windows = { version = "0.62", features = [
     # O canto redondo do Windows 11, que a janela sem moldura perde.
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    # A licença para capturar sem a borda amarela (`allow_borderless_capture`).
+    "Graphics_Capture",
+    "Security_Authorization_AppCapabilityAccess",
 ] }
 windows-core = "0.62"
 

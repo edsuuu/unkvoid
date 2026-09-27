@@ -46,15 +46,6 @@ const FOLLOW: &str = r#"{"event":"live.follow"}"#;
 
 const DEFAULT_SERVER: &str = "https://unkvoid.com";
 
-/// De quanto em quanto tempo o app aberto procura versão nova, depois da procura da abertura.
-///
-/// `UNKVOID_UPDATE_EVERY`, em segundos, troca o intervalo: é como se prova o botão verde sem
-/// esperar meia hora.
-///
-/// ponytail: procurar no relógio, sem aviso do servidor. Teto: quem publica espera até meia
-/// hora para o botão verde aparecer. A saída é o tempo real avisar a versão nova.
-const UPDATE_CHECK: std::time::Duration = std::time::Duration::from_secs(30 * 60);
-
 /// Quanto se espera a sala se despedir do servidor antes de entregar o app ao instalador. Sem
 /// a despedida, quem assiste fica vendo a tela parada até o servidor desistir de esperar.
 const LEAVING: std::time::Duration = std::time::Duration::from_secs(3);
@@ -735,15 +726,18 @@ impl Bridge {
 
             landed(&core, &api, &window, &landing, user).await;
 
-            if let Some(account) = account {
-                go_live(&api, &sfu, &live, &window, account).await;
-            }
+            // O tempo real abre com conta ou sem: sem conta ele só ouve o canal das versões.
+            go_live(&api, &sfu, &live, &window, account).await;
 
             if returning {
                 paint(&window, |app| app.global::<Ui>().invoke_resume_session());
             }
 
-            watch_updates(&api, &window, &installer).await;
+            // Anunciada pelo servidor e ainda não instalada (a abertura não conseguiu baixar):
+            // o botão verde volta sem ninguém perguntar ao site.
+            if core_app::update::announced(&core).is_some() {
+                prepare_update(&api, &window, &installer).await;
+            }
         });
     }
 
@@ -777,7 +771,12 @@ impl Bridge {
 
                     landed(&core, &api, &window, &landing, user).await;
 
-                    if let Some(account) = account {
+                    if account.is_some() {
+                        // O de antes era o sem conta: o com conta se apresenta ao SFU.
+                        if let Some(guest) = lock(&live).take() {
+                            guest.close();
+                        }
+
                         go_live(&api, &sfu, &live, &window, account).await;
                     }
                 }
@@ -798,6 +797,11 @@ impl Bridge {
 
         lock(&self.followed).clear();
         lock(&self.online).clear();
+
+        // Sem conta o tempo real continua, só para o aviso de versão nova.
+        let (api, sfu, live, window) = (self.api.clone(), self.sfu.clone(), self.live.clone(), self.window.clone());
+
+        self.spawn(async move { go_live(&api, &sfu, &live, &window, None).await });
 
         let window = self.window.clone();
         let landing = self.core.home();
@@ -1036,6 +1040,8 @@ impl Bridge {
 
         match event {
             "live.follow" => return self.follow(),
+            // Vale sem conta: é o canal público, e o `me` abaixo não importa para ele.
+            "ReleasePublished" => return self.release_announced(data),
             "room.chime" => {
                 if let Ok(chime) = serde_json::from_value::<Chime>(data["chime"].clone()) {
                     self.chime(chime);
@@ -1058,6 +1064,24 @@ impl Bridge {
         let talking = lock(&self.talking).as_ref().map(|person| person.id);
 
         self.act(realtime::read(event, channel, data, me, talking));
+    }
+
+    /// O servidor avisou pelo tempo real que saiu versão nova: fica anotada na configuração
+    /// (sai de lá quando estiver instalada) e desce calada até o botão verde aparecer.
+    fn release_announced(self: &Rc<Self>, data: &serde_json::Value) {
+        let Some(version) = core_app::update::newer_in(data) else {
+            return;
+        };
+
+        if lock(&self.installer).as_ref().is_some_and(|(_, ready)| *ready == version) {
+            return;
+        }
+
+        core_app::update::announce(&self.core, &version);
+
+        let (api, window, ready) = (self.api.clone(), self.window.clone(), self.installer.clone());
+
+        self.spawn(async move { prepare_update(&api, &window, &ready).await });
     }
 
     fn act(self: &Rc<Self>, reading: Reading) {
@@ -2266,7 +2290,7 @@ async fn go_live(
     sfu: &Arc<Mutex<Option<String>>>,
     live: &Arc<Mutex<Option<Arc<Realtime>>>>,
     window: &Weak<AppWindow>,
-    account: i64,
+    account: Option<i64>,
 ) {
     let Some(url) = lock(sfu).clone() else {
         return;
@@ -2286,7 +2310,9 @@ async fn go_live(
         }
     };
 
-    if let Err(failure) = realtime.subscribe(&format!("user.{account}")).await {
+    if let Some(account) = account
+        && let Err(failure) = realtime.subscribe(&format!("user.{account}")).await
+    {
         tracing::warn!(%failure, "tempo real: o canal da conta não abriu");
     }
 
@@ -3190,38 +3216,28 @@ async fn clips_saved() {
     }
 }
 
-/// Com o app aberto, procura versão nova de tempos em tempos e a baixa calada. Pronta e
-/// conferida, o botão verde aparece na barra: quem escolhe a hora de reiniciar é a pessoa,
-/// como no Discord — ninguém cai da sala porque saiu uma versão.
-async fn watch_updates(api: &Api, window: &Weak<AppWindow>, ready: &Arc<Mutex<Option<(PathBuf, String)>>>) {
-    let every = std::env::var("UNKVOID_UPDATE_EVERY")
-        .ok()
-        .and_then(|seconds| seconds.parse().ok())
-        .map_or(UPDATE_CHECK, std::time::Duration::from_secs);
-
-    loop {
-        tokio::time::sleep(every).await;
-
-        let Some(release) = api.newer_release(core_app::update::PLATFORM).await else {
-            continue;
-        };
-        let Some(installer) = core_app::update::fetch(api, &release, |_, _| {}).await else {
-            continue;
-        };
-        let version = release.version.clone();
-
-        tracing::info!(version, "atualização: pronta para instalar");
-        *lock(ready) = Some((installer, version.clone()));
-
-        paint(window, move |app| {
-            let ui = app.global::<Ui>();
-
-            ui.set_update_version(version.into());
-            ui.set_update_ready(true);
-        });
-
+/// Baixa calada a versão nova e, conferida a assinatura, mostra o botão verde na barra: quem
+/// escolhe a hora de reiniciar é a pessoa, como no Discord — ninguém cai da sala porque saiu
+/// uma versão. Quem chama é o aviso do servidor pelo tempo real, e não um relógio: o app só
+/// pergunta ao site quando há o que perguntar.
+async fn prepare_update(api: &Api, window: &Weak<AppWindow>, ready: &Arc<Mutex<Option<(PathBuf, String)>>>) {
+    let Some(release) = api.newer_release(core_app::update::PLATFORM).await else {
         return;
-    }
+    };
+    let Some(installer) = core_app::update::fetch(api, &release, |_, _| {}).await else {
+        return;
+    };
+    let version = release.version.clone();
+
+    tracing::info!(version, "atualização: pronta para instalar");
+    *lock(ready) = Some((installer, version.clone()));
+
+    paint(window, move |app| {
+        let ui = app.global::<Ui>();
+
+        ui.set_update_version(version.into());
+        ui.set_update_ready(true);
+    });
 }
 
 /// Abre o instalador e sai, como o atualizador do Tauri: `/P` sem perguntas, `/UPDATE` é

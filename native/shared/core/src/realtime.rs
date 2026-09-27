@@ -6,6 +6,10 @@
 //! e mais quatro avisos daqui: `presence.here` com quem já estava num canal de presença ao
 //! assinar, `realtime.lost` quando o socket cai, `realtime.back` quando ele volta com tudo
 //! reassinado (hora de reler o que pode ter passado) e `realtime.closed` quando desiste.
+//!
+//! Sem conta o socket abre do mesmo jeito, sem `identify`, só para o canal `releases`: é por
+//! ele que a versão nova chega a todo app aberto, sem o app perguntar ao site de tempos em
+//! tempos.
 
 use std::collections::{BTreeSet, HashSet};
 use std::sync::mpsc::Sender;
@@ -20,6 +24,9 @@ use crate::chimes::Chime;
 use crate::client::SfuClient;
 use crate::protocol::Event;
 use crate::reconnect::Backoff;
+
+/// O canal público das versões: o único que se ouve sem conta.
+pub const RELEASES: &str = "releases";
 
 pub struct Realtime {
     url: String,
@@ -41,8 +48,17 @@ impl Realtime {
             updates,
         });
 
-        realtime.identify(&client).await?;
+        if realtime.api.signed_in() {
+            realtime.identify(&client).await?;
+        }
+
         tokio::spawn(relay(Arc::downgrade(&realtime), events));
+
+        // SFU que ainda não conhece o canal o recusa: o app só fica sem o aviso, e confere a
+        // versão ao abrir.
+        if let Err(failure) = realtime.subscribe(RELEASES).await {
+            tracing::warn!(%failure, "tempo real: o canal das versões não abriu");
+        }
 
         Ok(realtime)
     }
@@ -145,7 +161,7 @@ async fn relay(realtime: Weak<Realtime>, mut events: UnboundedReceiver<Event>) {
                 continue;
             };
 
-            if held.identify(&client).await.is_err() {
+            if held.api.signed_in() && held.identify(&client).await.is_err() {
                 continue;
             }
 

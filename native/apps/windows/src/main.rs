@@ -37,6 +37,9 @@ fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    #[cfg(target_os = "windows")]
+    allow_borderless_capture();
+
     let window = AppWindow::new()?;
 
     // Os Clips primeiro: o núcleo espera o servidor responder, e o replay não pode esperar.
@@ -99,6 +102,31 @@ fn main() -> anyhow::Result<()> {
     window.run()?;
 
     Ok(())
+}
+
+/// A borda amarela que o Windows pinta em volta do que está sendo capturado — o replay dos
+/// Clips e a tela transmitida — aparecia até para quem assiste. O `windows-capture` já pede a
+/// captura sem borda, mas app de fora da loja só é atendido depois de pedir licença, uma vez
+/// por processo; sem ela o Windows ignora o pedido calado. Tem de vir antes da primeira
+/// captura. No Windows 10 a borda não sai: o pedido é recusado e fica no log.
+///
+/// A resposta vem da configuração de privacidade do Windows, sem janela nenhuma; o prazo existe
+/// só para uma resposta que nunca chegue não prender a abertura do app.
+#[cfg(target_os = "windows")]
+fn allow_borderless_capture() {
+    use windows::Graphics::Capture::{GraphicsCaptureAccess, GraphicsCaptureAccessKind};
+
+    let (answer, answered) = std::sync::mpsc::channel();
+
+    std::thread::spawn(move || {
+        let _ = answer.send(GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless).and_then(|asked| asked.join()));
+    });
+
+    match answered.recv_timeout(std::time::Duration::from_secs(3)) {
+        Ok(Ok(status)) => tracing::info!(?status, "captura: licença para tirar a borda amarela"),
+        Ok(Err(failure)) => tracing::info!(%failure, "captura: este Windows não tira a borda amarela"),
+        Err(_) => tracing::warn!("captura: o Windows não respondeu a licença da borda"),
+    }
 }
 
 /// O log num arquivo (sem console atrás da janela, é onde o que aconteceu fica) e a instância
