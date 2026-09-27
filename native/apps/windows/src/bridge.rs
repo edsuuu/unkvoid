@@ -8,6 +8,7 @@
 //! sala?) é chamada ao `core_app`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -20,6 +21,7 @@ use core_app::models::{
 };
 use core_app::realtime::{self, Realtime, Reading};
 use core_app::reconnect::Backoff;
+use core_app::resume::{self, Resume, VoiceSeat};
 use core_app::room::Room;
 use core_app::{App, Failure, Screen};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel, Weak};
@@ -43,6 +45,19 @@ type Toasts = Arc<Mutex<(i32, Vec<ToastRow>)>>;
 const FOLLOW: &str = r#"{"event":"live.follow"}"#;
 
 const DEFAULT_SERVER: &str = "https://unkvoid.com";
+
+/// De quanto em quanto tempo o app aberto procura versão nova, depois da procura da abertura.
+///
+/// `UNKVOID_UPDATE_EVERY`, em segundos, troca o intervalo: é como se prova o botão verde sem
+/// esperar meia hora.
+///
+/// ponytail: procurar no relógio, sem aviso do servidor. Teto: quem publica espera até meia
+/// hora para o botão verde aparecer. A saída é o tempo real avisar a versão nova.
+const UPDATE_CHECK: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Quanto se espera a sala se despedir do servidor antes de entregar o app ao instalador. Sem
+/// a despedida, quem assiste fica vendo a tela parada até o servidor desistir de esperar.
+const LEAVING: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// ponytail: a câmera do Windows ainda não existe — o `capture` não abre webcam aqui, e o
 /// `Room` só aceita câmera no macOS. Teto: quem está no Windows vê a câmera dos outros mas
@@ -74,6 +89,9 @@ pub struct Bridge {
     voice: Arc<Mutex<Voice>>,
     /// O canal de voz em que se está: o chat da voz lê e escreve nele.
     voice_channel: Arc<Mutex<Option<String>>>,
+    /// A sala aberta de verdade, pelo código ou pelo id do canal: é o que diz se entrar é
+    /// voltar a ela ou trocar de sala.
+    entered: Arc<Mutex<Option<String>>>,
     /// Os contadores da última volta da linha de números.
     counted: Arc<Mutex<std::collections::HashMap<String, media::Counters>>>,
     /// Desde quando se está na sala. O relógio da barra conta a partir daqui.
@@ -106,6 +124,14 @@ pub struct Bridge {
     /// Quem está online no servidor aberto.
     online: Arc<Mutex<HashSet<i64>>>,
     toasts: Toasts,
+    /// A versão nova já baixada e conferida, com o número dela: o que o botão verde instala.
+    installer: Arc<Mutex<Option<(PathBuf, String)>>>,
+    /// Onde se estava antes da atualização, esperando a abertura terminar para voltar lá.
+    resumed: Arc<Mutex<Option<Resume>>>,
+    /// A tela que volta ao ar assim que a sala retomada abrir.
+    resumed_share: Arc<Mutex<Option<capture::CaptureConfig>>>,
+    /// O servidor do canal de voz em que se está: é ele que a tela abre ao voltar.
+    voice_server: Arc<Mutex<Option<i64>>>,
 }
 
 impl Bridge {
@@ -132,6 +158,7 @@ impl Bridge {
             stage: Arc::default(),
             voice: Arc::default(),
             voice_channel: Arc::default(),
+            entered: Arc::default(),
             counted: Arc::default(),
             since: Arc::default(),
             servers: Arc::default(),
@@ -149,6 +176,10 @@ impl Bridge {
             followed: Arc::default(),
             online: Arc::default(),
             toasts: Arc::default(),
+            installer: Arc::default(),
+            resumed: Arc::default(),
+            resumed_share: Arc::default(),
+            voice_server: Arc::default(),
         }))
     }
 
@@ -462,9 +493,9 @@ impl Bridge {
         });
 
         ui.on_back_to_room({
-            let window = self.window.clone();
+            let bridge = self.clone();
 
-            move || paint(&window, |app| app.global::<Ui>().set_screen("room".into()))
+            move || bridge.back_to_room()
         });
 
         ui.on_toggle_voice_chat({
@@ -621,13 +652,36 @@ impl Bridge {
 
             move |index| bridge.choose(false, index)
         });
+
+        ui.on_install_update({
+            let bridge = self.clone();
+
+            move || bridge.install_update()
+        });
+
+        ui.on_resume_session({
+            let bridge = self.clone();
+
+            move || bridge.resume_session()
+        });
     }
 
-    /// A abertura: o servidor responde? Onde fica o SFU? O token guardado ainda vale?
+    /// A abertura: o servidor responde? Onde fica o SFU? O token guardado ainda vale? Aberto,
+    /// volta para onde se estava se foi a atualização que fechou o app, e passa a procurar a
+    /// próxima versão.
     pub fn start(self: &Rc<Self>) {
         let (core, api, window) = (self.core.clone(), self.api.clone(), self.window.clone());
         let (sfu, live) = (self.sfu.clone(), self.live.clone());
         let landing = self.landing();
+        let installer = self.installer.clone();
+        let returning = {
+            let resume = resume::take(&self.core);
+            let returning = resume.is_some();
+
+            *lock(&self.resumed) = resume;
+
+            returning
+        };
 
         self.spawn(async move {
             let mut backoff = Backoff::default();
@@ -684,6 +738,12 @@ impl Bridge {
             if let Some(account) = account {
                 go_live(&api, &sfu, &live, &window, account).await;
             }
+
+            if returning {
+                paint(&window, |app| app.global::<Ui>().invoke_resume_session());
+            }
+
+            watch_updates(&api, &window, &installer).await;
         });
     }
 
@@ -1375,9 +1435,15 @@ impl Bridge {
     /// fez antes dele. Quem está dentro aparece embaixo do nome do canal, e a tela continua
     /// sendo a do servidor.
     fn join_voice(self: &Rc<Self>, channel: &Channel) {
-        *lock(&self.voice_channel) = Some(channel.id.clone());
+        self.join_voice_channel(&channel.id, &channel.name);
+    }
+
+    /// O canal é sempre do servidor aberto: é na árvore dele que se clica.
+    fn join_voice_channel(self: &Rc<Self>, id: &str, name: &str) {
+        *lock(&self.voice_channel) = Some(id.to_owned());
+        *lock(&self.voice_server) = *lock(&self.opened);
         self.follow();
-        self.connect(Ok(channel.id.clone()), Some(channel.id.clone()), Some(channel.name.clone()));
+        self.connect(Ok(id.to_owned()), Some(id.to_owned()), Some(name.to_owned()));
     }
 
     /// Abre ou fecha o chat da voz. Abrir relê o canal e zera as não lidas; aberto, o tempo
@@ -1425,13 +1491,34 @@ impl Bridge {
         });
     }
 
+    /// Sai da voz ou da sala por código, o que estiver aberto. É o que fechar a janela faz: ela
+    /// só se esconde (os Clips seguem na bandeja), e a chamada não pode ficar aberta sem ela.
+    pub fn hang_up(self: &Rc<Self>) {
+        if lock(&self.voice_channel).is_some() {
+            self.leave_voice();
+        } else if lock(&self.room).is_some() {
+            self.leave_room();
+        }
+    }
+
     /// Sai da voz e continua no servidor. É o fone cortado da barra de baixo.
     fn leave_voice(self: &Rc<Self>) {
         let held = self.close_room();
 
+        self.forget_voice();
+        self.chime(Chime::Left);
+
+        self.spawn(async move {
+            if let Some(room) = held {
+                room.leave().await;
+            }
+        });
+    }
+
+    /// O canal de voz sai da barra de baixo e do tempo real.
+    fn forget_voice(self: &Rc<Self>) {
         *lock(&self.voice_channel) = None;
         self.follow();
-        self.chime(Chime::Left);
 
         paint(&self.window, |app| {
             let ui = app.global::<Ui>();
@@ -1444,18 +1531,51 @@ impl Bridge {
             ui.set_voice_chat_unread(0);
             ui.set_voice_messages(ModelRc::default());
         });
+    }
 
-        self.spawn(async move {
-            if let Some(room) = held {
-                room.leave().await;
+    /// De volta à sala que ficou no ar: a por código volta a tomar a janela, e o canal de voz
+    /// abre o palco dele no hub.
+    fn back_to_room(self: &Rc<Self>) {
+        let in_voice = lock(&self.voice).inside;
+
+        paint(&self.window, move |app| {
+            let ui = app.global::<Ui>();
+
+            if in_voice {
+                ui.set_screen("hub".into());
+                ui.set_stage_open(true);
+            } else {
+                ui.set_screen("room".into());
             }
         });
+    }
+
+    /// Uma sala por vez, como o núcleo faz na ABI do Mac: entrar em outra sai desta antes.
+    /// Sem isto a de antes seguia viva no SFU, ao lado da nova, e a pessoa aparecia duas
+    /// vezes. Devolve a sala para quem entra esperar a despedida dela.
+    fn leave_for_another(self: &Rc<Self>, into_voice: bool) -> Option<Arc<Room>> {
+        lock(&self.entered).as_ref()?;
+
+        let was_voice = lock(&self.voice).inside;
+        let held = self.close_room();
+
+        if was_voice && !into_voice {
+            self.forget_voice();
+        }
+
+        if !was_voice {
+            paint(&self.window, |app| app.global::<Ui>().set_room_code(SharedString::new()));
+        }
+
+        held
     }
 
     /// Fecha deste lado o que a sala abriu — o microfone, o que se assiste, o palco — e
     /// devolve a sala para quem chama avisar o servidor da saída.
     fn close_room(self: &Rc<Self>) -> Option<Arc<Room>> {
         let held = lock(&self.room).take();
+
+        *lock(&self.entered) = None;
 
         drop(lock(&self.microphone).take());
         drop(lock(&self.watch).take());
@@ -1475,6 +1595,92 @@ impl Bridge {
         });
 
         held
+    }
+
+    /// Onde se está agora, do jeito que a versão nova precisa para voltar: a sala por código
+    /// ou o canal de voz, e a tela no ar. Fora de sala não há para onde voltar.
+    fn resume_point(self: &Rc<Self>) -> Option<Resume> {
+        let share = lock(&self.room).as_ref()?.sharing_recipe().as_ref().map(core_app::sharing::choice_of);
+        let channel = lock(&self.voice_channel).clone();
+
+        Some(match channel {
+            Some(channel) => Resume {
+                room: channel,
+                name: String::new(),
+                voice: Some(VoiceSeat {
+                    name: self.window.upgrade().map(|app| app.global::<Ui>().get_voice_name().to_string()).unwrap_or_default(),
+                    server: *lock(&self.voice_server),
+                }),
+                share,
+                saved_at: 0,
+            },
+            None => {
+                let state = self.core.state();
+
+                Resume { room: state.room?, name: state.name, voice: None, share, saved_at: 0 }
+            }
+        })
+    }
+
+    /// O botão verde da barra: guarda onde se está, se despede da sala e entrega o app ao
+    /// instalador, que o fecha e abre a versão nova — e ela volta para cá. Recusado o aviso do
+    /// administrador, a volta é na hora, nesta mesma versão.
+    fn install_update(self: &Rc<Self>) {
+        let Some((installer, version)) = lock(&self.installer).clone() else {
+            return;
+        };
+
+        if let Some(point) = self.resume_point() {
+            resume::save(&self.core, &point);
+        }
+
+        let held = self.close_room();
+        let (core, window, resumed, toasts) = (self.core.clone(), self.window.clone(), self.resumed.clone(), self.toasts.clone());
+
+        show(&window, Screen::Updating, format!("Instalando a versão {version}…"));
+
+        self.spawn(async move {
+            if let Some(room) = held
+                && tokio::time::timeout(LEAVING, room.leave()).await.is_err()
+            {
+                tracing::warn!("atualização: a sala não se despediu a tempo");
+            }
+
+            clips_saved().await;
+
+            // O botão verde é clicado com a janela na frente: a versão nova volta com ela.
+            if install(&installer, false) {
+                return;
+            }
+
+            *lock(&resumed) = resume::take(&core);
+            show(&window, core.home(), String::new());
+            notify(&window, &toasts, "A atualização não foi instalada. Ela fica pronta no botão verde.", true);
+            paint(&window, |app| app.global::<Ui>().invoke_resume_session());
+        });
+    }
+
+    /// Volta para onde se estava antes da atualização. Quem assistia volta assistindo sem
+    /// nada guardado: entrar na sala já abre as telas de quem está transmitindo.
+    fn resume_session(self: &Rc<Self>) {
+        let Some(point) = lock(&self.resumed).take() else {
+            return;
+        };
+
+        *lock(&self.resumed_share) = point.share.as_ref().map(core_app::sharing::capture_config);
+
+        let Some(seat) = point.voice else {
+            let opened = self.core.join_room(&point.name, &point.room);
+
+            return self.enter(opened, None);
+        };
+        let index = seat.server.and_then(|server| lock(&self.servers).iter().position(|known| known.id == server));
+
+        if let Some(index) = index.and_then(|index| i32::try_from(index).ok()) {
+            self.open_server(index);
+        }
+
+        self.join_voice_channel(&point.room, &seat.name);
     }
 
     fn connect(
@@ -1500,9 +1706,17 @@ impl Bridge {
             return;
         };
 
+        // A casinha leva à Home com a sala no ar, e o código digitado de novo — ou a sala das
+        // recentes — é o caminho de volta, e não uma segunda sessão.
+        if lock(&self.entered).as_deref() == Some(room.as_str()) {
+            return self.back_to_room();
+        }
+
+        let previous = self.leave_for_another(staying.is_some());
         let window = self.window.clone();
         let identity = self.identity(&room, voice);
         let in_voice = staying.is_some();
+        let entered = self.entered.clone();
         let (held, watch, stage, voice, started) = (
             self.room.clone(),
             self.watch.clone(),
@@ -1512,18 +1726,25 @@ impl Bridge {
         );
         let microphone = self.microphone.clone();
         let (microphone_device, speaker_device) = lock(&self.chosen).clone();
+        // Tirada já: se esta entrada falhar, a próxima que a pessoa fizer à mão não pode sair
+        // transmitindo sozinha.
+        let resumed_share = lock(&self.resumed_share).take();
 
         // Da escolha do canal até o microfone abrir, o botão não pinta mudo.
         lock(&voice).opening = in_voice;
         paint(&window, |app| app.global::<Ui>().set_entry_busy(true));
 
         self.spawn(async move {
+            if let Some(previous) = previous {
+                previous.leave().await;
+            }
+
             let (updates, heard) = std::sync::mpsc::channel();
-            let entered = Room::enter(&url, &room, identity, updates).await;
+            let attempt = Room::enter(&url, &room, identity, updates).await;
 
             paint(&window, |app| app.global::<Ui>().set_entry_busy(false));
 
-            let (opened, media) = match entered {
+            let (opened, media) = match attempt {
                 Ok(entered) => entered,
                 Err(failure) => {
                     lock(&voice).opening = false;
@@ -1538,6 +1759,7 @@ impl Bridge {
             };
 
             *lock(&held) = Some(opened.clone());
+            *lock(&entered) = Some(room.clone());
             *lock(&started) = Some(std::time::Instant::now());
 
             {
@@ -1623,11 +1845,18 @@ impl Bridge {
 
             // Entrar na voz abre o microfone, como no Mac e no React: quem entra já é ouvido.
             if in_voice {
-                open_microphone(opened, microphone, voice.clone(), window.clone(), microphone_device).await;
+                open_microphone(opened.clone(), microphone, voice.clone(), window.clone(), microphone_device).await;
             }
 
             lock(&voice).opening = false;
             paint_voice(&window, &voice);
+
+            if let Some(recipe) = resumed_share
+                && let Err(failure) = opened.share(recipe).await
+            {
+                tracing::warn!(%failure, "retomada: a tela não voltou ao ar");
+                complain(&window, room_failure("share"));
+            }
         });
     }
 
@@ -2946,20 +3175,74 @@ async fn updating(api: &Api, window: &Weak<AppWindow>) -> bool {
 
     show(window, Screen::Updating, format!("Instalando a versão {}…", release.version));
 
-    install(&installer)
+    clips_saved().await;
+
+    // Na abertura, escondida quando veio do logon: a versão nova volta do mesmo jeito.
+    install(&installer, std::env::args().any(|argument| argument == "--background"))
+}
+
+/// Um replay sendo gravado no disco morreria no meio junto com o app, e o MP4 ficaria
+/// quebrado: a troca de versão espera ele terminar.
+async fn clips_saved() {
+    #[cfg(target_os = "windows")]
+    while crate::clips::saving() {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+/// Com o app aberto, procura versão nova de tempos em tempos e a baixa calada. Pronta e
+/// conferida, o botão verde aparece na barra: quem escolhe a hora de reiniciar é a pessoa,
+/// como no Discord — ninguém cai da sala porque saiu uma versão.
+async fn watch_updates(api: &Api, window: &Weak<AppWindow>, ready: &Arc<Mutex<Option<(PathBuf, String)>>>) {
+    let every = std::env::var("UNKVOID_UPDATE_EVERY")
+        .ok()
+        .and_then(|seconds| seconds.parse().ok())
+        .map_or(UPDATE_CHECK, std::time::Duration::from_secs);
+
+    loop {
+        tokio::time::sleep(every).await;
+
+        let Some(release) = api.newer_release(core_app::update::PLATFORM).await else {
+            continue;
+        };
+        let Some(installer) = core_app::update::fetch(api, &release, |_, _| {}).await else {
+            continue;
+        };
+        let version = release.version.clone();
+
+        tracing::info!(version, "atualização: pronta para instalar");
+        *lock(ready) = Some((installer, version.clone()));
+
+        paint(window, move |app| {
+            let ui = app.global::<Ui>();
+
+            ui.set_update_version(version.into());
+            ui.set_update_ready(true);
+        });
+
+        return;
+    }
 }
 
 /// Abre o instalador e sai, como o atualizador do Tauri: `/P` sem perguntas, `/UPDATE` é
-/// troca e não instalação nova, `/R` reabre o app no fim. O Windows pede o administrador
-/// antes — o app mora em Arquivos de Programas —, e recusar o aviso só deixa esta versão.
+/// troca e não instalação nova, `/R` reabre o app no fim. Numa conta de administrador o app já
+/// roda elevado (os Clips precisam), e o instalador herda o nível sem UAC; numa conta comum o
+/// Windows pede a senha do administrador, e recusar só deixa esta versão. Com o app escondido
+/// na bandeja (`hidden`), a troca é toda silenciosa (`/S`, nem a barra de progresso aparece,
+/// que podia subir por cima de um jogo) e ele volta do mesmo jeito (`/BACKGROUND`).
 #[cfg(target_os = "windows")]
-fn install(installer: &std::path::Path) -> bool {
+fn install(installer: &std::path::Path, hidden: bool) -> bool {
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     use windows::core::{HSTRING, PCWSTR, w};
 
     let file = HSTRING::from(installer.as_os_str());
-    let opened = unsafe { ShellExecuteW(None, w!("open"), &file, w!("/P /UPDATE /R"), PCWSTR::null(), SW_SHOWNORMAL) };
+    let parameters = if hidden {
+        w!("/S /UPDATE /R /BACKGROUND")
+    } else {
+        w!("/P /UPDATE /R")
+    };
+    let opened = unsafe { ShellExecuteW(None, w!("open"), &file, parameters, PCWSTR::null(), SW_SHOWNORMAL) };
 
     // Acima de 32 é sucesso: é assim que o ShellExecute responde desde sempre.
     if opened.0 as isize <= 32 {
@@ -2972,7 +3255,7 @@ fn install(installer: &std::path::Path) -> bool {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn install(_installer: &std::path::Path) -> bool {
+fn install(_installer: &std::path::Path, _hidden: bool) -> bool {
     false
 }
 

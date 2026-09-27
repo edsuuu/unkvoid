@@ -92,7 +92,65 @@ fn main() -> anyhow::Result<()> {
     ui.set_in_server(false);
     shoot("home")?;
 
+    // Os Clips: a aba com a galeria por jogo, e a seção nas Configurações, com conta e sem.
+    let clips = app.global::<ClipsUi>();
+
+    clips.set_available(true);
+    clips.set_open(true);
+    clips.set_recording(true);
+    clips.set_replay_enabled(true);
+    clips.set_status("Gravando · replay de 5 min".into());
+    clips.set_save_label("Salvar últimos 5 min".into());
+    clips.set_games(model(vec!["Todos · 3".into(), "Arena Breakout Infinite · 2".into(), "Desktop · 1".into()]));
+    clips.set_clips(model(vec![
+        clip("Arena Breakout Infinite", "26/09/2026 21:40", "5:00 · 1312 MB", 180, 60),
+        clip("Arena Breakout Infinite", "26/09/2026 21:12", "5:00 · 1298 MB", 60, 180),
+        clip("Desktop", "26/09/2026 18:03", "1:12 · 301 MB", 120, 120),
+    ]));
+    shoot("clips")?;
+
+    clips.set_open(false);
+    clips.set_monitors(model(vec![
+        MonitorItem { label: "Monitor 1".into(), detail: "AW2525HM · 1920×1080 · 240 Hz".into(), primary: true, preview: gradient(180, 60) },
+        MonitorItem { label: "Monitor 2".into(), detail: "25G3ZM · 1920×1080 · 240 Hz".into(), primary: false, preview: gradient(60, 180) },
+    ]));
+    clips.set_microphones(model(vec!["Padrão do Windows".into(), "Microfone (NVIDIA Broadcast)".into()]));
+    clips.set_quality_index(1);
+    clips.set_fps_index(1);
+    clips.set_system_audio(true);
+    clips.set_microphone(true);
+    clips.set_noise_suppression(true);
+    clips.set_start_with_windows(true);
+    clips.set_save_hotkey("End".into());
+    clips.set_overlay_hotkey("Alt + Z".into());
+    clips.set_clips_folder(r"C:\Users\edsu\Videos\UnkvoidClips".into());
+    clips.set_buffer_estimate("O replay de 5 min ocupa até 2,0 GB no disco, e o que passa do tempo é apagado sozinho.".into());
+    ui.set_settings_tab("clips".into());
+    ui.set_settings_open(true);
+    shoot("configuracoes-clips")?;
+
+    ui.set_signed_in(false);
+    ui.set_screen("entry".into());
+    shoot("configuracoes-clips-sem-conta")?;
+
     Ok(())
+}
+
+fn clip(title: &str, date: &str, details: &str, red: u8, blue: u8) -> ClipItem {
+    ClipItem { title: title.into(), date: date.into(), details: details.into(), thumbnail: gradient(red, blue) }
+}
+
+/// Um degradê no lugar da miniatura: o que importa na foto é o desenho do cartão.
+fn gradient(red: u8, blue: u8) -> Image {
+    let mut buffer = SharedPixelBuffer::<Rgb8Pixel>::new(160, 90);
+
+    for (index, pixel) in buffer.make_mut_slice().iter_mut().enumerate() {
+        let shade = (index % 160) as u16 * 255 / 160;
+
+        *pixel = Rgb8Pixel { r: (u16::from(red) * shade / 255) as u8, g: 30, b: (u16::from(blue) * shade / 255) as u8 };
+    }
+
+    Image::from_rgb8(buffer)
 }
 
 fn model<T: Clone + 'static>(rows: Vec<T>) -> ModelRc<T> {

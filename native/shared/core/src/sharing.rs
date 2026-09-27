@@ -196,6 +196,30 @@ pub fn capture_config(choice: &serde_json::Value) -> CaptureConfig {
     }
 }
 
+/// O caminho de volta do `capture_config`: a receita no ar escrita como o seletor a manda. É
+/// o que se guarda para a transmissão voltar sozinha depois de uma atualização.
+pub fn choice_of(config: &CaptureConfig) -> serde_json::Value {
+    let source = match config.source {
+        CaptureSource::Display(id) => format!("display:{id}"),
+        CaptureSource::Window(id) => format!("window:{id}"),
+        _ => String::new(),
+    };
+    let quality = match config.quality {
+        capture::Quality::Hd720 => "720",
+        capture::Quality::Hd1080 => "1080",
+        capture::Quality::Qhd1440 => "1440",
+        capture::Quality::Uhd2160 => "2160",
+    };
+
+    serde_json::json!({
+        "source": source,
+        "quality": quality,
+        "fps": config.frame_rate,
+        "audio": config.capture_audio,
+        "muteCalls": config.mute_listed_apps,
+    })
+}
+
 #[derive(Default)]
 pub struct ActiveSession(pub tokio::sync::Mutex<Session>);
 
@@ -988,6 +1012,29 @@ pub fn start_native(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recipe_written_as_a_choice_reads_back_the_same() {
+        for (source, quality) in [
+            (CaptureSource::Window(0x0004_0A2C), capture::Quality::Hd720),
+            (CaptureSource::Display(2), capture::Quality::Qhd1440),
+            (CaptureSource::PrimaryDisplay, capture::Quality::Uhd2160),
+        ] {
+            let sent = CaptureConfig {
+                quality,
+                source,
+                frame_rate: 30,
+                capture_audio: false,
+                mute_listed_apps: false,
+                ..CaptureConfig::default()
+            };
+            let back = capture_config(&choice_of(&sent));
+
+            assert_eq!(format!("{:?}", back.source), format!("{:?}", sent.source));
+            assert_eq!(format!("{:?}", back.quality), format!("{:?}", sent.quality));
+            assert_eq!((back.frame_rate, back.capture_audio, back.mute_listed_apps), (30, false, false));
+        }
+    }
 
     #[test]
     fn the_voice_gate_opens_on_speech_and_holds_through_the_pause_between_words() {

@@ -6,14 +6,19 @@ import { RoomScreen } from "room.slint";
 import { Halo, OfflineScreen, Toast, UpdatingScreen } from "shell.slint";
 import { SettingsModal } from "settings.slint";
 import { ShareModal } from "share.slint";
+import { ClipsScreen, ClipsTray, ClipsUi, OverlayWindow, SectionTabs } from "clips.slint";
+import { ResizeEdges, TitleBar } from "frame.slint";
 
-export { Ui }
+export { Ui, ClipsUi, ClipsTray, OverlayWindow }
+export { ClipItem, MonitorItem } from "clips.slint";
 export { ChannelRow, DeviceRow, MemberGroupRow, MemberRow, MessageRow, PeerRow, ServerRow, SourceRow, ToastRow, VoicePersonRow } from "state.slint";
 
-// A janela é a pilha das cinco telas, e quem diz qual está valendo é o núcleo.
+// A janela é a pilha das cinco telas, e quem diz qual está valendo é o núcleo. A moldura é
+// nossa (`frame.slint`): sem ela não há onde pôr o botão da atualização ao lado do minimizar.
 export component AppWindow inherits Window {
     title: "Unkvoid";
     icon: @image-url("../../desktop/src-tauri/icons/128x128.png");
+    no-frame: true;
     background: Skin.back;
     default-font-family: Skin.sans;
     // Os números do `expand_window` do Tauri, que o macOS também usa: com menos largura os
@@ -23,18 +28,42 @@ export component AppWindow inherits Window {
     min-width: 940px;
     min-height: 600px;
 
+    property <length> bar: 32px;
+
     Halo { }
 
-    if Ui.screen == "entry" : EntryScreen { }
-    if Ui.screen == "hub" : HubScreen { }
-    if Ui.screen == "room" : RoomScreen { }
-    if Ui.screen == "offline" : OfflineScreen { }
-    if Ui.screen == "updating" : UpdatingScreen { }
+    // As telas e os modais moram embaixo da barra: o modal cobre a janela inteira, como o
+    // `fixed inset-0` do React, menos a moldura — que continua arrastando e fechando. Logo
+    // abaixo da barra ficam as abas Unkvoid e Clips, e os Clips no lugar das telas: com o
+    // servidor fora do ar ("Sem conexão", "Atualizando"), o replay e a galeria seguem ao
+    // alcance.
+    Rectangle {
+        y: root.bar;
+        height: root.height - root.bar;
 
-    // O modal mora acima das telas: ele cobre a janela inteira, como o `fixed inset-0` do
-    // React, e por isso não pode nascer dentro de nenhuma delas.
-    if Ui.settings-open : SettingsModal { }
-    if Ui.share-open : ShareModal { }
+        VerticalLayout {
+            if ClipsUi.available : SectionTabs { }
+
+            Rectangle {
+                vertical-stretch: 1;
+
+                if !ClipsUi.open && Ui.screen == "entry" : EntryScreen { }
+                if !ClipsUi.open && Ui.screen == "hub" : HubScreen { }
+                if !ClipsUi.open && Ui.screen == "room" : RoomScreen { }
+                if !ClipsUi.open && Ui.screen == "offline" : OfflineScreen { }
+                if !ClipsUi.open && Ui.screen == "updating" : UpdatingScreen { }
+                if ClipsUi.open : ClipsScreen { }
+            }
+        }
+
+        if Ui.settings-open : SettingsModal { }
+        if Ui.share-open : ShareModal { }
+    }
+
+    TitleBar {
+        y: 0;
+        height: root.bar;
+    }
 
     // Os avisos ficam acima de tudo, no pé da janela e no meio, um embaixo do outro.
     if Ui.toasts.length > 0 : VerticalLayout {
@@ -49,4 +78,6 @@ export component AppWindow inherits Window {
             item: toast;
         }
     }
+
+    if !Ui.maximized : ResizeEdges { }
 }

@@ -1,0 +1,46 @@
+[package]
+name = "clips"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Instant replay: the screen always recording into a disk buffer, saved to MP4 only on request (Windows)"
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+
+# Só o Windows grava replay: nos outros sistemas a crate compila vazia, com o buffer em disco
+# (`replay`), que é Rust puro.
+[target.'cfg(target_os = "windows")'.dependencies]
+mp4 = "0.14"
+# RNNoise em Rust puro: o filtro de ruído de código aberto que o Discord usava antes do Krisp.
+nnnoiseless = { version = "0.5", default-features = false }
+serde.workspace = true
+# Travada: uma 2.x que troque de `windows` muda o tipo da textura que chega no callback, e o
+# encoder deixa de compilar sem aviso nenhum antes. O `capture` pede "2" e resolve na mesma.
+windows-capture = "=2.0.1"
+windows = { version = "0.62", features = [
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_Media_MediaFoundation",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Ole",
+    "Win32_System_Performance",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+    "Win32_System_Variant",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# O `#[implement]` gera caminhos `windows_core::`: a crate precisa estar aqui pelo nome.
+windows-core = "0.62"

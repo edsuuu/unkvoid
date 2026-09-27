@@ -7,7 +7,11 @@
 ; fixado na barra de tarefas apontando para o lugar certo.
 ;
 ; Só há a página do progresso: sem perguntas, instalar é o `/P` (passivo) do Tauri o tempo
-; todo. `/S` é o silencioso do próprio NSIS.
+; todo. `/S` é o silencioso do próprio NSIS. `/BACKGROUND` reabre o app só na bandeja: é o
+; que o atualizador passa quando a troca acontece com o app escondido (aberto no logon).
+;
+; Ele também absorve o UnkvoidClips, o replay que era um app separado e agora é a aba Clips
+; daqui: tira o app antigo e deixa os clipes e as escolhas, que o Unkvoid importa.
 ;
 ;   makensis /DVERSION=0.1.0-beta /DBINARY=…\unkvoid.exe /DICON=…\icon.ico /DOUTFILE=…\setup.exe installer.nsi
 
@@ -74,8 +78,32 @@ Function MediaFeaturePack
   ${EndIf}
 FunctionEnd
 
+; O UnkvoidClips virou a aba Clips: os dois abertos gravariam a tela duas vezes e brigariam
+; pelos mesmos atalhos. Sai o app, a tarefa do logon e o buffer de replay (gigas de vídeo que
+; já não servem); ficam os clipes, a pasta escolhida e o `settings.json`, que o Unkvoid lê
+; na primeira vez.
+Function RemoveUnkvoidClips
+  nsExec::Exec `taskkill /F /T /IM UnkvoidClips.exe`
+  Pop $0
+  nsExec::Exec `schtasks /Delete /F /TN "UnkvoidClips"`
+  Pop $0
+
+  Delete "$PROGRAMFILES64\UnkvoidClips\UnkvoidClips.exe"
+  Delete "$PROGRAMFILES64\UnkvoidClips\uninstall.exe"
+  RMDir "$PROGRAMFILES64\UnkvoidClips"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\UnkvoidClips"
+
+  ; O UnkvoidClips punha os atalhos e o buffer na conta de quem instalou.
+  SetShellVarContext current
+  Delete "$SMPROGRAMS\UnkvoidClips.lnk"
+  Delete "$DESKTOP\UnkvoidClips.lnk"
+  RMDir /r "$LOCALAPPDATA\UnkvoidClips\buffer"
+  SetShellVarContext all
+FunctionEnd
+
 Section
   Call MediaFeaturePack
+  Call RemoveUnkvoidClips
 
   ; O app aberto trava o .exe. O atualizador sai sozinho logo depois de abrir o instalador,
   ; mas não espera por nós; quem abriu à mão também está aqui.
@@ -115,18 +143,28 @@ Section
   IntFmt $0 "0x%08X" $0
   WriteRegDWORD HKLM "${UNINSTALL_KEY}" "EstimatedSize" "$0"
 
-  ; Abre o app no fim — menos no silencioso sem `/R`, que é instalação por script. Pelo
-  ; Explorer, e não direto: daqui ele herdaria o administrador do instalador.
+  ; Abre o app no fim — menos no silencioso sem `/R`, que é instalação por script. Direto
+  ; daqui: o app pede o nível mais alto da conta (os Clips precisam), e aberto pelo instalador
+  ; ele herda o nível sem outro UAC.
   ClearErrors
   ${GetOptions} $R0 "/R" $R1
   ${IfNot} ${Errors}
   ${OrIfNot} ${Silent}
-    Exec `"$WINDIR\explorer.exe" "$INSTDIR\${EXE}"`
+    ClearErrors
+    ${GetOptions} $R0 "/BACKGROUND" $R1
+    ${If} ${Errors}
+      Exec `"$INSTDIR\${EXE}"`
+    ${Else}
+      Exec `"$INSTDIR\${EXE}" --background`
+    ${EndIf}
   ${EndIf}
 SectionEnd
 
 Section "Uninstall"
   nsExec::Exec `taskkill /F /T /IM ${EXE}`
+  Pop $0
+  ; A tarefa que o app cria para abrir no logon (a opção "Iniciar com o Windows" dos Clips).
+  nsExec::Exec `schtasks /Delete /F /TN "${PRODUCT}"`
   Pop $0
   Sleep 800
 
@@ -140,4 +178,9 @@ Section "Uninstall"
   DeleteRegKey HKLM "${UNINSTALL_KEY}"
   DeleteRegKey HKLM "Software\unkvoid\${PRODUCT}"
   DeleteRegKey /ifempty HKLM "Software\unkvoid"
+
+  ; O buffer do replay é só desta máquina e pode ter gigas. Os clipes salvos ficam.
+  SetShellVarContext current
+  RMDir /r "$LOCALAPPDATA\com.unkvoid.desktop\clips-buffer"
+  SetShellVarContext all
 SectionEnd

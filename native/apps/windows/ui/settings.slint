@@ -2,6 +2,7 @@ import { ScrollView } from "std-widgets.slint";
 import { Icons, Skin } from "skin.slint";
 import { Ui } from "state.slint";
 import { Avatar, Glyph, LabelMono, Muted, RowItem } from "widgets.slint";
+import { ClipsSettings, ClipsUi } from "clips.slint";
 
 // Uma linha da coluna da esquerda.
 component Section inherits RowItem {
@@ -94,7 +95,8 @@ component Choice inherits RowItem {
 // as preferências de voz moram na ABI dele; aqui elas ainda não subiram para o núcleo, e aba
 // que não faz nada não entra.
 export component SettingsModal inherits Rectangle {
-    property <string> tab: "account";
+    // Sem conta, "Minha conta" não tem o que mostrar: abre no que há.
+    property <string> tab: !Ui.signed-in && Ui.settings-tab == "account" ? (ClipsUi.available ? "clips" : "voice") : Ui.settings-tab;
     property <bool> shown;
 
     background: #06050abd;
@@ -156,20 +158,20 @@ export component SettingsModal inherits Rectangle {
                     spacing: 4px;
                     alignment: start;
 
-                    LabelMono {
+                    if Ui.signed-in : LabelMono {
                         text: "CONFIGURAÇÕES DE USUÁRIO";
                         // O mesmo respiro do Mac em volta do título de cada grupo.
                         x: 10px;
                     }
 
-                    Section {
+                    if Ui.signed-in : Section {
                         commands: Icons.users;
                         text: "Minha conta";
                         on: root.tab == "account";
-                        clicked => { root.tab = "account"; }
+                        clicked => { Ui.settings-tab = "account"; }
                     }
 
-                    Rectangle { height: 10px; }
+                    if Ui.signed-in : Rectangle { height: 10px; }
 
                     LabelMono {
                         text: "CONFIGURAÇÕES DO APP";
@@ -180,19 +182,26 @@ export component SettingsModal inherits Rectangle {
                         commands: Icons.mic;
                         text: "Voz e vídeo";
                         on: root.tab == "voice";
-                        clicked => { root.tab = "voice"; }
+                        clicked => { Ui.settings-tab = "voice"; }
                     }
 
-                    Rectangle { height: 10px; }
+                    if ClipsUi.available : Section {
+                        commands: Icons.play;
+                        text: "Clips";
+                        on: root.tab == "clips";
+                        clicked => { Ui.settings-tab = "clips"; }
+                    }
 
-                    Rectangle {
+                    if Ui.signed-in : Rectangle { height: 10px; }
+
+                    if Ui.signed-in : Rectangle {
                         height: 1px;
                         background: Skin.line;
                     }
 
-                    Rectangle { height: 10px; }
+                    if Ui.signed-in : Rectangle { height: 10px; }
 
-                    Section {
+                    if Ui.signed-in : Section {
                         commands: Icons.logout;
                         text: "Sair da conta";
                         danger: true;
@@ -222,7 +231,7 @@ export component SettingsModal inherits Rectangle {
                     alignment: start;
 
                     Text {
-                        text: root.tab == "account" ? "Minha conta" : "Voz e vídeo";
+                        text: root.tab == "account" ? "Minha conta" : (root.tab == "clips" ? "Clips" : "Voz e vídeo");
                         color: Skin.ink-strong;
                         font-family: Skin.sans;
                         font-size: 20px;
@@ -269,6 +278,8 @@ export component SettingsModal inherits Rectangle {
                             value: Ui.signed-in ? "conta conectada" : "usando sem login";
                         }
                     }
+
+                    if root.tab == "clips" : ClipsSettings { }
 
                     if root.tab == "voice" : VerticalLayout {
                         spacing: 8px;

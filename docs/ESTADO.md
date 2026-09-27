@@ -11,6 +11,13 @@ perguntas que esperam o dono. O histórico das sessões saiu do repositório e c
 
 ### Windows
 
+- **Clips** (o replay instantâneo, 27/09/2026). O motor e o painel do Alt+Z rodaram por dias
+  como UnkvoidClips, um app separado, numa RTX 4060 Ti com o Arena Breakout. Painel, salvar,
+  pastas por jogo e atalhos foram provados; o custo medido foi 0,1% de CPU, 0,4% do motor 3D da
+  GPU e 6 MB/s de disco em Ultra. **Não provado dentro do Unkvoid:** a aba, a seção nas
+  Configurações, a bandeja, o player na janela do Unkvoid (que desenha com o renderizador padrão
+  do Slint, e não o de software do UnkvoidClips), o manifesto de administrador e o instalador
+  removendo o UnkvoidClips. Esses só foram compilados e fotografados pela `vitrine`.
 - MFT de hardware que não é o primeiro da lista (placa integrada atrás da dedicada): não há
   máquina híbrida para provar.
 - **Taxa que acompanha a perda** (0.0.38). Provado numa RTX 4060 Ti: o MFT da NVIDIA aceita

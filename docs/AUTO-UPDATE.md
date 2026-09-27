@@ -106,7 +106,15 @@ atalho do menu Iniciar e o app fixado na barra de tarefas valendo.
 O nativo se atualiza do mesmo jeito, pelo `native/shared/core/src/update.rs`: na abertura lê
 o manifesto, compara pelo semver (`0.1.0` vem depois de `0.1.0-beta`), baixa com a barra na
 tela, confere a assinatura com a mesma pública do `tauri.conf.json` e abre o instalador com
-`/P /UPDATE /R`. Recusar o aviso do administrador só deixa a versão que está.
+`/P /UPDATE /R`.
+
+Com os Clips o app roda com o nível mais alto da conta (ver `DECISOES.md`). Numa conta de
+administrador ele já está elevado, e o instalador aberto por ele herda o nível: a troca acontece
+**sem aviso do UAC**, e o instalador reabre o app direto, não mais pelo Explorer. Numa conta
+comum o Windows pede a senha do administrador, como antes. Aberto no logon, escondido na bandeja, o app passa `/S /UPDATE /R
+/BACKGROUND`: nem a barra do instalador aparece (podia subir por cima de um jogo) e ele volta
+só na bandeja. O instalador também remove o UnkvoidClips, o app separado de antes, deixando os
+clipes e o `settings.json` dele, que os Clips importam.
 
 Compilar e empacotar, no PowerShell:
 

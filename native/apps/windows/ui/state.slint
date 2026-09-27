@@ -157,6 +157,21 @@ export global Ui {
     in property <string> status: "Abrindo o Unkvoid";
     // Quanto da atualização já desceu, de 0 a 100; negativo enquanto não há barra.
     in property <float> update-progress: -1;
+    // A versão nova já baixada e conferida, esperando o clique no botão verde da barra.
+    in property <bool> update-ready;
+    in property <string> update-version;
+
+    // A moldura: a janela não tem a do Windows, e a barra de cima é nossa.
+    in property <bool> maximized;
+    callback drag-window();
+    // "n", "s", "e", "w", "ne", "nw", "se" ou "sw": a borda que se puxa.
+    callback resize-window(string);
+    callback minimize-window();
+    callback toggle-maximize();
+    callback close-window();
+    callback install-update();
+    // A volta para onde se estava antes da atualização, já na thread da janela.
+    callback resume-session();
 
     in property <string> user-name;
     in property <string> user-initial;
@@ -242,6 +257,9 @@ export global Ui {
     in property <bool> self-view;
     /// As configurações da conta: o modal do React, por cima de tudo.
     in-out property <bool> settings-open;
+    // A seção aberta nas Configurações: "account", "voice" ou "clips". Fica aqui, e não no
+    // modal, para a engrenagem dos Clips abrir direto na seção deles.
+    in-out property <string> settings-tab: "account";
     in property <[DeviceRow]> microphones;
     in property <[DeviceRow]> speakers;
 

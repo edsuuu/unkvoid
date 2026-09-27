@@ -19,6 +19,7 @@ pub mod permissions;
 pub mod protocol;
 pub mod realtime;
 pub mod reconnect;
+pub mod resume;
 pub mod room;
 pub mod room_code;
 pub mod routes;
