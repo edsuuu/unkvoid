@@ -133,7 +133,7 @@ fn main() -> anyhow::Result<()> {
     ui.set_screen("entry".into());
     shoot("configuracoes-clips-sem-conta")?;
 
-    // Na sala as abas vão para a barra dela, no lugar da casinha: sem conta ela nem aparece.
+    // Na sala as abas vão para a barra dela, à direita da casinha, com conta ou sem.
     ui.set_settings_open(false);
     ui.set_screen("room".into());
     shoot("sala-abas-sem-conta")?;

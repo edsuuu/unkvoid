@@ -26,10 +26,11 @@ export component RoomScreen inherits Rectangle {
                 padding-right: 12px;
                 spacing: 8px;
 
-                // A casinha do React, antes do "SALA", e só com conta, como lá: sem conta a
-                // sala por código não tem para onde ir, e sair dela é o telefone vermelho. Ela
-                // não sai da sala: a Home abre com a transmissão no ar e o caminho de volta.
-                if Ui.signed-in : IconButton {
+                // A casinha, antes do "SALA", com conta ou sem: ela não sai da sala. Com conta
+                // abre a Home dos servidores, sem conta a entrada — as duas com a transmissão no
+                // ar e o "Voltar à sala". Entrar de novo na mesma sala só volta a ela (uma sala
+                // por vez, no `connect`), então a casinha não duplica ninguém no SFU.
+                IconButton {
                     commands: Icons.home;
                     size: 30px;
                     glyph-size: 14px;
