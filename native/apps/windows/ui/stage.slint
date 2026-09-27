@@ -262,13 +262,14 @@ component StreamTile inherits Rectangle {
                 padding: 12px;
                 spacing: 6px;
 
-                LabelMono { text: "VOLUME"; }
+                LabelMono { text: root.tile.heard ? "VOLUME " + root.tile.volume + "%" : "VOLUME (MUDO)"; }
 
+                // O volume de verdade, e zero com o som desligado, como no React: arrastar liga.
                 Slider {
                     minimum: 0;
                     maximum: 100;
-                    value: 100;
-                    changed(level) => { Ui.set-volume(root.tile.producer, level / 100); }
+                    value: root.tile.heard ? root.tile.volume : 0;
+                    changed(level) => { Ui.set-volume(root.tile.producer, level); }
                 }
             }
         }

@@ -39,6 +39,8 @@ pub struct Placed {
     pub focused: bool,
     pub full: bool,
     pub heard: bool,
+    /// De 0 a 100, só deste lado.
+    pub volume: u8,
     pub watchers: Vec<String>,
 }
 
@@ -49,6 +51,8 @@ pub struct Stage {
     watchers: HashMap<String, Vec<String>>,
     /// As telas cujo som a pessoa ligou, pelo producer do vídeo.
     heard: HashSet<String>,
+    /// O volume escolhido de cada tela, de 0 a 100; sem escolha, 100.
+    volumes: HashMap<String, u8>,
     focused: Option<String>,
     full: Option<String>,
 }
@@ -62,6 +66,7 @@ impl Stage {
         let alive: HashSet<&str> = self.tiles.iter().map(|tile| tile.producer_id.as_str()).collect();
 
         self.heard.retain(|producer| alive.contains(producer.as_str()));
+        self.volumes.retain(|producer, _| alive.contains(producer.as_str()));
         self.focused.take_if(|producer| !alive.contains(producer.as_str()));
         self.full.take_if(|producer| !alive.contains(producer.as_str()));
     }
@@ -88,15 +93,45 @@ impl Stage {
     }
 
     /// Liga ou desliga o som de uma tela. Devolve o producer do som e se ele passou a tocar.
+    /// Ligar com o volume em zero volta a 100, como no React: ligado e mudo ao mesmo tempo não
+    /// diria nada a ninguém.
     pub fn toggle_heard(&mut self, producer: &str) -> Option<(String, bool)> {
         let audio = self.tile(producer)?.audio.clone()?;
         let heard = !self.heard.remove(producer);
 
         if heard {
             self.heard.insert(producer.to_owned());
+
+            if self.volume(producer) == 0 {
+                self.volumes.insert(producer.to_owned(), 100);
+            }
         }
 
         Some((audio, heard))
+    }
+
+    /// O volume do slider, de 0 a 100. Como no React, mexer nele liga o som e zero o desliga —
+    /// o som de uma tela chega mudo, e arrastar o volume de uma tela muda não mudaria nada.
+    /// Devolve o producer do som e se ele passou a tocar, quando isso mudou.
+    pub fn set_volume(&mut self, producer: &str, volume: u8) -> Option<(String, Option<bool>)> {
+        let audio = self.tile(producer)?.audio.clone()?;
+        let volume = volume.min(100);
+        let heard = volume > 0;
+        let changed = heard != self.heard.contains(producer);
+
+        self.volumes.insert(producer.to_owned(), volume);
+
+        if heard {
+            self.heard.insert(producer.to_owned());
+        } else {
+            self.heard.remove(producer);
+        }
+
+        Some((audio, changed.then_some(heard)))
+    }
+
+    pub fn volume(&self, producer: &str) -> u8 {
+        self.volumes.get(producer).copied().unwrap_or(100)
     }
 
     /// Focar o mesmo cartão de novo, ou pedir foco em nada, sai do foco.
@@ -149,6 +184,7 @@ impl Stage {
                     focused,
                     full: self.full.as_deref() == Some(tile.producer_id.as_str()),
                     heard: self.heard.contains(&tile.producer_id),
+                    volume: self.volume(&tile.producer_id),
                     watchers: self.watchers.get(&tile.producer_id).cloned().unwrap_or_default(),
                     tile: tile.clone(),
                 };
@@ -374,6 +410,24 @@ mod tests {
         assert_eq!(stage.toggle_heard("tela-0"), Some(("som-0".to_owned(), true)));
         assert_eq!(stage.toggle_heard("tela-0"), Some(("som-0".to_owned(), false)));
         assert_eq!(stage.toggle_heard("nenhuma"), None);
+    }
+
+    #[test]
+    fn the_volume_slider_turns_the_sound_on_and_zero_mutes_it() {
+        let mut stage = Stage::default();
+
+        stage.set_tiles(&tiles(1));
+
+        assert_eq!(stage.set_volume("tela-0", 40), Some(("som-0".to_owned(), Some(true))), "arrastar liga o som");
+        assert_eq!(stage.set_volume("tela-0", 70), Some(("som-0".to_owned(), None)), "já tocando, só muda o volume");
+        assert_eq!(stage.placed()[0].volume, 70);
+        assert_eq!(stage.set_volume("tela-0", 0), Some(("som-0".to_owned(), Some(false))), "zero muta");
+        assert!(!stage.placed()[0].heard);
+
+        stage.toggle_heard("tela-0");
+
+        assert_eq!(stage.placed()[0].volume, 100, "ligar com o volume em zero volta a 100");
+        assert!(stage.placed()[0].heard);
     }
 
     #[test]

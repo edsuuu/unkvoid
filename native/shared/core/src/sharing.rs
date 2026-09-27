@@ -30,11 +30,48 @@ const RATE_WINDOW: Duration = Duration::from_secs(1);
 /// O encoder de vídeo e quem decide a taxa dele, atrás do mesmo cadeado: a decisão é
 /// aplicada na thread da captura, a única que toca no encoder, no cadeado que o quadro já
 /// tomaria de qualquer jeito.
+/// O menor espaço entre dois quadros-chave pedidos por quem assiste. Cada pessoa que perde um
+/// pacote pede um, e com várias assistindo os pedidos se somam ao GOP: medido em 27/09 na tela
+/// de alguém com PC e upload fracos, saía um quadro-chave por segundo. É o quadro mais caro do
+/// encoder, e num upload fraco cada um entope a saída por centenas de ms — os quadros de trás
+/// esperam, e para quem assiste a transmissão trava. Pedido dentro do intervalo não se perde:
+/// sai quando o intervalo acaba.
+const KEYFRAME_SPACING: Duration = Duration::from_secs(2);
+
+/// Os pedidos de quadro-chave de quem assiste, atendidos com o espaço do `KEYFRAME_SPACING`.
+#[derive(Default)]
+struct KeyframeGate {
+    asked: bool,
+    last: Option<Instant>,
+}
+
+impl KeyframeGate {
+    /// Anota o pedido, se veio um, e diz se é hora de atender o que está esperando.
+    fn due(&mut self, asked: bool, now: Instant) -> bool {
+        self.asked |= asked;
+
+        if !self.asked || self.last.is_some_and(|last| now.duration_since(last) < KEYFRAME_SPACING) {
+            return false;
+        }
+
+        self.served(now);
+
+        true
+    }
+
+    /// Saiu um quadro-chave, pedido ou do GOP: quem esperava por um já tem.
+    fn served(&mut self, now: Instant) {
+        self.asked = false;
+        self.last = Some(now);
+    }
+}
+
 struct VideoEncoding {
     encoder: PlatformEncoder,
     governor: BitrateGovernor,
     window_started: Instant,
     nacked: u64,
+    keyframes: KeyframeGate,
     dropped_before: u64,
 }
 
@@ -420,6 +457,7 @@ impl Broadcast {
             encoder,
             window_started: Instant::now(),
             nacked: 0,
+            keyframes: KeyframeGate::default(),
             dropped_before: dropped_so_far,
         });
 
@@ -562,8 +600,11 @@ impl Broadcast {
                     };
 
                     if feedback.keyframe {
-                        encoding.encoder.request_keyframe();
                         keyframes_callback.fetch_add(1, Ordering::Relaxed);
+                    }
+
+                    if encoding.keyframes.due(feedback.keyframe, started) {
+                        encoding.encoder.request_keyframe();
                     }
 
                     encoding.nacked += u64::from(feedback.lost);
@@ -585,6 +626,11 @@ impl Broadcast {
                     match encoding.encoder.encode(surface, frame.timestamp_ns) {
                         Ok(encoded) => {
                             encoded_callback.fetch_add(1, Ordering::Relaxed);
+
+                            if encoded.keyframe {
+                                encoding.keyframes.served(started);
+                            }
+
                             encoded
                         }
                         // `NeedsMoreInput` é a fila do encoder de hardware enchendo, não
@@ -1012,6 +1058,25 @@ pub fn start_native(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyframe_requests_are_spaced_and_none_is_lost() {
+        let mut gate = KeyframeGate::default();
+        let start = Instant::now();
+
+        assert!(!gate.due(false, start), "sem pedido, nada sai");
+        assert!(gate.due(true, start), "o primeiro pedido sai na hora");
+        assert!(!gate.due(true, start + Duration::from_millis(300)), "outro logo depois espera");
+        assert!(!gate.due(false, start + Duration::from_secs(1)), "e continua esperando");
+        assert!(gate.due(false, start + KEYFRAME_SPACING), "mas sai quando o intervalo acaba");
+        assert!(!gate.due(false, start + KEYFRAME_SPACING * 3), "e não sai de novo sem pedido");
+
+        let later = start + KEYFRAME_SPACING * 4;
+
+        gate.served(later);
+
+        assert!(!gate.due(true, later + Duration::from_millis(500)), "o do GOP que acabou de sair já atende");
+    }
 
     #[test]
     fn a_recipe_written_as_a_choice_reads_back_the_same() {

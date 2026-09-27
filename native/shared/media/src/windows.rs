@@ -847,11 +847,12 @@ impl MediaFoundationEncoder {
 }
 
 
-/// Quantos segundos entre quadros-chave. Quem perde um pacote fica congelado até o
-/// próximo, então isto é o teto da travada de quem assiste — mas o servidor pede um
-/// quadro-chave na hora quando vê buraco, então o periódico só cobre quem acabou de
-/// entrar. Dois segundos é metade dos keyframes, e keyframe é o quadro mais caro.
-const GOP_SECONDS: f64 = 2.0;
+/// Quantos segundos entre quadros-chave. Quem perde um pacote pede um na hora (o
+/// `KEYFRAME_SPACING` do núcleo espaça os pedidos), e quem acaba de entrar também: o SFU pede
+/// ao criar o consumer. Então o periódico é só rede de segurança — e o quadro-chave é o mais
+/// caro do encoder: num upload fraco, cada um entope a saída por centenas de ms. Com 2 s, somado
+/// aos pedidos, saía um por segundo, e a transmissão de quem tem PC fraco travava.
+const GOP_SECONDS: f64 = 4.0;
 
 /// O valor booleano do COM para verdadeiro. Nenhum dos ajustes aqui é desligado.
 const LIGADO: VARIANT_0_0_0 = VARIANT_0_0_0 {

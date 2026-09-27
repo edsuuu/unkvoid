@@ -109,6 +109,8 @@ export struct TileRow {
     /// Há som de tela para ligar, e se ele está ligado.
     audio: bool,
     heard: bool,
+    /// De 0 a 100, só deste lado.
+    volume: int,
     /// Quantos assistem, e quem, para o balão do olho.
     watchers: int,
     watcher-names: string,
@@ -336,7 +338,7 @@ export global Ui {
     callback toggle-heard(string);
     callback toggle-focus(string);
     callback toggle-fullscreen(string);
-    /// De 0 a 1, só do lado de quem ouve.
+    /// De 0 a 100, só do lado de quem ouve. Mexer nele liga o som da tela, e zero desliga.
     callback set-volume(string, float);
 
     callback toggle-mic();

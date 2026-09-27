@@ -217,6 +217,7 @@ fn tile(label: &str, column: i32, line: i32, width: u32, height: u32, watchers: 
         paused: false,
         audio: true,
         heard: false,
+        volume: 100,
         watchers,
         watcher_names: SharedString::new(),
         stats: format!("{height}p · 60 fps · 0,0%").into(),

@@ -560,12 +560,21 @@ impl Bridge {
             let bridge = self.clone();
 
             move |producer| {
-                let Some((audio, heard)) = lock(&bridge.stage).toggle_heard(&producer) else {
+                let (toggled, volume) = {
+                    let mut stage = lock(&bridge.stage);
+
+                    (stage.toggle_heard(&producer), stage.volume(&producer))
+                };
+                let Some((audio, heard)) = toggled else {
                     return;
                 };
 
                 if let Some(room) = lock(&bridge.room).clone() {
                     room.mute_watched(&audio, !heard);
+                }
+
+                if let Some(watch) = lock(&bridge.watch).as_ref() {
+                    watch.speaker().set_volume(&audio, f32::from(volume) / 100.0);
                 }
 
                 paint_stage(&bridge.window, &bridge.stage);
@@ -594,11 +603,21 @@ impl Bridge {
             let bridge = self.clone();
 
             move |producer, level| {
-                let audio = lock(&bridge.stage).tile(&producer).and_then(|tile| tile.audio.clone());
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let volume = level.round().clamp(0.0, 100.0) as u8;
+                let Some((audio, heard)) = lock(&bridge.stage).set_volume(&producer, volume) else {
+                    return;
+                };
 
-                if let (Some(audio), Some(watch)) = (audio, lock(&bridge.watch).as_ref()) {
-                    watch.speaker().set_volume(&audio, level);
+                if let (Some(heard), Some(room)) = (heard, lock(&bridge.room).clone()) {
+                    room.mute_watched(&audio, !heard);
                 }
+
+                if let Some(watch) = lock(&bridge.watch).as_ref() {
+                    watch.speaker().set_volume(&audio, f32::from(volume) / 100.0);
+                }
+
+                paint_stage(&bridge.window, &bridge.stage);
             }
         });
 
@@ -3079,6 +3098,7 @@ fn paint_stage(window: &Weak<AppWindow>, stage: &Arc<Mutex<Stage>>) {
                     paused: placed.tile.paused,
                     audio: placed.tile.audio.is_some(),
                     heard: placed.heard,
+                    volume: i32::from(placed.volume),
                     watchers: i32::try_from(placed.watchers.len()).unwrap_or(i32::MAX),
                     watcher_names: placed.watchers.join(", ").into(),
                     stats: before
