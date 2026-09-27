@@ -425,6 +425,12 @@ O `subscribe` devolve a presença do canal, e o SFU emite `presence.joining { id
 `presence.leaving { id }` para os outros inscritos na primeira e na última conexão de cada
 pessoa naquele canal.
 
+**O canal `releases` é público.** Qualquer socket o assina, sem `identify` e sem o Laravel
+autorizar, e ele não tem presença: o `subscribe` devolve só `{ channel }`, e ninguém entra nem
+sai da lista. Só recebe o que o Laravel publica. É por ele que a versão nova chega a todo app
+aberto, inclusive a quem entrou sem conta: o app abre o socket do tempo real mesmo sem conta,
+só para ele.
+
 O que o Laravel publica sai por `POST /broadcast` assinado, um pedido por canal. Falha do
 SFU não desfaz nada: a escrita já está no banco, a resposta HTTP sai normal e o erro fica no
 log do canal `sfu`. Como nada é reentregue depois de uma queda, ao reconectar o app busca de
@@ -435,6 +441,7 @@ mais recentes do canal e da conversa abertos, emendando com o que já estava na 
 |---|---|---|
 | `channel.{ulid}` | `VIEW_CHANNEL` | texto: `MessageSent { message }`, `MessageUpdated { message }`, `MessageDeleted { id, channel_id }` · voz: `VoiceStateUpdated { channel_id, user_id, name, event: joined\|left }` (no canal da própria voz, para canal oculto não vazar quem está nele; o app assina o canal de cada voz que enxerga) |
 | `server.{id}` | membro | `ServerUpdated { server_id }` (qualquer mudança de estrutura: o app refaz o `GET`) |
+| `releases` | qualquer socket, sem `identify` | `ReleasePublished { version, platform }` (a cada `POST /api/releases`: o app compara com a própria versão e plataforma, anota a versão na configuração e baixa calado até mostrar o botão verde) |
 | `user.{id}` | o próprio | `FriendshipUpdated { friendship, removed }` (`FriendResource`, nos canais dos **dois** lados) · `MemberRemoved { server_id, reason: kicked\|banned }` · `DirectMessageCreated { message, recipient }`, `DirectMessageUpdated { message, recipient }`, `DirectMessageDeleted { id }` (nos canais dos **dois** lados da conversa; `message` é o `DirectMessageResource` sem o `mine`) |
 
 O nome do canal perdeu os prefixos `private-` e `presence-` do Pusher: é `channel.`, `server.`

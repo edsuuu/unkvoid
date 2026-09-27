@@ -255,6 +255,46 @@ test('o que o Laravel publica chega a quem está inscrito, e só a ele', async (
     await fora.close();
 });
 
+test('o canal releases se ouve sem conta, sem o Laravel e sem presença', async () => {
+    authorizeCalls = [];
+
+    const visitante = await open();
+    const conta = await open();
+    const inscrito = await visitante.call('subscribe', { channel: 'releases' });
+
+    assert.equal(inscrito.ok, true, 'o visitante sem identify não entrou no canal público');
+    assert.equal(inscrito.data.members, undefined, 'o canal público devolveu presença');
+
+    await conta.call('identify', { token: sessionToken('user:40', 'Ana') });
+    await conta.call('subscribe', { channel: 'releases' });
+
+    assert.deepEqual(authorizeCalls, [], 'o canal público perguntou ao Laravel');
+
+    const response = await signedFetch('POST', '/broadcast', {
+        channel: 'releases',
+        event: 'ReleasePublished',
+        data: { version: '0.1.6', platform: 'windows-x86_64-nsis' },
+    });
+
+    assert.equal((await response.json()).delivered, 2);
+
+    for (const client of [visitante, conta]) {
+        const chegou = await client.waitFor((entry) => entry.event === 'ReleasePublished');
+
+        assert.equal(chegou.data.version, '0.1.6');
+    }
+
+    await conta.close();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    assert.ok(
+        !visitante.inbox.some((entry) => String(entry.event).startsWith('presence.')),
+        'o canal público anunciou presença',
+    );
+
+    await visitante.close();
+});
+
 test('publicar sem assinatura não entrega nada', async () => {
     const response = await fetch(`${HTTP}/broadcast`, {
         method: 'POST',

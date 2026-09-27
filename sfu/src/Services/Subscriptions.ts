@@ -9,6 +9,15 @@ export type Subscriber = {
 export type PresenceMember = { id: string; name: string };
 
 export class Subscriptions {
+    /**
+     * Canal que qualquer socket ouve sem `identify` e sem perguntar ao Laravel: só recebe o
+     * que o Laravel publica, e ninguém aparece na presença dele. É por onde a versão nova do
+     * app chega a todo app aberto, inclusive a quem entrou sem conta.
+     */
+    public static isPublic(channel: string): boolean {
+        return channel === 'releases';
+    }
+
     private readonly byChannel = new Map<string, Set<Subscriber>>();
 
     private readonly bySocket = new Map<WebSocket, Set<string>>();
