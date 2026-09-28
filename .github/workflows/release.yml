@@ -1,7 +1,6 @@
 # Os instaladores do Windows e do macOS saem daqui, de um runner do GitHub, a partir do próprio
-# repositório — e não da máquina de ninguém. É o que a assinatura de código exige (a SignPath só
-# assina build automatizado e verificável), e é o que deixa qualquer pessoa conferir de onde veio
-# o que ela instalou. O Linux sai da VPS (build-linux.yml), porque o .deb vai para o APT de lá.
+# repositório — e não da máquina de ninguém: é o que deixa qualquer pessoa conferir de onde veio
+# o que ela instalou, e o que uma assinatura de código vai exigir quando houver. O Linux sai da VPS (build-linux.yml), porque o .deb vai para o APT de lá.
 #
 # Cada instalador vai para o site pela API assinada, que o guarda no MinIO e monta o latest.json
 # que o app lê. Ninguém se atualiza pelo GitHub.

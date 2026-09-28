@@ -61,7 +61,6 @@
                     <a href="{{ route('home') }}#download">Download</a>
                     <a href="{{ route('privacy') }}">Privacidade</a>
                     <a href="{{ route('terms') }}">Termos</a>
-                    <a href="{{ route('code-signing') }}">Code signing policy</a>
                 </div>
             </footer>
         </div>

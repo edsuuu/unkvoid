@@ -111,12 +111,11 @@ perguntas que esperam o dono. O histórico das sessões saiu do repositório e c
   o `release.yml` voltou a rodar nos runners do GitHub (19/09/2026) e o macOS compila lá. Falta
   alguém abrir o app num Mac antes de publicar: `gh workflow run release.yml -f platform=macos
   -f publish=false` deixa o `.dmg` como artefato do run para testar.
-- **Assinatura de código do Windows (SignPath Foundation).** Inscrição enviada em 19/09/2026, em
-  análise. O que eles conferem já existe: a página `/code-signing-policy`, a seção no README, a
-  licença MIT e a release saindo do `release.yml`. Quando aprovarem, falta o passo de assinatura
-  no fluxo (a ordem está em [AUTO-UPDATE.md](AUTO-UPDATE.md#de-onde-sai-a-release)) e
-  autenticação em dois fatores na conta do GitHub. Até lá o Windows avisa que o editor é
-  desconhecido.
+- **Assinatura de código.** Nenhum instalador leva assinatura de editor: o Windows avisa que o
+  editor é desconhecido e o macOS pede para liberar na primeira abertura. A saída é um
+  certificado pago (Authenticode no Windows, Developer ID + notarização no macOS); decidido não
+  pagar por ora (28/09/2026). Quando houver um, o passo entra entre o build e a publicação, na
+  ordem descrita em [AUTO-UPDATE.md](AUTO-UPDATE.md#de-onde-sai-a-release).
 - **Borda amarela no Windows 10.** O Windows Graphics Capture só desliga a borda do Windows 11
   em diante; no 10 a saída é capturar o monitor pelo DXGI Desktop Duplication (sem borda, quadro
   na GPU, backend que a `windows-capture` já traz). Nada implementado: o porquê, os custos (só
