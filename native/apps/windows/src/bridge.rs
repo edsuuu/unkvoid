@@ -3423,11 +3423,88 @@ async fn arrive(
     }
 }
 
-/// Abre um endereço no navegador pelo Explorer, e não direto: daqui o navegador herdaria o
-/// administrador do app.
+/// Abre um endereço no navegador da pessoa sem o administrador do app. Quem abre é o Explorer
+/// da área de trabalho, que roda sem elevação, a pedido do app pela automação do shell
+/// (`IShellDispatch2::ShellExecute`). Abrir direto daria um navegador elevado, que briga com o
+/// perfil do navegador já aberto; e chamar o `explorer.exe` com o endereço, com o app elevado,
+/// abria o gerenciador de arquivos no lugar do navegador.
+#[cfg(target_os = "windows")]
 fn open_in_browser(url: &str) {
-    if let Err(failure) = std::process::Command::new("explorer.exe").arg(url).spawn() {
-        tracing::warn!(%failure, "navegador: o Explorer não abriu o endereço");
+    let url = url.to_owned();
+    let spawned = std::thread::Builder::new().name("navegador".into()).spawn(move || {
+        if let Err(failure) = open_through_desktop(&url) {
+            tracing::warn!(%failure, "navegador: a área de trabalho não abriu o endereço, abrindo direto");
+            open_directly(&url);
+        }
+    });
+
+    if let Err(failure) = spawned {
+        tracing::warn!(%failure, "navegador: a thread não subiu");
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn open_in_browser(_url: &str) {}
+
+/// O COM desta thread em volta do pedido ao shell da área de trabalho.
+#[cfg(target_os = "windows")]
+fn open_through_desktop(url: &str) -> windows::core::Result<()> {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+
+    // SAFETY: COM de apartamento único nesta thread, só dela, e desfeito antes de ela acabar.
+    unsafe {
+        let started = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let opened = desktop_shell_execute(url);
+
+        if started.is_ok() {
+            CoUninitialize();
+        }
+
+        opened
+    }
+}
+
+/// O caminho do shell da área de trabalho: a janela do desktop, o navegador de pastas dela, a
+/// vista e, por fim, o objeto de automação do Explorer, que executa como o próprio Explorer.
+#[cfg(target_os = "windows")]
+fn desktop_shell_execute(url: &str) -> windows::core::Result<()> {
+    use windows::Win32::System::Com::{CLSCTX_LOCAL_SERVER, CoCreateInstance, IDispatch, IServiceProvider};
+    use windows::Win32::System::Variant::{VARIANT, VT_I4};
+    use windows::Win32::UI::Shell::{
+        IShellBrowser, IShellDispatch2, IShellFolderViewDual, IShellView, IShellWindows, SID_STopLevelBrowser,
+        SVGIO_BACKGROUND, SWC_DESKTOP, SWFO_NEEDDISPATCH, ShellWindows,
+    };
+    use windows::core::{BSTR, Interface};
+
+    // SAFETY: chamadas COM com o COM já aberto nesta thread; o `VARIANT` do desktop é o
+    // `CSIDL_DESKTOP` (zero) marcado como inteiro, com o resto zerado pelo `default`.
+    unsafe {
+        let windows: IShellWindows = CoCreateInstance(&ShellWindows, None, CLSCTX_LOCAL_SERVER)?;
+        let mut desktop = VARIANT::default();
+
+        (*desktop.Anonymous.Anonymous).vt = VT_I4;
+
+        let mut window = 0;
+        let found = windows.FindWindowSW(&desktop, &VARIANT::default(), SWC_DESKTOP, &mut window, SWFO_NEEDDISPATCH)?;
+        let browser: IShellBrowser = found.cast::<IServiceProvider>()?.QueryService(&SID_STopLevelBrowser)?;
+        let view: IShellView = browser.QueryActiveShellView()?;
+        let background: IDispatch = view.GetItemObject(SVGIO_BACKGROUND)?;
+        let shell: IShellDispatch2 = background.cast::<IShellFolderViewDual>()?.Application()?.cast()?;
+
+        shell.ShellExecute(&BSTR::from(url), &VARIANT::default(), &VARIANT::default(), &VARIANT::default(), &VARIANT::default())
+    }
+}
+
+/// O último recurso: o navegador sai com o nível do app, mas o login não fica sem navegador.
+#[cfg(target_os = "windows")]
+fn open_directly(url: &str) {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::{HSTRING, PCWSTR, w};
+
+    // SAFETY: as duas cadeias vivem até o fim da chamada, que não guarda nenhuma delas.
+    unsafe {
+        ShellExecuteW(None, w!("open"), &HSTRING::from(url), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
     }
 }
 
@@ -3474,6 +3551,15 @@ mod tests {
         // Cortar por byte partiria o "Ã" ao meio, e o avatar mostraria lixo.
         assert_eq!(initial("Ângela"), "Â");
         assert_eq!(initial(""), "");
+    }
+
+    /// Abre uma aba de verdade, pelo Explorer da área de trabalho: é o caminho do login com o
+    /// Google. `cargo test -p unkvoid-windows -- --ignored desktop_opens`.
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "windows")]
+    fn the_desktop_opens_a_page_in_the_browser() {
+        open_through_desktop("https://unkvoid.com").expect("o Explorer da área de trabalho abriu o endereço");
     }
 
     #[test]
