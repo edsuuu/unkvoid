@@ -5,7 +5,9 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::bail;
-use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, SIZE};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HLOCAL, HWND, LocalFree, SIZE,
+};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteObject, GetDC, GetDIBits,
     GetObjectW, HGDIOBJ, ReleaseDC,
@@ -16,9 +18,17 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW,
 };
+use windows::Win32::Security::Authorization::{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
+use windows::Win32::Security::{
+    GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_ELEVATION_TYPE, TOKEN_QUERY,
+    TokenElevationType, TokenElevationTypeLimited,
+};
 use windows::Win32::System::Threading::{
-    AttachThreadInput, CreateEventW, CreateMutexW, GetCurrentProcessId, GetCurrentThread,
-    GetCurrentThreadId, SetEvent, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
+    AttachThreadInput, CreateEventW, CreateMutexW, EVENT_MODIFY_STATE, GetCurrentProcess, GetCurrentProcessId,
+    GetCurrentThread, GetCurrentThreadId, OpenEventW, OpenProcessToken, SetEvent, SetThreadPriority,
+    THREAD_MODE_BACKGROUND_BEGIN,
 };
 use windows::Win32::UI::Shell::{
     FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FOLDERID_Videos, FO_DELETE,
@@ -99,22 +109,24 @@ pub fn installer_clips_folder() -> Option<PathBuf> {
 /// Por tarefa agendada e não pela chave `Run`: o app roda como administrador, e o Windows não
 /// abre programa elevado pela `Run` sem pedir UAC a cada logon. A tarefa "ao fazer logon, com
 /// privilégios máximos" abre sem perguntar.
+///
+/// A tarefa existe sempre, com o início ligado ou não: é por ela que o app se eleva sem o UAC
+/// quando é aberto pelo ícone fixado (`elevate`). Desligar o início só desliga o gatilho do
+/// logon.
 pub fn set_autostart(enabled: bool) {
     // A 0.1.0 usava a chave `Run`; ela abriria uma segunda cópia, pedindo UAC, a cada logon.
     unsafe {
         let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE);
     }
 
-    let result = if enabled { register_logon_task() } else { run_schtasks(&["/Delete", "/F", "/TN", TASK_NAME]) };
-
-    if let Err(error) = result {
+    if let Err(error) = register_logon_task(enabled) {
         tracing::warn!(error = %format!("{error:#}"), enabled, "início com o Windows: a tarefa agendada não foi gravada");
     }
 }
 
 const TASK_NAME: &str = "Unkvoid";
 
-fn register_logon_task() -> anyhow::Result<()> {
+fn register_logon_task(at_logon: bool) -> anyhow::Result<()> {
     let executable = std::env::current_exe()?;
     let user = format!(
         "{}\\{}",
@@ -130,7 +142,7 @@ fn register_logon_task() -> anyhow::Result<()> {
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>Unkvoid: aberto na bandeja ao entrar no Windows, com o replay dos Clips.</Description></RegistrationInfo>
-  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{user}</UserId></LogonTrigger></Triggers>
+  <Triggers><LogonTrigger><Enabled>{at_logon}</Enabled><UserId>{user}</UserId></LogonTrigger></Triggers>
   <Principals><Principal id="Author"><UserId>{user}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
@@ -175,23 +187,148 @@ fn run_schtasks(arguments: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// O mutex e o evento de "mostrar a janela" abertos a toda a sessão, elevada ou não. A cópia
+/// elevada (a da tarefa agendada) é quem os cria; a que o clique no ícone fixado abre não é
+/// elevada, e o Windows esconde de um processo comum o que um elevado criou com a segurança
+/// padrão — ela nem descobriria que o app já está aberto. Todos podem tudo neles, e o rótulo de
+/// integridade baixo deixa quem está embaixo sinalizar.
+const SHARED: PCWSTR = w!("D:(A;;GA;;;WD)S:(ML;;NW;;;LW)");
+
+const INSTANCE: PCWSTR = w!("Local\\Unkvoid");
+const SHOW: PCWSTR = w!("Local\\Unkvoid-show");
+
+/// Quanto a cópia sem elevação espera a elevada, aberta pela tarefa, ficar pronta para mostrar a
+/// janela.
+const ELEVATING: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Garante uma instância só. Devolve o evento que a segunda instância sinaliza para esta
 /// mostrar a janela, ou `None` quando esta é a segunda — que já avisou a primeira.
 pub fn single_instance() -> anyhow::Result<Option<HANDLE>> {
     unsafe {
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(SHARED, SDDL_REVISION_1, &mut descriptor, None)?;
+
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: false.into(),
+        };
         // Fica aberto até o processo morrer (o `HANDLE` não fecha sozinho): é ele que diz
-        // "já tem um rodando".
-        let _instance = CreateMutexW(None, true, w!("Local\\Unkvoid"))?;
-        let already_running = GetLastError() == ERROR_ALREADY_EXISTS;
-        let event = CreateEventW(None, false, false, w!("Local\\Unkvoid-show"))?;
+        // "já tem um rodando". Acesso negado também diz: é o de uma cópia elevada de antes.
+        let instance = CreateMutexW(Some(&attributes), true, INSTANCE);
+        let already_running = match &instance {
+            Ok(_) => GetLastError() == ERROR_ALREADY_EXISTS,
+            Err(error) => error.code() == ERROR_ACCESS_DENIED.to_hresult(),
+        };
+        let event = CreateEventW(Some(&attributes), false, false, SHOW);
+
+        let _ = LocalFree(Some(HLOCAL(descriptor.0)));
 
         if already_running {
-            let _ = SetEvent(event);
+            if !show_running() {
+                tracing::warn!("instância única: o app já aberto não recebeu o pedido de mostrar a janela");
+            }
 
             return Ok(None);
         }
 
-        Ok(Some(event))
+        instance?;
+
+        Ok(Some(event?))
+    }
+}
+
+/// Pede ao app já aberto que mostre a janela. `false` quando não há nenhum aberto (ou ele não
+/// deixa pedir).
+fn show_running() -> bool {
+    unsafe {
+        let Ok(event) = OpenEventW(EVENT_MODIFY_STATE, false, SHOW) else {
+            return false;
+        };
+        let asked = SetEvent(event).is_ok();
+
+        let _ = CloseHandle(event);
+
+        asked
+    }
+}
+
+/// Aberto sem elevação numa conta de administrador — o clique no ícone fixado, o menu Iniciar,
+/// o atalho —, o app se eleva sem o UAC: pede a janela ao que já está aberto ou abre a cópia
+/// elevada pela tarefa agendada e pede a janela a ela. `true` quando esta cópia pode sair.
+/// Sem tarefa (ou numa conta comum, que não se eleva), `false`, e o app segue como sempre.
+pub fn elevate() -> bool {
+    if !limited_administrator() {
+        return false;
+    }
+
+    if show_running() {
+        return true;
+    }
+
+    if let Err(error) = run_schtasks(&["/Run", "/TN", TASK_NAME]) {
+        tracing::warn!(error = %format!("{error:#}"), "elevação: a tarefa agendada não abriu o app");
+
+        // Sem a tarefa (a primeira abertura, ou ela foi apagada), é o UAC de sempre: a cópia
+        // elevada grava a tarefa, e da próxima vez ninguém pergunta.
+        return run_as_administrator();
+    }
+
+    // A cópia elevada nasce na bandeja (`--background`); a janela é o que a pessoa pediu.
+    let deadline = std::time::Instant::now() + ELEVATING;
+
+    while std::time::Instant::now() < deadline {
+        if show_running() {
+            return true;
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+
+    tracing::warn!("elevação: a cópia elevada não ficou pronta a tempo");
+
+    true
+}
+
+/// Abre esta mesma cópia pedindo o administrador. Recusado o aviso, `false`: o app segue sem.
+fn run_as_administrator() -> bool {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let Ok(executable) = std::env::current_exe() else {
+        return false;
+    };
+    let opened = unsafe {
+        ShellExecuteW(None, w!("runas"), &HSTRING::from(executable.as_os_str()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL)
+    };
+
+    // Acima de 32 é sucesso: é assim que o ShellExecute responde desde sempre.
+    opened.0 as isize > 32
+}
+
+/// Conta de administrador com o token sem elevação: o que o Windows dá a quem clica num ícone.
+fn limited_administrator() -> bool {
+    unsafe {
+        let mut token = HANDLE::default();
+
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+
+        let mut kind = TOKEN_ELEVATION_TYPE::default();
+        let mut size = 0;
+        let asked = GetTokenInformation(
+            token,
+            TokenElevationType,
+            Some(std::ptr::from_mut(&mut kind).cast()),
+            size_of::<TOKEN_ELEVATION_TYPE>() as u32,
+            &mut size,
+        );
+
+        let _ = CloseHandle(token);
+
+        asked.is_ok() && kind == TokenElevationTypeLimited
     }
 }
 

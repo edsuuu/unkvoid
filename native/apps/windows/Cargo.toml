@@ -45,6 +45,8 @@ windows = { version = "0.62", features = [
     # O player dos Clips (`IMFMediaEngine`).
     "Win32_Media_MediaFoundation",
     "Win32_Security",
+    # O mutex e o evento da instância única abertos a quem não é elevado (`SHARED`).
+    "Win32_Security_Authorization",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Diagnostics_Debug",

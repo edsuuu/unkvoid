@@ -154,6 +154,10 @@ fn start_windows() -> anyhow::Result<Option<windows::Win32::Foundation::HANDLE>>
     std::panic::set_hook(Box::new(|information| tracing::error!("pânico: {information}")));
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "Unkvoid abrindo");
 
+    if clips::shell::elevate() {
+        return Ok(None);
+    }
+
     clips::shell::single_instance()
 }
 

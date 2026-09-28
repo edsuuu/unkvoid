@@ -128,8 +128,7 @@ pub struct Bridge {
 impl Bridge {
     pub fn new(window: Weak<AppWindow>) -> anyhow::Result<Rc<Self>> {
         let storage = Storage::open()?;
-        let server = std::env::var("UNKVOID_SERVER").unwrap_or_else(|_| DEFAULT_SERVER.to_owned());
-        let (core, api) = (Arc::new(App::new(storage)), Arc::new(Api::new(&server)?));
+        let (core, api) = (Arc::new(App::new(storage)), Arc::new(Api::new(&server())?));
 
         core.keep_session(&api, {
             let window = window.clone();
@@ -259,11 +258,9 @@ impl Bridge {
         // botão explica em vez de abrir. A saída é esse fluxo subir para o `shared/core`,
         // onde o macOS vai precisar dele igual.
         ui.on_google_sign_in({
-            let window = self.window.clone();
+            let bridge = self.clone();
 
-            move || {
-                complain(&window, "Entrar com o Google ainda não funciona aqui. Use e-mail e senha.")
-            }
+            move || bridge.google_sign_in()
         });
 
         ui.on_sign_out({
@@ -786,21 +783,47 @@ impl Bridge {
                         Some(user) => Some(user),
                         None => api.me().await.ok(),
                     };
-                    let account = user.as_ref().map(|user| user.id);
 
-                    landed(&core, &api, &window, &landing, user).await;
-
-                    if account.is_some() {
-                        // O de antes era o sem conta: o com conta se apresenta ao SFU.
-                        if let Some(guest) = lock(&live).take() {
-                            guest.close();
-                        }
-
-                        go_live(&api, &sfu, &live, &window, account).await;
-                    }
+                    arrive(&core, &api, &window, &landing, &sfu, &live, user).await;
                 }
                 Err(failure) => refuse_login(&window, &failure),
             }
+        });
+    }
+
+    /// Entrar com o Google: o navegador abre na conta do Google, e o site devolve o token a uma
+    /// porta local deste app — o `core_app::google`, o mesmo caminho do Mac. A pessoa tem até
+    /// cinco minutos para escolher a conta; o e-mail e senha seguem livres enquanto isso.
+    fn google_sign_in(self: &Rc<Self>) {
+        let (core, api, window) = (self.core.clone(), self.api.clone(), self.window.clone());
+        let (sfu, live) = (self.sfu.clone(), self.live.clone());
+        let landing = self.landing();
+
+        self.spawn(async move {
+            let login = match core_app::google::GoogleLogin::start(&server()).await {
+                Ok(login) => login,
+                Err(failure) => {
+                    tracing::warn!(%failure, "google: a porta do retorno não abriu");
+                    complain(&window, "Não deu para abrir o login do Google. Tente de novo.");
+
+                    return;
+                }
+            };
+
+            open_in_browser(&login.url);
+
+            let Ok((token, refresh)) = login.wait().await else {
+                complain(&window, "O login com o Google não voltou do navegador. Tente de novo.");
+
+                return;
+            };
+
+            core.set_token(Some(&token));
+            api.adopt(&token, refresh.as_deref());
+
+            let user = api.me().await.ok();
+
+            arrive(&core, &api, &window, &landing, &sfu, &live, user).await;
         });
     }
 
@@ -3368,6 +3391,43 @@ fn refused(refusal: EntryRefusal) -> &'static str {
         EntryRefusal::CodeIsInvalid => {
             "Use 3–32 caracteres: letras, números e hífens (sem hífen no começo ou fim)."
         }
+    }
+}
+
+/// O site que o app usa: o de produção, ou o de `UNKVOID_SERVER` para a pilha local.
+fn server() -> String {
+    std::env::var("UNKVOID_SERVER").unwrap_or_else(|_| DEFAULT_SERVER.to_owned())
+}
+
+/// Com a conta aberta: a tela do hub e o tempo real da conta no lugar do sem conta, que só
+/// ouvia o canal das versões.
+async fn arrive(
+    core: &Arc<App>,
+    api: &Arc<Api>,
+    window: &Weak<AppWindow>,
+    landing: &Landing,
+    sfu: &Arc<Mutex<Option<String>>>,
+    live: &Arc<Mutex<Option<Arc<Realtime>>>>,
+    user: Option<User>,
+) {
+    let account = user.as_ref().map(|user| user.id);
+
+    landed(core, api, window, landing, user).await;
+
+    if account.is_some() {
+        if let Some(guest) = lock(live).take() {
+            guest.close();
+        }
+
+        go_live(api, sfu, live, window, account).await;
+    }
+}
+
+/// Abre um endereço no navegador pelo Explorer, e não direto: daqui o navegador herdaria o
+/// administrador do app.
+fn open_in_browser(url: &str) {
+    if let Err(failure) = std::process::Command::new("explorer.exe").arg(url).spawn() {
+        tracing::warn!(%failure, "navegador: o Explorer não abriu o endereço");
     }
 }
 
