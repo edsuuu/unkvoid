@@ -234,6 +234,15 @@ fn bind(app: &Rc<App>) {
             }
         });
     });
+    ui.on_player_set_volume(|volume| {
+        with_app(|app| {
+            app.ui().set_player_volume(volume);
+
+            if let Some((player, _)) = app.player.borrow().as_ref() {
+                player.set_volume(f64::from(volume) / 100.0);
+            }
+        });
+    });
     ui.on_player_close(|| with_app(|app| app.close_player()));
     ui.on_player_show_in_folder(|| {
         with_app(|app| {
@@ -995,6 +1004,7 @@ impl App {
 
         match Player::open(parent, &path) {
             Ok(player) => {
+                player.set_volume(f64::from(self.ui().get_player_volume()) / 100.0);
                 *self.player.borrow_mut() = Some((player, path));
                 self.ui().set_player_title(title.into());
                 self.ui().set_page(1);

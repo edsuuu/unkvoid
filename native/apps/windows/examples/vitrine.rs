@@ -144,6 +144,12 @@ fn main() -> anyhow::Result<()> {
     clips.set_open(true);
     shoot("clips-com-faixa")?;
 
+    clips.set_page(1);
+    clips.set_player_title("Arena Breakout Infinite · 26/09/2026 21:40".into());
+    clips.set_player_time("1:12 / 5:00".into());
+    clips.set_player_progress(0.24);
+    shoot("clips-player")?;
+
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 // Os Clips, o replay instantâneo do Windows: a aba, a seção das Configurações, o painel do
 // Alt+Z e a bandeja. Vieram do UnkvoidClips, que era um app separado.
 
+import { Slider } from "std-widgets.slint";
 import { Skin, Icons } from "skin.slint";
 import { Ui } from "state.slint";
 import { Glass, Title, Body, Muted, LabelMono, PrimaryButton, GhostButton, Glyph, IconButton, RowItem } from "widgets.slint";
@@ -308,6 +309,9 @@ export global ClipsUi {
     in-out property <float> player-progress;
     in-out property <string> player-time;
     in-out property <bool> player-playing;
+    // O volume do player, de 0 a 100. Começa baixo: um clipe de jogo sai no volume do jogo, e
+    // abrir um no meio da noite no máximo assusta. Vale enquanto o app está aberto.
+    in-out property <int> player-volume: 10;
 
     in-out property <int> replay-index;
     in-out property <int> quality-index;
@@ -338,6 +342,7 @@ export global ClipsUi {
     callback capture-hotkey(string);
     callback player-toggle();
     callback player-seek(float);
+    callback player-set-volume(int);
     callback player-close();
     callback player-show-in-folder();
     callback player-delete();
@@ -427,70 +432,89 @@ export component ClipsScreen inherits Rectangle {
     }
 
     VerticalLayout {
-        HorizontalLayout {
-            padding-left: 22px;
-            padding-right: 22px;
-            padding-top: 16px;
-            padding-bottom: 12px;
-            spacing: 12px;
-            height: 72px;
+        // Uma linha só, na mesma barra de vidro da sala: as abas, o estado do replay e os
+        // botões. A faixa das abas de cima (`app.slint`) some com os Clips abertos, e é daqui
+        // que se volta ao Unkvoid.
+        VerticalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 12px;
+            padding-bottom: 4px;
 
-            Rectangle {
-                width: pill.preferred-width + 26px;
-                height: 30px;
-                y: (parent.height - self.height) / 2;
-                border-radius: 999px;
-                border-width: 1px;
-                border-color: Skin.line-strong;
-                background: Skin.row;
+            Glass {
+                height: 52px;
+                border-radius: 16px;
 
-                pill := HorizontalLayout {
-                    x: 12px;
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
                     spacing: 8px;
 
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+
+                        SectionTabs { }
+                    }
+
                     Rectangle {
-                        width: 8px;
-                        height: 8px;
+                        width: pill.preferred-width + 26px;
+                        height: 30px;
                         y: (parent.height - self.height) / 2;
-                        border-radius: 4px;
-                        background: ClipsUi.recording ? Skin.danger : Skin.ink-faint;
+                        border-radius: 999px;
+                        border-width: 1px;
+                        border-color: Skin.line-strong;
+                        background: Skin.row;
+
+                        pill := HorizontalLayout {
+                            x: 12px;
+                            spacing: 8px;
+
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 4px;
+                                background: ClipsUi.recording ? Skin.danger : Skin.ink-faint;
+                            }
+
+                            Text {
+                                text: ClipsUi.status;
+                                color: Skin.ink-body;
+                                font-family: Skin.sans;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
 
-                    Text {
-                        text: ClipsUi.status;
-                        color: Skin.ink-body;
-                        font-family: Skin.sans;
-                        font-size: 12px;
-                        vertical-alignment: center;
+                    Rectangle { horizontal-stretch: 1; }
+
+                    GhostButton {
+                        text: "Configurações";
+                        y: (parent.height - self.height) / 2;
+                        clicked => {
+                            ClipsUi.leave-player();
+                            Ui.settings-tab = "clips";
+                            Ui.open-settings();
+                        }
                     }
-                }
-            }
 
-            Rectangle { horizontal-stretch: 1; }
-
-            GhostButton {
-                text: "Configurações";
-                y: (parent.height - self.height) / 2;
-                clicked => {
-                    ClipsUi.leave-player();
-                    Ui.settings-tab = "clips";
-                    Ui.open-settings();
-                }
-            }
-
-            PrimaryButton {
-                text: !ClipsUi.replay-enabled ? "Ligar replay" : (ClipsUi.saving ? "Salvando…" : ClipsUi.save-label);
-                enabled: !ClipsUi.replay-enabled || (ClipsUi.recording && !ClipsUi.saving);
-                // O tamanho dos vizinhos (Galeria, Configurações): o roxo já destaca.
-                height: 32px;
-                font-size: 12.5px;
-                border-radius: 10px;
-                y: (parent.height - self.height) / 2;
-                clicked => {
-                    if ClipsUi.replay-enabled {
-                        ClipsUi.save-replay();
-                    } else {
-                        ClipsUi.enable-replay();
+                    PrimaryButton {
+                        text: !ClipsUi.replay-enabled ? "Ligar replay" : (ClipsUi.saving ? "Salvando…" : ClipsUi.save-label);
+                        enabled: !ClipsUi.replay-enabled || (ClipsUi.recording && !ClipsUi.saving);
+                        // O tamanho dos vizinhos (Galeria, Configurações): o roxo já destaca.
+                        height: 32px;
+                        font-size: 12.5px;
+                        border-radius: 10px;
+                        y: (parent.height - self.height) / 2;
+                        clicked => {
+                            if ClipsUi.replay-enabled {
+                                ClipsUi.save-replay();
+                            } else {
+                                ClipsUi.enable-replay();
+                            }
+                        }
                     }
                 }
             }
@@ -648,6 +672,29 @@ export component ClipsScreen inherits Rectangle {
                         color: Skin.ink-soft;
                         font-family: Skin.sans;
                         font-size: 12.5px;
+                        vertical-alignment: center;
+                    }
+
+                    Glyph {
+                        commands: ClipsUi.player-volume == 0 ? Icons.speaker-off : Icons.speaker;
+                        size: 16px;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Slider {
+                        width: 110px;
+                        minimum: 0;
+                        maximum: 100;
+                        value: ClipsUi.player-volume;
+                        changed(level) => { ClipsUi.player-set-volume(round(level)); }
+                    }
+
+                    Text {
+                        text: ClipsUi.player-volume + "%";
+                        color: Skin.ink-soft;
+                        font-family: Skin.mono;
+                        font-size: 11px;
+                        width: 34px;
                         vertical-alignment: center;
                     }
                 }

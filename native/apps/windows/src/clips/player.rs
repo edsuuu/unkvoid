@@ -116,6 +116,13 @@ impl Player {
         unsafe { (self.engine.GetCurrentTime(), self.engine.GetDuration()) }
     }
 
+    /// De 0 a 1.
+    pub fn set_volume(&self, volume: f64) {
+        unsafe {
+            let _ = self.engine.SetVolume(volume.clamp(0.0, 1.0));
+        }
+    }
+
     pub fn seek(&self, fraction: f32) {
         let (_, duration) = self.position();
 
