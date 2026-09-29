@@ -5,6 +5,7 @@
 //! A grade, o foco e a tela cheia são só do lado de quem olha, como no React e no Mac.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use core_app::models::Peer;
 use core_app::room::Mine;
@@ -210,8 +211,8 @@ pub struct Voice {
     /// O mudo de quem está fora da sala. Ao sair, o mudo de dentro vira este.
     pub muted_at_rest: bool,
     pub deafened: bool,
-    /// O nível do próprio microfone, de 0 a 1.
-    pub level: f32,
+    /// A última vez que o próprio microfone passou do limiar de fala.
+    pub spoke_at: Option<Instant>,
     /// Os producers de microfone de quem está falando agora.
     pub speaking: HashSet<String>,
     /// Quem está na sala, como o último `room.peers` contou.
@@ -227,9 +228,19 @@ impl Voice {
         }
     }
 
-    /// Eu falando: na voz, com o microfone não desenhado como mudo e acima do limiar.
+    /// Um `room.level` do próprio microfone, na escala de 0 a 100.
+    pub fn hear_myself(&mut self, percent: u8, now: Instant) {
+        if percent >= core_app::speaking::OWN_LOUDNESS {
+            self.spoke_at = Some(now);
+        }
+    }
+
+    /// Eu falando: na voz, com o microfone não desenhado como mudo, e acima do limiar há
+    /// menos que a cauda — a mesma dos outros, para o anel não piscar entre as palavras.
     pub fn speaking_myself(&self) -> bool {
-        self.inside && !self.mic_shown_off() && self.level > core_app::speaking::LOUDNESS
+        self.inside
+            && !self.mic_shown_off()
+            && self.spoke_at.is_some_and(|spoke| spoke.elapsed() < core_app::speaking::TAIL)
     }
 
     /// A pessoa saiu da sala: o mudo de dentro vira o de fora, e o resto zera.
@@ -241,7 +252,7 @@ impl Voice {
         self.mine = Mine::default();
         self.inside = false;
         self.opening = false;
-        self.level = 0.0;
+        self.spoke_at = None;
         self.speaking.clear();
         self.peers.clear();
     }
@@ -497,14 +508,39 @@ mod tests {
         let mut voice = Voice {
             inside: true,
             mine: Mine { mic: true, can_speak: true, ..Mine::default() },
-            level: 0.3,
             ..Voice::default()
         };
+
+        voice.hear_myself(core_app::speaking::OWN_LOUDNESS - 1, Instant::now());
+
+        assert!(!voice.speaking_myself(), "abaixo do limiar não acende");
+
+        voice.hear_myself(core_app::speaking::OWN_LOUDNESS, Instant::now());
 
         assert!(voice.speaking_myself());
 
         voice.mine.mic_muted = true;
 
         assert!(!voice.speaking_myself());
+    }
+
+    #[test]
+    fn my_ring_stays_lit_through_the_tail_and_goes_out_after_it() {
+        let mut voice = Voice {
+            inside: true,
+            mine: Mine { mic: true, can_speak: true, ..Mine::default() },
+            ..Voice::default()
+        };
+        let long_ago = Instant::now().checked_sub(core_app::speaking::TAIL).expect("relógio");
+
+        voice.hear_myself(100, long_ago);
+        voice.hear_myself(0, Instant::now());
+
+        assert!(!voice.speaking_myself(), "o silêncio depois da cauda apaga");
+
+        voice.hear_myself(100, Instant::now());
+        voice.hear_myself(0, Instant::now());
+
+        assert!(voice.speaking_myself(), "o silêncio logo depois da fala ainda não apaga");
     }
 }

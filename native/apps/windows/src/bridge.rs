@@ -238,13 +238,13 @@ impl Bridge {
         ui.on_create_room({
             let bridge = self.clone();
 
-            move |name, code| bridge.enter(bridge.core.create_room(&name, &code), None)
+            move |name, code| bridge.enter(bridge.core.create_room(&bridge.room_name(&name), &code), None)
         });
 
         ui.on_join_room({
             let bridge = self.clone();
 
-            move |name, code| bridge.enter(bridge.core.join_room(&name, &code), None)
+            move |name, code| bridge.enter(bridge.core.join_room(&bridge.room_name(&name), &code), None)
         });
 
         ui.on_sign_in({
@@ -253,14 +253,16 @@ impl Bridge {
             move |email, password, register| bridge.sign_in(&email, &password, register)
         });
 
-        // ponytail: entrar pelo Google é o navegador do sistema e a volta por
-        // `unkvoid://login?token=&state=`, que hoje só existe no app do Tauri. Teto: o
-        // botão explica em vez de abrir. A saída é esse fluxo subir para o `shared/core`,
-        // onde o macOS vai precisar dele igual.
         ui.on_google_sign_in({
             let bridge = self.clone();
 
             move || bridge.google_sign_in()
+        });
+
+        ui.on_rename({
+            let bridge = self.clone();
+
+            move |name| bridge.rename(&name)
         });
 
         ui.on_sign_out({
@@ -400,7 +402,7 @@ impl Bridge {
         ui.on_open_recent_room({
             let bridge = self.clone();
 
-            move |code| bridge.enter(bridge.core.join_room("", &code), None)
+            move |code| bridge.enter(bridge.core.join_room(&bridge.room_name(""), &code), None)
         });
 
         ui.on_leave_room({
@@ -818,12 +820,46 @@ impl Bridge {
                 return;
             };
 
+            // A aba tenta se fechar sozinha, mas o navegador pode recusar: o app vem para a
+            // frente de qualquer jeito, e a pessoa não fica olhando para o navegador.
+            #[cfg(target_os = "windows")]
+            let _ = slint::invoke_from_event_loop(crate::clips::show_window);
+
             core.set_token(Some(&token));
             api.adopt(&token, refresh.as_deref());
 
             let user = api.me().await.ok();
 
             arrive(&core, &api, &window, &landing, &sfu, &live, user).await;
+        });
+    }
+
+    /// Troca o apelido da conta. O erro de validação do Laravel vai para baixo do campo; o
+    /// resto, para a mesma linha.
+    fn rename(self: &Rc<Self>, name: &str) {
+        let name = name.trim().to_owned();
+        let (api, window) = (self.api.clone(), self.window.clone());
+
+        paint(&window, |app| app.global::<Ui>().set_nickname_busy(true));
+
+        self.spawn(async move {
+            let renamed = api.rename(&name).await;
+
+            paint(&window, move |app| {
+                let ui = app.global::<Ui>();
+
+                ui.set_nickname_busy(false);
+
+                match renamed {
+                    Ok(user) => {
+                        ui.set_nickname_error(SharedString::new());
+                        ui.set_nickname_pending(!user.nickname_confirmed);
+                        ui.set_user_initial(initial(&user.name));
+                        ui.set_user_name(user.name.into());
+                    }
+                    Err(failure) => ui.set_nickname_error(said(&failure).into()),
+                }
+            });
         });
     }
 
@@ -854,6 +890,7 @@ impl Bridge {
             let ui = app.global::<Ui>();
 
             ui.set_signed_in(false);
+            ui.set_nickname_pending(false);
             ui.set_user_name(SharedString::new());
             ui.set_user_initial(SharedString::new());
             ui.set_servers(ModelRc::default());
@@ -1491,6 +1528,18 @@ impl Bridge {
             // servidor gravou, e não o que este app achou que mandou.
             read_channel(&api, &window, &channel, mine).await;
         });
+    }
+
+    /// O nome de quem entra numa sala por código. Com conta é sempre o apelido da conta: o
+    /// que se digitou antes do login, ou o guardado da última sala, não vale — e as "Últimas
+    /// salas" da Home, que não têm campo, entravam sem nome nenhum.
+    fn room_name(&self, typed: &str) -> String {
+        let Some(app) = self.window.upgrade() else {
+            return typed.to_owned();
+        };
+        let ui = app.global::<Ui>();
+
+        if ui.get_signed_in() { ui.get_user_name().into() } else { typed.to_owned() }
     }
 
     fn enter(self: &Rc<Self>, opened: Result<String, EntryRefusal>, voice: Option<String>) {
@@ -2587,6 +2636,7 @@ async fn landed(core: &Arc<App>, api: &Arc<Api>, window: &Weak<AppWindow>, landi
     let landing = core.home();
     let name = user.as_ref().map(|user| user.name.clone()).unwrap_or_default();
     let signed_in = user.is_some();
+    let pending = user.as_ref().is_some_and(|user| !user.nickname_confirmed);
 
     // Quem sou eu decide se um pedido de amizade chegou ou saiu — e isso é lido em toda
     // lista de amigos daqui para a frente.
@@ -2600,6 +2650,7 @@ async fn landed(core: &Arc<App>, api: &Arc<Api>, window: &Weak<AppWindow>, landi
         let ui = app.global::<Ui>();
 
         ui.set_signed_in(signed_in);
+        ui.set_nickname_pending(pending);
         ui.set_user_initial(initial(&name));
         ui.set_user_name(name.into());
         ui.set_login_error(SharedString::new());
@@ -2967,13 +3018,12 @@ fn listen(heard: std::sync::mpsc::Receiver<String>, window: Weak<AppWindow>, sta
                     paint_stage(&window, &stage);
                 }
                 "room.level" => {
-                    #[allow(clippy::cast_possible_truncation)]
-                    let level = data["level"].as_f64().unwrap_or(0.0) as f32;
+                    let percent = data["percent"].as_u64().map_or(0, |percent| u8::try_from(percent).unwrap_or(u8::MAX));
                     let changed = {
                         let mut voice = lock(&voice);
                         let before = voice.speaking_myself();
 
-                        voice.level = level;
+                        voice.hear_myself(percent, std::time::Instant::now());
                         before != voice.speaking_myself()
                     };
 

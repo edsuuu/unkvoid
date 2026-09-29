@@ -215,7 +215,7 @@ Conta:
 | `POST /api/auth/refresh` (público) | `{ refresh_token }` | o par novo, no mesmo formato; o token de renovação usado morre na hora. Vencido, usado ou de outra coisa: 401 `"Sua sessão terminou. Entre de novo."` |
 | `POST /api/auth/logout` | `{ refresh_token? }` | 204; derruba o token de acesso da requisição e, se vier, o de renovação da mesma conta |
 | `GET /api/me` | — | `{ id, name, email, avatar_url, avatar_uploaded, admin, nickname_confirmed }` |
-| `PATCH /api/me` | `{ name }` (3 a 32 caracteres, `[A-Za-z0-9._]`, único; pode repetir o atual) | o mesmo `user`, agora com `nickname_confirmed: true`. Só enquanto `nickname_confirmed` for `false`: depois é 403 |
+| `PATCH /api/me` | `{ name }` (3 a 32 caracteres, `[A-Za-z0-9._]`, único; pode repetir o atual) | o mesmo `user`, agora com `nickname_confirmed: true`. Troca a qualquer hora; a primeira troca também confirma o automático |
 | `POST /api/me/avatar` | `multipart`, campo `avatar` (jpeg/png/webp, ≤ 2 MB) | o mesmo `user`, com a foto nova; guarda no bucket privado e apaga a foto anterior |
 | `DELETE /api/me/avatar` | — | o mesmo `user` (200, não 204): tirar a foto enviada faz voltar a valer a do Google, e o app precisa do link novo |
 
@@ -474,6 +474,8 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 - Com `nickname_confirmed: false`, um modal que não fecha pede o apelido (já preenchido com o
   automático) a cada abertura do app, até o `PATCH /api/me` dar certo. Dá para sair da conta
   por ele.
+- Com a conta aberta, "Minha conta" nas configurações troca o apelido pelo mesmo
+  `PATCH /api/me`, com o erro de validação embaixo do campo.
 - Nos formulários de entrar e criar conta, o campo recusado fica com a borda vermelha e a
   mensagem embaixo dele; o que não é de campo (credencial errada, 429) fica na linha geral.
 - Logado e sem servidor aberto, o centro mostra **Criar sala** e **Últimas salas**. Criar

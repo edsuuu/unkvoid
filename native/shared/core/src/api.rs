@@ -323,6 +323,16 @@ impl Api {
         self.get("/api/me").await
     }
 
+    /// Troca o apelido. Quem valida é o Laravel: repetido ou com espaço volta como
+    /// `Invalid` sobre o `name`, já em português.
+    pub async fn rename(&self, name: &str) -> Result<User, HttpError> {
+        self.send(
+            self.http.patch(self.url("/api/me")).json(&serde_json::json!({ "name": name })),
+            "/api/me",
+        )
+        .await
+    }
+
     pub async fn servers(&self) -> Result<Vec<ServerSummary>, HttpError> {
         self.get("/api/servers").await
     }

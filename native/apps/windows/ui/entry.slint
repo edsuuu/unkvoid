@@ -1,3 +1,4 @@
+import { ScrollView } from "std-widgets.slint";
 import { Skin } from "skin.slint";
 import { Ui } from "state.slint";
 import { Avatar, Danger, DividerOr, Field, Glass, GhostButton, LabelMono, LinkButton, Muted, PrimaryButton, Title } from "widgets.slint";
@@ -327,18 +328,22 @@ component AuthCard inherits Glass {
 }
 
 export component EntryScreen inherits Rectangle {
-    VerticalLayout {
-        padding: 24px;
-        padding-top: 76px;
-        alignment: start;
+    // Na janela baixa os cartões passam da altura: a tela rola, em vez de cortar o fim do
+    // login e a linha do erro.
+    ScrollView {
+        VerticalLayout {
+            padding: 24px;
+            padding-top: 76px;
+            alignment: start;
 
-        HorizontalLayout {
-            spacing: 20px;
-            alignment: center;
+            HorizontalLayout {
+                spacing: 20px;
+                alignment: center;
 
-            RoomCard { }
+                RoomCard { }
 
-            if !Ui.signed-in : AuthCard { }
+                if !Ui.signed-in : AuthCard { }
+            }
         }
     }
 }

@@ -1,7 +1,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { Icons, Skin } from "skin.slint";
 import { Ui } from "state.slint";
-import { Avatar, Glyph, LabelMono, Muted, RowItem } from "widgets.slint";
+import { Avatar, Field, Glyph, LabelMono, LinkButton, Muted, PrimaryButton, RowItem } from "widgets.slint";
 import { ClipsSettings, ClipsUi } from "clips.slint";
 
 // Uma linha da coluna da esquerda.
@@ -266,12 +266,39 @@ export component SettingsModal inherits Rectangle {
 
                         Rectangle { height: 8px; }
 
-                        LabelMono { text: "CONTA"; }
+                        LabelMono { text: "APELIDO"; }
 
-                        Line {
-                            label: "Apelido";
-                            value: Ui.user-name;
+                        HorizontalLayout {
+                            spacing: 10px;
+
+                            nickname := Field {
+                                horizontal-stretch: 1;
+                                text: Ui.user-name;
+                                placeholder: "seu.apelido";
+                                error: Ui.nickname-error;
+                                enabled: !Ui.nickname-busy;
+                                init => { Ui.nickname-error = ""; }
+                                accepted => { Ui.rename(self.text); }
+                                edited => { Ui.nickname-error = ""; }
+                            }
+
+                            // O campo cresce com o erro embaixo; o botão fica na altura dele.
+                            VerticalLayout {
+                                alignment: start;
+
+                                PrimaryButton {
+                                    text: Ui.nickname-busy ? "Salvando…" : "Salvar";
+                                    enabled: !Ui.nickname-busy && nickname.text != Ui.user-name;
+                                    clicked => { Ui.rename(nickname.text); }
+                                }
+                            }
                         }
+
+                        Muted { text: "É o nome que todo mundo vê. De 3 a 32 letras, números, ponto e _, sem espaço."; }
+
+                        Rectangle { height: 8px; }
+
+                        LabelMono { text: "CONTA"; }
 
                         Line {
                             label: "Entrada";
@@ -353,3 +380,78 @@ export component SettingsModal inherits Rectangle {
     }
 }
 
+// A conta nova, pelo app ou pelo Google, nasce com um apelido tirado do e-mail. Este modal
+// não fecha: pede a escolha a cada abertura, até o `PATCH /api/me` dar certo — o mesmo do
+// Mac. Ficar com o automático também vale, e sair da conta é a outra porta.
+export component NicknameModal inherits Rectangle {
+    property <bool> shown;
+
+    background: #06050abd;
+    opacity: root.shown ? 1.0 : 0.0;
+    init => { root.shown = true; }
+
+    animate opacity { duration: 180ms; easing: ease-out; }
+
+    // Come o clique: o que está atrás não se alcança antes da escolha.
+    TouchArea { }
+
+    Rectangle {
+        width: 440px;
+        height: box.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2 + (root.shown ? 0px : 10px);
+        background: #100d1af7;
+        border-radius: 22px;
+        border-width: 1px;
+        border-color: #ffffff1a;
+        drop-shadow-blur: 45px;
+        drop-shadow-offset-y: 20px;
+        drop-shadow-color: #000000f2;
+
+        animate y { duration: 220ms; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
+
+        box := VerticalLayout {
+            padding: 28px;
+            spacing: 14px;
+
+            Text {
+                text: "Escolha seu apelido";
+                color: Skin.ink-strong;
+                font-family: Skin.sans;
+                font-size: 18px;
+                font-weight: 600;
+            }
+
+            Muted { text: "É como as pessoas te acham. Sem espaço, e ninguém mais pode usar o mesmo."; }
+
+            nickname := Field {
+                text: Ui.user-name;
+                placeholder: "apelido";
+                error: Ui.nickname-error;
+                enabled: !Ui.nickname-busy;
+                init => {
+                    Ui.nickname-error = "";
+                    self.focus();
+                }
+                accepted => { Ui.rename(self.text); }
+                edited => { Ui.nickname-error = ""; }
+            }
+
+            HorizontalLayout {
+                alignment: space-between;
+
+                LinkButton {
+                    label: "Sair da conta";
+                    vertical-alignment: center;
+                    clicked => { Ui.sign-out(); }
+                }
+
+                PrimaryButton {
+                    text: Ui.nickname-busy ? "Salvando…" : "Confirmar";
+                    enabled: !Ui.nickname-busy;
+                    clicked => { Ui.rename(nickname.text); }
+                }
+            }
+        }
+    }
+}

@@ -4,7 +4,7 @@ import { EntryScreen } from "entry.slint";
 import { HubScreen } from "hub.slint";
 import { RoomScreen } from "room.slint";
 import { Halo, OfflineScreen, Toast, UpdatingScreen } from "shell.slint";
-import { SettingsModal } from "settings.slint";
+import { NicknameModal, SettingsModal } from "settings.slint";
 import { ShareModal } from "share.slint";
 import { ClipsScreen, ClipsTray, ClipsUi, OverlayWindow, SectionTabs } from "clips.slint";
 import { ResizeEdges, TitleBar } from "frame.slint";
@@ -67,6 +67,7 @@ export component AppWindow inherits Window {
 
         if Ui.settings-open : SettingsModal { }
         if Ui.share-open : ShareModal { }
+        if Ui.signed-in && Ui.nickname-pending : NicknameModal { }
     }
 
     TitleBar {

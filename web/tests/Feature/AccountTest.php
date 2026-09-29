@@ -175,14 +175,17 @@ it('ficar com o apelido automático também confirma', function (): void {
         ->assertJsonPath('data.nickname_confirmed', true);
 });
 
-it('não troca o apelido de quem já confirmou', function (): void {
-    $user = User::factory()->create(['name' => 'ada']);
+it('quem já confirmou troca o apelido de novo, e a data da escolha fica', function (): void {
+    $user = User::factory()->create(['name' => 'ada', 'nickname_confirmed_at' => now()->subYear()]);
+    $chosen = $user->nickname_confirmed_at?->toDateTimeString();
 
     $this->actingAs($user)->patchJson('/api/me', ['name' => 'outro.nome'])
-        ->assertForbidden()
-        ->assertJsonPath('message', 'Você já escolheu o seu apelido.');
+        ->assertOk()
+        ->assertJsonPath('data.name', 'outro.nome')
+        ->assertJsonPath('data.nickname_confirmed', true);
 
-    expect($user->fresh()?->name)->toBe('ada');
+    expect($user->fresh()?->name)->toBe('outro.nome')
+        ->and($user->fresh()?->nickname_confirmed_at?->toDateTimeString())->toBe($chosen);
 });
 
 it('o PATCH /api/me exige token', function (): void {

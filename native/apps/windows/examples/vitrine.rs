@@ -129,6 +129,21 @@ fn main() -> anyhow::Result<()> {
     ui.set_settings_open(true);
     shoot("configuracoes-clips")?;
 
+    ui.set_settings_tab("account".into());
+    shoot("configuracoes-conta")?;
+
+    // A conta nova, com o apelido automático: o modal que não fecha pede a escolha.
+    ui.set_settings_open(false);
+    ui.set_nickname_pending(true);
+    shoot("apelido-escolha")?;
+
+    ui.set_nickname_error("Esse apelido já é de outra pessoa.".into());
+    shoot("apelido-escolha-erro")?;
+
+    ui.set_nickname_pending(false);
+    ui.set_nickname_error(SharedString::new());
+    ui.set_settings_tab("clips".into());
+    ui.set_settings_open(true);
     ui.set_signed_in(false);
     ui.set_screen("entry".into());
     shoot("configuracoes-clips-sem-conta")?;
@@ -149,6 +164,23 @@ fn main() -> anyhow::Result<()> {
     clips.set_player_time("1:12 / 5:00".into());
     clips.set_player_progress(0.24);
     shoot("clips-player")?;
+
+    // A janela no mínimo do app: os cartões da Home descem um embaixo do outro, e a entrada
+    // sem conta tem de caber inteira.
+    clips.set_open(false);
+    window.set_size(slint::PhysicalSize::new(940, 600));
+    ui.set_screen("hub".into());
+    ui.set_home_tab("servers".into());
+    ui.set_recent_rooms(model(vec![model(vec!["np9cabl01opi".into(), "mg6gag7qik00".into()])]));
+    shoot("home-estreita")?;
+
+    window.set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
+    shoot("home-larga")?;
+
+    window.set_size(slint::PhysicalSize::new(940, 600));
+    ui.set_signed_in(false);
+    ui.set_screen("entry".into());
+    shoot("entrada-estreita")?;
 
     Ok(())
 }
@@ -240,32 +272,34 @@ fn tile(label: &str, column: i32, line: i32, width: u32, height: u32, watchers: 
 
 /// Deixa as animações de entrada terminarem e desenha a janela inteira num BMP.
 fn shoot(window: &MinimalSoftwareWindow, path: &str) -> anyhow::Result<()> {
+    let (width, height) = (window.size().width, window.size().height);
+
     std::thread::sleep(Duration::from_millis(400));
     slint::platform::update_timers_and_animations();
     window.request_redraw();
 
-    let mut pixels = vec![PremultipliedRgbaColor::default(); (WIDTH * HEIGHT) as usize];
+    let mut pixels = vec![PremultipliedRgbaColor::default(); (width * height) as usize];
 
     window.draw_if_needed(|renderer| {
-        renderer.render(&mut pixels, WIDTH as usize);
+        renderer.render(&mut pixels, width as usize);
     });
 
-    let row = WIDTH as usize * 4;
-    let mut bmp = Vec::with_capacity(54 + row * HEIGHT as usize);
+    let row = width as usize * 4;
+    let mut bmp = Vec::with_capacity(54 + row * height as usize);
 
     bmp.extend_from_slice(b"BM");
-    bmp.extend_from_slice(&(54 + row as u32 * HEIGHT).to_le_bytes());
+    bmp.extend_from_slice(&(54 + row as u32 * height).to_le_bytes());
     bmp.extend_from_slice(&[0; 4]);
     bmp.extend_from_slice(&54_u32.to_le_bytes());
     bmp.extend_from_slice(&40_u32.to_le_bytes());
-    bmp.extend_from_slice(&WIDTH.to_le_bytes());
-    bmp.extend_from_slice(&HEIGHT.to_le_bytes());
+    bmp.extend_from_slice(&width.to_le_bytes());
+    bmp.extend_from_slice(&height.to_le_bytes());
     bmp.extend_from_slice(&1_u16.to_le_bytes());
     bmp.extend_from_slice(&32_u16.to_le_bytes());
     bmp.extend_from_slice(&[0; 24]);
 
-    for line in (0..HEIGHT as usize).rev() {
-        for pixel in &pixels[line * WIDTH as usize..(line + 1) * WIDTH as usize] {
+    for line in (0..height as usize).rev() {
+        for pixel in &pixels[line * width as usize..(line + 1) * width as usize] {
             bmp.extend_from_slice(&[pixel.blue, pixel.green, pixel.red, 255]);
         }
     }

@@ -186,6 +186,11 @@ export global Ui {
     in property <bool> entry-busy;
 
     in property <string> login-error;
+    /// A recusa do apelido novo, embaixo do campo dele em "Minha conta". Digitar apaga.
+    in-out property <string> nickname-error;
+    in property <bool> nickname-busy;
+    /// A conta ainda está com o apelido automático: o modal que não fecha pede a escolha.
+    in property <bool> nickname-pending;
     in property <string> login-email-error;
     in property <string> login-password-error;
     in property <bool> login-busy;
@@ -271,6 +276,7 @@ export global Ui {
     callback google-sign-in();
     callback sign-out();
     callback clear-login-error(string);
+    callback rename(string);
 
     callback show-entry();
     callback show-home();

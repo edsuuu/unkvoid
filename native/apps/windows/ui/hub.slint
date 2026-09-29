@@ -934,7 +934,7 @@ export component HubScreen inherits Rectangle {
             }
 
             // o miolo da Home: salas, amigos ou a conversa aberta
-            ScrollView {
+            middle := ScrollView {
                 horizontal-stretch: 1;
 
                 VerticalLayout {
@@ -952,10 +952,25 @@ export component HubScreen inherits Rectangle {
                     // Os dois cartões lado a lado, como o `flex-wrap` do React. O terceiro,
                     // "Últimas salas", saiu como no Mac: as salas em que se está já moram na
                     // trilha da esquerda, e repeti-las ao lado só empurrava o resto.
-                    if Ui.home-tab == "servers" : HorizontalLayout {
+                    //
+                    // Quebra quando os dois não cabem na base de 360 cada, com os 12 entre eles:
+                    // o de códigos desce e toma a linha, o de criar fica nos 360 dele.
+                    if Ui.home-tab == "servers" && middle.visible-width >= 732px : HorizontalLayout {
                         spacing: 12px;
 
                         HomeCreate { }
+                        HomeCodes { }
+                    }
+
+                    if Ui.home-tab == "servers" && middle.visible-width < 732px : VerticalLayout {
+                        spacing: 12px;
+
+                        HorizontalLayout {
+                            alignment: start;
+
+                            HomeCreate { }
+                        }
+
                         HomeCodes { }
                     }
 

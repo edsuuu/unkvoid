@@ -7,11 +7,16 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// O pico a partir do qual um bloco conta como fala. Vale também para o próprio microfone.
+/// O pico a partir do qual um bloco de quem chega conta como fala.
 pub const LOUDNESS: f32 = 0.02;
 
+/// O mesmo para o próprio microfone, na escala de 0 a 100 do `room.level` — o limiar do
+/// React. O `room.level` é a média do bloco, bem abaixo do pico: medido contra o
+/// `LOUDNESS`, um microfone baixo nunca acendia o próprio anel, e os outros ouviam.
+pub const OWN_LOUDNESS: u8 = 40;
+
 /// Quanto a fala continua acesa depois do último pico.
-const TAIL: Duration = Duration::from_millis(350);
+pub const TAIL: Duration = Duration::from_millis(350);
 
 #[derive(Debug, Default)]
 pub struct Speaking {
