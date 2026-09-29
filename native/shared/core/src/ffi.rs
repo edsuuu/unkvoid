@@ -1451,12 +1451,22 @@ mod tests {
         format!("http://{address}")
     }
 
-    /// Token vencido em qualquer chamada leva de volta à entrada — e não só no `me` da
-    /// abertura. Era assim que o app ficava preso no hub sem conta.
+    /// Token vencido em qualquer chamada, com o par que não renova, leva de volta à entrada —
+    /// e não só no `me` da abertura. Era assim que o app ficava preso no hub sem conta. O
+    /// `session.ended` sai junto, para a interface que ouve eventos.
     #[test]
     fn an_expired_token_lands_on_the_entry_screen_from_any_call() {
         let (handle, _dir) = isolated_core();
 
+        unsafe {
+            (*handle).app.set_token(Some("vencido"));
+            (*handle).app.set_refresh_token("tambem-vencido");
+        }
+        assert_eq!(
+            app_call(handle, "state", "{}")["signedIn"],
+            true,
+            "com token a conta conta como entrada"
+        );
         assert_eq!(
             app_call(
                 handle,
@@ -1464,13 +1474,6 @@ mod tests {
                 &format!(r#"{{"url":"{}"}}"#, a_laravel_that_expired_the_token())
             )["ok"],
             true
-        );
-
-        unsafe { (*handle).app.set_token(Some("vencido")) };
-        assert_eq!(
-            app_call(handle, "state", "{}")["signedIn"],
-            true,
-            "com token a conta conta como entrada"
         );
 
         let answer = app_call(handle, "servers", "{}");
@@ -1481,6 +1484,29 @@ mod tests {
 
         assert_eq!(state["signedIn"], false);
         assert_eq!(state["screen"], "entry", "{state}");
+
+        let mut events = Vec::new();
+
+        loop {
+            let raw = unsafe { unkvoid_next_event(handle) };
+
+            if raw.is_null() {
+                break;
+            }
+
+            events.push(
+                unsafe { CStr::from_ptr(raw) }
+                    .to_str()
+                    .expect("utf8")
+                    .to_owned(),
+            );
+            unsafe { unkvoid_string_free(raw) };
+        }
+
+        assert!(
+            events.iter().any(|event| event.contains("session.ended")),
+            "sem session.ended: {events:?}"
+        );
 
         unsafe { unkvoid_core_free(handle) };
     }

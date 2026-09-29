@@ -51,6 +51,8 @@ extension AppModel {
         let from = event["channel"] as? String
 
         switch event["event"] as? String {
+        case "session.ended":
+            Task { await sessionEnded() }
         case "realtime.back":
             Task { await connectChat() }
         case let name? where name.hasPrefix("Message"):

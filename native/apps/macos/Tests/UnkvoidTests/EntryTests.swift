@@ -128,10 +128,11 @@ struct EntryTests {
         await model.leaveRoom()
     }
 
-    /// O token vence (ou é revogado noutro aparelho) com o app aberto: a próxima chamada
-    /// devolve à entrada, com o aviso, em vez de deixar o hub na tela sem conta.
+    /// O token de acesso é revogado noutro aparelho com o app aberto: a próxima chamada
+    /// renova o par por baixo e a pessoa nem percebe. (O par que não renova é o `session.ended`,
+    /// coberto no núcleo: a interface só solta a conta e lê a tela nova.)
     @Test(.enabled(if: HubTests.ready))
-    func anExpiredTokenLandsOnTheEntryScreen() async throws {
+    func aRevokedAccessTokenIsRenewedWithoutAnyoneNoticing() async throws {
         #expect(EndToEndTests.isolated)
 
         let model = AppModel(url: Launch.socketUrl())
@@ -144,16 +145,15 @@ struct EntryTests {
         await model.signIn(registering: false)
 
         try #require(model.signedIn, "a Grace não entrou: \(model.loginError)")
-        #expect(model.screen == .hub)
 
-        // Revoga o token no servidor sem o núcleo saber: é o que "vencer" parece daqui.
+        // Revoga só o token de acesso no servidor, sem o núcleo saber.
         #expect(await model.ask("api", ["name": "signOut", "params": [:], "body": [:]])["failed"] == nil)
 
         await model.loadServers()
 
-        #expect(model.screen == .entry)
-        #expect(!model.signedIn)
-        #expect(model.user == nil)
-        #expect(model.notice == "Sua sessão expirou. Entre de novo.")
+        #expect(model.screen == .hub)
+        #expect(model.signedIn)
+        #expect(!model.serversFailed, "a chamada depois da renovação tinha de passar")
+        #expect(model.notice == nil)
     }
 }

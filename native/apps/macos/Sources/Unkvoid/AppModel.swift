@@ -631,6 +631,19 @@ final class AppModel: ObservableObject {
         await forgetAccount()
     }
 
+    /// A sessão acabou sem a pessoa pedir — o par não renovou, ou o token foi revogado noutro
+    /// aparelho: solta a conta, cai na entrada e diz por quê.
+    func sessionEnded() async {
+        guard signedIn else {
+            return
+        }
+
+        await leaveVoice()
+        await forgetAccount()
+
+        notice = Self.sentence(for: "signedOut")
+    }
+
     /// Solta o que era da conta e lê do núcleo em que tela se fica — a regra de qual tela
     /// é dele.
     private func forgetAccount() async {
@@ -709,10 +722,7 @@ final class AppModel: ObservableObject {
         // O núcleo já apagou o token e voltou a tela para a entrada; aqui só se solta o que
         // era da conta. Sem isto o hub ficava na tela, sem conta, e nada mais respondia.
         if answered.value["failed"] as? String == "signedOut", signedIn {
-            await leaveVoice()
-            await forgetAccount()
-
-            notice = Self.sentence(for: "signedOut")
+            await sessionEnded()
         }
 
         return answered.value
