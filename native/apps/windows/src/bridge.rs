@@ -83,6 +83,8 @@ pub struct Bridge {
     /// A sala aberta de verdade, pelo código ou pelo id do canal: é o que diz se entrar é
     /// voltar a ela ou trocar de sala.
     entered: Arc<Mutex<Option<String>>>,
+    /// A entrada que ainda espera o servidor.
+    entering: Arc<Mutex<Entering>>,
     /// Os contadores da última volta da linha de números.
     counted: Arc<Mutex<std::collections::HashMap<String, media::Counters>>>,
     /// Desde quando se está na sala. O relógio da barra conta a partir daqui.
@@ -149,6 +151,7 @@ impl Bridge {
             voice: Arc::default(),
             voice_channel: Arc::default(),
             entered: Arc::default(),
+            entering: Arc::default(),
             counted: Arc::default(),
             since: Arc::default(),
             servers: Arc::default(),
@@ -1691,6 +1694,7 @@ impl Bridge {
         let held = lock(&self.room).take();
 
         *lock(&self.entered) = None;
+        lock(&self.entering).cancel();
 
         drop(lock(&self.microphone).take());
         drop(lock(&self.watch).take());
@@ -1828,6 +1832,15 @@ impl Bridge {
         }
 
         let previous = self.leave_for_another(staying.is_some());
+
+        // O `entered` só vale quando a entrada termina: dois pedidos seguidos — o duplo clique
+        // num código das recentes — abriam duas sessões, e o SFU derrubava a primeira com
+        // "entrou por outro lugar", com a outra viva por baixo da tela.
+        if !lock(&self.entering).begin(&room) {
+            return;
+        }
+
+        let entering = self.entering.clone();
         let window = self.window.clone();
         let identity = self.identity(&room, voice);
         let in_voice = staying.is_some();
@@ -1858,6 +1871,16 @@ impl Bridge {
             let attempt = Room::enter(&url, &room, identity, updates).await;
 
             paint(&window, |app| app.global::<Ui>().set_entry_busy(false));
+
+            // Outra sala foi pedida, ou a pessoa saiu, enquanto esta esperava o servidor: quem
+            // manda na tela agora é a outra, e esta se despede.
+            if !lock(&entering).finish(&room) {
+                if let Ok((opened, _)) = attempt {
+                    opened.leave().await;
+                }
+
+                return;
+            }
 
             let (opened, media) = match attempt {
                 Ok(entered) => entered,
@@ -3558,6 +3581,39 @@ fn open_directly(url: &str) {
     }
 }
 
+/// A sala que está a caminho do servidor. Só a última pedida vale: a de antes, quando chega,
+/// se despede sozinha.
+#[derive(Debug, Default)]
+struct Entering(Option<String>);
+
+impl Entering {
+    /// Falso quando esta sala já está a caminho: o segundo pedido não abre outra sessão.
+    fn begin(&mut self, room: &str) -> bool {
+        if self.0.as_deref() == Some(room) {
+            return false;
+        }
+
+        self.0 = Some(room.to_owned());
+
+        true
+    }
+
+    /// Verdadeiro quando a entrada que chegou ainda é a pedida.
+    fn finish(&mut self, room: &str) -> bool {
+        let wanted = self.0.as_deref() == Some(room);
+
+        if wanted {
+            self.0 = None;
+        }
+
+        wanted
+    }
+
+    fn cancel(&mut self) {
+        self.0 = None;
+    }
+}
+
 fn device_name() -> String {
     std::env::var("COMPUTERNAME").map(|host| format!("windows-{host}")).unwrap_or("windows".into())
 }
@@ -3587,6 +3643,24 @@ mod tests {
                 "vazou número: {written}"
             );
         }
+    }
+
+    #[test]
+    fn a_second_request_for_the_room_on_its_way_opens_no_second_session() {
+        let mut entering = Entering::default();
+
+        assert!(entering.begin("mg6gag7qik00"));
+        assert!(!entering.begin("mg6gag7qik00"), "o duplo clique não abre outra sessão");
+        assert!(entering.finish("mg6gag7qik00"));
+        assert!(entering.begin("mg6gag7qik00"), "depois de chegar, pedir de novo volta a valer");
+
+        assert!(entering.begin("a593mzl95t6p"));
+        assert!(!entering.finish("mg6gag7qik00"), "a sala trocada no caminho se despede ao chegar");
+        assert!(entering.finish("a593mzl95t6p"));
+
+        assert!(entering.begin("m4nj0b8eo7qk"));
+        entering.cancel();
+        assert!(!entering.finish("m4nj0b8eo7qk"), "quem saiu antes de a sala chegar não entra nela");
     }
 
     #[test]

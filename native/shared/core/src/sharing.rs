@@ -648,6 +648,8 @@ impl Broadcast {
                 };
 
                 if let Some(sender) = target(&capture_target).as_mut() {
+                    sender.follow_bitrate(target_bitrate_callback.load(Ordering::Relaxed));
+
                     match sender.send_frame(video_source, encoded, frame_rate) {
                         Ok(packets) => {
                             sent_callback.fetch_add(1, Ordering::Relaxed);

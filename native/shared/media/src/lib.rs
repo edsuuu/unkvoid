@@ -8,6 +8,7 @@ use capture::Quality;
 
 mod audio;
 mod governor;
+mod pacer;
 mod plain;
 mod receiver;
 mod recovery;
