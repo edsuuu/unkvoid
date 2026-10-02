@@ -18,6 +18,11 @@ apple-cf = { version = "0.9", features = ["cv"] }
 windows-capture = "2"
 windows = { version = "0.62", features = [
     "Win32_Graphics_Direct3D11",
+    # O Windows 10 não tira a borda amarela do Graphics Capture: lá o monitor sai pelo
+    # Desktop Duplication, e o cursor é desenhado pelo GDI numa cópia do quadro.
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_Performance",
     # A área útil do monitor: o tamanho para o qual volta a janela minimizada que estava
     # maximizada.
     "Win32_Graphics_Gdi",

@@ -10,10 +10,13 @@
 //! filme com aceleração ligada) chega preto — é o Windows que entrega assim, e o app não
 //! contorna isso.
 
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Context as _;
+use capture::windows_duplication::Duplication;
+use windows::Win32::Graphics::Direct3D11::{ID3D11DeviceContext, ID3D11Texture2D};
 use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame;
 use windows_capture::graphics_capture_api::{GraphicsCaptureApi, InternalCaptureControl};
@@ -36,8 +39,15 @@ pub struct VideoSettings {
     pub bitrate: u32,
 }
 
+/// O que está gravando: o Graphics Capture, ou o Desktop Duplication no Windows que não tira a
+/// borda amarela — a borda saía em todo clipe.
+enum Running {
+    Graphics(CaptureControl<Handler, anyhow::Error>),
+    Duplication(Duplication),
+}
+
 pub struct ScreenCapture {
-    control: Option<CaptureControl<Handler, anyhow::Error>>,
+    control: Option<Running>,
 
     /// Largura e altura que o encoder está produzindo, empacotadas; zero até o primeiro quadro.
     frame_size: Arc<AtomicU64>,
@@ -55,6 +65,27 @@ impl ScreenCapture {
         .context("o monitor escolhido não existe mais")?;
 
         let frame_size = Arc::new(AtomicU64::new(0));
+
+        if Duplication::needed() {
+            let mut handler = Handler::fresh(settings, sink.clone(), frame_size.clone());
+            let started = Duplication::start(monitor, settings.frame_rate, true, move |frame| {
+                match handler.frame(frame.texture, frame.context, (frame.width, frame.height), frame.timestamp_ns) {
+                    Ok(()) => ControlFlow::Continue(()),
+                    // Parar é o que faz o gravador religar a captura, como no Graphics Capture.
+                    Err(error) => {
+                        tracing::warn!(error = %error, "captura: o encoder recusou o quadro");
+
+                        ControlFlow::Break(())
+                    }
+                }
+            });
+
+            match started {
+                Ok(duplication) => return Ok(Self { control: Some(Running::Duplication(duplication)), frame_size }),
+                Err(failure) => tracing::warn!(%failure, "captura: o Desktop Duplication não abriu, o replay vai com a borda"),
+            }
+        }
+
         let control = Handler::start_free_threaded(Settings::new(
             monitor,
             cursor_settings(),
@@ -67,7 +98,7 @@ impl ScreenCapture {
         ))
         .map_err(|error| anyhow::anyhow!("o Windows recusou a captura da tela: {error}"))?;
 
-        Ok(Self { control: Some(control), frame_size })
+        Ok(Self { control: Some(Running::Graphics(control)), frame_size })
     }
 
     /// O tamanho do vídeo que está sendo gravado, depois do primeiro quadro.
@@ -79,14 +110,22 @@ impl ScreenCapture {
 
     /// A captura para sozinha quando o encoder falha ou o monitor some.
     pub fn is_running(&self) -> bool {
-        self.control.as_ref().is_some_and(|control| !control.is_finished())
+        match &self.control {
+            Some(Running::Graphics(control)) => !control.is_finished(),
+            Some(Running::Duplication(duplication)) => duplication.is_running(),
+            None => false,
+        }
     }
 
     pub fn stop(&mut self) {
-        if let Some(control) = self.control.take()
-            && let Err(error) = control.stop()
-        {
-            tracing::warn!(error = %error, "captura: parou com erro");
+        match self.control.take() {
+            Some(Running::Graphics(control)) => {
+                if let Err(error) = control.stop() {
+                    tracing::warn!(error = %error, "captura: parou com erro");
+                }
+            }
+            Some(Running::Duplication(mut duplication)) => duplication.stop(),
+            None => {}
         }
     }
 }
@@ -163,7 +202,7 @@ impl GraphicsCaptureApiHandler for Handler {
     fn new(context: Context<Self::Flags>) -> Result<Self, Self::Error> {
         let (settings, sink, frame_size) = context.flags;
 
-        Ok(Self { settings, sink, frame_size, encoder: None, frames: 0, counted_since: std::time::Instant::now() })
+        Ok(Self::fresh(settings, sink, frame_size))
     }
 
     fn on_frame_arrived(
@@ -173,6 +212,29 @@ impl GraphicsCaptureApiHandler for Handler {
     ) -> Result<(), Self::Error> {
         let timestamp_ns = crate::clock::from_hundred_nanoseconds(frame.timestamp()?.Duration);
 
+        self.frame(frame.as_raw_texture(), frame.device_context(), (frame.width(), frame.height()), timestamp_ns)
+    }
+
+    fn on_closed(&mut self) -> Result<(), Self::Error> {
+        tracing::warn!("captura: o Windows encerrou a captura do monitor");
+
+        Ok(())
+    }
+}
+
+impl Handler {
+    fn fresh(settings: VideoSettings, sink: RecordSink, frame_size: Arc<AtomicU64>) -> Self {
+        Self { settings, sink, frame_size, encoder: None, frames: 0, counted_since: std::time::Instant::now() }
+    }
+
+    /// Um quadro do monitor, de qualquer uma das duas capturas, para o encoder.
+    fn frame(
+        &mut self,
+        texture: &ID3D11Texture2D,
+        context: &ID3D11DeviceContext,
+        (width, height): (u32, u32),
+        timestamp_ns: u64,
+    ) -> anyhow::Result<()> {
         self.frames += 1;
 
         if self.counted_since.elapsed() >= STATS_INTERVAL {
@@ -187,7 +249,7 @@ impl GraphicsCaptureApiHandler for Handler {
                 crate::recorder::join_multimedia_task("Capture");
 
                 // NV12 guarda a cor em blocos de 2×2: largura ou altura ímpar é recusada.
-                let (width, height) = (frame.width() & !1, frame.height() & !1);
+                let (width, height) = (width & !1, height & !1);
 
                 self.frame_size.store((u64::from(width) << 32) | u64::from(height), Ordering::Relaxed);
                 self.encoder.insert(Encoder::new(EncoderSettings {
@@ -199,7 +261,7 @@ impl GraphicsCaptureApiHandler for Handler {
             }
         };
 
-        for encoded in encoder.encode(frame.as_raw_texture(), frame.device_context(), timestamp_ns)? {
+        for encoded in encoder.encode(texture, context, timestamp_ns)? {
             self.sink.push(Record {
                 track: Track::Video,
                 keyframe: encoded.keyframe,
@@ -207,12 +269,6 @@ impl GraphicsCaptureApiHandler for Handler {
                 data: encoded.data,
             });
         }
-
-        Ok(())
-    }
-
-    fn on_closed(&mut self) -> Result<(), Self::Error> {
-        tracing::warn!("captura: o Windows encerrou a captura do monitor");
 
         Ok(())
     }
@@ -227,7 +283,8 @@ fn cursor_settings() -> CursorCaptureSettings {
     }
 }
 
-/// A borda amarela só dá para tirar do Windows 11 em diante.
+/// A borda amarela só dá para tirar do Windows 11 em diante; no 10 o replay só passa por aqui
+/// quando o Desktop Duplication não abre.
 fn border_settings() -> DrawBorderSettings {
     if GraphicsCaptureApi::is_border_settings_supported().unwrap_or(false) {
         DrawBorderSettings::WithoutBorder
@@ -244,5 +301,40 @@ fn update_interval(frame_rate: u32) -> MinimumUpdateIntervalSettings {
         MinimumUpdateIntervalSettings::Custom(std::time::Duration::from_secs_f64(1.0 / f64::from(frame_rate.max(1))))
     } else {
         MinimumUpdateIntervalSettings::Default
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::replay::ReplayBuffer;
+
+    /// Na máquina de verdade, pelo Desktop Duplication — `UNKVOID_DUPLICATION=on` força o
+    /// caminho do Windows 10 num Windows 11: o encoder recebe os quadros e o vídeo ganha tamanho.
+    #[test]
+    #[ignore = "precisa de um monitor e de um encoder de hardware"]
+    fn the_replay_records_through_the_desktop_duplication() {
+        let folder = std::env::temp_dir().join(format!("unkvoid-clips-teste-{}", std::process::id()));
+        let buffer = ReplayBuffer::start(folder.clone(), Duration::from_secs(30)).expect("buffer");
+        let mut capture = ScreenCapture::start(VideoSettings { monitor: None, frame_rate: 30, bitrate: 5_000_000 }, buffer.sink())
+            .expect("captura");
+
+        assert_eq!(
+            matches!(capture.control, Some(Running::Duplication(_))),
+            Duplication::needed(),
+            "o replay não foi pelo caminho deste Windows"
+        );
+
+        std::thread::sleep(Duration::from_secs(2));
+
+        assert!(capture.is_running(), "a captura parou sozinha");
+        assert!(capture.frame_size().is_some(), "nenhum quadro chegou ao encoder");
+
+        capture.stop();
+        drop(buffer);
+
+        let _ = std::fs::remove_dir_all(folder);
     }
 }

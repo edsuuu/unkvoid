@@ -157,6 +157,10 @@ enum Backend {
 /// nela, este lado lê dela, e o keyed mutex ordena os dois.
 struct Bridge {
     source: (u32, u32),
+    /// O device da captura que a ponte atende. A duplicação do Windows 10 volta com um
+    /// device novo depois de cair (troca de resolução, UAC), e a cópia para a textura do
+    /// device antigo não chegaria aqui.
+    capture: ID3D11Device,
     shared_with_capture: ID3D11Texture2D,
     capture_lock: IDXGIKeyedMutex,
     my_lock: IDXGIKeyedMutex,
@@ -379,7 +383,7 @@ impl MediaFoundationEncoder {
         if self
             .bridge
             .as_ref()
-            .is_none_or(|bridge| bridge.source != source)
+            .is_none_or(|bridge| bridge.source != source || bridge.capture != surface.device)
         {
             self.bridge = Some(unsafe { self.build_bridge(surface, source)? });
         }
@@ -527,6 +531,7 @@ impl MediaFoundationEncoder {
 
             Ok(Bridge {
                 source,
+                capture: surface.device.clone(),
                 shared_with_capture: shared,
                 capture_lock,
                 my_lock,

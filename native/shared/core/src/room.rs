@@ -658,6 +658,19 @@ impl Room {
         lock(&self.watching).counters(producer_id)
     }
 
+    /// A tela de uma transmissão quebrou do lado de quem assiste (quadro largado,
+    /// decodificador que falhou): pede o keyframe na hora, como o WebRTC do navegador faz,
+    /// em vez de a imagem ficar parada até o keyframe periódico.
+    pub fn request_keyframe(&self, producer_id: &str) {
+        lock(&self.watching).request_keyframe(producer_id);
+    }
+
+    /// Quando a sala começou, desde a primeira pessoa: o relógio da barra conta daí. `None`
+    /// num SFU que ainda não diz.
+    pub fn started(&self) -> Option<std::time::Instant> {
+        self.session.started()
+    }
+
     pub fn peers(&self) -> Value {
         json!({ "peers": self.session.peers() })
     }

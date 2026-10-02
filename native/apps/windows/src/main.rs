@@ -14,6 +14,8 @@ mod bridge;
 mod clips;
 mod devices;
 mod frame;
+#[cfg(target_os = "windows")]
+mod logbook;
 #[cfg(test)]
 mod sharing;
 mod sound;
@@ -108,7 +110,8 @@ fn main() -> anyhow::Result<()> {
 /// Clips e a tela transmitida — aparecia até para quem assiste. O `windows-capture` já pede a
 /// captura sem borda, mas app de fora da loja só é atendido depois de pedir licença, uma vez
 /// por processo; sem ela o Windows ignora o pedido calado. Tem de vir antes da primeira
-/// captura. No Windows 10 a borda não sai: o pedido é recusado e fica no log.
+/// captura. No Windows 10 o pedido é recusado, e o monitor inteiro sai pelo Desktop
+/// Duplication (`capture::windows_duplication`), que não tem borda.
 ///
 /// A resposta vem da configuração de privacidade do Windows, sem janela nenhuma; o prazo existe
 /// só para uma resposta que nunca chegue não prender a abertura do app.
@@ -133,23 +136,10 @@ fn allow_borderless_capture() {
 /// única. `None` quando o app já está aberto: ele recebe o pedido de mostrar a janela.
 #[cfg(target_os = "windows")]
 fn start_windows() -> anyhow::Result<Option<windows::Win32::Foundation::HANDLE>> {
-    let folder = clips::shell::local_folder();
-    let path = folder.join("unkvoid.log");
-
-    let _ = std::fs::create_dir_all(&folder);
-
-    // Um arquivo só, recomeçado quando passa de 5 MB: o anterior fica ao lado, para o que
-    // aconteceu logo antes de um problema não sumir na troca.
-    if std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 5_000_000) {
-        let _ = std::fs::rename(&path, folder.join("unkvoid.old.log"));
-    }
-
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    let log = logbook::DailyLog::open(&clips::shell::local_folder());
 
-    match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        Ok(file) => tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::sync::Mutex::new(file)).with_ansi(false).init(),
-        Err(_) => tracing_subscriber::fmt().with_env_filter(filter).init(),
-    }
+    tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::sync::Mutex::new(log)).with_ansi(false).init();
 
     std::panic::set_hook(Box::new(|information| tracing::error!("pânico: {information}")));
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "Unkvoid abrindo");

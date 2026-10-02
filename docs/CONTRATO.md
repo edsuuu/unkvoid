@@ -91,6 +91,12 @@ regras que o cliente precisa saber para não contar errado:
   volta);
 - quem está na carência de reconexão não conta como plateia.
 
+A resposta do `join` traz `elapsedMs`: há quanto tempo a sala existe, desde a primeira pessoa
+— a sala nasce com ela e some com a última. O relógio da barra da sala conta daí, igual para
+todo mundo. É duração, e não hora, porque o relógio de cada máquina erra (o de um PC estava
+18 s à frente do da VPS em 30/09/2026); quem recebe subtrai do próprio relógio. Sem o campo
+(SFU antigo), o relógio conta da própria entrada.
+
 Cada pessoa em `peers` (resposta do `join`) vem como
 `{ peerId, userId, name, reconnecting, producers: [{ producerId, kind, source, paused }] }`.
 Na entrada nova, quem está na carência de reconexão fica de fora da lista. Na **retomada**

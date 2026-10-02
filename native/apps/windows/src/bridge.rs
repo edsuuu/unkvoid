@@ -1898,7 +1898,9 @@ impl Bridge {
 
             *lock(&held) = Some(opened.clone());
             *lock(&entered) = Some(room.clone());
-            *lock(&started) = Some(std::time::Instant::now());
+            // Desde a primeira pessoa, como a duração de uma chamada: quem entra depois vê o
+            // tempo de quem já estava.
+            *lock(&started) = Some(opened.started().unwrap_or_else(std::time::Instant::now));
 
             {
                 let mut voice = lock(&voice);
@@ -1949,6 +1951,14 @@ impl Bridge {
                         pending.store(false, std::sync::atomic::Ordering::Release);
                         draw_fresh(&window, &cell);
                     });
+                }
+            }, {
+                let room = Arc::downgrade(&opened);
+
+                move |producer: &str| {
+                    if let Some(room) = room.upgrade() {
+                        room.request_keyframe(producer);
+                    }
                 }
             }));
 

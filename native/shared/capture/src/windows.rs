@@ -1,3 +1,4 @@
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -24,6 +25,7 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::windows_audio::{AudioScope, SystemAudio};
+use crate::windows_duplication::{self, Duplication};
 use crate::{
     CaptureConfig, CaptureError, CaptureEvent, CaptureSource, Display, GpuSurface, VideoFrame,
     Window,
@@ -176,9 +178,16 @@ where
     )
 }
 
+/// O que está capturando: o Graphics Capture, ou o Desktop Duplication no monitor do Windows
+/// que não tira a borda amarela.
+enum Running {
+    Graphics(windows_capture::capture::CaptureControl<Sink, CaptureFailure>),
+    Duplication(Duplication),
+}
+
 /// Capture via Windows Graphics Capture. Requires Windows 10 1903 or newer.
 pub struct WindowsCapturer {
-    control: Option<windows_capture::capture::CaptureControl<Sink, CaptureFailure>>,
+    control: Option<Running>,
     frames: Arc<AtomicU64>,
 
     /// O som não vem junto com a imagem aqui: o Graphics Capture só entrega quadros, e
@@ -294,14 +303,14 @@ impl WindowsCapturer {
             crate::CaptureSource::Window(id) => capture_preview(
                 CaptureWindow::from_raw_hwnd(hwnd_from_id(id)),
             ),
-            crate::CaptureSource::Display(id) => capture_preview(
+            crate::CaptureSource::Display(id) => monitor_preview(
                 Monitor::enumerate()
                     .map_err(|error| CaptureError::Platform(error.to_string()))?
                     .into_iter()
                     .nth(id as usize)
                     .ok_or(CaptureError::NoDisplay)?,
             ),
-            crate::CaptureSource::PrimaryDisplay => capture_preview(
+            crate::CaptureSource::PrimaryDisplay => monitor_preview(
                 Monitor::enumerate()
                     .map_err(|error| CaptureError::Platform(error.to_string()))?
                     .into_iter()
@@ -313,6 +322,55 @@ impl WindowsCapturer {
             ),
         }
     }
+}
+
+/// A prévia do monitor: pelo Desktop Duplication onde a borda amarela não sai, para ela não
+/// piscar no monitor cada vez que o seletor abre.
+fn monitor_preview(monitor: Monitor) -> Result<Vec<u8>, CaptureError> {
+    if !Duplication::needed() {
+        return capture_preview(monitor);
+    }
+
+    let path = std::env::temp_dir().join(format!("unkvoid-preview-{}.jpg", std::process::id()));
+
+    if let Err(failure) = windows_duplication::preview(monitor, &path) {
+        tracing::info!(%failure, "prévia: o Desktop Duplication recusou, vai pelo Graphics Capture");
+
+        return capture_preview(monitor);
+    }
+
+    let bytes = std::fs::read(&path).map_err(|error| CaptureError::Platform(error.to_string()))?;
+    let _ = std::fs::remove_file(path);
+
+    Ok(bytes)
+}
+
+/// O monitor pelo Desktop Duplication, com o mesmo relógio e o mesmo evento do Graphics
+/// Capture: para o encoder, é só uma textura de outro device.
+fn start_duplication(
+    monitor: Monitor,
+    config: &CaptureConfig,
+    sink: EventSink,
+    frames: Arc<AtomicU64>,
+) -> Result<Duplication, String> {
+    let started_at = std::time::Instant::now();
+
+    Duplication::start(monitor, config.frame_rate, config.show_cursor, move |frame| {
+        frames.fetch_add(1, Ordering::Relaxed);
+
+        sink(CaptureEvent::Video(VideoFrame {
+            width: frame.width,
+            height: frame.height,
+            timestamp_ns: started_at.elapsed().as_nanos() as u64,
+            surface: Some(GpuSurface {
+                texture: frame.texture.clone(),
+                device: frame.device.clone(),
+                context: frame.context.clone(),
+            }),
+        }));
+
+        ControlFlow::Continue(())
+    })
 }
 
 fn capture_preview<T>(target: T) -> Result<Vec<u8>, CaptureError>
@@ -428,7 +486,7 @@ impl WindowsCapturer {
                     return Err(CaptureError::NoDisplay);
                 }
 
-                start_capture(window_target, config, sink.clone(), frames.clone())?
+                Running::Graphics(start_capture(window_target, config, sink.clone(), frames.clone())?)
             }
             source => {
                 let monitor = match source {
@@ -438,7 +496,22 @@ impl WindowsCapturer {
                 }
                 .map_err(|_| CaptureError::NoDisplay)?;
 
-                start_capture(monitor, config, sink.clone(), frames.clone())?
+                // A borda amarela aparecia para quem assistia. Sem a duplicação (outra placa
+                // de vídeo num notebook híbrido, por exemplo), a tela vai com ela, mas vai.
+                let duplicated = Duplication::needed()
+                    .then(|| start_duplication(monitor, config, sink.clone(), frames.clone()))
+                    .and_then(|started| {
+                        started
+                            .inspect_err(|failure| {
+                                tracing::warn!(%failure, "captura: o Desktop Duplication não abriu, a tela vai com a borda");
+                            })
+                            .ok()
+                    });
+
+                match duplicated {
+                    Some(duplication) => Running::Duplication(duplication),
+                    None => Running::Graphics(start_capture(monitor, config, sink.clone(), frames.clone())?),
+                }
             }
         };
 
@@ -506,10 +579,12 @@ impl WindowsCapturer {
             audio.stop();
         }
 
-        if let Some(control) = self.control.take() {
-            control
-                .stop()
-                .map_err(|error| CaptureError::Platform(error.to_string()))?;
+        match self.control.take() {
+            Some(Running::Graphics(control)) => {
+                control.stop().map_err(|error| CaptureError::Platform(error.to_string()))?;
+            }
+            Some(Running::Duplication(mut duplication)) => duplication.stop(),
+            None => {}
         }
 
         Ok(())

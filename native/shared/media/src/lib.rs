@@ -61,6 +61,10 @@ impl H264Decoder {
     pub fn decode(&mut self, _annex_b: &[u8], _timestamp: u32) -> anyhow::Result<Vec<DecodedFrame>> {
         Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
     }
+
+    pub fn skip(&mut self, _annex_b: &[u8], _timestamp: u32) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
+    }
 }
 
 /// O buffer de GPU que o encoder recebe. No macOS é um `IOSurface`; no Windows é a

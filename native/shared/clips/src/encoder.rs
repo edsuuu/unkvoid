@@ -132,6 +132,9 @@ unsafe impl Send for Encoder {}
 /// flags), e sem ele não há VideoProcessor nem gerente para o Media Foundation.
 struct Bridge {
     source: (u32, u32),
+    /// O contexto da captura que a ponte atende: a duplicação do Windows 10 volta com um
+    /// device novo depois de cair, e a cópia para a textura do antigo não chegaria aqui.
+    capture: ID3D11DeviceContext,
     shared_with_capture: ID3D11Texture2D,
     capture_lock: IDXGIKeyedMutex,
     my_lock: IDXGIKeyedMutex,
@@ -225,8 +228,8 @@ impl Encoder {
 
         let source = (description.Width, description.Height);
 
-        if self.bridge.as_ref().is_none_or(|bridge| bridge.source != source) {
-            self.bridge = Some(unsafe { self.build_bridge(texture, source)? });
+        if self.bridge.as_ref().is_none_or(|bridge| bridge.source != source || bridge.capture != *context) {
+            self.bridge = Some(unsafe { self.build_bridge(texture, context, source)? });
         }
 
         let bridge = self.bridge.as_mut().expect("acabou de ser montada");
@@ -267,6 +270,7 @@ impl Encoder {
     unsafe fn build_bridge(
         &self,
         texture: &ID3D11Texture2D,
+        context: &ID3D11DeviceContext,
         source: (u32, u32),
     ) -> anyhow::Result<Bridge> {
         tracing::info!(width = source.0, height = source.1, "encoder: montando a ponte entre os devices");
@@ -333,6 +337,7 @@ impl Encoder {
 
             Ok(Bridge {
                 source,
+                capture: context.clone(),
                 capture_lock: shared.cast()?,
                 my_lock: mine.cast()?,
                 shared_with_capture: shared,

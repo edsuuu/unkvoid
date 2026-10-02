@@ -88,6 +88,8 @@ struct Route {
     /// Só no vídeo.
     recovery: Option<Recovery>,
     last_pli: Option<Instant>,
+    /// Quem decodifica pediu um keyframe; sai no próximo tique que o `PLI_INTERVAL` deixar.
+    keyframe_asked: bool,
 }
 
 #[derive(Default)]
@@ -195,12 +197,13 @@ impl PlainReceiver {
 
                     let pli_allowed = route.last_pli.is_none_or(|last| now.duration_since(last) >= PLI_INTERVAL);
 
-                    if due.pli
+                    if (due.pli || route.keyframe_asked)
                         && pli_allowed
                         && let Ok(feedback) = outgoing.encrypt_rtcp(&recovery::pli(ssrc, media))
                     {
                         let _ = socket.send(&feedback);
                         route.last_pli = Some(now);
+                        route.keyframe_asked = false;
                     }
                 }
             }
@@ -225,7 +228,18 @@ impl PlainReceiver {
                 rtx,
                 recovery: video.then(Recovery::default),
                 last_pli: None,
+                keyframe_asked: false,
             });
+        }
+    }
+
+    /// Quem decodifica perdeu o fio (largou quadro, o decodificador falhou): o keyframe é
+    /// pedido no próximo tique, em vez de a tela esperar o periódico do encoder.
+    pub fn request_keyframe(&self, id: &str) {
+        if let Ok(mut routes) = self.routes.lock()
+            && let Some(route) = routes.active.iter_mut().find(|route| route.id == id)
+        {
+            route.keyframe_asked = true;
         }
     }
 
@@ -422,6 +436,7 @@ mod tests {
             rtx: None,
             recovery: None,
             last_pli: None,
+            keyframe_asked: false,
         }
     }
 

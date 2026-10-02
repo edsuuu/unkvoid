@@ -236,6 +236,13 @@ impl Watching {
     pub fn counters(&self, producer_id: &str) -> Option<Counters> {
         self.receiver.as_ref()?.counters(producer_id)
     }
+
+    /// Quem decodifica perdeu o fio: o keyframe é pedido agora ao servidor.
+    pub fn request_keyframe(&self, producer_id: &str) {
+        if let Some(receiver) = &self.receiver {
+            receiver.request_keyframe(producer_id);
+        }
+    }
 }
 
 impl Drop for Watching {
