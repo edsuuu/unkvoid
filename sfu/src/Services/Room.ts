@@ -35,6 +35,12 @@ export class Room {
 
     public onEvicted: ((room: Room) => void) | null = null;
 
+    /**
+     * Quando a primeira pessoa entrou: a sala nasce com ela e some com a última. É daqui que
+     * o relógio da barra conta, igual para todo mundo, como a duração de uma chamada.
+     */
+    public readonly createdAt = Date.now();
+
     private readonly evictions = new Map<string, NodeJS.Timeout>();
 
     public constructor(

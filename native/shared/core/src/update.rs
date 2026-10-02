@@ -9,8 +9,14 @@ use std::path::PathBuf;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use minisign_verify::{PublicKey, Signature};
+use serde_json::Value;
 
 use crate::api::Api;
+use crate::app::App;
+
+/// A versão que o servidor anunciou pelo tempo real, guardada até estar instalada. É ela que
+/// dispensa perguntar ao site de tempos em tempos: o app só pergunta quando é avisado.
+const ANNOUNCED_KEY: &str = "unkvoid:update-announced";
 
 /// A chave do manifesto que serve a esta plataforma. No Windows é a do `.exe`: o instalador
 /// nativo é um NSIS, e é por essa mesma chave que o app do Tauri chega até ele.
@@ -42,6 +48,33 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
         (Ok(candidate), Ok(current)) => candidate > current,
         _ => false,
     }
+}
+
+/// A versão que um `ReleasePublished` do canal `releases` anuncia, quando ela é desta
+/// plataforma e mais nova que esta. O aviso vai a todo app aberto, de todos os sistemas.
+pub fn newer_in(announcement: &Value) -> Option<String> {
+    let version = announcement["version"].as_str()?;
+
+    (announcement["platform"] == PLATFORM && is_newer(version, env!("CARGO_PKG_VERSION"))).then(|| version.to_owned())
+}
+
+/// Anota a versão anunciada: fica na configuração até a versão nova estar rodando.
+pub fn announce(app: &App, version: &str) {
+    app.set_preference(ANNOUNCED_KEY, Value::String(version.to_owned()));
+}
+
+/// A versão anunciada que ainda falta instalar. Já instalada — esta versão é ela ou mais
+/// nova —, a anotação sai do disco.
+pub fn announced(app: &App) -> Option<String> {
+    let version = app.preference(ANNOUNCED_KEY)?.as_str()?.to_owned();
+
+    if is_newer(&version, env!("CARGO_PKG_VERSION")) {
+        return Some(version);
+    }
+
+    app.set_preference(ANNOUNCED_KEY, Value::Null);
+
+    None
 }
 
 /// Os bytes são os que a nossa chave assinou? A assinatura do manifesto é o arquivo do
@@ -99,6 +132,32 @@ pub async fn fetch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_announced_version_stays_noted_until_it_is_the_one_running() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app = App::new(storage::Storage::open_at(dir.path()).expect("open"));
+
+        announce(&app, "99.0.0");
+
+        assert_eq!(announced(&app), Some("99.0.0".to_owned()));
+        assert_eq!(announced(&app), Some("99.0.0".to_owned()), "ler não apaga");
+
+        announce(&app, env!("CARGO_PKG_VERSION"));
+
+        assert_eq!(announced(&app), None, "a versão anunciada é a que está rodando");
+        assert_eq!(app.preference(ANNOUNCED_KEY), None, "e a anotação sai do disco");
+    }
+
+    #[test]
+    fn only_a_newer_version_of_this_platform_is_worth_announcing() {
+        let newer = serde_json::json!({ "version": "99.0.0", "platform": PLATFORM });
+
+        assert_eq!(newer_in(&newer), Some("99.0.0".to_owned()));
+        assert_eq!(newer_in(&serde_json::json!({ "version": "99.0.0", "platform": "outra-plataforma" })), None);
+        assert_eq!(newer_in(&serde_json::json!({ "version": "0.0.1", "platform": PLATFORM })), None);
+        assert_eq!(newer_in(&serde_json::json!({ "platform": PLATFORM })), None);
+    }
 
     /// `printf unkvoid | tauri signer sign` com a privada do par `9a18c9243ef59b08`.
     const SAMPLE_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTYUdNa2tQdldiQ0hGSW5yRjYxbXFhTG1iV2M1YUVyY0xjTzBQSjBUNmpaQVVjMEhMUldScTQyelhxcmhmaS9waTExdFdFcXc4VWRLVGY2UzhFRlJvOTY1TlVJb1p5MVF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNDM1OTM0CWZpbGU6YW1vc3RyYQpscGFIaFNVdVlIbERYcUZodDJaVDlGcENqd0IzK2VGL3A5UVZzdGJnYUoxOEZqbHh2MjdvSmJ0TTFXWWdPd1d4MXM0VGFkQ09CZXcwd2FQNElmSjBDdz09Cg==";

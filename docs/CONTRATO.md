@@ -91,6 +91,12 @@ regras que o cliente precisa saber para não contar errado:
   volta);
 - quem está na carência de reconexão não conta como plateia.
 
+A resposta do `join` traz `elapsedMs`: há quanto tempo a sala existe, desde a primeira pessoa
+— a sala nasce com ela e some com a última. O relógio da barra da sala conta daí, igual para
+todo mundo. É duração, e não hora, porque o relógio de cada máquina erra (o de um PC estava
+18 s à frente do da VPS em 30/09/2026); quem recebe subtrai do próprio relógio. Sem o campo
+(SFU antigo), o relógio conta da própria entrada.
+
 Cada pessoa em `peers` (resposta do `join`) vem como
 `{ peerId, userId, name, reconnecting, producers: [{ producerId, kind, source, paused }] }`.
 Na entrada nova, quem está na carência de reconexão fica de fora da lista. Na **retomada**
@@ -215,7 +221,7 @@ Conta:
 | `POST /api/auth/refresh` (público) | `{ refresh_token }` | o par novo, no mesmo formato; o token de renovação usado morre na hora. Vencido, usado ou de outra coisa: 401 `"Sua sessão terminou. Entre de novo."` |
 | `POST /api/auth/logout` | `{ refresh_token? }` | 204; derruba o token de acesso da requisição e, se vier, o de renovação da mesma conta |
 | `GET /api/me` | — | `{ id, name, email, avatar_url, avatar_uploaded, admin, nickname_confirmed }` |
-| `PATCH /api/me` | `{ name }` (3 a 32 caracteres, `[A-Za-z0-9._]`, único; pode repetir o atual) | o mesmo `user`, agora com `nickname_confirmed: true`. Só enquanto `nickname_confirmed` for `false`: depois é 403 |
+| `PATCH /api/me` | `{ name }` (3 a 32 caracteres, `[A-Za-z0-9._]`, único; pode repetir o atual) | o mesmo `user`, agora com `nickname_confirmed: true`. Troca a qualquer hora; a primeira troca também confirma o automático |
 | `POST /api/me/avatar` | `multipart`, campo `avatar` (jpeg/png/webp, ≤ 2 MB) | o mesmo `user`, com a foto nova; guarda no bucket privado e apaga a foto anterior |
 | `DELETE /api/me/avatar` | — | o mesmo `user` (200, não 204): tirar a foto enviada faz voltar a valer a do Google, e o app precisa do link novo |
 
@@ -425,6 +431,12 @@ O `subscribe` devolve a presença do canal, e o SFU emite `presence.joining { id
 `presence.leaving { id }` para os outros inscritos na primeira e na última conexão de cada
 pessoa naquele canal.
 
+**O canal `releases` é público.** Qualquer socket o assina, sem `identify` e sem o Laravel
+autorizar, e ele não tem presença: o `subscribe` devolve só `{ channel }`, e ninguém entra nem
+sai da lista. Só recebe o que o Laravel publica. É por ele que a versão nova chega a todo app
+aberto, inclusive a quem entrou sem conta: o app abre o socket do tempo real mesmo sem conta,
+só para ele.
+
 O que o Laravel publica sai por `POST /broadcast` assinado, um pedido por canal. Falha do
 SFU não desfaz nada: a escrita já está no banco, a resposta HTTP sai normal e o erro fica no
 log do canal `sfu`. Como nada é reentregue depois de uma queda, ao reconectar o app busca de
@@ -435,6 +447,7 @@ mais recentes do canal e da conversa abertos, emendando com o que já estava na 
 |---|---|---|
 | `channel.{ulid}` | `VIEW_CHANNEL` | texto: `MessageSent { message }`, `MessageUpdated { message }`, `MessageDeleted { id, channel_id }` · voz: `VoiceStateUpdated { channel_id, user_id, name, event: joined\|left }` (no canal da própria voz, para canal oculto não vazar quem está nele; o app assina o canal de cada voz que enxerga) |
 | `server.{id}` | membro | `ServerUpdated { server_id }` (qualquer mudança de estrutura: o app refaz o `GET`) |
+| `releases` | qualquer socket, sem `identify` | `ReleasePublished { version, platform }` (a cada `POST /api/releases`: o app compara com a própria versão e plataforma, anota a versão na configuração e baixa calado até mostrar o botão verde) |
 | `user.{id}` | o próprio | `FriendshipUpdated { friendship, removed }` (`FriendResource`, nos canais dos **dois** lados) · `MemberRemoved { server_id, reason: kicked\|banned }` · `DirectMessageCreated { message, recipient }`, `DirectMessageUpdated { message, recipient }`, `DirectMessageDeleted { id }` (nos canais dos **dois** lados da conversa; `message` é o `DirectMessageResource` sem o `mine`) |
 
 O nome do canal perdeu os prefixos `private-` e `presence-` do Pusher: é `channel.`, `server.`
@@ -467,6 +480,8 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 - Com `nickname_confirmed: false`, um modal que não fecha pede o apelido (já preenchido com o
   automático) a cada abertura do app, até o `PATCH /api/me` dar certo. Dá para sair da conta
   por ele.
+- Com a conta aberta, "Minha conta" nas configurações troca o apelido pelo mesmo
+  `PATCH /api/me`, com o erro de validação embaixo do campo.
 - Nos formulários de entrar e criar conta, o campo recusado fica com a borda vermelha e a
   mensagem embaixo dele; o que não é de campo (credencial errada, 429) fica na linha geral.
 - Logado e sem servidor aberto, o centro mostra **Criar sala** e **Últimas salas**. Criar

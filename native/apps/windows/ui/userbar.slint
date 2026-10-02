@@ -383,7 +383,10 @@ export component UserBar inherits Rectangle {
                 commands: Icons.gear;
                 open: Ui.settings-open;
                 y: (parent.height - self.height) / 2;
-                clicked => { Ui.open-settings(); }
+                clicked => {
+                    Ui.settings-tab = "account";
+                    Ui.open-settings();
+                }
             }
         }
     }

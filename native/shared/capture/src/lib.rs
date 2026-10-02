@@ -15,6 +15,9 @@ mod windows;
 #[cfg(target_os = "windows")]
 mod windows_audio;
 
+#[cfg(target_os = "windows")]
+pub mod windows_duplication;
+
 #[cfg(target_os = "linux")]
 mod linux;
 

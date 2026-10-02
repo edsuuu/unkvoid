@@ -3,6 +3,7 @@ import { Icons, Skin } from "skin.slint";
 import { Ui } from "state.slint";
 import { Avatar, CodeChip, Danger, Glass, Glyph, IconButton, LabelMono, Pill, RowItem } from "widgets.slint";
 import { PeopleMenu, Stage } from "stage.slint";
+import { ClipsUi, SectionTabs } from "clips.slint";
 
 // A sala: o código para mandar a alguém, quem está dentro, e o que está sendo transmitido.
 //
@@ -25,14 +26,27 @@ export component RoomScreen inherits Rectangle {
                 padding-right: 12px;
                 spacing: 8px;
 
-                // A casinha do React, antes do "SALA". Aqui ela não sai da sala: a Home (ou a
-                // entrada, sem conta) abre com a transmissão no ar, e mostra o caminho de volta.
+                // A casinha, antes do "SALA", com conta ou sem: ela não sai da sala. Com conta
+                // abre a Home dos servidores, sem conta a entrada — as duas com a transmissão no
+                // ar e o "Voltar à sala". Entrar de novo na mesma sala só volta a ela (uma sala
+                // por vez, no `connect`), então a casinha não duplica ninguém no SFU.
                 IconButton {
                     commands: Icons.home;
                     size: 30px;
                     glyph-size: 14px;
                     y: (parent.height - self.height) / 2;
                     clicked => { Ui.visit-home(); }
+                }
+
+                // As abas Unkvoid e Clips na barra da sala, à direita da casinha, e não numa
+                // faixa só delas em cima: a sala ganha a altura da faixa.
+                // Sem esticar: esticado, o bloco dividia a sobra com o espaçador e empurrava o
+                // "SALA" para o meio da barra.
+                if ClipsUi.available : VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 0;
+
+                    SectionTabs { }
                 }
 
                 LabelMono {

@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 use App\Enums\ReleasePlatformEnum;
 use App\Models\Release;
+use Illuminate\Http\Client\Request;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 
 function signedHeaders(string $path, UploadedFile $file, ?string $secret = null): array
@@ -48,6 +50,26 @@ it('publica pela API assinada, guarda no bucket e monta o latest.json com URL as
 
     $this->get('/downloads/windows-msi')->assertRedirect('https://s3.unkvoid.test/releases/0.0.8/Unkvoid_0.0.8_x64_pt-BR.msi?assinada=1');
     $this->get('/downloads/macos')->assertNotFound();
+});
+
+it('publicar avisa os apps abertos pelo canal releases do SFU', function (): void {
+    $file = UploadedFile::fake()->create('Unkvoid_0.1.6_x64-setup.exe', 100);
+
+    $this->postJson('/api/releases', ['version' => '0.1.6', 'platform' => 'windows-x86_64-nsis', 'file' => $file, 'signature' => 'assinatura-nativa'], signedHeaders('/api/releases', $file))
+        ->assertCreated();
+
+    Http::assertSent(fn (Request $request): bool => str_ends_with($request->url(), '/broadcast')
+        && $request['channel'] === 'releases'
+        && $request['event'] === 'ReleasePublished'
+        && $request['data'] === ['version' => '0.1.6', 'platform' => 'windows-x86_64-nsis']);
+});
+
+it('publicar sem assinatura não avisa ninguém', function (): void {
+    $file = UploadedFile::fake()->create('Unkvoid_0.1.6_x64-setup.exe', 100);
+
+    $this->postJson('/api/releases', ['version' => '0.1.6', 'platform' => 'windows-x86_64-nsis', 'file' => $file])->assertStatus(401);
+
+    Http::assertNothingSent();
 });
 
 it('publicar a mesma versão de novo substitui em vez de duplicar', function (): void {

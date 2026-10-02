@@ -1,0 +1,1321 @@
+// Os Clips, o replay instantâneo do Windows: a aba, a seção das Configurações, o painel do
+// Alt+Z e a bandeja. Vieram do UnkvoidClips, que era um app separado.
+
+import { Slider } from "std-widgets.slint";
+import { Skin, Icons } from "skin.slint";
+import { Ui } from "state.slint";
+import { Glass, Title, Body, Muted, LabelMono, PrimaryButton, GhostButton, Glyph, IconButton, RowItem } from "widgets.slint";
+
+export struct MonitorItem {
+    label: string,
+    detail: string,
+    primary: bool,
+    preview: image,
+}
+
+export struct ClipItem {
+    title: string,
+    date: string,
+    details: string,
+    thumbnail: image,
+}
+
+component Switch inherits Rectangle {
+    in-out property <bool> checked;
+    callback toggled();
+
+    width: 38px;
+    height: 22px;
+    border-radius: 11px;
+    background: root.checked ? Skin.brand : #ffffff1f;
+
+    Rectangle {
+        x: root.checked ? parent.width - self.width - 3px : 3px;
+        y: 3px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: Skin.ink-strong;
+
+        animate x { duration: 120ms; }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled();
+        }
+    }
+}
+
+component Segmented inherits HorizontalLayout {
+    in property <[string]> options;
+    in-out property <int> selected;
+    callback chosen();
+
+    spacing: 6px;
+    alignment: start;
+
+    for option[index] in root.options : RowItem {
+        on: index == root.selected;
+        width: max(64px, label.preferred-width + 24px);
+        height: 32px;
+        clicked => {
+            root.selected = index;
+            root.chosen();
+        }
+
+        label := Text {
+            text: option;
+            color: index == root.selected ? Skin.ink-strong : Skin.ink-icon;
+            font-family: Skin.sans;
+            font-size: 12.5px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component SettingRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> hint;
+
+    spacing: 16px;
+
+    // O mínimo de 40 fica no texto, e não na linha: mínimo declarado na linha substitui o que
+    // os filhos pedem, e dentro do `ScrollView` das Configurações (que monta o conteúdo na
+    // altura mínima) a linha dos monitores encolhia para 40 com os cards transbordando.
+    VerticalLayout {
+        width: 220px;
+        min-height: 40px;
+        alignment: center;
+        spacing: 2px;
+
+        Body { text: root.label; }
+
+        if root.hint != "" : Muted {
+            text: root.hint;
+            font-size: 11.5px;
+        }
+    }
+
+    HorizontalLayout {
+        alignment: start;
+        spacing: 10px;
+
+        @children
+    }
+}
+
+component Section inherits Glass {
+    in property <string> title;
+
+    border-radius: 16px;
+
+    VerticalLayout {
+        padding: 18px;
+        spacing: 12px;
+
+        LabelMono { text: root.title; }
+
+        @children
+    }
+}
+
+component MonitorCard inherits Rectangle {
+    in property <MonitorItem> item;
+    in property <bool> selected;
+    callback clicked();
+
+    width: 230px;
+    height: 176px;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: root.selected ? Skin.brand : (touch.has-hover ? #8a7cf580 : Skin.line);
+    background: root.selected ? #8a7cf51f : Skin.glass;
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+
+        Rectangle {
+            height: 120px;
+            border-radius: 8px;
+            background: #000000;
+            clip: true;
+
+            Image {
+                source: root.item.preview;
+                width: parent.width;
+                height: parent.height;
+                image-fit: contain;
+            }
+
+            if root.item.primary : Rectangle {
+                x: 6px;
+                y: 6px;
+                width: badge.preferred-width + 12px;
+                height: 18px;
+                border-radius: 5px;
+                background: Skin.brand;
+
+                badge := Text {
+                    text: "PRINCIPAL";
+                    color: Skin.ink-strong;
+                    font-family: Skin.sans;
+                    font-size: 9.5px;
+                    font-weight: 700;
+                    letter-spacing: 0.6px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        Text {
+            text: root.item.label;
+            color: Skin.ink-strong;
+            font-family: Skin.sans;
+            font-size: 12.5px;
+            font-weight: 600;
+            overflow: elide;
+        }
+
+        Muted {
+            text: root.item.detail;
+            font-size: 11px;
+            wrap: no-wrap;
+            overflow: elide;
+        }
+    }
+}
+
+component ClipCard inherits Rectangle {
+    in property <ClipItem> item;
+    callback open();
+    callback delete();
+
+    border-radius: 14px;
+    border-width: 1px;
+    border-color: touch.has-hover ? #8a7cf580 : Skin.line;
+    background: touch.has-hover ? Skin.row : Skin.glass;
+    clip: true;
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open(); }
+    }
+
+    VerticalLayout {
+        Rectangle {
+            height: root.width * 9 / 16;
+            background: #000000;
+
+            Image {
+                source: root.item.thumbnail;
+                image-fit: cover;
+                width: parent.width;
+                height: parent.height;
+            }
+
+            Rectangle {
+                x: parent.width - self.width - 8px;
+                y: 8px;
+                width: 30px;
+                height: 30px;
+                border-radius: 9px;
+                background: remove.has-hover ? Skin.danger : #06050acc;
+                visible: touch.has-hover || remove.has-hover;
+
+                Glyph {
+                    commands: Icons.close;
+                    size: 14px;
+                    tint: Skin.ink-strong;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                remove := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.delete(); }
+                }
+            }
+        }
+
+        VerticalLayout {
+            padding: 12px;
+            spacing: 3px;
+
+            Text {
+                text: root.item.title;
+                color: Skin.ink-strong;
+                font-family: Skin.sans;
+                font-size: 13.5px;
+                font-weight: 600;
+                overflow: elide;
+            }
+
+            Muted {
+                text: root.item.date + "  ·  " + root.item.details;
+                font-size: 11.5px;
+                wrap: no-wrap;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+export global ClipsUi {
+    callback quit();
+
+    // Sair do player por outro caminho (a aba Unkvoid, as Configurações): o vídeo é uma janela
+    // do Windows por cima da interface, e ficaria na frente do que abrir.
+    public function leave-player() {
+        if self.page == 1 {
+            self.player-close();
+            self.page = 0;
+        }
+    }
+
+    // Só o Windows grava replay: a aba e a seção aparecem quando o Rust diz que há motor.
+    in property <bool> available;
+    // A aba aberta no topo da janela: os Clips no lugar das telas do Unkvoid.
+    in-out property <bool> open;
+    // Onde o vídeo do player vai: o Rust põe a janela do Windows em cima deste retângulo.
+    in-out property <length> video-x;
+    in-out property <length> video-y;
+    in-out property <length> video-width;
+    in-out property <length> video-height;
+
+    in-out property <string> status;
+    in-out property <bool> recording;
+    in-out property <bool> replay-enabled;
+    in-out property <string> problem;
+    in-out property <[ClipItem]> clips;
+    // "Todos · 12", "Arena Breakout Infinite · 8", "Desktop · 4": o primeiro mostra tudo.
+    in-out property <[string]> games;
+    in-out property <int> game-index;
+    in-out property <string> save-label;
+    in-out property <bool> saving;
+    in-out property <int> page;
+
+    in-out property <string> player-title;
+    in-out property <float> player-progress;
+    in-out property <string> player-time;
+    in-out property <bool> player-playing;
+    // O volume do player, de 0 a 100. Começa baixo: um clipe de jogo sai no volume do jogo, e
+    // abrir um no meio da noite no máximo assusta. Vale enquanto o app está aberto.
+    in-out property <int> player-volume: 10;
+
+    in-out property <int> replay-index;
+    in-out property <int> quality-index;
+    in-out property <int> fps-index;
+    in-out property <[MonitorItem]> monitors;
+    in-out property <int> monitor-index;
+    in-out property <bool> system-audio;
+    in-out property <bool> microphone;
+    in-out property <[string]> microphones;
+    in-out property <int> microphone-index;
+    in-out property <bool> noise-suppression;
+    in-out property <string> save-hotkey;
+    in-out property <string> overlay-hotkey;
+    // Qual atalho espera a próxima combinação: "save", "overlay" ou nenhum.
+    in-out property <string> capturing-hotkey;
+    in-out property <string> clips-folder;
+    in-out property <bool> start-with-windows;
+    in-out property <string> buffer-estimate;
+
+    callback save-replay();
+    callback enable-replay();
+    callback open-clip(int);
+    callback delete-clip(int);
+    callback game-chosen();
+    callback open-folder();
+    callback change-folder();
+    callback settings-changed();
+    callback capture-hotkey(string);
+    callback player-toggle();
+    callback player-seek(float);
+    callback player-set-volume(int);
+    callback player-close();
+    callback player-show-in-folder();
+    callback player-delete();
+
+    in-out property <int> confirm-delete: -1;
+
+}
+
+// As duas partes do app, em todas as telas: o Unkvoid (salas, servidores, voz) e os Clips,
+// que funcionam sem conta e sem internet. Sem margem própria: na sala elas moram dentro da
+// barra dela, e nas outras telas numa faixa no alto (`app.slint`).
+export component SectionTabs inherits HorizontalLayout {
+    spacing: 4px;
+    alignment: start;
+
+    RowItem {
+        on: !ClipsUi.open;
+        width: unkvoid-label.preferred-width + 32px;
+        height: 32px;
+        clicked => {
+            ClipsUi.leave-player();
+            ClipsUi.open = false;
+        }
+
+        unkvoid-label := Text {
+            text: "Unkvoid";
+            color: !ClipsUi.open ? Skin.ink-strong : Skin.ink-icon;
+            font-family: Skin.sans;
+            font-size: 13px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    RowItem {
+        on: ClipsUi.open;
+        width: clips-label.preferred-width + 50px;
+        height: 32px;
+        clicked => { ClipsUi.open = true; }
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: 8px;
+
+            // O ponto vermelho é o replay gravando: dá para ver de qualquer tela.
+            Rectangle {
+                width: 7px;
+                height: 7px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 3.5px;
+                background: ClipsUi.recording ? Skin.danger : Skin.ink-faint;
+            }
+
+            clips-label := Text {
+                text: "Clips";
+                color: ClipsUi.open ? Skin.ink-strong : Skin.ink-icon;
+                font-family: Skin.sans;
+                font-size: 13px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// A aba dos Clips: o estado do replay e o salvar no alto, a galeria por jogo e o player.
+// As configurações moram no modal de Configurações do app, na seção Clips.
+export component ClipsScreen inherits Rectangle {
+    // A janela do player segue este retângulo: o Rust lê onde ele está. Cada medida tem o seu
+    // `changed`, e o `init` grava as de partida, que o `changed` não avisa.
+    property <length> video-x: video.absolute-position.x;
+    property <length> video-y: video.absolute-position.y;
+    property <length> video-width: video.width;
+    property <length> video-height: video.height;
+
+    changed video-x => { ClipsUi.video-x = root.video-x; }
+    changed video-y => { ClipsUi.video-y = root.video-y; }
+    changed video-width => { ClipsUi.video-width = root.video-width; }
+    changed video-height => { ClipsUi.video-height = root.video-height; }
+
+    init => {
+        ClipsUi.video-x = root.video-x;
+        ClipsUi.video-y = root.video-y;
+        ClipsUi.video-width = root.video-width;
+        ClipsUi.video-height = root.video-height;
+    }
+
+    VerticalLayout {
+        // Uma linha só, na mesma barra de vidro da sala: as abas, o estado do replay e os
+        // botões. A faixa das abas de cima (`app.slint`) some com os Clips abertos, e é daqui
+        // que se volta ao Unkvoid.
+        VerticalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 12px;
+            padding-bottom: 4px;
+
+            Glass {
+                height: 52px;
+                border-radius: 16px;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 8px;
+
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+
+                        SectionTabs { }
+                    }
+
+                    Rectangle {
+                        width: pill.preferred-width + 26px;
+                        height: 30px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 999px;
+                        border-width: 1px;
+                        border-color: Skin.line-strong;
+                        background: Skin.row;
+
+                        pill := HorizontalLayout {
+                            x: 12px;
+                            spacing: 8px;
+
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 4px;
+                                background: ClipsUi.recording ? Skin.danger : Skin.ink-faint;
+                            }
+
+                            Text {
+                                text: ClipsUi.status;
+                                color: Skin.ink-body;
+                                font-family: Skin.sans;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    Rectangle { horizontal-stretch: 1; }
+
+                    GhostButton {
+                        text: "Configurações";
+                        y: (parent.height - self.height) / 2;
+                        clicked => {
+                            ClipsUi.leave-player();
+                            Ui.settings-tab = "clips";
+                            Ui.open-settings();
+                        }
+                    }
+
+                    PrimaryButton {
+                        text: !ClipsUi.replay-enabled ? "Ligar replay" : (ClipsUi.saving ? "Salvando…" : ClipsUi.save-label);
+                        enabled: !ClipsUi.replay-enabled || (ClipsUi.recording && !ClipsUi.saving);
+                        // O tamanho dos vizinhos (Galeria, Configurações): o roxo já destaca.
+                        height: 32px;
+                        font-size: 12.5px;
+                        border-radius: 10px;
+                        y: (parent.height - self.height) / 2;
+                        clicked => {
+                            if ClipsUi.replay-enabled {
+                                ClipsUi.save-replay();
+                            } else {
+                                ClipsUi.enable-replay();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if ClipsUi.problem != "" : Rectangle {
+            height: 38px;
+            background: #e2445c26;
+
+            Text {
+                text: ClipsUi.problem;
+                color: Skin.ink-strong;
+                font-family: Skin.sans;
+                font-size: 12.5px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+
+            gallery := Flickable {
+                visible: ClipsUi.page == 0;
+
+                property <length> gap: 16px;
+                property <length> margin: 22px;
+                property <int> columns: max(1, floor((self.width - 2 * self.margin + self.gap) / (250px + self.gap)));
+                property <length> card-width: (self.width - 2 * self.margin - (self.columns - 1) * self.gap) / self.columns;
+                property <length> card-height: self.card-width * 9 / 16 + 62px;
+                // Os cards começam abaixo da fileira de jogos.
+                property <length> top: ClipsUi.games.length > 0 ? 50px : 4px;
+
+                content-height: max(self.height, self.top + self.margin + ceil(ClipsUi.clips.length / self.columns) * (self.card-height + self.gap));
+
+                // ponytail: uma fileira só; com jogos demais para a largura, os últimos ficam de fora.
+                if ClipsUi.games.length > 0 : Segmented {
+                    x: gallery.margin;
+                    y: 4px;
+                    options: ClipsUi.games;
+                    selected <=> ClipsUi.game-index;
+                    chosen => { ClipsUi.game-chosen(); }
+                }
+
+                for clip[index] in ClipsUi.clips : ClipCard {
+                    x: gallery.margin + mod(index, gallery.columns) * (gallery.card-width + gallery.gap);
+                    y: gallery.top + floor(index / gallery.columns) * (gallery.card-height + gallery.gap);
+                    width: gallery.card-width;
+                    height: gallery.card-height;
+                    item: clip;
+                    open => { ClipsUi.open-clip(index); }
+                    delete => { ClipsUi.confirm-delete = index; }
+                }
+
+                if ClipsUi.clips.length == 0 : VerticalLayout {
+                    alignment: center;
+                    spacing: 8px;
+
+                    Title {
+                        text: "Nenhum clipe ainda";
+                        horizontal-alignment: center;
+                    }
+
+                    Muted {
+                        text: "O replay já está gravando. Aperte " + ClipsUi.save-hotkey + " no jogo, ou " + ClipsUi.overlay-hotkey + " e clique no replay, para salvar.";
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+
+            VerticalLayout {
+                visible: ClipsUi.page == 1;
+                padding-left: 22px;
+                padding-right: 22px;
+                padding-bottom: 18px;
+                spacing: 12px;
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    height: 34px;
+
+                    IconButton {
+                        commands: Icons.arrow-left;
+                        clicked => {
+                            ClipsUi.player-close();
+                            ClipsUi.page = 0;
+                        }
+                    }
+
+                    Title {
+                        text: ClipsUi.player-title;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+
+                    GhostButton {
+                        text: "Mostrar na pasta";
+                        clicked => { ClipsUi.player-show-in-folder(); }
+                    }
+
+                    GhostButton {
+                        text: "Apagar";
+                        clicked => { ClipsUi.player-delete(); }
+                    }
+                }
+
+                video := Rectangle {
+                    vertical-stretch: 1;
+                    background: #000000;
+                }
+
+                HorizontalLayout {
+                    spacing: 14px;
+                    height: 34px;
+
+                    IconButton {
+                        commands: ClipsUi.player-playing ? Icons.pause : Icons.play;
+                        filled: !ClipsUi.player-playing;
+                        clicked => { ClipsUi.player-toggle(); }
+                    }
+
+                    seek := Rectangle {
+                        horizontal-stretch: 1;
+
+                        Rectangle {
+                            y: (parent.height - self.height) / 2;
+                            height: 6px;
+                            border-radius: 3px;
+                            background: #ffffff1f;
+                        }
+
+                        Rectangle {
+                            x: 0;
+                            y: (parent.height - self.height) / 2;
+                            width: parent.width * clamp(ClipsUi.player-progress, 0, 1);
+                            height: 6px;
+                            border-radius: 3px;
+                            background: @linear-gradient(90deg, Skin.brand 0%, Skin.lilac 100%);
+                        }
+
+                        seek-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { ClipsUi.player-seek(self.mouse-x / self.width); }
+                            moved => {
+                                if self.pressed {
+                                    ClipsUi.player-seek(clamp(self.mouse-x / self.width, 0, 1));
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: ClipsUi.player-time;
+                        color: Skin.ink-soft;
+                        font-family: Skin.sans;
+                        font-size: 12.5px;
+                        vertical-alignment: center;
+                    }
+
+                    Glyph {
+                        commands: ClipsUi.player-volume == 0 ? Icons.speaker-off : Icons.speaker;
+                        size: 16px;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Slider {
+                        width: 110px;
+                        minimum: 0;
+                        maximum: 100;
+                        value: ClipsUi.player-volume;
+                        changed(level) => { ClipsUi.player-set-volume(round(level)); }
+                    }
+
+                    Text {
+                        text: ClipsUi.player-volume + "%";
+                        color: Skin.ink-soft;
+                        font-family: Skin.mono;
+                        font-size: 11px;
+                        width: 34px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+        }
+    }
+
+    if ClipsUi.confirm-delete >= 0 : Rectangle {
+        background: #06050acc;
+
+        TouchArea {
+            clicked => { ClipsUi.confirm-delete = -1; }
+        }
+
+        Glass {
+            width: 380px;
+            height: 170px;
+            background: #14111f;
+
+            VerticalLayout {
+                padding: 22px;
+                spacing: 10px;
+
+                Title { text: "Apagar este clipe?"; }
+
+                Muted { text: "Ele vai para a Lixeira, dá para recuperar de lá."; }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+
+                    GhostButton {
+                        text: "Cancelar";
+                        clicked => { ClipsUi.confirm-delete = -1; }
+                    }
+
+                    PrimaryButton {
+                        text: "Apagar";
+                        width: 110px;
+                        clicked => {
+                            ClipsUi.delete-clip(ClipsUi.confirm-delete);
+                            ClipsUi.confirm-delete = -1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A seção Clips das Configurações do app: tudo o que a aba grava e onde salva.
+export component ClipsSettings inherits VerticalLayout {
+    spacing: 14px;
+    alignment: start;
+
+
+    Section {
+        title: "REPLAY INSTANTÂNEO";
+
+        SettingRow {
+            label: "Replay ligado";
+            hint: "Grava o tempo todo e continua ligado quando o Windows inicia";
+
+            Switch {
+                checked <=> ClipsUi.replay-enabled;
+                toggled => { ClipsUi.settings-changed(); }
+            }
+        }
+
+        SettingRow {
+            label: "Duração";
+            hint: "Quanto tempo para trás cada clipe guarda";
+
+            Segmented {
+                options: ["5 min", "10 min", "20 min", "30 min"];
+                selected <=> ClipsUi.replay-index;
+                chosen => { ClipsUi.settings-changed(); }
+            }
+        }
+
+        SettingRow {
+            label: "Qualidade";
+            hint: "Taxa do vídeo em 1080p60";
+
+            Segmented {
+                options: ["Média · 20 Mb/s", "Alta · 35 Mb/s", "Ultra · 50 Mb/s"];
+                selected <=> ClipsUi.quality-index;
+                chosen => { ClipsUi.settings-changed(); }
+            }
+        }
+
+        SettingRow {
+            label: "Quadros por segundo";
+
+            Segmented {
+                options: ["30", "60"];
+                selected <=> ClipsUi.fps-index;
+                chosen => { ClipsUi.settings-changed(); }
+            }
+        }
+
+        SettingRow {
+            label: "Monitor";
+            hint: "Qual tela o replay grava. Vem no principal do Windows.";
+
+            for monitor[index] in ClipsUi.monitors : MonitorCard {
+                item: monitor;
+                selected: index == ClipsUi.monitor-index;
+                clicked => {
+                    ClipsUi.monitor-index = index;
+                    ClipsUi.settings-changed();
+                }
+            }
+        }
+
+        Muted { text: ClipsUi.buffer-estimate; }
+    }
+
+    Section {
+        title: "ÁUDIO";
+
+        SettingRow {
+            label: "Som do sistema";
+            hint: "Jogo, navegador e tudo o que toca no PC";
+
+            Switch {
+                checked <=> ClipsUi.system-audio;
+                toggled => { ClipsUi.settings-changed(); }
+            }
+        }
+
+        SettingRow {
+            label: "Microfone";
+
+            Switch {
+                checked <=> ClipsUi.microphone;
+                toggled => { ClipsUi.settings-changed(); }
+            }
+        }
+
+        if ClipsUi.microphone : SettingRow {
+            label: "Aparelho";
+            hint: "O NVIDIA Broadcast aparece aqui como microfone";
+
+            VerticalLayout {
+                spacing: 6px;
+
+                for name[index] in ClipsUi.microphones : RowItem {
+                    on: index == ClipsUi.microphone-index;
+                    width: 380px;
+                    clicked => {
+                        ClipsUi.microphone-index = index;
+                        ClipsUi.settings-changed();
+                    }
+
+                    Text {
+                        x: 12px;
+                        text: name;
+                        color: index == ClipsUi.microphone-index ? Skin.ink-strong : Skin.ink-icon;
+                        font-family: Skin.sans;
+                        font-size: 12.5px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+
+        if ClipsUi.microphone : SettingRow {
+            label: "Filtro de ruído";
+            hint: "RNNoise: tira ventilador, teclado e som ambiente da voz";
+
+            Switch {
+                checked <=> ClipsUi.noise-suppression;
+                toggled => { ClipsUi.settings-changed(); }
+            }
+        }
+    }
+
+    Section {
+        title: "ATALHOS";
+
+        SettingRow {
+            label: "Salvar replay";
+
+            Rectangle {
+                width: hotkey.preferred-width + 24px;
+                height: 32px;
+                border-radius: 9px;
+                background: #8a7cf529;
+
+                hotkey := Text {
+                    text: ClipsUi.capturing-hotkey == "save" ? "Pressione a combinação…" : ClipsUi.save-hotkey;
+                    color: Skin.lilac-2;
+                    font-family: Skin.sans;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            GhostButton {
+                text: ClipsUi.capturing-hotkey == "save" ? "Esc cancela" : "Alterar";
+                enabled: ClipsUi.capturing-hotkey == "";
+                clicked => { ClipsUi.capture-hotkey("save"); }
+            }
+        }
+
+        SettingRow {
+            label: "Abrir o painel";
+            hint: "Mostra o replay por cima do jogo";
+
+            Rectangle {
+                width: overlay-key.preferred-width + 24px;
+                height: 32px;
+                border-radius: 9px;
+                background: #8a7cf529;
+
+                overlay-key := Text {
+                    text: ClipsUi.capturing-hotkey == "overlay" ? "Pressione a combinação…" : ClipsUi.overlay-hotkey;
+                    color: Skin.lilac-2;
+                    font-family: Skin.sans;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            GhostButton {
+                text: ClipsUi.capturing-hotkey == "overlay" ? "Esc cancela" : "Alterar";
+                enabled: ClipsUi.capturing-hotkey == "";
+                clicked => { ClipsUi.capture-hotkey("overlay"); }
+            }
+        }
+    }
+
+    Section {
+        title: "PASTA DOS CLIPES";
+
+        HorizontalLayout {
+            spacing: 10px;
+
+            Body {
+                text: ClipsUi.clips-folder;
+                vertical-alignment: center;
+                overflow: elide;
+                wrap: no-wrap;
+                horizontal-stretch: 1;
+            }
+
+            GhostButton {
+                text: "Abrir";
+                clicked => { ClipsUi.open-folder(); }
+            }
+
+            GhostButton {
+                text: "Alterar";
+                clicked => { ClipsUi.change-folder(); }
+            }
+        }
+    }
+
+    Section {
+        title: "SISTEMA";
+
+        SettingRow {
+            label: "Iniciar com o Windows";
+            hint: "Já começa gravando o replay, direto na bandeja";
+
+            Switch {
+                checked <=> ClipsUi.start-with-windows;
+                toggled => { ClipsUi.settings-changed(); }
+            }
+        }
+
+        // Fechar a janela só esconde. A saída mora na bandeja, e aqui também: se o ícone da
+        // bandeja sumir (o Explorer reiniciado), ainda dá para fechar o app.
+        SettingRow {
+            label: "Sair do Unkvoid";
+            hint: "Para o replay e fecha o app, até abrir de novo";
+
+            GhostButton {
+                text: "Sair";
+                clicked => { ClipsUi.quit(); }
+            }
+        }
+    }
+}
+
+// Um botão da faixa do painel, no desenho do GeForce Experience: círculo grande, nome e
+// estado embaixo.
+component RoundButton inherits VerticalLayout {
+    in property <string> commands;
+    in property <string> label;
+    in property <string> caption;
+    in property <bool> active;
+    in property <bool> recording;
+    callback clicked();
+
+    spacing: 8px;
+    width: 150px;
+
+    HorizontalLayout {
+        alignment: center;
+
+        Rectangle {
+            width: 68px;
+            height: 68px;
+            border-radius: 34px;
+            border-width: 1px;
+            border-color: touch.has-hover || root.active ? Skin.brand : Skin.line-strong;
+            // Cor cheia e não degradê: o degradê não respeita o arredondamento em todo
+            // renderizador do Slint, e o círculo virava um quadrado.
+            background: root.active ? Skin.brand-dark : (touch.has-hover ? #2a2440f2 : #1a1628e6);
+
+            Glyph {
+                commands: root.commands;
+                size: 28px;
+                tint: root.recording ? Skin.danger : Skin.ink-strong;
+                filled: root.recording;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+
+            touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.clicked(); }
+            }
+        }
+    }
+
+    Text {
+        text: root.label;
+        color: Skin.ink-strong;
+        font-family: Skin.sans;
+        font-size: 13.5px;
+        font-weight: 600;
+        horizontal-alignment: center;
+    }
+
+    Text {
+        text: root.caption;
+        color: root.recording ? Skin.lilac-2 : Skin.ink-soft;
+        font-family: Skin.sans;
+        font-size: 11.5px;
+        horizontal-alignment: center;
+    }
+}
+
+export component OverlayWindow inherits Window {
+    title: "Unkvoid";
+    no-frame: true;
+    always-on-top: true;
+    // Opaco: esta janela é só a barra e o quadro, recortados no formato deles pelo Rust. O
+    // escuro translúcido por cima do jogo é outra janela, atrás desta — assim o quadro de
+    // configurações fica sólido e o resto da tela escurece sem esconder o jogo.
+    background: #14111f;
+    default-font-family: Skin.sans;
+
+    in-out property <bool> enabled;
+    in-out property <int> replay-index;
+    in-out property <int> quality-index;
+    in-out property <int> fps-index;
+    in property <string> clips-folder;
+    in property <string> save-hotkey;
+    in property <string> overlay-hotkey;
+    in property <bool> saving;
+    // O bloco do replay (ligar, tempo, pasta) só aparece pelo botão Configurações.
+    in-out property <bool> panel-open;
+    // Quanto o conteúdo está acima do lugar dele: o Rust anima de -altura até 0, e a descida
+    // acontece dentro da janela parada.
+    in property <length> slide;
+
+    // O Rust dimensiona a janela pelo conteúdo e recorta a janela nos dois quadros.
+    out property <length> content-width: dock.preferred-width;
+    out property <length> content-height: dock.preferred-height;
+    out property <length> toolbar-x: toolbar.absolute-position.x;
+    out property <length> toolbar-y: toolbar.absolute-position.y;
+    out property <length> toolbar-width: toolbar.width;
+    out property <length> toolbar-height: toolbar.height;
+    out property <length> panel-x: panel-card.absolute-position.x;
+    out property <length> panel-y: panel-card.absolute-position.y;
+    out property <length> panel-width: panel-card.width;
+    out property <length> panel-height: panel-card.height;
+
+    callback replay-clicked();
+    callback toggle-replay();
+    callback replay-length-changed();
+    callback quality-changed();
+    callback fps-changed();
+    callback change-folder();
+    callback save();
+    callback open-gallery();
+    callback dismiss();
+
+    property <int> minutes: [5, 10, 20, 30][root.replay-index];
+
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.dismiss();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    dock := VerticalLayout {
+        y: root.slide;
+        height: self.preferred-height;
+        // A distância do alto do monitor mora aqui, e não na posição da janela: a janela fica
+        // no topo da tela, e o conteúdo desce da borda dela.
+        padding-top: 40px;
+        spacing: 14px;
+        alignment: start;
+
+        HorizontalLayout {
+            alignment: center;
+
+            toolbar := Rectangle {
+                width: toolbar-content.preferred-width + 48px;
+                height: toolbar-content.preferred-height + 36px;
+                border-radius: 22px;
+                border-width: 1px;
+                border-color: Skin.line-strong;
+                background: #14111f;
+
+                toolbar-content := VerticalLayout {
+                    x: 24px;
+                    y: 18px;
+                    // O tamanho dele mesmo: sem isto o layout esticava para o tamanho da barra,
+                    // que por sua vez é medida por ele, e o texto de baixo vazava para fora do
+                    // recorte.
+                    width: self.preferred-width;
+                    height: self.preferred-height;
+                    spacing: 14px;
+
+                    HorizontalLayout {
+                        spacing: 28px;
+
+                        RoundButton {
+                            commands: "M12 4a8 8 0 1 1 0 16 8 8 0 1 1 0-16z";
+                            label: "Replay instantâneo";
+                            caption: root.saving
+                                ? "Salvando…"
+                                : (root.enabled ? "Clique para salvar " + root.minutes + " min" : "Desligado · clique para ligar");
+                            recording: root.enabled;
+                            clicked => { root.replay-clicked(); }
+                        }
+
+                        // Ligar e desligar à mão, sem abrir as configurações: o desenho do botão
+                        // de energia, violeta enquanto grava.
+                        RoundButton {
+                            commands: "M12 3v8 M6.4 6.6a8 8 0 1 0 11.2 0";
+                            label: root.enabled ? "Replay ligado" : "Replay desligado";
+                            caption: root.enabled ? "Clique para desligar" : "Clique para ligar";
+                            active: root.enabled;
+                            clicked => {
+                                root.enabled = !root.enabled;
+                                root.toggle-replay();
+                            }
+                        }
+
+                        RoundButton {
+                            commands: Icons.screen;
+                            label: "Galeria";
+                            caption: "Ver os clipes";
+                            clicked => { root.open-gallery(); }
+                        }
+
+                        RoundButton {
+                            commands: Icons.gear;
+                            label: "Configurações";
+                            caption: "Tempo, qualidade, pasta";
+                            active: root.panel-open;
+                            clicked => { root.panel-open = !root.panel-open; }
+                        }
+                    }
+
+                    Muted {
+                        text: "Esc ou " + root.overlay-hotkey + " para voltar ao jogo";
+                        font-size: 11.5px;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            alignment: center;
+
+            // Sempre na árvore, com altura zero quando fechado: dentro de um `if`, o Rust não
+            // conseguiria ler onde o quadro está para recortar a janela.
+            Rectangle {
+                width: 460px;
+                height: root.panel-open ? panel-card.preferred-height : 0px;
+                clip: true;
+
+                panel-card := Rectangle {
+                    y: 0;
+                    width: 460px;
+                    height: self.preferred-height;
+                    border-radius: 18px;
+                    border-width: 1px;
+                    border-color: Skin.line-strong;
+                    background: #14111f;
+
+                    VerticalLayout {
+                        padding: 22px;
+                        spacing: 14px;
+
+                        HorizontalLayout {
+                            spacing: 12px;
+
+                            Title {
+                                text: "Replay instantâneo";
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+
+                            Switch {
+                                checked <=> root.enabled;
+                                toggled => { root.toggle-replay(); }
+                            }
+                        }
+
+                        Muted {
+                            text: root.enabled
+                                ? "Gravando o tempo todo. Só vira arquivo quando você salvar."
+                                : "Ligue para começar a gravar. Ele continua ligado quando o Windows iniciar de novo.";
+                        }
+
+                        PrimaryButton {
+                            text: root.saving ? "Salvando…" : "Salvar os últimos " + root.minutes + " min";
+                            enabled: root.enabled && !root.saving;
+                            clicked => { root.save(); }
+                        }
+
+                        Muted {
+                            text: "Ou aperte " + root.save-hotkey + " em qualquer jogo, sem abrir o painel.";
+                            font-size: 11.5px;
+                            horizontal-alignment: center;
+                        }
+
+                        LabelMono { text: "DURAÇÃO DO REPLAY"; }
+
+                        Segmented {
+                            options: ["5 min", "10 min", "20 min", "30 min"];
+                            selected <=> root.replay-index;
+                            chosen => { root.replay-length-changed(); }
+                        }
+
+                        LabelMono { text: "QUALIDADE"; }
+
+                        Segmented {
+                            options: ["Média · 20 Mb/s", "Alta · 35 Mb/s", "Ultra · 50 Mb/s"];
+                            selected <=> root.quality-index;
+                            chosen => { root.quality-changed(); }
+                        }
+
+                        LabelMono { text: "QUADROS POR SEGUNDO"; }
+
+                        Segmented {
+                            options: ["30", "60"];
+                            selected <=> root.fps-index;
+                            chosen => { root.fps-changed(); }
+                        }
+
+                        LabelMono { text: "SALVAR EM"; }
+
+                        HorizontalLayout {
+                            spacing: 10px;
+
+                            Body {
+                                text: root.clips-folder;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                wrap: no-wrap;
+                                horizontal-stretch: 1;
+                            }
+
+                            GhostButton {
+                                text: "Alterar";
+                                clicked => { root.change-folder(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+export component ClipsTray inherits SystemTrayIcon {
+    icon: @image-url("../../desktop/src-tauri/icons/128x128.png");
+    tooltip: "Unkvoid";
+
+    callback open();
+    callback save();
+    callback quit();
+
+    clicked => { root.open(); }
+
+    Menu {
+        MenuItem {
+            title: "Abrir o Unkvoid";
+            activated => { root.open(); }
+        }
+
+        MenuItem {
+            title: "Salvar replay";
+            activated => { root.save(); }
+        }
+
+        MenuItem {
+            title: "Sair";
+            activated => { root.quit(); }
+        }
+    }
+}

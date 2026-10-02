@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Models;
 
 use App\Enums\PermissionEnum;
-use App\Exceptions\ForbiddenException;
 use App\Models\Concerns\LogsFailedWrites;
 use App\Notifications\NewLoginNotification;
 use App\Notifications\ResetPasswordNotification;
@@ -89,18 +88,16 @@ final class User extends Authenticatable implements Auditable
     }
 
     /**
-     * Troca o apelido automático pelo que a pessoa escolheu. É uma escolha só: depois de
-     * confirmado, o apelido não muda por aqui.
+     * Troca o apelido, a qualquer hora. A primeira troca também confirma o automático, e a
+     * data dela fica: é a da escolha, não a da última troca.
      *
      * @throws Throwable
      */
-    public function confirmNickname(string $name): void
+    public function changeNickname(string $name): void
     {
-        throw_if($this->hasConfirmedNickname(), ForbiddenException::class, 'Você já escolheu o seu apelido.');
-
-        self::write('falha ao confirmar o apelido', fn () => $this->update([
+        self::write('falha ao trocar o apelido', fn () => $this->update([
             'name' => $name,
-            'nickname_confirmed_at' => now(),
+            'nickname_confirmed_at' => $this->nickname_confirmed_at ?? now(),
         ]), ['user_id' => $this->id]);
     }
 

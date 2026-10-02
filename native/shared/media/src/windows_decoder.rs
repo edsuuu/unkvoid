@@ -32,6 +32,11 @@ use crate::windows::start_media_foundation;
 const RTP_CLOCK: i64 = 90_000;
 const HNS_PER_SECOND: i64 = 10_000_000;
 
+/// Em quantas threads a conversão para RGB se divide. Numa thread só, um quadro 1080p levava
+/// ~10 ms, mais da metade do custo de assistir; quatro cabem em qualquer PC de hoje e deixam
+/// o resto dos núcleos para o jogo de quem assiste.
+const CONVERSION_THREADS: usize = 4;
+
 /// Quantas vezes seguidas o MFT pode mudar o formato de saída antes de desistir do quadro.
 /// Ele muda uma vez, no primeiro quadro; em laço, é MFT quebrado, não vídeo novo.
 const MOST_STREAM_CHANGES: u32 = 4;
@@ -106,6 +111,18 @@ impl H264Decoder {
     /// MFT devolve o próprio quadro na hora; a lista existe para o primeiro, que às vezes só
     /// sai junto com o segundo.
     pub fn decode(&mut self, annex_b: &[u8], timestamp: u32) -> Result<Vec<DecodedFrame>> {
+        self.feed(annex_b, timestamp, true)
+    }
+
+    /// Decodifica sem virar imagem. Todo quadro P tem de passar pelo decodificador para o
+    /// seguinte sair certo, mas converter para RGB um quadro que outro mais novo vai substituir
+    /// antes de a janela desenhar é trabalho jogado fora — era o que deixava quem assiste duas
+    /// telas 1080p60 quatro segundos atrás.
+    pub fn skip(&mut self, annex_b: &[u8], timestamp: u32) -> Result<()> {
+        self.feed(annex_b, timestamp, false).map(drop)
+    }
+
+    fn feed(&mut self, annex_b: &[u8], timestamp: u32, convert: bool) -> Result<Vec<DecodedFrame>> {
         unsafe {
             let sample = input_sample(annex_b, timestamp)?;
             let mut ready = Vec::new();
@@ -116,24 +133,24 @@ impl H264Decoder {
                 }
 
                 // Cheio: o que estava pronto sai primeiro, e aí o quadro entra.
-                self.drain(&mut ready)?;
+                self.drain(&mut ready, convert)?;
                 self.transform
                     .ProcessInput(0, &sample, 0)
                     .context("o decodificador recusou o quadro depois de esvaziar")?;
             }
 
-            self.drain(&mut ready)?;
+            self.drain(&mut ready, convert)?;
 
             Ok(ready)
         }
     }
 
-    unsafe fn drain(&mut self, ready: &mut Vec<DecodedFrame>) -> Result<()> {
+    unsafe fn drain(&mut self, ready: &mut Vec<DecodedFrame>, convert: bool) -> Result<()> {
         let mut changes = 0;
 
         loop {
-            match unsafe { self.next_output()? } {
-                Output::Frame(frame) => ready.push(frame),
+            match unsafe { self.next_output(convert)? } {
+                Output::Frame(frame) => ready.extend(frame),
                 Output::Empty => return Ok(()),
                 Output::StreamChanged => {
                     changes += 1;
@@ -148,7 +165,7 @@ impl H264Decoder {
         }
     }
 
-    unsafe fn next_output(&mut self) -> Result<Output> {
+    unsafe fn next_output(&mut self, convert: bool) -> Result<Output> {
         unsafe {
             let info = self
                 .transform
@@ -180,7 +197,11 @@ impl H264Decoder {
 
             let sample = sample.ok_or_else(|| anyhow!("o decodificador não devolveu amostra"))?;
 
-            Ok(Output::Frame(self.read(&sample)?))
+            if !convert {
+                return Ok(Output::Frame(None));
+            }
+
+            Ok(Output::Frame(Some(self.read(&sample)?)))
         }
     }
 
@@ -231,7 +252,8 @@ impl H264Decoder {
 }
 
 enum Output {
-    Frame(DecodedFrame),
+    /// `None` quando o quadro saiu do decodificador sem ser convertido.
+    Frame(Option<DecodedFrame>),
     Empty,
     StreamChanged,
 }
@@ -390,23 +412,31 @@ fn nv12_to_rgb(nv12: &[u8], layout: Layout) -> Result<DecodedFrame> {
     }
 
     let mut rgb = vec![0_u8; width * height * 3];
+    let band = height.div_ceil(CONVERSION_THREADS);
 
-    for row in 0..height {
-        let luma = &nv12[row * stride..row * stride + width];
-        let chroma = &nv12[chroma_start + (row / 2) * stride..];
-        let line = &mut rgb[row * width * 3..(row + 1) * width * 3];
+    // Faixas de linhas, uma por thread: as linhas não dependem umas das outras.
+    std::thread::scope(|scope| {
+        for (index, lines) in rgb.chunks_mut(band * width * 3).enumerate() {
+            scope.spawn(move || {
+                for (offset, line) in lines.chunks_exact_mut(width * 3).enumerate() {
+                    let row = index * band + offset;
+                    let luma = &nv12[row * stride..row * stride + width];
+                    let chroma = &nv12[chroma_start + (row / 2) * stride..];
 
-        for column in 0..width {
-            let y = (i32::from(luma[column]) - 16) * luma_gain;
-            let u = i32::from(chroma[column & !1]) - 128;
-            let v = i32::from(chroma[(column & !1) + 1]) - 128;
-            let pixel = &mut line[column * 3..column * 3 + 3];
+                    for column in 0..width {
+                        let y = (i32::from(luma[column]) - 16) * luma_gain;
+                        let u = i32::from(chroma[column & !1]) - 128;
+                        let v = i32::from(chroma[(column & !1) + 1]) - 128;
+                        let pixel = &mut line[column * 3..column * 3 + 3];
 
-            pixel[0] = clamp((y + red_v * v + 128) >> 8);
-            pixel[1] = clamp((y - green_u * u - green_v * v + 128) >> 8);
-            pixel[2] = clamp((y + blue_u * u + 128) >> 8);
+                        pixel[0] = clamp((y + red_v * v + 128) >> 8);
+                        pixel[1] = clamp((y - green_u * u - green_v * v + 128) >> 8);
+                        pixel[2] = clamp((y + blue_u * u + 128) >> 8);
+                    }
+                }
+            });
         }
-    }
+    });
 
     #[allow(clippy::cast_possible_truncation)]
     Ok(DecodedFrame {
@@ -445,6 +475,31 @@ mod tests {
     #[test]
     fn the_fixture_is_split_into_its_six_frames() {
         assert_eq!(access_units(FIXTURE).len(), 6);
+    }
+
+    /// É o que quem assiste faz quando fica para trás: decodifica sem converter e só o mais
+    /// novo vira imagem. O último tem de sair igual ao de quem converteu todos.
+    #[test]
+    fn frames_skipped_still_feed_the_ones_after_them() {
+        let units = access_units(FIXTURE);
+        let (mut every, mut skipping) = (H264Decoder::new().expect("abriu"), H264Decoder::new().expect("abriu"));
+        let mut converted = Vec::new();
+
+        for (index, unit) in units.iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            let timestamp = index as u32 * 3_000;
+
+            converted.extend(every.decode(unit, timestamp).expect("o quadro decodificou"));
+
+            if index + 1 < units.len() {
+                skipping.skip(unit, timestamp).expect("o quadro passou sem converter");
+            } else {
+                let last = skipping.decode(unit, timestamp).expect("o último decodificou");
+
+                assert_eq!(last.len(), 1, "o pulo segurou ou soltou quadro a mais");
+                assert_eq!(Some(&last[0]), converted.last(), "o último saiu diferente depois dos pulos");
+            }
+        }
     }
 
     #[test]

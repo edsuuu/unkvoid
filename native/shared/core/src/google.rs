@@ -18,9 +18,12 @@ use tokio::net::TcpListener;
 /// Quanto se espera a pessoa escolher a conta no navegador.
 const PATIENCE: Duration = Duration::from_secs(300);
 
+/// A aba tenta se fechar. O navegador só deixa quando ela tem uma página só no histórico —
+/// com a escolha de conta do Google no meio ele recusa, e a frase fica.
 const DONE: &str = "<!doctype html><meta charset=utf-8><title>Unkvoid</title>\
 <body style=\"font-family:system-ui;background:#06050a;color:#ece9f3;display:grid;place-items:center;height:100vh;margin:0\">\
-<p>Pronto. Pode fechar esta aba e voltar para o Unkvoid.</p>";
+<p>Pronto, você entrou. Pode fechar esta aba e voltar para o Unkvoid.</p>\
+<script>window.close()</script>";
 
 pub struct GoogleLogin {
     listener: TcpListener,

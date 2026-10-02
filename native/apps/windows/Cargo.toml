@@ -23,24 +23,56 @@ serde.workspace = true
 serde_json.workspace = true
 # A chave SRTP atravessa o `producePlain` em base64, e volta assim do servidor.
 base64 = "0.22"
-slint = "1.18"
+# O `raw-window-handle` dá o HWND das janelas: o recorte do painel do Alt+Z e o player dos
+# Clips moram nele. `unstable-winit-030`: a janela sem a moldura do Windows arrasta e
+# redimensiona pelo winit.
+slint = { version = "1.18", features = ["raw-window-handle-06", "unstable-winit-030"] }
 # A prévia do seletor de tela chega em JPEG do `capture`. Já está no lock pelo próprio Slint.
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
-# A lista de microfones e de saídas de áudio do sistema.
+# A lista de microfones e de saídas de áudio do sistema, e os Clips.
 [target.'cfg(target_os = "windows")'.dependencies]
+# O motor do replay instantâneo. Com outro nome aqui porque o módulo da interface dele também
+# se chama `clips`.
+clips-engine = { package = "clips", path = "../../shared/clips" }
+raw-window-handle = "0.6"
 windows = { version = "0.62", features = [
     "Win32_Devices_FunctionDiscovery",
+    "Win32_Foundation",
+    # O painel do Alt+Z, o aviso e as miniaturas: janelas e desenho do Windows.
+    "Win32_Graphics_Gdi",
     "Win32_Media_Audio",
+    # O player dos Clips (`IMFMediaEngine`).
+    "Win32_Media_MediaFoundation",
+    "Win32_Security",
+    # O mutex e o evento da instância única abertos a quem não é elevado (`SHARED`).
+    "Win32_Security_Authorization",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    # A pasta escolhida no instalador do UnkvoidClips.
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
     # O `PROPVARIANT` e o `VT_LPWSTR` do nome do aparelho.
     "Win32_System_Variant",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell_Common",
     "Win32_UI_Shell_PropertiesSystem",
     # O `ShellExecuteW` que abre o instalador da atualização pedindo o administrador.
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
+    # O canto redondo do Windows 11, que a janela sem moldura perde.
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    # A licença para capturar sem a borda amarela (`allow_borderless_capture`).
+    "Graphics_Capture",
+    "Security_Authorization_AppCapabilityAccess",
 ] }
+windows-core = "0.62"
 
 [build-dependencies]
 slint-build = "1.18"

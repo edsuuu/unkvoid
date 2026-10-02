@@ -182,6 +182,10 @@ export class App {
         }
 
         for (const channel of channels) {
+            if (Subscriptions.isPublic(channel)) {
+                continue;
+            }
+
             if (this.subscriptions.countFor(channel, identity.userId) === 0) {
                 this.broadcaster.send(channel, 'presence.leaving', { id: identity.userId });
             }

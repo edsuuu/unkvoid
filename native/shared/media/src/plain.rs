@@ -29,6 +29,7 @@ use rtc::shared::marshal::Marshal;
 use rtc::srtp::context::Context as SrtpContext;
 use rtc::srtp::protection_profile::ProtectionProfile;
 
+use crate::pacer::Pacer;
 use crate::{audio::CHANNELS, audio::SAMPLE_RATE, EncodedFrame, FRAME_MS};
 
 /// Tipos de payload. 96+ é a faixa dinâmica, e o servidor devolve o que for declarado.
@@ -175,6 +176,9 @@ pub struct PlainSender {
     /// Os últimos pacotes de vídeo já cifrados, com o número de sequência, para reenviar
     /// o que o servidor disser que não chegou. O `bool` diz se ele já foi pedido de volta.
     history: VecDeque<(u16, Bytes, bool)>,
+
+    /// Por onde o vídeo sai, no ritmo. O resto sai direto pelo `socket`.
+    pacer: Pacer,
 }
 
 /// O que o servidor devolveu desde a última leitura.
@@ -247,6 +251,9 @@ impl PlainSender {
 
         grow_send_buffer(&socket);
 
+        let pacer = Pacer::start(socket.try_clone().context("could not share the SFU socket with the pacer")?)
+            .context("could not start the pacer thread")?;
+
         let srtp = SrtpContext::new(
             &key[..KEY_LEN],
             &key[KEY_LEN..],
@@ -277,7 +284,13 @@ impl PlainSender {
             dropped: 0,
             sent_bytes: 0,
             history: VecDeque::with_capacity(HISTORY),
+            pacer,
         })
+    }
+
+    /// A taxa do vídeo agora, que o governador decide: é por ela que o ritmo da saída anda.
+    pub fn follow_bitrate(&self, video_bitrate: u64) {
+        self.pacer.follow(video_bitrate);
     }
 
     pub fn server(&self) -> SocketAddr {
@@ -354,15 +367,7 @@ impl PlainSender {
         stream.last_video_ns = Some(frame.timestamp_ns);
         stream.packetizer.skip_samples(advance);
 
-        let sent = Self::send(
-            &self.socket,
-            &mut self.srtp,
-            stream,
-            Bytes::from(frame.data),
-            0,
-            (&mut self.dropped, &mut self.sent_bytes),
-        )?;
-
+        let sent = Self::protect(&mut self.srtp, stream, Bytes::from(frame.data), 0)?;
         let packets = sent.len();
 
         stream.packets += packets as u32;
@@ -372,6 +377,7 @@ impl PlainSender {
                 self.history.pop_front();
             }
 
+            self.pacer.push(packet.clone());
             self.history.push_back((sequence, packet, false));
         }
 
@@ -469,14 +475,14 @@ impl PlainSender {
         feedback
     }
 
-    /// Pacotes largados porque o buffer de saída estava cheio.
+    /// Pacotes largados porque o buffer de saída, ou a fila do ritmo, estava cheio.
     pub fn dropped(&self) -> u64 {
-        self.dropped
+        self.dropped + self.pacer.dropped()
     }
 
     /// Bytes protegidos que o socket aceitou, vídeo e áudio somados.
     pub fn sent_bytes(&self) -> u64 {
-        self.sent_bytes
+        self.sent_bytes + self.pacer.sent_bytes()
     }
 
     /// O Opus chega em blocos fixos de 20 ms, então o relógio anda sempre o mesmo tanto.
@@ -485,33 +491,29 @@ impl PlainSender {
         let base = self.ssrc_base;
         let stream = self.streams.entry(source).or_insert_with(|| source.stream(base));
 
-        let sent = Self::send(
-            &self.socket,
-            &mut self.srtp,
-            stream,
-            Bytes::copy_from_slice(opus),
-            samples,
-            (&mut self.dropped, &mut self.sent_bytes),
-        )?;
+        let sent = Self::protect(&mut self.srtp, stream, Bytes::copy_from_slice(opus), samples)?;
 
         stream.packets += sent.len() as u32;
+
+        for (_, packet) in &sent {
+            match self.socket.send(packet) {
+                Ok(written) => self.sent_bytes += written as u64,
+                // Só chega aqui com o buffer do socket cheio, e depois do `SO_SNDBUF`
+                // ampliado isso é uplink saturado de verdade. Largar o pacote é o preço
+                // certo para som ao vivo: dormir aqui segurava a thread que o produz.
+                Err(error) if error.kind() == ErrorKind::WouldBlock => self.dropped += 1,
+                Err(error) => return Err(error).context("could not send RTP to the SFU"),
+            }
+        }
 
         self.report(source);
 
         Ok(())
     }
 
-    /// Devolve cada pacote que saiu, já cifrado e com o número de sequência — inclusive o
-    /// que o buffer cheio largou, que é justamente o que o servidor vai pedir de volta.
-    fn send(
-        socket: &UdpSocket,
-        srtp: &mut SrtpContext,
-        stream: &mut Stream,
-        payload: Bytes,
-        samples: u32,
-        counters: (&mut u64, &mut u64),
-    ) -> Result<Vec<(u16, Bytes)>> {
-        let (dropped, sent_bytes) = counters;
+    /// Empacota e cifra: devolve cada pacote com o número de sequência, pronto para sair e
+    /// para o histórico de reenvio.
+    fn protect(srtp: &mut SrtpContext, stream: &mut Stream, payload: Bytes, samples: u32) -> Result<Vec<(u16, Bytes)>> {
         let packetizer = stream.packetizer.as_mut();
         let timestamp = &mut stream.last_timestamp;
         let payload_bytes = &mut stream.bytes;
@@ -533,17 +535,6 @@ impl PlainSender {
             let protected = srtp
                 .encrypt_rtp(&plain)
                 .map_err(|error| anyhow!("could not protect RTP: {error}"))?;
-
-            match socket.send(&protected) {
-                Ok(written) => *sent_bytes += written as u64,
-                // Só chega aqui com o buffer do socket cheio, e depois do `SO_SNDBUF`
-                // ampliado isso é uplink saturado de verdade. Largar o pacote é o preço
-                // certo para vídeo ao vivo: dormir aqui segurava a thread da captura,
-                // que é justamente quem produz o próximo quadro, e segurava junto o
-                // mutex do destino.
-                Err(error) if error.kind() == ErrorKind::WouldBlock => *dropped += 1,
-                Err(error) => return Err(error).context("could not send RTP to the SFU"),
-            }
 
             sent.push((packet.header.sequence_number, protected.freeze()));
         }
@@ -734,8 +725,10 @@ mod tests {
             )
             .expect("could not send the frame");
 
+        // O relatório do remetente sai direto e o vídeo sai no ritmo: o primeiro a chegar
+        // pode ser o relatório.
         let mut buffer = [0u8; 2048];
-        let size = server_socket.recv(&mut buffer).expect("the frame did not arrive");
+        let size = media_packet(&server_socket, &mut buffer);
         let original = buffer[..size].to_vec();
         let sequence = u16::from_be_bytes([original[2], original[3]]);
 
@@ -986,12 +979,15 @@ mod tests {
             ));
         }
 
+        // O vídeo sai no ritmo e o som sai na hora: a ordem de chegada não é a de envio.
+        seen.sort_unstable_by_key(|(_, ssrc)| *ssrc);
+
         assert_eq!(
             seen,
             [
                 (PAYLOAD_VIDEO, Source::Screen.ssrc(BASE)),
-                (PAYLOAD_VIDEO, Source::Camera.ssrc(BASE)),
                 (PAYLOAD_AUDIO, Source::ScreenAudio.ssrc(BASE)),
+                (PAYLOAD_VIDEO, Source::Camera.ssrc(BASE)),
                 (PAYLOAD_AUDIO, Source::Mic.ssrc(BASE)),
             ]
         );

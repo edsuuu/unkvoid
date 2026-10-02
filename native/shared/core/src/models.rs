@@ -293,6 +293,10 @@ pub struct JoinResponse {
     /// e não os bits do canal, que decide mic, câmera e tela.
     #[serde(default)]
     pub can: Vec<String>,
+    /// Há quanto tempo a sala existe, desde a primeira pessoa. Duração, e não hora: o relógio
+    /// de cada máquina erra. `None` num SFU de antes do campo.
+    #[serde(default)]
+    pub elapsed_ms: Option<u64>,
 }
 
 /// O que a interface desenha. Uma tela por estado, e a interface nunca inventa um sexto.

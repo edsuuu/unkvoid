@@ -75,7 +75,7 @@ describe('integração: os clientes do app contra o Laravel e o SFU no ar', () =
         }
     });
 
-    it('cria duas contas sem apelido, confirma o apelido uma vez só, e senha errada é 401', async () => {
+    it('cria duas contas sem apelido, confirma o apelido, troca de novo, e senha errada é 401', async () => {
         const registered = await ana.post('/api/auth/register', { email: `ana.${STAMP}@local.test`, password: PASSWORD, device: 'app' });
 
         ana.setToken(registered.token);
@@ -89,7 +89,8 @@ describe('integração: os clientes do app contra o Laravel e o SFU no ar', () =
 
         expect(anaUser.name).toBe(`ana.${STAMP}`);
         expect((await ana.get('/api/me')).nickname_confirmed).toBe(true);
-        await rejectsWith(() => ana.patch('/api/me', { name: `ana2.${STAMP}` }), [403], 'confirmado, o apelido não muda mais por aqui');
+        expect((await ana.patch('/api/me', { name: `ana2.${STAMP}` })).name, 'confirmado, o apelido ainda se troca').toBe(`ana2.${STAMP}`);
+        await ana.patch('/api/me', { name: `ana.${STAMP}` });
         await rejectsWith(() => new ApiClient(SERVER).post('/api/auth/login', { email: `ana.${STAMP}@local.test`, password: 'errada', device: 'app' }), [401], 'senha errada é 401 (InvalidCredentialsException)');
     });
 

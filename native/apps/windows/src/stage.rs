@@ -5,6 +5,7 @@
 //! A grade, o foco e a tela cheia são só do lado de quem olha, como no React e no Mac.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use core_app::models::Peer;
 use core_app::room::Mine;
@@ -39,6 +40,8 @@ pub struct Placed {
     pub focused: bool,
     pub full: bool,
     pub heard: bool,
+    /// De 0 a 100, só deste lado.
+    pub volume: u8,
     pub watchers: Vec<String>,
 }
 
@@ -49,6 +52,8 @@ pub struct Stage {
     watchers: HashMap<String, Vec<String>>,
     /// As telas cujo som a pessoa ligou, pelo producer do vídeo.
     heard: HashSet<String>,
+    /// O volume escolhido de cada tela, de 0 a 100; sem escolha, 100.
+    volumes: HashMap<String, u8>,
     focused: Option<String>,
     full: Option<String>,
 }
@@ -62,6 +67,7 @@ impl Stage {
         let alive: HashSet<&str> = self.tiles.iter().map(|tile| tile.producer_id.as_str()).collect();
 
         self.heard.retain(|producer| alive.contains(producer.as_str()));
+        self.volumes.retain(|producer, _| alive.contains(producer.as_str()));
         self.focused.take_if(|producer| !alive.contains(producer.as_str()));
         self.full.take_if(|producer| !alive.contains(producer.as_str()));
     }
@@ -88,15 +94,45 @@ impl Stage {
     }
 
     /// Liga ou desliga o som de uma tela. Devolve o producer do som e se ele passou a tocar.
+    /// Ligar com o volume em zero volta a 100, como no React: ligado e mudo ao mesmo tempo não
+    /// diria nada a ninguém.
     pub fn toggle_heard(&mut self, producer: &str) -> Option<(String, bool)> {
         let audio = self.tile(producer)?.audio.clone()?;
         let heard = !self.heard.remove(producer);
 
         if heard {
             self.heard.insert(producer.to_owned());
+
+            if self.volume(producer) == 0 {
+                self.volumes.insert(producer.to_owned(), 100);
+            }
         }
 
         Some((audio, heard))
+    }
+
+    /// O volume do slider, de 0 a 100. Como no React, mexer nele liga o som e zero o desliga —
+    /// o som de uma tela chega mudo, e arrastar o volume de uma tela muda não mudaria nada.
+    /// Devolve o producer do som e se ele passou a tocar, quando isso mudou.
+    pub fn set_volume(&mut self, producer: &str, volume: u8) -> Option<(String, Option<bool>)> {
+        let audio = self.tile(producer)?.audio.clone()?;
+        let volume = volume.min(100);
+        let heard = volume > 0;
+        let changed = heard != self.heard.contains(producer);
+
+        self.volumes.insert(producer.to_owned(), volume);
+
+        if heard {
+            self.heard.insert(producer.to_owned());
+        } else {
+            self.heard.remove(producer);
+        }
+
+        Some((audio, changed.then_some(heard)))
+    }
+
+    pub fn volume(&self, producer: &str) -> u8 {
+        self.volumes.get(producer).copied().unwrap_or(100)
     }
 
     /// Focar o mesmo cartão de novo, ou pedir foco em nada, sai do foco.
@@ -149,6 +185,7 @@ impl Stage {
                     focused,
                     full: self.full.as_deref() == Some(tile.producer_id.as_str()),
                     heard: self.heard.contains(&tile.producer_id),
+                    volume: self.volume(&tile.producer_id),
                     watchers: self.watchers.get(&tile.producer_id).cloned().unwrap_or_default(),
                     tile: tile.clone(),
                 };
@@ -174,8 +211,8 @@ pub struct Voice {
     /// O mudo de quem está fora da sala. Ao sair, o mudo de dentro vira este.
     pub muted_at_rest: bool,
     pub deafened: bool,
-    /// O nível do próprio microfone, de 0 a 1.
-    pub level: f32,
+    /// A última vez que o próprio microfone passou do limiar de fala.
+    pub spoke_at: Option<Instant>,
     /// Os producers de microfone de quem está falando agora.
     pub speaking: HashSet<String>,
     /// Quem está na sala, como o último `room.peers` contou.
@@ -191,9 +228,19 @@ impl Voice {
         }
     }
 
-    /// Eu falando: na voz, com o microfone não desenhado como mudo e acima do limiar.
+    /// Um `room.level` do próprio microfone, na escala de 0 a 100.
+    pub fn hear_myself(&mut self, percent: u8, now: Instant) {
+        if percent >= core_app::speaking::OWN_LOUDNESS {
+            self.spoke_at = Some(now);
+        }
+    }
+
+    /// Eu falando: na voz, com o microfone não desenhado como mudo, e acima do limiar há
+    /// menos que a cauda — a mesma dos outros, para o anel não piscar entre as palavras.
     pub fn speaking_myself(&self) -> bool {
-        self.inside && !self.mic_shown_off() && self.level > core_app::speaking::LOUDNESS
+        self.inside
+            && !self.mic_shown_off()
+            && self.spoke_at.is_some_and(|spoke| spoke.elapsed() < core_app::speaking::TAIL)
     }
 
     /// A pessoa saiu da sala: o mudo de dentro vira o de fora, e o resto zera.
@@ -205,7 +252,7 @@ impl Voice {
         self.mine = Mine::default();
         self.inside = false;
         self.opening = false;
-        self.level = 0.0;
+        self.spoke_at = None;
         self.speaking.clear();
         self.peers.clear();
     }
@@ -377,6 +424,24 @@ mod tests {
     }
 
     #[test]
+    fn the_volume_slider_turns_the_sound_on_and_zero_mutes_it() {
+        let mut stage = Stage::default();
+
+        stage.set_tiles(&tiles(1));
+
+        assert_eq!(stage.set_volume("tela-0", 40), Some(("som-0".to_owned(), Some(true))), "arrastar liga o som");
+        assert_eq!(stage.set_volume("tela-0", 70), Some(("som-0".to_owned(), None)), "já tocando, só muda o volume");
+        assert_eq!(stage.placed()[0].volume, 70);
+        assert_eq!(stage.set_volume("tela-0", 0), Some(("som-0".to_owned(), Some(false))), "zero muta");
+        assert!(!stage.placed()[0].heard);
+
+        stage.toggle_heard("tela-0");
+
+        assert_eq!(stage.placed()[0].volume, 100, "ligar com o volume em zero volta a 100");
+        assert!(stage.placed()[0].heard);
+    }
+
+    #[test]
     fn the_watchers_are_counted_by_screen() {
         let mut stage = Stage::default();
 
@@ -443,14 +508,39 @@ mod tests {
         let mut voice = Voice {
             inside: true,
             mine: Mine { mic: true, can_speak: true, ..Mine::default() },
-            level: 0.3,
             ..Voice::default()
         };
+
+        voice.hear_myself(core_app::speaking::OWN_LOUDNESS - 1, Instant::now());
+
+        assert!(!voice.speaking_myself(), "abaixo do limiar não acende");
+
+        voice.hear_myself(core_app::speaking::OWN_LOUDNESS, Instant::now());
 
         assert!(voice.speaking_myself());
 
         voice.mine.mic_muted = true;
 
         assert!(!voice.speaking_myself());
+    }
+
+    #[test]
+    fn my_ring_stays_lit_through_the_tail_and_goes_out_after_it() {
+        let mut voice = Voice {
+            inside: true,
+            mine: Mine { mic: true, can_speak: true, ..Mine::default() },
+            ..Voice::default()
+        };
+        let long_ago = Instant::now().checked_sub(core_app::speaking::TAIL).expect("relógio");
+
+        voice.hear_myself(100, long_ago);
+        voice.hear_myself(0, Instant::now());
+
+        assert!(!voice.speaking_myself(), "o silêncio depois da cauda apaga");
+
+        voice.hear_myself(100, Instant::now());
+        voice.hear_myself(0, Instant::now());
+
+        assert!(voice.speaking_myself(), "o silêncio logo depois da fala ainda não apaga");
     }
 }

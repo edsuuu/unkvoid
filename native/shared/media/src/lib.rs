@@ -8,6 +8,7 @@ use capture::Quality;
 
 mod audio;
 mod governor;
+mod pacer;
 mod plain;
 mod receiver;
 mod recovery;
@@ -25,7 +26,7 @@ mod windows_decoder;
 pub use audio::{AudioEncoder, FRAME_MS};
 pub use governor::BitrateGovernor;
 pub use plain::{Feedback, PlainSender, Source};
-pub use receiver::{PlainReceiver, Rtx, Stream, resolve};
+pub use receiver::{PlainReceiver, Rtx, Stream, grow_receive_buffer, resolve};
 pub use recovery::Counters;
 pub use unpack::{AccessUnit, AudioUnpacker, VideoUnpacker, nals};
 
@@ -58,6 +59,10 @@ impl H264Decoder {
     }
 
     pub fn decode(&mut self, _annex_b: &[u8], _timestamp: u32) -> anyhow::Result<Vec<DecodedFrame>> {
+        Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
+    }
+
+    pub fn skip(&mut self, _annex_b: &[u8], _timestamp: u32) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
     }
 }

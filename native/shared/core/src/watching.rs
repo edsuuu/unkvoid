@@ -150,6 +150,7 @@ impl Watching {
         let stop = Arc::new(AtomicBool::new(false));
 
         socket.set_read_timeout(Some(PATIENCE))?;
+        media::grow_receive_buffer(&socket);
         pump(
             socket,
             producer_id.clone(),
@@ -234,6 +235,13 @@ impl Watching {
     /// O que aconteceu com o vídeo de uma transmissão: recebidos, recuperados e perdidos.
     pub fn counters(&self, producer_id: &str) -> Option<Counters> {
         self.receiver.as_ref()?.counters(producer_id)
+    }
+
+    /// Quem decodifica perdeu o fio: o keyframe é pedido agora ao servidor.
+    pub fn request_keyframe(&self, producer_id: &str) {
+        if let Some(receiver) = &self.receiver {
+            receiver.request_keyframe(producer_id);
+        }
     }
 }
 
