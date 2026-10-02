@@ -3283,6 +3283,16 @@ fn initial(name: &str) -> SharedString {
     name.chars().next().map(|letter| letter.to_uppercase().to_string()).unwrap_or_default().into()
 }
 
+/// Instalado pela Microsoft Store, quem atualiza é a Store: o app não procura versão no site,
+/// nem baixa o instalador do site por cima do pacote.
+fn updated_by_the_store() -> bool {
+    #[cfg(target_os = "windows")]
+    return crate::clips::shell::packaged();
+
+    #[cfg(not(target_os = "windows"))]
+    false
+}
+
 /// Há versão nova? Baixa com a barra na tela, confere a assinatura e entrega ao instalador,
 /// que troca o app e o abre de novo — como fazia o atualizador do Tauri. `true` quando o app
 /// está de saída. Falhou em qualquer ponto, abre na versão que tem: atualizar nunca impede de
@@ -3291,6 +3301,10 @@ fn initial(name: &str) -> SharedString {
 /// ponytail: só na abertura; o React procura também de seis em seis horas. Vale trazer
 /// quando alguém passar dias com o app aberto sem sala.
 async fn updating(api: &Api, window: &Weak<AppWindow>) -> bool {
+    if updated_by_the_store() {
+        return false;
+    }
+
     show(window, Screen::Updating, "Procurando atualizações…".to_owned());
 
     let Some(release) = api.newer_release(core_app::update::PLATFORM).await else {
@@ -3347,6 +3361,10 @@ async fn clips_saved() {
 /// uma versão. Quem chama é o aviso do servidor pelo tempo real, e não um relógio: o app só
 /// pergunta ao site quando há o que perguntar.
 async fn prepare_update(api: &Api, window: &Weak<AppWindow>, ready: &Arc<Mutex<Option<(PathBuf, String)>>>) {
+    if updated_by_the_store() {
+        return;
+    }
+
     let Some(release) = api.newer_release(core_app::update::PLATFORM).await else {
         return;
     };
