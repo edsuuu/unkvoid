@@ -37,6 +37,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 clips-engine = { package = "clips", path = "../../shared/clips" }
 raw-window-handle = "0.6"
 windows = { version = "0.62", features = [
+    # O pacote da Store: a identidade do processo e a tarefa de início do manifesto.
+    "ApplicationModel",
+    "ApplicationModel_Activation",
+    "Foundation",
     "Win32_Devices_FunctionDiscovery",
     "Win32_Foundation",
     # O painel do Alt+Z, o aviso e as miniaturas: janelas e desenho do Windows.
@@ -47,6 +51,7 @@ windows = { version = "0.62", features = [
     "Win32_Security",
     # O mutex e o evento da instância única abertos a quem não é elevado (`SHARED`).
     "Win32_Security_Authorization",
+    "Win32_Storage_Packaging_Appx",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Diagnostics_Debug",

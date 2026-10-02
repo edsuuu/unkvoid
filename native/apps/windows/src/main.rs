@@ -91,7 +91,7 @@ fn main() -> anyhow::Result<()> {
             }
         });
 
-        if !std::env::args().any(|argument| argument == "--background") {
+        if !clips::shell::started_in_background() {
             clips::show_window();
         }
 

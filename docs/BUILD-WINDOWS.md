@@ -114,3 +114,20 @@ incremental).
 Do lado do WSL dá para conferir só o `capture`, que é Rust puro:
 `cd native && cargo check --target x86_64-pc-windows-msvc -p capture`. O `media` não
 dá: o `opusic-sys` compila C e precisa do MSVC.
+
+## O pacote da Microsoft Store (MSIX)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File native\apps\windows\build-msix.ps1
+```
+
+Sai `native/target/release/bundle/windows/Unkvoid_<versão>.0_x64.msix`, sem assinatura: é
+esse arquivo que sobe no Partner Center (produto `9NGPGTV3NPLW`), e a Store assina depois de
+aprovar. A identidade do pacote (`Unkvoid.Unkvoid`, `CN=3877BA03-…`) está em
+`native/apps/windows/msix/AppxManifest.xml`; o quarto número da versão é da Store, sempre 0.
+
+O mesmo `unkvoid.exe` muda de jeito quando roda como pacote (`shell::packaged()`): não procura
+versão no site (quem atualiza é a Store), abre no logon pela `StartupTask` do manifesto e
+**não se eleva** — a Store não aprova pacote que pede administrador. Nessa instalação os
+atalhos dos Clips e o falar-apertando não alcançam jogos que rodam elevados (anti-cheat); o
+`.exe` do site continua como antes.

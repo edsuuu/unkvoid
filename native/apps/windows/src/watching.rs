@@ -11,7 +11,7 @@
 //! segundos atrás e o que chegava depois era largado — tela travada até o próximo keyframe.
 //! O som, na mesma fila, atrasava junto.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::collections::hash_map::Entry;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
@@ -32,6 +32,12 @@ const PATIENCE: Duration = Duration::from_millis(100);
 /// pulada nos quadros que não vão aparecer, ela só fica para trás se nem decodificar der
 /// conta; aí o quadro é largado e o keyframe é pedido na hora.
 const SCREEN_QUEUE: usize = 120;
+
+/// Imagens prontas esperando o horário delas: meio segundo a 60 fps, a espera mais longa do
+/// `Playout`.
+// ponytail: a imagem espera já em RGB (~6 MB em 1080p, até 30 por tela). Guardar em NV12 e
+// converter na hora de mostrar corta pela metade, se a memória pesar.
+const MOST_WAITING: usize = 30;
 
 /// O quadro mais novo de cada tela que a janela ainda não desenhou.
 type Fresh = Arc<Mutex<HashMap<String, SharedPixelBuffer<Rgb8Pixel>>>>;
@@ -225,61 +231,113 @@ impl Drop for Screen {
     }
 }
 
-/// A thread de uma tela: decodifica tudo o que chegou e converte para imagem só o mais novo.
-/// Quem acompanha recebe um quadro por vez e converte todos; quem ficou para trás junta
-/// vários na fila, decodifica-os sem converter e alcança o presente.
+/// A thread de uma tela: decodifica tudo o que chegou, na ordem, e mostra cada quadro no
+/// horário dele, que o `Playout` tira do relógio do RTP de quem transmite. É o "jitter buffer"
+/// do navegador: um bolo de quadros segurado por um reenvio sai espaçado, e não de uma vez.
+/// Quadro que já passou da hora só vira imagem se for o último que chegou: é assim que quem
+/// ficou para trás alcança o presente.
 fn decode_screen(producer: &str, queue: &Receiver<Media>, (fresh, drawn): (&Fresh, &Drawn), stop: &AtomicBool, (on_frame, ask_keyframe): (&OnFrame, &AskKeyframe)) {
+    let _timer = FineTimer::start();
     let mut decoder = None;
+    let mut playout = media::Playout::default();
+    let mut waiting: VecDeque<(Instant, SharedPixelBuffer<Rgb8Pixel>)> = VecDeque::new();
     let mut batch = Vec::new();
 
     while !stop.load(Ordering::Relaxed) {
-        match queue.recv_timeout(PATIENCE) {
+        let wait = waiting.front().map_or(PATIENCE, |(due, _)| due.saturating_duration_since(Instant::now()).min(PATIENCE));
+
+        match queue.recv_timeout(wait) {
             Ok(item) => batch.push(item),
-            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
 
         batch.extend(queue.try_iter());
 
-        let newest = batch.len() - 1;
+        let newest = batch.len().saturating_sub(1);
 
         for (index, item) in batch.drain(..).enumerate() {
             let MediaKind::Video { keyframe, timestamp } = item.kind else {
                 continue;
             };
 
+            let now = Instant::now();
+            let due = playout.due(timestamp, now);
             let open = decoder.is_some();
-            let shown = show(&mut decoder, fresh, producer, &item.data, (keyframe, timestamp), index == newest);
+            let image = show(&mut decoder, producer, &item.data, (keyframe, timestamp), due > now || index == newest);
 
             if open && decoder.is_none() {
                 ask_keyframe(producer);
             }
 
-            let Some(height) = shown else {
-                continue;
-            };
+            if let Some(image) = image {
+                waiting.push_back((due, image));
+            }
+        }
 
-            let mut drawn = lock(drawn);
-            let counted = drawn.entry(producer.to_owned()).or_default();
+        while waiting.len() > MOST_WAITING {
+            waiting.pop_front();
+        }
 
-            *counted = (counted.0 + 1, height);
-            drop(drawn);
-            (lock(on_frame))();
+        let now = Instant::now();
+        let mut latest = None;
+
+        while waiting.front().is_some_and(|(due, _)| *due <= now) {
+            latest = waiting.pop_front();
+        }
+
+        let Some((_, image)) = latest else {
+            continue;
+        };
+
+        let height = image.height();
+
+        lock(fresh).insert(producer.to_owned(), image);
+
+        let mut drawn = lock(drawn);
+        let counted = drawn.entry(producer.to_owned()).or_default();
+
+        *counted = (counted.0 + 1, height);
+        drop(drawn);
+        (lock(on_frame))();
+    }
+}
+
+/// O relógio do Windows acorda de 15,6 em 15,6 ms por padrão, mais que um quadro a 60 fps: os
+/// horários do `Playout` cairiam em pares e a imagem pularia. Enquanto alguma tela está aberta,
+/// ele acorda de milissegundo em milissegundo, como faz o navegador tocando vídeo.
+struct FineTimer;
+
+impl FineTimer {
+    fn start() -> Self {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            windows::Win32::Media::timeBeginPeriod(1);
+        }
+
+        Self
+    }
+}
+
+impl Drop for FineTimer {
+    fn drop(&mut self) {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            windows::Win32::Media::timeEndPeriod(1);
         }
     }
 }
 
 /// Um quadro de uma tela. O decodificador só nasce num keyframe: quadro P sem o I de antes
-/// só desenharia lixo. Se ele falhar, morre e renasce no próximo keyframe. Devolve a altura
-/// do quadro que virou imagem — com `convert` falso, nenhum vira.
+/// só desenharia lixo. Se ele falhar, morre e renasce no próximo keyframe. Devolve a imagem
+/// do quadro — com `convert` falso, ele passa pelo decodificador e nenhuma imagem sai.
 fn show(
     decoder: &mut Option<media::H264Decoder>,
-    fresh: &Fresh,
     producer: &str,
     data: &[u8],
     (keyframe, timestamp): (bool, u32),
     convert: bool,
-) -> Option<u32> {
+) -> Option<SharedPixelBuffer<Rgb8Pixel>> {
     if decoder.is_none() {
         if !keyframe {
             return None;
@@ -301,11 +359,8 @@ fn show(
     match decoded {
         Ok(frame) => {
             let frame = frame?;
-            let buffer = SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(&frame.rgb, frame.width, frame.height);
 
-            lock(fresh).insert(producer.to_owned(), buffer);
-
-            Some(frame.height)
+            Some(SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(&frame.rgb, frame.width, frame.height))
         }
         Err(failure) => {
             tracing::warn!(failure = %format!("{failure:#}"), producer, "assistir: quadro recusado, esperando o próximo keyframe");
@@ -387,8 +442,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(16));
         }
 
+        // O que a thread da tela pôs na tela, contado por ela: a espera de 16 ms acima vira 31 num
+        // processo sem janela no Windows 11, e a pergunta da janela sozinha mediria o relógio.
+        let shown: u32 = watch.drawn().values().map(|(count, _)| count).sum();
+
         runtime.block_on(room.leave());
-        println!("{frames} imagens prontas em 10 s, de {}x{}", size.0, size.1);
+        println!("{frames} imagens prontas em 10 s, {shown} postas na tela pela thread, de {}x{}", size.0, size.1);
 
         assert!(frames > 100, "só {frames} imagens em 10 s");
         assert!(size.0 >= 640 && size.1 >= 360, "a imagem saiu {size:?}");
@@ -398,13 +457,10 @@ mod tests {
     #[test]
     fn a_screen_only_starts_drawing_at_a_keyframe() {
         let mut decoder = None;
-        let fresh = Fresh::default();
-
-        let drawn = show(&mut decoder, &fresh, "tela", &[0, 0, 0, 1, 0x09, 0x10], (false, 0), true);
+        let drawn = show(&mut decoder, "tela", &[0, 0, 0, 1, 0x09, 0x10], (false, 0), true);
 
         assert!(drawn.is_none());
 
         assert!(decoder.is_none(), "um quadro P abriu decodificador");
-        assert!(lock(&fresh).is_empty());
     }
 }

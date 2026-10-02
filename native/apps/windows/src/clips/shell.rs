@@ -114,6 +114,14 @@ pub fn installer_clips_folder() -> Option<PathBuf> {
 /// quando é aberto pelo ícone fixado (`elevate`). Desligar o início só desliga o gatilho do
 /// logon.
 pub fn set_autostart(enabled: bool) {
+    if packaged() {
+        if let Err(error) = set_startup_task(enabled) {
+            tracing::warn!(error = %error, enabled, "início com o Windows: a tarefa de início do pacote não mudou");
+        }
+
+        return;
+    }
+
     // A 0.1.0 usava a chave `Run`; ela abriria uma segunda cópia, pedindo UAC, a cada logon.
     unsafe {
         let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE);
@@ -125,6 +133,50 @@ pub fn set_autostart(enabled: bool) {
 }
 
 const TASK_NAME: &str = "Unkvoid";
+
+/// A `StartupTask` declarada no `AppxManifest.xml` do pacote da Store.
+const STARTUP_TASK: &str = "UnkvoidStartup";
+
+/// Instalado pela Microsoft Store (MSIX), o processo tem identidade de pacote. Aí quem atualiza
+/// é a Store, o logon abre o app pela `StartupTask` do manifesto, e ele roda sem administrador:
+/// a Store não aprova pacote que se eleva.
+pub fn packaged() -> bool {
+    use windows::Win32::Foundation::APPMODEL_ERROR_NO_PACKAGE;
+    use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
+
+    let mut length = 0;
+
+    // Com pacote, o nome não cabe em zero caracteres e a resposta é outro erro.
+    unsafe { GetCurrentPackageFullName(&mut length, None) != APPMODEL_ERROR_NO_PACKAGE }
+}
+
+/// Aberto para ficar na bandeja: pela tarefa agendada (`--background`) ou, no pacote da Store,
+/// pela `StartupTask` do logon, que não passa argumento nenhum.
+pub fn started_in_background() -> bool {
+    use windows::ApplicationModel::Activation::ActivationKind;
+    use windows::ApplicationModel::AppInstance;
+
+    std::env::args().any(|argument| argument == "--background")
+        || packaged() && AppInstance::GetActivatedEventArgs().and_then(|arguments| arguments.Kind()).is_ok_and(|kind| kind == ActivationKind::StartupTask)
+}
+
+/// Desligado, desliga; ligado, pede ao Windows. Quem desligou o app em "Aplicativos de
+/// inicialização" do Windows fica desligado: o pedido volta recusado, como deve.
+fn set_startup_task(enabled: bool) -> windows::core::Result<()> {
+    use windows::ApplicationModel::{StartupTask, StartupTaskState};
+
+    let task = StartupTask::GetAsync(&HSTRING::from(STARTUP_TASK))?.join()?;
+
+    if !enabled {
+        return task.Disable();
+    }
+
+    if task.State()? == StartupTaskState::Disabled {
+        task.RequestEnableAsync()?.join()?;
+    }
+
+    Ok(())
+}
 
 fn register_logon_task(at_logon: bool) -> anyhow::Result<()> {
     let executable = std::env::current_exe()?;
@@ -259,7 +311,7 @@ fn show_running() -> bool {
 /// elevada pela tarefa agendada e pede a janela a ela. `true` quando esta cópia pode sair.
 /// Sem tarefa (ou numa conta comum, que não se eleva), `false`, e o app segue como sempre.
 pub fn elevate() -> bool {
-    if !limited_administrator() {
+    if packaged() || !limited_administrator() {
         return false;
     }
 
