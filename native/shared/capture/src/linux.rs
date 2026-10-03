@@ -223,10 +223,15 @@ impl LinuxCapturer {
             Some(session) => session.size,
             None => Self::source_size(config.source)?,
         };
-        let (width, height) = config.quality.fit(source_size);
-        let frame_rate = config.frame_rate.clamp(1, 60);
+        // Sem encoder na placa o x264 roda na CPU de quem também está jogando: 720p30, o mesmo
+        // teto do `EncoderConfig::for_cpu` do Windows. Na resolução e no fps cheios ele tomava o
+        // processador inteiro (`threads=0`) e mesmo assim não sustentava 1080p60 em PC fraco.
+        let on_cpu = Self::video_encoder() == "x264enc";
+        let quality = if on_cpu { Quality::Hd720 } else { config.quality };
+        let (width, height) = quality.fit(source_size);
+        let frame_rate = config.frame_rate.clamp(1, if on_cpu { 30 } else { 60 });
 
-        let bitrate = match config.quality {
+        let bitrate = match quality {
             Quality::Hd720 => 5_000,
             Quality::Hd1080 => 10_000,
             Quality::Qhd1440 => 20_000,
