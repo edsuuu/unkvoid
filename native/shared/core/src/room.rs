@@ -245,6 +245,25 @@ impl Room {
                 None => {}
             }
 
+            // A perda que não cede no piso da taxa desce um degrau de qualidade (720p, depois
+            // 720p30); um minuto limpo no teto sobe um de volta.
+            let (starved, roomy) = lock(&room.sending)
+                .screen
+                .as_ref()
+                .map_or((false, false), |broadcast| (broadcast.starved(), broadcast.roomy()));
+
+            if starved || roomy {
+                let stepped = room.redo_screen(|broadcast| if starved { broadcast.step_down() } else { broadcast.step_up() });
+
+                if let Err(error) = stepped {
+                    tracing::error!(error = %error, "transmissão: o degrau de qualidade não abriu");
+                }
+
+                if let Some(watch) = watch.as_mut() {
+                    watch.restarted(Instant::now());
+                }
+            }
+
             let lost = lock(&room.sending).lost_the_server();
 
             if lost {

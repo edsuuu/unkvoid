@@ -176,20 +176,55 @@ impl StallWatch {
     }
 }
 
-/// Os pedidos de quadro-chave de quem assiste, atendidos com o espaço do `KEYFRAME_SPACING`.
-#[derive(Default)]
+/// Até onde o espaço entre quadros-chave pedidos cresce quando os pedidos não param: é alguém
+/// com perda constante pedindo um atrás do outro, e cada um é o quadro mais caro do encoder para
+/// todo mundo — num upload fraco, entope a saída de quem transmite. Passar do GOP (4 s) não
+/// mudaria nada: o periódico sai de qualquer jeito.
+const MOST_KEYFRAME_SPACING: Duration = Duration::from_secs(4);
+
+/// Sem pedido nenhum por isto, o espaço volta ao `KEYFRAME_SPACING`.
+const KEYFRAME_QUIET: Duration = Duration::from_secs(15);
+
+/// Os pedidos de quadro-chave de quem assiste, atendidos com espaço entre um e outro.
 struct KeyframeGate {
     asked: bool,
     last: Option<Instant>,
+    /// Um pedido chegou dentro do espaço e teve de esperar por ele.
+    waited: bool,
+    spacing: Duration,
+    asked_at: Option<Instant>,
+}
+
+impl Default for KeyframeGate {
+    fn default() -> Self {
+        Self { asked: false, last: None, waited: false, spacing: KEYFRAME_SPACING, asked_at: None }
+    }
 }
 
 impl KeyframeGate {
     /// Anota o pedido, se veio um, e diz se é hora de atender o que está esperando.
     fn due(&mut self, asked: bool, now: Instant) -> bool {
+        if asked {
+            self.asked_at = Some(now);
+        } else if self.asked_at.is_some_and(|at| now.duration_since(at) >= KEYFRAME_QUIET) {
+            self.spacing = KEYFRAME_SPACING;
+        }
+
         self.asked |= asked;
 
-        if !self.asked || self.last.is_some_and(|last| now.duration_since(last) < KEYFRAME_SPACING) {
+        if !self.asked {
             return false;
+        }
+
+        if self.last.is_some_and(|last| now.duration_since(last) < self.spacing) {
+            self.waited = true;
+
+            return false;
+        }
+
+        // Pedido que esperou o espaço inteiro: eles não estão parando, e o espaço dobra.
+        if std::mem::take(&mut self.waited) {
+            self.spacing = (self.spacing * 2).min(MOST_KEYFRAME_SPACING);
         }
 
         self.served(now);
@@ -200,6 +235,7 @@ impl KeyframeGate {
     /// Saiu um quadro-chave, pedido ou do GOP: quem esperava por um já tem.
     fn served(&mut self, now: Instant) {
         self.asked = false;
+        self.waited = false;
         self.last = Some(now);
     }
 }
@@ -522,6 +558,20 @@ impl Session {
     }
 }
 
+/// A escada de uma transmissão: a qualidade escolhida, e abaixo dela 720p e 720p30 — só os
+/// degraus que de fato descem.
+fn rungs(chosen: (capture::Quality, u32)) -> Vec<(capture::Quality, u32)> {
+    let mut rungs = vec![chosen];
+
+    for rung in [(capture::Quality::Hd720, chosen.1), (capture::Quality::Hd720, chosen.1.min(30))] {
+        if rungs.last() != Some(&rung) {
+            rungs.push(rung);
+        }
+    }
+
+    rungs
+}
+
 /// De quanto em quanto a última imagem se repete com a captura calada: um por segundo, como o
 /// WebRTC numa tela parada.
 #[cfg(target_os = "windows")]
@@ -665,6 +715,13 @@ pub struct Broadcast {
     /// Quem repete a última imagem quando a captura cala — ver `StillFrames`.
     #[cfg(target_os = "windows")]
     still: Option<StillFrames>,
+
+    /// O encoder e o governador, para o vigia perguntar se a perda pede um degrau.
+    encoding: Arc<Mutex<VideoEncoding>>,
+    /// A qualidade e o fps que a pessoa escolheu, e quantos degraus abaixo deles a perda
+    /// empurrou a transmissão (`step_down`).
+    chosen: (capture::Quality, u32),
+    steps: usize,
 }
 
 impl Broadcast {
@@ -715,6 +772,8 @@ impl Broadcast {
             dropped_before: dropped_so_far,
         }));
         let last_frame = Arc::new(Mutex::new((0_u64, Instant::now())));
+        let video_encoding = Arc::clone(&encoding);
+        let (recipe_quality, recipe_frame_rate) = (config.quality, config.frame_rate);
 
         tracing::info!("broadcast: abrindo o encoder de áudio");
 
@@ -968,6 +1027,9 @@ impl Broadcast {
             software,
             #[cfg(target_os = "windows")]
             still,
+            encoding: video_encoding,
+            chosen: (recipe_quality, recipe_frame_rate),
+            steps: 0,
         })
     }
 
@@ -1052,6 +1114,42 @@ impl Broadcast {
     /// quando uma etapa para de produzir.
     pub fn refresh(&mut self) -> anyhow::Result<()> {
         self.restart(self.config.quality, self.config.frame_rate, None)
+    }
+
+    /// A perda continua com a taxa no piso desta qualidade: o caminho não leva nem a menor taxa,
+    /// e só um degrau de resolução resolve — o que o WebRTC faz no navegador.
+    /// Falso no último degrau: abaixo dele não há o que fazer.
+    pub fn starved(&self) -> bool {
+        rungs(self.chosen).len() > self.steps + 1 && self.encoding.lock().is_ok_and(|encoding| encoding.governor.starved())
+    }
+
+    /// Um minuto limpo no teto de uma qualidade abaixo da escolhida: o degrau de cima cabe.
+    pub fn roomy(&self) -> bool {
+        self.steps > 0 && self.encoding.lock().is_ok_and(|encoding| encoding.governor.roomy())
+    }
+
+    /// Um degrau abaixo: 720p, depois 720p30. Já no último, nada.
+    pub fn step_down(&mut self) -> anyhow::Result<()> {
+        self.step_to(self.steps + 1)
+    }
+
+    /// Um degrau acima, até a qualidade que a pessoa escolheu.
+    pub fn step_up(&mut self) -> anyhow::Result<()> {
+        self.step_to(self.steps.saturating_sub(1))
+    }
+
+    fn step_to(&mut self, steps: usize) -> anyhow::Result<()> {
+        let chosen = self.chosen;
+        let Some(&(quality, frame_rate)) = rungs(chosen).get(steps).filter(|_| steps != self.steps) else {
+            return Ok(());
+        };
+
+        tracing::warn!(?quality, frame_rate, "transmissão: a rede pediu outro degrau de qualidade");
+        self.restart(quality, frame_rate, None)?;
+        self.chosen = chosen;
+        self.steps = steps;
+
+        Ok(())
     }
 
     /// A mesma receita no encoder do processador, em até 720p30: pior, mas no ar.
@@ -1447,6 +1545,16 @@ mod tests {
     }
 
     #[test]
+    fn the_ladder_only_has_rungs_that_go_down() {
+        use capture::Quality::{Hd720, Hd1080};
+
+        assert_eq!(rungs((Hd1080, 60)), [(Hd1080, 60), (Hd720, 60), (Hd720, 30)]);
+        assert_eq!(rungs((Hd1080, 30)), [(Hd1080, 30), (Hd720, 30)]);
+        assert_eq!(rungs((Hd720, 60)), [(Hd720, 60), (Hd720, 30)]);
+        assert_eq!(rungs((Hd720, 30)), [(Hd720, 30)], "já no fundo, nenhum degrau");
+    }
+
+    #[test]
     fn a_still_screen_is_refreshed_ever_less_often() {
         let (start, mut counts) = (Instant::now(), Counts::default());
         let mut watch = StallWatch::new(start);
@@ -1513,6 +1621,25 @@ mod tests {
         gate.served(later);
 
         assert!(!gate.due(true, later + Duration::from_millis(500)), "o do GOP que acabou de sair já atende");
+    }
+
+    /// Pedidos que não param espaçam até o GOP; quinze segundos quietos voltam aos 2 s.
+    #[test]
+    fn keyframe_requests_that_keep_coming_space_out_up_to_the_gop() {
+        let mut gate = KeyframeGate::default();
+        let start = Instant::now();
+        let at = |millis: u64| start + Duration::from_millis(millis);
+
+        assert!(gate.due(true, at(0)));
+        assert!(!gate.due(true, at(500)));
+        assert!(gate.due(false, at(2_000)), "o que esperou sai no espaço de 2 s");
+        assert!(!gate.due(true, at(2_500)));
+        assert!(!gate.due(false, at(5_000)), "pedidos seguidos: o espaço passou a 4 s");
+        assert!(gate.due(false, at(6_000)));
+        assert!(!gate.due(false, at(30_000)), "sem pedido nada sai");
+        assert!(gate.due(true, at(30_000)), "depois de quinze segundos quietos sai na hora");
+        assert!(!gate.due(true, at(30_500)));
+        assert!(gate.due(false, at(32_000)), "e o espaço voltou a 2 s");
     }
 
     #[test]
