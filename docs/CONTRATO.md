@@ -164,7 +164,7 @@ sobre `ts\nMÉTODO\ncaminho\ncorpo`, janela de 300 s — como o `kick` de hoje):
 | `POST /rooms/:code/mute` | `{ "userId": "user:12", "muted": true }` — pausa/retoma o producer `mic` daquela conta | `{ muted: n }` |
 | `GET /presence` | corpo vazio | `{ rooms: { "<room>": [ { sub, name, sources: ["mic","screen"] } ] } }` |
 
-`consumePlain` devolve também `ssrc` do consumer: o receptor nativo do Linux separa os
+`consumePlain` devolve também `ssrc` do consumer: o receptor nativo (`PlainReceiver`) separa os
 producers de uma mesma porta por SSRC, sem adivinhar pelo primeiro pacote.
 
 E devolve `rtx: { ssrc, payloadType } | null` — o fluxo de retransmissão do consumer
