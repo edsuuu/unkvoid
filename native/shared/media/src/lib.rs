@@ -106,6 +106,8 @@ pub struct EncoderConfig {
     pub height: u32,
     pub frame_rate: f64,
     pub bitrate: u32,
+    /// Pular o encoder da placa: ele já travou nesta transmissão.
+    pub software: bool,
 }
 
 impl EncoderConfig {
@@ -142,6 +144,7 @@ impl EncoderConfig {
             // 60 sobra em 30, e sobra vira bitrate gasto à toa.
             bitrate: bitrate * frame_rate / Self::FPS_MAX,
             frame_rate: f64::from(frame_rate),
+            software: false,
         }
     }
 

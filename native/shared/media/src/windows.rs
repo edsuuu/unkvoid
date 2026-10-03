@@ -219,8 +219,8 @@ impl MediaFoundationEncoder {
 
             tracing::info!("encoder: procurando o MFT de H.264 por hardware");
 
-            let hardware = if cpu_forced() {
-                Err(EncoderError::Start("UNKVOID_ENCODER=cpu".into()))
+            let hardware = if cpu_forced() || config.software {
+                Err(EncoderError::Start("UNKVOID_ENCODER=cpu ou o encoder da placa já travou".into()))
             } else {
                 open_encoder(MFT_ENUM_FLAG_HARDWARE, Some(&manager), config)
             };

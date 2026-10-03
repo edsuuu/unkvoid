@@ -20,7 +20,7 @@ use ::windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect,
 };
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowPlacement, GetWindowThreadProcessId, IsIconic, WINDOWPLACEMENT,
+    GetWindowPlacement, GetWindowThreadProcessId, IsIconic, IsWindow, WINDOWPLACEMENT,
     WPF_RESTORETOMAXIMIZED,
 };
 
@@ -43,6 +43,40 @@ fn id_from_hwnd(hwnd: *mut std::ffi::c_void) -> u64 {
 
 fn hwnd_from_id(id: u64) -> *mut std::ffi::c_void {
     id as usize as *mut std::ffi::c_void
+}
+
+/// O id de um monitor é o número que o Windows deu a ele (`\\.\DISPLAY2` é 2), e não a posição
+/// na lista: desligar a TV ou o segundo monitor, ou voltar da suspensão, reordena a lista, e a
+/// posição passava a transmitir **outro** monitor, com o que estivesse nele. Somado a
+/// `DISPLAY_IDS` para nunca bater com um id antigo, de posição, guardado antes desta versão: esse
+/// falha em vez de adivinhar.
+const DISPLAY_IDS: u32 = 1_000;
+
+fn display_id(monitor: &Monitor) -> Option<u32> {
+    monitor.index().ok().and_then(|number| u32::try_from(number).ok()).map(|number| DISPLAY_IDS + number)
+}
+
+/// O monitor de um id, ou nenhum: o que sumiu não vira outro.
+fn monitor_by_id(id: u32) -> Result<Monitor, CaptureError> {
+    Monitor::enumerate()
+        .map_err(|error| CaptureError::Platform(error.to_string()))?
+        .into_iter()
+        .find(|monitor| display_id(monitor) == Some(id))
+        .ok_or(CaptureError::NoDisplay)
+}
+
+pub fn window_alive(source: CaptureSource) -> bool {
+    match source {
+        CaptureSource::Window(id) => unsafe { IsWindow(Some(HWND(hwnd_from_id(id)))) }.as_bool(),
+        _ => true,
+    }
+}
+
+pub fn window_minimized(source: CaptureSource) -> bool {
+    match source {
+        CaptureSource::Window(id) => unsafe { IsIconic(HWND(hwnd_from_id(id))) }.as_bool(),
+        _ => false,
+    }
 }
 
 /// O tamanho da janela para o encoder.
@@ -303,13 +337,7 @@ impl WindowsCapturer {
             crate::CaptureSource::Window(id) => capture_preview(
                 CaptureWindow::from_raw_hwnd(hwnd_from_id(id)),
             ),
-            crate::CaptureSource::Display(id) => monitor_preview(
-                Monitor::enumerate()
-                    .map_err(|error| CaptureError::Platform(error.to_string()))?
-                    .into_iter()
-                    .nth(id as usize)
-                    .ok_or(CaptureError::NoDisplay)?,
-            ),
+            crate::CaptureSource::Display(id) => monitor_preview(monitor_by_id(id)?),
             crate::CaptureSource::PrimaryDisplay => monitor_preview(
                 Monitor::enumerate()
                     .map_err(|error| CaptureError::Platform(error.to_string()))?
@@ -413,8 +441,8 @@ impl WindowsCapturer {
 
                 Ok(window_size(shown, restored_placement(HWND(hwnd_from_id(id)))))
             }
-            CaptureSource::Display(index) => {
-                let monitor = Monitor::from_index(index as usize + 1).map_err(|_| CaptureError::NoDisplay)?;
+            CaptureSource::Display(id) => {
+                let monitor = monitor_by_id(id)?;
 
                 Ok((monitor.width().map_err(platform)?, monitor.height().map_err(platform)?))
             }
@@ -433,11 +461,12 @@ impl WindowsCapturer {
 
         Ok(monitors
             .into_iter()
-            .enumerate()
-            .map(|(index, monitor)| Display {
-                id: index as u32,
-                width: monitor.width().unwrap_or(0),
-                height: monitor.height().unwrap_or(0),
+            .filter_map(|monitor| {
+                Some(Display {
+                    id: display_id(&monitor)?,
+                    width: monitor.width().unwrap_or(0),
+                    height: monitor.height().unwrap_or(0),
+                })
             })
             .collect())
     }
@@ -490,11 +519,9 @@ impl WindowsCapturer {
             }
             source => {
                 let monitor = match source {
-                    // `displays()` numera a partir de zero; `from_index` conta de um.
-                    CaptureSource::Display(index) => Monitor::from_index(index as usize + 1),
-                    _ => Monitor::primary(),
-                }
-                .map_err(|_| CaptureError::NoDisplay)?;
+                    CaptureSource::Display(id) => monitor_by_id(id)?,
+                    _ => Monitor::primary().map_err(|_| CaptureError::NoDisplay)?,
+                };
 
                 // A borda amarela aparecia para quem assistia. Sem a duplicação (outra placa
                 // de vídeo num notebook híbrido, por exemplo), a tela vai com ela, mas vai.
@@ -593,7 +620,20 @@ impl WindowsCapturer {
 
 #[cfg(test)]
 mod tests {
-    use super::{Restored, window_size};
+    use super::{DISPLAY_IDS, Monitor, Restored, display_id, monitor_by_id, window_size};
+
+    /// Cada monitor da máquina volta pelo id dele, e um id antigo, de posição, não acha nenhum.
+    #[test]
+    fn a_monitor_comes_back_by_its_own_id_and_an_old_position_finds_none() {
+        for monitor in Monitor::enumerate().expect("os monitores listaram") {
+            let id = display_id(&monitor).expect("o monitor tem número");
+
+            assert!(id > DISPLAY_IDS);
+            assert_eq!(monitor_by_id(id).expect("voltou").as_raw_hmonitor(), monitor.as_raw_hmonitor());
+        }
+
+        assert!(monitor_by_id(0).is_err(), "o id de posição achou um monitor");
+    }
 
     #[test]
     fn a_minimized_window_is_sized_by_where_it_comes_back_to() {

@@ -60,6 +60,7 @@ fn room_failure(what: &str) -> &'static str {
     match what {
         "watch" => "Não deu para assistir a uma das transmissões.",
         "mic" => "Não deu para abrir o microfone.",
+        "shareClosed" => "A janela que você compartilhava foi fechada, e a transmissão parou.",
         _ => "Não deu para compartilhar a tela.",
     }
 }
@@ -2071,11 +2072,16 @@ impl Bridge {
 
                 serde_json::Value::Null
             });
-            let displays = sources_of(&listed["displays"], |display| Source {
+            let mut displays = sources_of(&listed["displays"], |display| Source {
                 value: format!("display:{}", display["id"]),
-                label: format!("Tela {}", display["id"]),
+                label: String::new(),
                 detail: format!("{}×{}", display["width"], display["height"]),
             });
+
+            // O id é o número que o Windows deu ao monitor, não a posição: o rótulo é a posição.
+            for (index, display) in displays.iter_mut().enumerate() {
+                display.label = format!("Tela {}", index + 1);
+            }
             let windows = sources_of(&listed["windows"], |shown| Source {
                 value: format!("window:{}", shown["id"]),
                 label: shown["title"].as_str().unwrap_or_default().to_owned(),

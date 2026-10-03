@@ -87,6 +87,8 @@ pub struct StallWatch {
     captured_since_restart: u64,
     encoded_since_restart: u64,
     transport_told: bool,
+    /// Paradas do encoder seguidas, sem os `ALIVE_FRAMES` que provam que ele voltou.
+    encoder_stalls: u32,
 }
 
 impl StallWatch {
@@ -101,7 +103,15 @@ impl StallWatch {
             captured_since_restart: 0,
             encoded_since_restart: 0,
             transport_told: false,
+            encoder_stalls: 0,
         }
+    }
+
+    /// O encoder parou duas vezes seguidas sem provar que voltou. Refazer na placa não resolve —
+    /// a memória de vídeo tomada pelo jogo, as sessões do NVENC tomadas pelo OBS —, e a saída é
+    /// o processador.
+    pub fn encoder_keeps_failing(&self) -> bool {
+        self.encoder_stalls >= 2
     }
 
     pub fn tick(&mut self, counts: Counts, now: Instant) -> Option<Stall> {
@@ -120,6 +130,7 @@ impl StallWatch {
 
             if self.encoded_since_restart >= ALIVE_FRAMES {
                 self.encoder_wait = ENCODER_WAIT;
+                self.encoder_stalls = 0;
             }
         }
 
@@ -134,6 +145,7 @@ impl StallWatch {
 
         if fresh(self.captured_at) && now.duration_since(self.encoded_at) >= self.encoder_wait {
             self.encoder_wait = (self.encoder_wait * 2).min(MOST_WAIT);
+            self.encoder_stalls += 1;
 
             return Some(Stall::Encoder);
         }
@@ -468,6 +480,14 @@ impl Session {
             .is_some_and(|sender| sender.lost_the_server(Instant::now()))
     }
 
+    /// O mesmo `start`, para chamar sem o cadeado da sessão na mão: captura e encoder levam até
+    /// segundos para abrir.
+    pub fn launcher(&self) -> impl FnOnce(CaptureConfig, Option<Source>, Option<Source>) -> anyhow::Result<Broadcast> + use<> {
+        let sender = Arc::clone(&self.sender);
+
+        move |config, video, audio| Broadcast::start(sender, config, video, audio, false)
+    }
+
     /// Liga uma das três origens. `video`/`audio` dizem com que SSRC cada evento sobe.
     pub fn start(
         &self,
@@ -475,7 +495,7 @@ impl Session {
         video: Option<Source>,
         audio: Option<Source>,
     ) -> anyhow::Result<Broadcast> {
-        Broadcast::start(Arc::clone(&self.sender), config, video, audio)
+        Broadcast::start(Arc::clone(&self.sender), config, video, audio, false)
     }
 
     /// Solta o remetente quando a última origem para: a próxima sessão no servidor pode
@@ -544,6 +564,9 @@ pub struct Broadcast {
     config: CaptureConfig,
     video: Option<Source>,
     audio_source: Option<Source>,
+    /// O encoder da placa já falhou nesta transmissão: os refazeres seguintes vão pelo do
+    /// processador.
+    software: bool,
 }
 
 impl Broadcast {
@@ -553,12 +576,12 @@ impl Broadcast {
         config: CaptureConfig,
         video: Option<Source>,
         audio_source: Option<Source>,
+        software: bool,
     ) -> anyhow::Result<Self> {
-        let encoder_config = EncoderConfig::new(
-            config.quality,
-            config.frame_rate,
-            PlatformCapturer::source_size(config.source)?,
-        );
+        let encoder_config = EncoderConfig {
+            software,
+            ..EncoderConfig::new(config.quality, config.frame_rate, PlatformCapturer::source_size(config.source)?)
+        };
 
         let frame_rate = encoder_config.frame_rate;
 
@@ -832,6 +855,7 @@ impl Broadcast {
             config: recipe,
             video,
             audio_source,
+            software,
         })
     }
 
@@ -864,7 +888,7 @@ impl Broadcast {
 
         self.capturer.stop()?;
 
-        match Self::start(Arc::clone(&self.sfu), wanted, self.video, self.audio_source) {
+        match Self::start(Arc::clone(&self.sfu), wanted, self.video, self.audio_source, self.software) {
             Ok(fresh) => {
                 *self = fresh;
 
@@ -878,6 +902,7 @@ impl Broadcast {
                     previous,
                     self.video,
                     self.audio_source,
+                    self.software,
                 )?;
 
                 Err(error)
@@ -915,6 +940,17 @@ impl Broadcast {
     /// quando uma etapa para de produzir.
     pub fn refresh(&mut self) -> anyhow::Result<()> {
         self.restart(self.config.quality, self.config.frame_rate, None)
+    }
+
+    /// A mesma receita no encoder do processador, em até 720p30: pior, mas no ar.
+    pub fn fall_back_to_cpu(&mut self) -> anyhow::Result<()> {
+        self.software = true;
+
+        self.refresh()
+    }
+
+    pub fn on_hardware(&self) -> bool {
+        self.encoder == "gpu"
     }
 
     /// Os números da transmissão no log, de tempos em tempos: é por eles que se vê, no log de
@@ -1265,6 +1301,32 @@ mod tests {
 
         assert_eq!(second(&mut watch, &mut counts, start, 5, (60, 0, 0)), None);
         assert_eq!(second(&mut watch, &mut counts, start, 6, (60, 0, 0)), Some(Stall::Encoder));
+    }
+
+    /// Duas paradas seguidas do encoder sem ele provar que voltou levam ao do processador; um
+    /// encoder que volta e trava muito depois começa a conta de novo.
+    #[test]
+    fn an_encoder_that_stops_twice_in_a_row_keeps_failing() {
+        let (start, mut counts) = (Instant::now(), Counts::default());
+        let mut watch = StallWatch::new(start);
+
+        second(&mut watch, &mut counts, start, 1, (60, 60, 60));
+
+        assert_eq!(second(&mut watch, &mut counts, start, 3, (60, 0, 0)), Some(Stall::Encoder));
+        assert!(!watch.encoder_keeps_failing(), "uma parada é refazer na placa");
+
+        watch.restarted(start + Duration::from_secs(3));
+        counts = Counts::default();
+
+        let stalled = (4..=10).find(|&at| second(&mut watch, &mut counts, start, at, (60, 0, 0)) == Some(Stall::Encoder));
+
+        assert!(stalled.is_some() && watch.encoder_keeps_failing(), "a segunda seguida vai para o processador");
+
+        watch.restarted(start + Duration::from_secs(20));
+        counts = Counts::default();
+        second(&mut watch, &mut counts, start, 21, (120, 120, 120));
+
+        assert!(!watch.encoder_keeps_failing(), "voltou: a conta recomeça");
     }
 
     #[test]
