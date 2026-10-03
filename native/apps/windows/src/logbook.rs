@@ -5,7 +5,7 @@
 //! pasta de nome quase igual: pedir "o log" a alguém trazia o arquivo errado.
 
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// Quantos dias de log ficam na pasta.
@@ -13,6 +13,12 @@ const KEPT_DAYS: usize = 7;
 
 const PREFIX: &str = "unkvoid-";
 const SUFFIX: &str = ".log";
+
+/// O que vai ao site num relatório: o servidor recusa mais de 20 mil caracteres.
+const MOST_REPORTED: usize = 19_000;
+
+/// O quanto do log de hoje já foi relatado, `AAAA-MM-DD bytes`, ao lado dos logs.
+const MARKER: &str = "unkvoid.sent";
 
 // ponytail: sem teto de tamanho por dia. Um aviso em laço pode encher o arquivo do dia; se
 // aparecer, cortar a escrita passado um teto (o antigo era 5 MB).
@@ -68,6 +74,73 @@ impl Write for DailyLog {
     fn flush(&mut self) -> std::io::Result<()> {
         self.file.as_mut().map_or(Ok(()), File::flush)
     }
+}
+
+/// O pedaço do log de hoje que ainda não foi ao site.
+pub struct Unreported {
+    /// O fim do pedaço, até o tamanho que o site aceita, sem o nome de quem usa a máquina.
+    pub log: String,
+    marker: PathBuf,
+    mark: String,
+}
+
+impl Unreported {
+    /// O site guardou: o marcador anda. Sem isto o mesmo pedaço volta no próximo relatório,
+    /// que é o que se quer quando o envio falhou.
+    pub fn sent(&self) {
+        let _ = std::fs::write(&self.marker, &self.mark);
+    }
+}
+
+/// O que o log de hoje ganhou desde o último relatório, quando há erro nele (`ERROR`, onde
+/// cai também o pânico). Pedaço sem erro só faz o marcador andar: não precisa ser lido de novo.
+///
+/// É assim que o problema de quem usa chega a quem conserta. Em 02/10 a tela de alguém parou
+/// de subir, e o único jeito de saber por quê era pedir o arquivo à pessoa.
+pub fn unreported(folder: &Path) -> Option<Unreported> {
+    let day = today();
+    let mut file = File::open(folder.join(format!("{PREFIX}{day}{SUFFIX}"))).ok()?;
+    let length = file.metadata().ok()?.len();
+    let marker = folder.join(MARKER);
+    let from = std::fs::read_to_string(&marker)
+        .ok()
+        .and_then(|text| {
+            let (marked, offset) = text.trim().split_once(' ')?;
+
+            (marked == day).then(|| offset.parse::<u64>().ok()).flatten()
+        })
+        .filter(|&offset| offset <= length)
+        .unwrap_or(0);
+    let mark = format!("{day} {length}");
+    let mut fresh = Vec::new();
+
+    // Só o que entrou depois do último relatório: o log do dia pode ter megabytes.
+    file.seek(SeekFrom::Start(from)).ok()?;
+    (&mut file).take(length - from).read_to_end(&mut fresh).ok()?;
+
+    let slice = String::from_utf8_lossy(&fresh);
+
+    if !slice.contains(" ERROR ") {
+        let _ = std::fs::write(&marker, mark);
+
+        return None;
+    }
+
+    let characters: Vec<char> = slice.chars().collect();
+    let tail: String = characters[characters.len().saturating_sub(MOST_REPORTED)..].iter().collect();
+
+    Some(Unreported { log: scrub(&tail, &std::env::var("USERNAME").unwrap_or_default()), marker, mark })
+}
+
+/// Tira o nome de quem usa a máquina: todo caminho no Windows passa por `C:\Users\<nome>`, e o
+/// relatório precisa de onde o arquivo estava, não de quem estava na frente do computador.
+fn scrub(text: &str, user: &str) -> String {
+    // Nome de duas letras aparece dentro de palavra, e trocá-lo estragaria o resto do log.
+    if user.chars().count() < 3 {
+        return text.to_owned();
+    }
+
+    text.replace(user, "<usuario>")
 }
 
 /// O dia de hoje no relógio da máquina, `AAAA-MM-DD`: o nome do arquivo bate com a data que a
@@ -126,6 +199,37 @@ mod tests {
     #[test]
     fn a_week_or_less_keeps_everything() {
         assert!(stale(vec!["unkvoid-2026-10-01.log".into()]).is_empty());
+    }
+
+    #[test]
+    fn only_a_slice_with_an_error_is_reported_and_only_once() {
+        let folder = std::env::temp_dir().join(format!("unkvoid-logbook-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join(format!("{PREFIX}{}{SUFFIX}", today()));
+
+        std::fs::write(&file, "2026-10-02T10:00:00Z  INFO core_app: tudo certo\n").unwrap();
+        assert!(unreported(&folder).is_none(), "pedaço sem erro não vai ao site");
+
+        let mut appending = OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(appending, "2026-10-02T10:00:01Z ERROR core_app::room: transmissão: o encoder parou").unwrap();
+
+        let pending = unreported(&folder).expect("o erro vai ao site");
+
+        assert!(pending.log.contains("o encoder parou"));
+        assert!(!pending.log.contains("tudo certo"), "o pedaço já marcado não volta");
+        assert!(unreported(&folder).is_some(), "sem o site confirmar, o pedaço continua pendente");
+
+        pending.sent();
+        assert!(unreported(&folder).is_none(), "depois de enviado, não volta");
+
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn the_user_name_leaves_the_report() {
+        assert_eq!(scrub(r"C:\Users\mank\AppData", "mank"), r"C:\Users\<usuario>\AppData");
+        assert_eq!(scrub("ed foi", "ed"), "ed foi", "nome curto demais fica");
     }
 
     #[test]
