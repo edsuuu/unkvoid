@@ -30,14 +30,13 @@ use crate::models::ProducerInfo;
 use crate::protocol::{Event, action, local};
 use crate::session::{Identity, Session};
 use crate::sharing::{self, AudioFeed, Stall, StallWatch};
-use crate::watching::{Incoming, Media, Watching};
+use crate::watching::{ArrivalWatch, Incoming, Media, Watching};
 
 /// De quanto em quanto tempo o vigia confere a tela que esta pessoa transmite.
 const GUARD_EVERY: Duration = Duration::from_secs(1);
 
 /// De quanto em quanto tempo os números da transmissão vão para o log.
 const NUMBERS_EVERY: Duration = Duration::from_secs(10);
-
 /// A única suíte combinada com o servidor, dos dois lados.
 const CRYPTO_SUITE: &str = "AES_CM_128_HMAC_SHA1_80";
 
@@ -57,6 +56,15 @@ pub struct Room {
     /// O que a pessoa fechou de propósito: não reabre sozinho, só pelo "Assistir".
     closed: Mutex<HashSet<String>>,
     paused: Mutex<HashSet<String>>,
+    /// Se o servidor está recebendo cada producer (`producerReceiving`): é o que separa a tela
+    /// parada de quem transmite do caminho de chegada morto.
+    receiving: Mutex<HashMap<String, bool>>,
+    /// A janela está fora da vista (`set_away`), e o vídeo que ela pausou por isso — não pela
+    /// pessoa: volta sozinho quando ela aparece.
+    hidden: std::sync::atomic::AtomicBool,
+    away: Mutex<HashSet<String>>,
+    /// Telas que a pessoa mandou assistir pelo "Assistir", acima do `screens_at_once`.
+    chosen: Mutex<HashSet<String>>,
     /// "Ver o que a sala vê": assistir à própria tela, que custa um decodificador a mais.
     self_view: std::sync::atomic::AtomicBool,
     /// A receita da tela que está subindo, para republicar depois de uma queda longa.
@@ -91,6 +99,10 @@ impl Room {
             consumers: Mutex::default(),
             closed: Mutex::default(),
             paused: Mutex::default(),
+            receiving: Mutex::default(),
+            hidden: std::sync::atomic::AtomicBool::new(false),
+            away: Mutex::default(),
+            chosen: Mutex::default(),
             self_view: std::sync::atomic::AtomicBool::new(false),
             shared: Mutex::default(),
             shown: Mutex::default(),
@@ -104,14 +116,52 @@ impl Room {
             async move { room.run(events).await }
         });
         tokio::spawn(Self::guard_sending(Arc::downgrade(&room)));
+        tokio::spawn(Self::guard_watching(Arc::downgrade(&room)));
 
         Ok((room, media))
     }
 
-    /// O vigia da tela que esta pessoa transmite: de segundo em segundo confere se captura,
-    /// encoder e envio continuam produzindo (`StallWatch`) e refaz captura e encoder no mesmo
-    /// producer quando uma etapa para — quem assiste vê a imagem voltar no quadro-chave
-    /// seguinte, sem a tela sumir da sala. Termina com a sala.
+    /// O vigia do caminho de chegada (`ArrivalWatch`): de segundo em segundo confere se as telas
+    /// que o servidor diz estar recebendo continuam chegando aqui, e refaz o caminho quando não.
+    /// É o que o WebRTC faz provando a conexão a cada poucos segundos. Termina com a sala.
+    async fn guard_watching(room: Weak<Self>) {
+        let mut beat = tokio::time::interval(GUARD_EVERY);
+        let mut arrival = ArrivalWatch::default();
+
+        loop {
+            beat.tick().await;
+
+            let Some(room) = room.upgrade() else {
+                return;
+            };
+            let consumed: Vec<String> = lock(&room.consumers).keys().cloned().collect();
+            let paused = lock(&room.paused).clone();
+            let away = lock(&room.away).clone();
+            let receiving = lock(&room.receiving).clone();
+            let screens: Vec<(String, u64, bool)> = consumed
+                .into_iter()
+                .filter(|producer_id| !paused.contains(producer_id) && !away.contains(producer_id))
+                .filter_map(|producer_id| {
+                    let packets = room.counters(&producer_id)?.received;
+                    let flowing = receiving.get(&producer_id).copied().unwrap_or(false);
+
+                    Some((producer_id, packets, flowing))
+                })
+                .collect();
+
+            if arrival.tick(&screens, Instant::now()) {
+                tracing::error!("assistir: o servidor recebe a tela e nada chega aqui há 5 s, refazendo o caminho de chegada");
+                room.rewatch();
+                room.settle().await;
+            }
+        }
+    }
+
+    /// O vigia do que esta pessoa transmite: de segundo em segundo confere se captura, encoder
+    /// e envio continuam produzindo (`StallWatch`) e refaz captura e encoder no mesmo producer
+    /// quando uma etapa para — quem assiste vê a imagem voltar no quadro-chave seguinte, sem a
+    /// tela sumir da sala. Se é o servidor que parou de responder, o caminho até ele morreu, e
+    /// tudo sobe de novo por outro (`resend`). Termina com a sala.
     async fn guard_sending(room: Weak<Self>) {
         let mut beat = tokio::time::interval(GUARD_EVERY);
         let mut watch: Option<StallWatch> = None;
@@ -168,6 +218,14 @@ impl Room {
                 }
                 None => {}
             }
+
+            let lost = lock(&room.sending).lost_the_server();
+
+            if lost {
+                tracing::error!("transmissão: o servidor parou de responder, subindo de novo por outro caminho");
+                room.resend().await;
+                watch = None;
+            }
         }
     }
 
@@ -188,18 +246,31 @@ impl Room {
                     lock(&self.consumers).remove(producer_id);
                     lock(&self.closed).remove(producer_id);
                     lock(&self.paused).remove(producer_id);
+                    lock(&self.receiving).remove(producer_id);
+                    lock(&self.away).remove(producer_id);
+                    lock(&self.chosen).remove(producer_id);
                 }
                 local::SESSION_LOST => self.tell("room.session", json!({ "state": "lost" })),
                 local::SESSION_REJOINED => {
                     self.tell("room.session", json!({ "state": "rejoined" }));
 
-                    // Entrada nova (a carência do servidor expirou) perdeu tudo o que
-                    // estava aberto lá: o que ficou aqui só atrapalha.
-                    if !self.session.resumed() {
+                    if self.session.resumed() {
+                        self.rewatch();
+                    } else {
+                        // Entrada nova (a carência do servidor expirou) perdeu tudo o que
+                        // estava aberto lá: o que ficou aqui só atrapalha.
                         self.republish().await;
                     }
 
                     self.settle().await;
+                }
+                "producerDead" => self.died(&event.data).await,
+                "producerReceiving" => {
+                    if let (Some(producer_id), Some(receiving)) =
+                        (event.data["producerId"].as_str(), event.data["receiving"].as_bool())
+                    {
+                        lock(&self.receiving).insert(producer_id.to_owned(), receiving);
+                    }
                 }
                 local::SESSION_GONE => self.tell("room.session", json!({ "state": "gone" })),
                 // A sala acabou para esta sessão, e não volta: o que subia para, e a interface
@@ -261,7 +332,20 @@ impl Room {
             .map(|(_, producer)| producer.clone())
             .collect();
 
+        let chosen = lock(&self.chosen).clone();
+        let watched = |producer: &ProducerInfo| lock(&self.watching).is_watching(&producer.producer_id);
+        let mut screens = wanted.iter().filter(|producer| producer.source == "screen" && watched(producer)).count();
+
         for producer in &wanted {
+            // Além do limite, a tela fica no "Assistir": a pessoa escolhe qual abrir.
+            if producer.source == "screen" && !watched(producer) && !chosen.contains(&producer.producer_id) {
+                if screens >= screens_at_once() {
+                    continue;
+                }
+
+                screens += 1;
+            }
+
             if let Err(failure) = self.consume(producer).await {
                 tracing::warn!(%failure, producer = %producer.producer_id, "não deu para assistir");
                 self.tell("room.failed", json!({ "what": "watch" }));
@@ -291,6 +375,8 @@ impl Room {
 
         let consumer_id = text(&answer, "consumerId");
         let address = address_of(&answer);
+
+        lock(&self.receiving).insert(producer.producer_id.clone(), answer["receiving"].as_bool().unwrap_or(false));
         let server_key = decode(&answer["srtpParameters"]["keyBase64"])
             .ok_or_else(|| anyhow!("consumidor sem chave"))?;
         let kind = answer["kind"].as_str().unwrap_or(&producer.kind).to_owned();
@@ -320,13 +406,25 @@ impl Room {
             return Err(failure);
         }
 
-        self.session
-            .client()
-            .call(
-                action::RESUME_CONSUMER,
-                json!({ "consumerId": consumer_id }),
-            )
-            .await?;
+        // Pausado antes de o caminho ser refeito continua pausado: o consumer nasce assim. E o
+        // vídeo que chega com a janela fora da vista espera ela voltar.
+        let paused = lock(&self.paused).contains(&producer.producer_id);
+        let away = kind == "video" && self.hidden.load(std::sync::atomic::Ordering::Relaxed);
+
+        if away {
+            lock(&self.away).insert(producer.producer_id.clone());
+        }
+
+        if !paused && !away {
+            self.session
+                .client()
+                .call(
+                    action::RESUME_CONSUMER,
+                    json!({ "consumerId": consumer_id }),
+                )
+                .await?;
+        }
+
         lock(&self.consumers).insert(producer.producer_id.clone(), consumer_id);
 
         Ok(())
@@ -356,12 +454,62 @@ impl Room {
         match producer_id {
             Some(producer_id) => {
                 lock(&self.closed).remove(producer_id);
+                lock(&self.chosen).insert(producer_id.to_owned());
             }
-            None => lock(&self.closed).clear(),
+            None => {
+                lock(&self.closed).clear();
+                lock(&self.chosen).extend(
+                    self.session
+                        .peers()
+                        .iter()
+                        .flat_map(|peer| peer.producers.iter())
+                        .map(|producer| producer.producer_id.clone()),
+                );
+            }
         }
 
         self.consume_all().await;
         self.announce_tiles();
+    }
+
+    /// A janela saiu da vista (minimizada, escondida) ou voltou. Fora da vista, o vídeo do que
+    /// se assiste é pausado no servidor: imagem que ninguém vê não gasta banda nem a CPU que o
+    /// jogo quer — o app em React fazia o mesmo. Na volta ele é retomado, e o `resumeConsumer`
+    /// pede o quadro-chave. O som continua. Chamar de novo com o mesmo valor não faz nada.
+    pub async fn set_away(&self, away: bool) {
+        if self.hidden.swap(away, std::sync::atomic::Ordering::Relaxed) == away {
+            return;
+        }
+
+        let video: HashSet<String> = self
+            .session
+            .peers()
+            .iter()
+            .flat_map(|peer| peer.producers.iter())
+            .filter(|producer| producer.kind == "video")
+            .map(|producer| producer.producer_id.clone())
+            .collect();
+        let chosen: HashSet<String> = if away {
+            let paused = lock(&self.paused).clone();
+
+            video.into_iter().filter(|producer_id| !paused.contains(producer_id)).collect()
+        } else {
+            std::mem::take(&mut *lock(&self.away))
+        };
+        let consumers: Vec<(String, String)> = lock(&self.consumers)
+            .iter()
+            .filter(|(producer_id, _)| chosen.contains(*producer_id))
+            .map(|(producer_id, consumer_id)| (producer_id.clone(), consumer_id.clone()))
+            .collect();
+        let acted = if away { action::PAUSE_CONSUMER } else { action::RESUME_CONSUMER };
+
+        for (producer_id, consumer_id) in consumers {
+            let done = self.session.client().call(acted, json!({ "consumerId": consumer_id })).await.is_ok();
+
+            if away && done {
+                lock(&self.away).insert(producer_id);
+            }
+        }
     }
 
     /// Pausar é o servidor parar de mandar: a banda é devolvida, e a volta pede um keyframe.
@@ -811,11 +959,16 @@ impl Room {
 
             merge(&mut request, lock(&self.sending).sfu_offer(*source));
 
-            last = self
-                .session
-                .client()
-                .call(action::PRODUCE_PLAIN, request)
-                .await?;
+            // A tela abriu e o som dela não: sem fechar a tela aqui, a sala via um cartão vazio
+            // até o servidor desistir dele em 30 s.
+            last = match self.session.client().call(action::PRODUCE_PLAIN, request).await {
+                Ok(answer) => answer,
+                Err(failure) => {
+                    self.close(producers).await;
+
+                    return Err(failure);
+                }
+            };
             producers.push(text(&last, "producerId"));
 
             self.note_own_producer("newProducer", &text(&last, "producerId"), source);
@@ -896,29 +1049,47 @@ impl Room {
     /// Depois de uma entrada nova (a carência do servidor expirou) ele não tem mais nada desta
     /// pessoa: o que estava aberto aqui é descartado, e o que ela transmitia sobe de novo.
     async fn republish(&self) {
-        let screen = lock(&self.shared).take();
-        let had_microphone = lock(&self.microphone).is_some();
-        let broadcast = lock(&self.sending).screen.take();
-
         lock(&self.watching).stop(None);
         lock(&self.consumers).clear();
         lock(&self.paused).clear();
+        lock(&self.away).clear();
+        lock(&self.producers).clear();
 
-        if let Some(mut broadcast) = broadcast {
+        self.resend().await;
+    }
+
+    /// Sobe de novo, por um remetente novo, a tela e o microfone que estavam no ar; o que ainda
+    /// estiver aberto no servidor fecha antes. O microfone mutado volta mutado.
+    ///
+    /// ponytail: parar a tela durante os segundos em que isto roda pode trazê-la de volta. A
+    /// saída é um cadeado assíncrono em volta de tudo o que abre e fecha origem.
+    async fn resend(&self) {
+        let screen = lock(&self.shared).take();
+        let microphone = lock(&self.microphone).take();
+        // A câmera do Linux não guarda receita para voltar: ela para, e a interface a vê
+        // desligada no `room.mine`.
+        let broadcasts = {
+            let mut sending = lock(&self.sending);
+
+            [sending.screen.take(), sending.camera.take()]
+        };
+
+        for mut broadcast in broadcasts.into_iter().flatten() {
             let _ = tokio::task::block_in_place(|| broadcast.stop());
         }
-
-        *lock(&self.microphone) = None;
 
         #[cfg(target_os = "macos")]
         {
             *lock(&self.camera) = None;
         }
 
-        lock(&self.producers).clear();
+        let producers: Vec<String> = lock(&self.producers).drain().flat_map(|(_, opened)| opened).collect();
+
+        self.close(producers).await;
 
         // A chave vai junto: o remetente novo recomeça a numeração, e a mesma chave com o
-        // contador reiniciado repetiria o keystream.
+        // contador reiniciado repetiria o keystream. É também a chave nova que faz o servidor
+        // trocar o transporte.
         lock(&self.sending).renew_sfu_key();
 
         if let Some(config) = screen
@@ -928,12 +1099,53 @@ impl Room {
             self.tell("room.failed", json!({ "what": "share" }));
         }
 
-        if had_microphone && let Err(failure) = self.reopen_microphone().await {
-            tracing::warn!(%failure, "o microfone não voltou depois da queda");
-            self.tell("room.failed", json!({ "what": "mic" }));
+        if let Some(previous) = microphone {
+            match self.reopen_microphone().await {
+                Ok(()) if previous.is_muted() => self.mute_microphone(true).await,
+                Ok(()) => {}
+                Err(failure) => {
+                    tracing::warn!(%failure, "o microfone não voltou depois da queda");
+                    self.tell("room.failed", json!({ "what": "mic" }));
+                }
+            }
         }
 
         self.announce_mine();
+    }
+
+    /// A conexão caiu e voltou na mesma sessão. Se foi o endereço da pessoa que mudou (o
+    /// provedor reconectou, o roteador reiniciou), o servidor continua mandando para o antigo e
+    /// descarta o que vem do novo: a imagem pararia ali até ela sair da sala. A chave nova faz
+    /// o servidor abrir outro transporte de chegada, e o `settle` seguinte assiste tudo de
+    /// novo. Custa um quadro-chave por tela, e só a quem voltou.
+    fn rewatch(&self) {
+        lock(&self.watching).renew();
+        lock(&self.consumers).clear();
+    }
+
+    /// O servidor fechou a tela ou o microfone desta pessoa: nada chegou lá em 30 s, ou a
+    /// permissão caiu. Seguir capturando seria transmitir para o vazio achando que está no ar.
+    async fn died(&self, data: &Value) {
+        let producer_id = data["producerId"].as_str().unwrap_or_default();
+
+        // O aviso de um producer que já foi trocado não derruba o que subiu no lugar dele.
+        if !lock(&self.producers).values().flatten().any(|opened| opened == producer_id) {
+            return;
+        }
+
+        match data["source"].as_str().and_then(Source::parse) {
+            Some(Source::Screen) => {
+                tracing::warn!(reason = ?data["reason"].as_str(), "o servidor fechou a tela");
+                self.stop_sharing().await;
+                self.tell("room.failed", json!({ "what": "share" }));
+            }
+            Some(Source::Mic) => {
+                tracing::warn!(reason = ?data["reason"].as_str(), "o servidor fechou o microfone");
+                self.close_microphone().await;
+                self.tell("room.failed", json!({ "what": "mic" }));
+            }
+            _ => {}
+        }
     }
 
     /// Para tudo o que sobe e o que chega, sem falar com o servidor: o socket já se foi.
@@ -992,6 +1204,13 @@ impl Room {
             .updates
             .send(json!({ "event": event, "channel": null, "data": data }).to_string());
     }
+}
+
+/// Quantas telas abrem sozinhas: duas em PC de até quatro núcleos, quatro nos outros, como o app
+/// em React. Cada tela 1080p60 decodificada custa perto de um núcleo; as que passam disso ficam
+/// no "Assistir".
+fn screens_at_once() -> usize {
+    if std::thread::available_parallelism().map_or(4, std::num::NonZero::get) <= 4 { 2 } else { 4 }
 }
 
 fn address_of(answer: &Value) -> String {

@@ -461,6 +461,13 @@ impl Session {
         Ok(())
     }
 
+    /// O servidor parou de responder com algo subindo — ver `PlainSender::lost_the_server`.
+    pub fn lost_the_server(&self) -> bool {
+        target(&self.sender)
+            .as_ref()
+            .is_some_and(|sender| sender.lost_the_server(Instant::now()))
+    }
+
     /// Liga uma das três origens. `video`/`audio` dizem com que SSRC cada evento sobe.
     pub fn start(
         &self,

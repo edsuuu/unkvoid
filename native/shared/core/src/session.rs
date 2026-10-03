@@ -21,7 +21,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::client::SfuClient;
 use crate::models::{JoinResponse, Peer, ProducerInfo, RoomIdentity};
 use crate::protocol::{Event, action, local};
-use crate::reconnect::Backoff;
+use crate::reconnect::{Backoff, MAX_ATTEMPTS};
 
 /// Quem se apresenta ao SFU, **de novo a cada entrada**. É função, e não valor, porque o
 /// token de voz vale 60 s: guardar o primeiro faria toda reconexão levar um token vencido.
@@ -345,9 +345,12 @@ impl Session {
     /// carência já expirou lá, entra de novo — que é pior, mas é voltar.
     async fn reconnect(&self) -> Option<UnboundedReceiver<Event>> {
         let mut backoff = Backoff::default();
+        let mut refused = 0;
 
-        while let Some(wait) = backoff.next_delay() {
-            tokio::time::sleep(wait).await;
+        // A rede fora do ar não conta: o app tenta enquanto estiver aberto. O que faz desistir é
+        // a sala recusar a volta.
+        while refused < MAX_ATTEMPTS {
+            tokio::time::sleep(backoff.next_patient_delay()).await;
 
             if self.left.load(Ordering::Relaxed) {
                 return None;
@@ -371,6 +374,7 @@ impl Session {
             match self.request_join(false).await {
                 Ok(_) => return Some(incoming),
                 Err(failure) => {
+                    refused += 1;
                     tracing::warn!(%failure, attempt = backoff.attempt, "a sala recusou a volta");
                 }
             }

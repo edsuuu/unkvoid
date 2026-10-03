@@ -1014,7 +1014,7 @@ impl App {
             }
             Err(error) => {
                 tracing::error!(error = %format!("{error:#}"), "player: não abriu o clipe");
-                toast::show("Não deu para abrir o clipe", &format!("{error:#}"));
+                toast::show("Não deu para abrir o clipe", "O arquivo pode estar corrompido ou aberto em outro programa.");
             }
         }
     }
