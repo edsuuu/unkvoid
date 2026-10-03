@@ -247,7 +247,7 @@ impl LinuxCapturer {
 
         let (source, stdin) = match &portal {
             Some(session) => (portal_source(session.node, frame_rate), Stdio::from(session.remote()?)),
-            None => (x11_source(config.show_cursor, region(config.source)), Stdio::null()),
+            None => (x11_source(config.show_cursor, region(config.source), window_of(config.source)), Stdio::null()),
         };
 
         let mut video = launch(&screen_pipeline(&source, frame_rate, width, format, &encoder), stdin)?;
@@ -353,11 +353,23 @@ pub fn uses_system_picker() -> bool {
     backend() == Backend::Portal
 }
 
-fn x11_source(show_cursor: bool, region: Option<Monitor>) -> String {
-    format!(
-        "ximagesrc use-damage=false show-pointer={show_cursor} {}",
-        region.map(Monitor::area).unwrap_or_default()
-    )
+/// A janela escolhida é lida pelo `xid` dela, e não a tela inteira: no X11 escolher uma janela
+/// transmitia todos os monitores, com o e-mail e a conversa junto — e no XWayland do WSLg a raiz
+/// sai preta, só a janela tem imagem.
+fn x11_source(show_cursor: bool, region: Option<Monitor>, window: Option<u64>) -> String {
+    let area = match window {
+        Some(id) => format!("xid={id}"),
+        None => region.map(Monitor::area).unwrap_or_default(),
+    };
+
+    format!("ximagesrc use-damage=false show-pointer={show_cursor} {area}")
+}
+
+fn window_of(source: CaptureSource) -> Option<u64> {
+    match source {
+        CaptureSource::Window(id) => Some(id),
+        _ => None,
+    }
 }
 
 /// Tela parada no PipeWire não gera buffer, e sem quadro novo o encoder não solta o
@@ -1005,7 +1017,7 @@ mod tests {
         let region = Monitor { width: 1920, height: 1080, x: 1920, y: 0 };
         let words = |pipeline: String| pipeline.split_whitespace().map(str::to_string).collect::<Vec<_>>().join(" ");
 
-        let x11 = words(screen_pipeline(&x11_source(false, Some(region)), 60, 1920, format, &encoder));
+        let x11 = words(screen_pipeline(&x11_source(false, Some(region), None), 60, 1920, format, &encoder));
         let portal = words(screen_pipeline(&portal_source(47, 60), 60, 1920, format, &encoder));
         let shared = words(format!(
             "! video/x-raw,framerate=60/1 ! videoconvert ! videoscale \
@@ -1022,7 +1034,12 @@ mod tests {
             "o fd é a entrada padrão do filho, e tela parada continua gerando quadro"
         );
 
-        assert_eq!(words(x11_source(true, None)), "ximagesrc use-damage=false show-pointer=true");
+        assert_eq!(words(x11_source(true, None, None)), "ximagesrc use-damage=false show-pointer=true");
+        assert_eq!(
+            words(x11_source(false, Some(region), window_of(CaptureSource::Window(6_291_458)))),
+            "ximagesrc use-damage=false show-pointer=false xid=6291458",
+            "a janela escolhida, e não o monitor inteiro"
+        );
         assert!(portal_source(3, 30).contains("keepalive-time=33 "), "um reenvio por quadro a 30 fps");
         assert!(portal_source(3, 0).contains("keepalive-time=1000 "), "fps zero não divide por zero");
     }
