@@ -1,102 +1,50 @@
 # O app nativo
 
-Decisão do dono: a interface deixa de ser uma webview e passa a ser escrita na linguagem de
-cada sistema. Uma pasta por sistema, para a manutenção de cada um ser independente.
+Um núcleo em Rust que decide tudo, e uma interface por sistema que só desenha. Cada pasta de
+sistema tem o seu `README.md` com o detalhe (`native/apps/windows`, `linux`, `macos`).
 
-Este arquivo é o desenho. O que já está pronto, o que falta, e por onde começar.
+## As camadas
 
-## Por que isto é menor do que parece
-
-A parte cara de um app de voz e tela não é a tela: é a mídia. E **ela já é nativa**.
-
-| Peça | Onde mora | Estado |
-|---|---|---|
-| Captura de tela (GPU) | `shared/capture` | pronta, nos três sistemas |
-| Encoder de hardware | `shared/media` | pronto |
-| Envio RTP + SRTP | `shared/media/plain.rs` (`PlainSender`) | pronto |
-| Recepção RTP + SRTP | `shared/media/receiver.rs` | pronto — já é o caminho do Linux |
-| RTP → quadro H.264 inteiro, Opus → PCM | `shared/media/unpack.rs` | pronto — é o que o macOS decodifica com o `AVSampleBufferDisplayLayer`, e o que o Windows vai entregar ao Media Foundation |
-| Áudio Opus | `shared/media/audio.rs` | pronto |
-
-O `receiver.rs` existe justamente para "o app sem WebRTC na janela". Ou seja: o caminho que o
-app nativo precisa já está escrito, testado e rodando — falta o resto do app usá-lo.
-
-Do lado do SFU, o protocolo para isso também já existe: `producePlain` e `consumePlain`.
-
-## O que ainda depende da janela web
-
-| O quê | Onde | Saída nativa |
-|---|---|---|
-| Microfone e câmera | `ui/core/Voice.ts` (`getUserMedia`) | `cpal` (áudio) e `nokhwa` (câmera) |
-| Transportes WebRTC | `ui/core/SfuClient.ts` (`mediasoup-client`) | não precisa: usar `producePlain`/`consumePlain` |
-| Toda a lógica | `ui/core` (7.004 linhas de TypeScript) | virar um crate Rust, compartilhado |
-| As telas | `ui/components` (4.172 linhas de TSX) | reescrever por sistema |
-
-## A estrutura
-
-```
-native/
-  shared/
-    capture/          captura de tela          (existe)
-    media/            encoder, RTP, SRTP, Opus (existe)
-    core/             NOVO — a lógica do app, compartilhada pelos três
-    storage/          NOVO — o estado em disco, na pasta do sistema
-  apps/
-    macos/            NOVO — Swift + SwiftUI
-    windows/          NOVO — Rust + Slint
-    linux/            NOVO — Rust + GTK4 (gtk-rs)
-    desktop/          o app Tauri de hoje, até a paridade
-```
-
-**A regra que faz isto valer a pena:** nada de regra de negócio nas pastas de sistema. Elas
-desenham e recebem eventos. Quem sabe o que é uma sala, quem pode falar, quando reconectar e o
-que mandar ao SFU é o `core`. Se uma decisão aparecer em `apps/macos/`, ela vai ter de ser
-escrita de novo em `apps/windows/` e em `apps/linux/` — e é assim que um app vira três apps
-diferentes com os mesmos bugs em lugares distintos.
-
-O Linux sai de graça nesse desenho: GTK em Rust fala com o `core` sem ponte nenhuma.
-
-## A ponte para Swift e C#
-
-O `core` expõe uma superfície pequena e estável: comandos entram, eventos saem.
-
-```
-    Swift (macOS)  ─┐
-    C# (Windows)   ─┼──► core (Rust) ──► capture · media · SFU
-    Rust (Linux)   ─┘
-```
-
-A ponte é uma ABI C escrita à mão, e **só o macOS precisa dela**: Linux e Windows são Rust e
-usam o `core` como crate. São seis funções que mudam devagar, e um header que se lê de cima a
-baixo custa menos que mais um gerador no caminho do build.
-
-## O armazenamento em pasta
-
-Sai o `localStorage` (30 usos hoje), entra arquivo na pasta que cada sistema reserva para o
-app:
-
-| Sistema | Onde |
+| Pasta | O que faz |
 |---|---|
-| macOS | `~/Library/Application Support/com.unkvoid.desktop/` |
-| Windows | `%APPDATA%\com.unkvoid.desktop\` |
-| Linux | `~/.config/com.unkvoid.desktop/` (XDG) |
+| `shared/capture/` | captura de tela, do som do sistema, do microfone e da câmera, um arquivo por sistema |
+| `shared/media/` | encoder de hardware, Opus, envio RTP/SRTP (`plain.rs`, com pacer e governador de taxa), recepção com reenvio e pedido de quadro-chave (`receiver.rs`, `recovery.rs`), remontagem do quadro e do som (`unpack.rs`), buffer de chegada (`playout.rs`) e o decodificador do Windows (`windows_decoder.rs`) |
+| `shared/core/` | **as regras**: sessão e cliente do SFU, a sala viva (`room.rs`: publicar, assistir, microfone, câmera, os vigias da transmissão e do caminho de chegada), cliente da API do Laravel, código de sala, estado do app, motivos de erro, atualização, log do dia e a ABI C do macOS |
+| `shared/storage/` | o estado em disco, com o token cifrado |
+| `shared/clips/` | o replay instantâneo (Clips) do Windows |
+| `apps/windows/` | Rust + Slint, usa o núcleo como crate |
+| `apps/linux/` | Rust + GTK4, usa o núcleo como crate |
+| `apps/macos/` | Swift + SwiftUI, fala com o núcleo pela ABI C |
+| `apps/desktop/` | o app Tauri + React de antes: referência de comportamento, não é mais publicado |
 
-O que é guardado hoje, e continua sendo: o token do Sanctum, o nome, a sala recente, as salas
-anteriores, as preferências de voz, o id da instalação e o estado dos painéis.
+**A regra:** regra de negócio não mora em pasta de sistema. O teste é "o Windows vai precisar
+disto igual?" — se sim, sobe para o `shared/core`. Senão a mesma regra é escrita três vezes e
+diverge no primeiro ajuste.
 
-O token merece tratamento à parte: em arquivo ele fica legível para qualquer processo do
-usuário. O chaveiro do sistema (Keychain, Credential Manager, Secret Service) é o lugar dele.
+## O que é de cada sistema
 
-## A ordem
+| | Windows | Linux | macOS |
+|---|---|---|---|
+| Tela | Graphics Capture; Desktop Duplication no monitor do Windows 10 | `ximagesrc` (X11) ou `pipewiresrc` pelo portal (Wayland) | ScreenCaptureKit |
+| Som do sistema | WASAPI por processo: só o jogo, sem o app de chamada | monitor do PulseAudio/PipeWire, sem o app de chamada | ScreenCaptureKit |
+| Encoder | Media Foundation na placa; sem placa, CPU em 720p30 | `nvh264enc`/`vah264enc`/`vaapih264enc`; sem placa, `x264enc` em 720p30 | VideoToolbox |
+| Microfone | WASAPI, pela interface | `pulsesrc`, pela captura | `AVAudioEngine` (com o cancelamento de eco do sistema) |
+| Câmera | ainda não | `v4l2src` | AVFoundation, `IOSurface` sem cópia |
+| Assistir | Media Foundation na placa (DXVA), com reserva na CPU | `gst-launch` por transmissão, RGB cru para a janela | VideoToolbox (`AVSampleBufferDisplayLayer`) |
+| Atualização | pelo site, assinada (ver [AUTO-UPDATE.md](AUTO-UPDATE.md)), ou pela Microsoft Store | pelo APT | ainda sem versão publicada |
 
-1. **`shared/storage`** — o estado em disco, com migração do que já existe no `localStorage`
-   para ninguém ser deslogado. É a peça que o app de hoje já pode usar.
-2. **`shared/core`** — a lógica sai do TypeScript: cliente do SFU, sala, voz, chat, estado.
-   Aqui mora o grosso do trabalho, e é o que evita escrever tudo três vezes.
-3. **Mic e câmera nativos** — `cpal` e `nokhwa`, o último pedaço que ainda depende da janela.
-4. **`apps/linux`** — primeiro, porque GTK em Rust não precisa de ponte: valida o `core` com o
-   menor caminho.
-5. **`apps/macos`** e **`apps/windows`** — com a ponte, já sabendo que o `core` funciona.
-6. **Aposentar o Tauri**, quando os três tiverem paridade.
+## A ponte do Swift
 
-O app Tauri continua de pé o tempo todo. Nenhum passo acima quebra o que existe hoje.
+Só o macOS passa pela ABI C (`shared/core/src/ffi.rs`); Windows e Linux são Rust. As funções
+estão em [ARQUITETURA.md](ARQUITETURA.md#a-ponte-para-o-swift), e as ações e avisos que passam
+por elas no [CONTRATO.md](CONTRATO.md). Duas regras que não perdoam: `unkvoid_call` e
+`unkvoid_app` **bloqueiam** (nunca na thread que desenha), e toda string devolvida volta em
+`unkvoid_string_free`, uma vez só.
+
+## O que fica no disco
+
+| O quê | Onde |
+|---|---|
+| estado e preferências (`state.json`) | a pasta de configuração do sistema, em `com.unkvoid.desktop` |
+| token da conta | cifrado em AES-256-GCM no mesmo arquivo; a chave fica no chaveiro do sistema (Keychain, Credential Manager, Secret Service) |
+| log do dia | Windows: `%LOCALAPPDATA%\com.unkvoid.desktop\unkvoid-AAAA-MM-DD.log`; Linux: `~/.local/state/unkvoid`. Sete dias, e as linhas com `ERROR` vão para `POST /api/errors` a cada 30 s |

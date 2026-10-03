@@ -26,8 +26,8 @@ decide; `apps/macos`, `apps/windows` e `apps/linux` desenham. Sem isso, três in
 viram três produtos que divergem no primeiro ajuste.
 
 **ABI C escrita à mão, e não `uniffi`:** são seis funções que mudam devagar. Um header que
-se lê de cima a baixo custa menos que mais um gerador no caminho do build. O Linux não passa
-por ela — GTK é Rust e usa o `core` direto.
+se lê de cima a baixo custa menos que mais um gerador no caminho do build. O Linux e o Windows não passam
+por ela — são Rust e usam o `core` direto.
 
 ## Em que linguagem o SFU deve ser escrito
 
@@ -161,7 +161,8 @@ As regras (`media::BitrateGovernor`), e o porquê de cada número:
 | `UNKVOID_ABR=off` | o mundo físico precisa de um botão de calibração |
 
 O que mudaria a decisão: um pacer no remetente. Com ele o REMB passa a medir a rede, e não a
-rajada, e vale trocar.
+rajada, e vale trocar. **O pacer entrou na 0.1.12** (o vídeo sai a 2,5× a taxa); a troca da perda
+por uma estimativa de banda ainda não foi feita nem decidida.
 
 ## Na retomada da sessão vale o `can` do token novo
 
@@ -195,9 +196,9 @@ Descartado: aumentar a carência (o app levou minutos para notar, carência nenh
 manter a sessão viva enquanto chega mídia (muda o que "presente na sala" quer dizer, e o app
 continuaria sem sinalização, clicando no vazio).
 
-ponytail: quem não tem WebRTC no motor da janela (Linux) entra sem `resume`, e para ele a queda
-de sinalização continua sendo entrada nova, com a mídia refeita. A saída é o `resume` deixar de
-depender do `recvTransport`.
+No app Tauri de antes, quem não tinha WebRTC no motor da janela (Linux) entrava sem `resume`;
+nos apps nativos a retomada vale nos três sistemas, e o caminho de chegada é refeito na volta,
+porque o endereço da pessoa pode ter mudado.
 
 ## Microfone aberto ao entrar, e nenhuma bind engole tecla no Windows
 
