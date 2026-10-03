@@ -11,6 +11,7 @@
 //! com uma cópia da textura para a interface no fim.
 
 use std::mem::ManuallyDrop;
+use std::sync::OnceLock;
 
 use ::windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFMediaType, IMFSample, IMFTransform, MF_E_NOTACCEPTING,
@@ -24,6 +25,8 @@ use ::windows::Win32::Media::MediaFoundation::{
 };
 use ::windows::Win32::System::Com::CoTaskMemFree;
 use anyhow::{Context, Result, anyhow};
+use rayon::prelude::*;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 
 use crate::DecodedFrame;
 use crate::windows::start_media_foundation;
@@ -32,10 +35,26 @@ use crate::windows::start_media_foundation;
 const RTP_CLOCK: i64 = 90_000;
 const HNS_PER_SECOND: i64 = 10_000_000;
 
-/// Em quantas threads a conversão para RGB se divide. Numa thread só, um quadro 1080p levava
+/// Em quantas threads a conversão para RGBA se divide. Numa thread só, um quadro 1080p levava
 /// ~10 ms, mais da metade do custo de assistir; quatro cabem em qualquer PC de hoje e deixam
 /// o resto dos núcleos para o jogo de quem assiste.
 const CONVERSION_THREADS: usize = 4;
+
+/// As threads da conversão, abertas uma vez para o app inteiro. Antes eram quatro threads novas
+/// por quadro — 240 por segundo numa tela a 60 fps —, e uma que o sistema recusasse derrubava a
+/// thread da tela com ela.
+fn conversion_pool() -> Option<&'static ThreadPool> {
+    static POOL: OnceLock<Option<ThreadPool>> = OnceLock::new();
+
+    POOL.get_or_init(|| {
+        ThreadPoolBuilder::new()
+            .num_threads(CONVERSION_THREADS)
+            .thread_name(|index| format!("unkvoid-cor-{index}"))
+            .build()
+            .ok()
+    })
+    .as_ref()
+}
 
 /// Quantas vezes seguidas o MFT pode mudar o formato de saída antes de desistir do quadro.
 /// Ele muda uma vez, no primeiro quadro; em laço, é MFT quebrado, não vídeo novo.
@@ -76,6 +95,10 @@ impl Matrix {
 pub struct H264Decoder {
     transform: IMFTransform,
     layout: Layout,
+    /// A amostra de saída da vez anterior, para a próxima: alocar uma do tamanho do quadro a
+    /// cada chamada eram vários MB por quadro (12 em 4K), em PC fraco disputando memória com o
+    /// jogo. Só existe quando quem aloca a saída é este lado, e cai na troca de formato.
+    spare: Option<IMFSample>,
 }
 
 // O MFT de software é free-threaded, e o decodificador só é usado por uma thread por vez:
@@ -99,6 +122,7 @@ impl H264Decoder {
             let mut decoder = Self {
                 transform,
                 layout: Layout::default(),
+                spare: None,
             };
 
             decoder.choose_output()?;
@@ -107,25 +131,56 @@ impl H264Decoder {
         }
     }
 
-    /// Entrega um quadro Annex-B e devolve o que ficou pronto. Com a baixa latência ligada o
-    /// MFT devolve o próprio quadro na hora; a lista existe para o primeiro, que às vezes só
-    /// sai junto com o segundo.
-    pub fn decode(&mut self, annex_b: &[u8], timestamp: u32) -> Result<Vec<DecodedFrame>> {
-        self.feed(annex_b, timestamp, true)
+    /// Entrega um quadro Annex-B e devolve a imagem que ficou pronta, se ficou. Com a baixa
+    /// latência ligada o MFT devolve o próprio quadro na hora; o primeiro às vezes só sai junto
+    /// com o segundo, e aí vale o mais novo.
+    pub fn decode(&mut self, annex_b: &[u8], timestamp: u32) -> Result<Option<DecodedFrame>> {
+        let mut frame = None::<DecodedFrame>;
+        let drawn = self.decode_into(annex_b, timestamp, |width, height| {
+            &mut frame
+                .insert(DecodedFrame { width, height, rgba: vec![0; width as usize * height as usize * 4] })
+                .rgba
+        })?;
+
+        Ok(frame.filter(|_| drawn))
+    }
+
+    /// O mesmo, escrevendo a imagem em RGBA direto no buffer que `target` der para o tamanho
+    /// dela — o da imagem da interface: sem um `Vec` no meio e sem a cópia dele para lá, que
+    /// eram ~0,7 GB/s numa tela 1080p60. Diz se saiu imagem.
+    pub fn decode_into<'target>(
+        &mut self,
+        annex_b: &[u8],
+        timestamp: u32,
+        target: impl FnOnce(u32, u32) -> &'target mut [u8],
+    ) -> Result<bool> {
+        let Some(sample) = (unsafe { self.feed(annex_b, timestamp)? }) else {
+            return Ok(false);
+        };
+        let filled = unsafe { self.read_into(&sample, target) };
+
+        self.recycle(sample);
+
+        filled.map(|()| true)
     }
 
     /// Decodifica sem virar imagem. Todo quadro P tem de passar pelo decodificador para o
-    /// seguinte sair certo, mas converter para RGB um quadro que outro mais novo vai substituir
-    /// antes de a janela desenhar é trabalho jogado fora — era o que deixava quem assiste duas
-    /// telas 1080p60 quatro segundos atrás.
+    /// seguinte sair certo, mas converter um quadro que outro mais novo vai substituir antes de
+    /// a janela desenhar é trabalho jogado fora — era o que deixava quem assiste duas telas
+    /// 1080p60 quatro segundos atrás.
     pub fn skip(&mut self, annex_b: &[u8], timestamp: u32) -> Result<()> {
-        self.feed(annex_b, timestamp, false).map(drop)
+        if let Some(sample) = unsafe { self.feed(annex_b, timestamp)? } {
+            self.recycle(sample);
+        }
+
+        Ok(())
     }
 
-    fn feed(&mut self, annex_b: &[u8], timestamp: u32, convert: bool) -> Result<Vec<DecodedFrame>> {
+    /// A amostra que saiu por último, já com o quadro dentro.
+    unsafe fn feed(&mut self, annex_b: &[u8], timestamp: u32) -> Result<Option<IMFSample>> {
         unsafe {
             let sample = input_sample(annex_b, timestamp)?;
-            let mut ready = Vec::new();
+            let mut last = None;
 
             if let Err(failure) = self.transform.ProcessInput(0, &sample, 0) {
                 if failure.code() != MF_E_NOTACCEPTING {
@@ -133,24 +188,28 @@ impl H264Decoder {
                 }
 
                 // Cheio: o que estava pronto sai primeiro, e aí o quadro entra.
-                self.drain(&mut ready, convert)?;
+                self.drain(&mut last)?;
                 self.transform
                     .ProcessInput(0, &sample, 0)
                     .context("o decodificador recusou o quadro depois de esvaziar")?;
             }
 
-            self.drain(&mut ready, convert)?;
+            self.drain(&mut last)?;
 
-            Ok(ready)
+            Ok(last)
         }
     }
 
-    unsafe fn drain(&mut self, ready: &mut Vec<DecodedFrame>, convert: bool) -> Result<()> {
+    unsafe fn drain(&mut self, last: &mut Option<IMFSample>) -> Result<()> {
         let mut changes = 0;
 
         loop {
-            match unsafe { self.next_output(convert)? } {
-                Output::Frame(frame) => ready.extend(frame),
+            match unsafe { self.next_output()? } {
+                Output::Frame(sample) => {
+                    if let Some(older) = last.replace(sample) {
+                        self.recycle(older);
+                    }
+                }
                 Output::Empty => return Ok(()),
                 Output::StreamChanged => {
                     changes += 1;
@@ -165,7 +224,7 @@ impl H264Decoder {
         }
     }
 
-    unsafe fn next_output(&mut self, convert: bool) -> Result<Output> {
+    unsafe fn next_output(&mut self) -> Result<Output> {
         unsafe {
             let info = self
                 .transform
@@ -173,13 +232,22 @@ impl H264Decoder {
                 .context("o decodificador não disse o tamanho da saída")?;
             let mut output = [MFT_OUTPUT_DATA_BUFFER::default()];
             let mut status = 0_u32;
+            let allocating = info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 == 0;
 
-            if info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 == 0 {
-                let size = info.cbSize.max(self.layout.stride * self.layout.rows * 3 / 2).max(1);
-                let buffer = MFCreateMemoryBuffer(size).context("sem memória para o quadro")?;
-                let sample = MFCreateSample().context("sem amostra para o quadro")?;
+            if allocating {
+                let sample = match self.spare.take() {
+                    Some(sample) => sample,
+                    None => {
+                        let size = info.cbSize.max(self.layout.stride * self.layout.rows * 3 / 2).max(1);
+                        let buffer = MFCreateMemoryBuffer(size).context("sem memória para o quadro")?;
+                        let sample = MFCreateSample().context("sem amostra para o quadro")?;
 
-                sample.AddBuffer(&buffer).context("a amostra recusou o buffer")?;
+                        sample.AddBuffer(&buffer).context("a amostra recusou o buffer")?;
+
+                        sample
+                    }
+                };
+
                 output[0].pSample = ManuallyDrop::new(Some(sample));
             }
 
@@ -190,22 +258,37 @@ impl H264Decoder {
 
             match result {
                 Ok(()) => {}
-                Err(failure) if failure.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(Output::Empty),
-                Err(failure) if failure.code() == MF_E_TRANSFORM_STREAM_CHANGE => return Ok(Output::StreamChanged),
+                Err(failure) if failure.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => {
+                    if allocating {
+                        self.spare = sample;
+                    }
+
+                    return Ok(Output::Empty);
+                }
+                // O tamanho novo pode não caber na amostra guardada.
+                Err(failure) if failure.code() == MF_E_TRANSFORM_STREAM_CHANGE => {
+                    self.spare = None;
+
+                    return Ok(Output::StreamChanged);
+                }
                 Err(failure) => return Err(anyhow!(failure).context("o decodificador falhou no quadro")),
             }
 
-            let sample = sample.ok_or_else(|| anyhow!("o decodificador não devolveu amostra"))?;
-
-            if !convert {
-                return Ok(Output::Frame(None));
-            }
-
-            Ok(Output::Frame(Some(self.read(&sample)?)))
+            Ok(Output::Frame(sample.ok_or_else(|| anyhow!("o decodificador não devolveu amostra"))?))
         }
     }
 
-    unsafe fn read(&self, sample: &IMFSample) -> Result<DecodedFrame> {
+    /// Guarda a amostra para a próxima saída, se é este lado quem aloca.
+    fn recycle(&mut self, sample: IMFSample) {
+        let allocating = unsafe { self.transform.GetOutputStreamInfo(0) }
+            .is_ok_and(|info| info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 == 0);
+
+        if allocating && self.spare.is_none() {
+            self.spare = Some(sample);
+        }
+    }
+
+    unsafe fn read_into<'target>(&self, sample: &IMFSample, target: impl FnOnce(u32, u32) -> &'target mut [u8]) -> Result<()> {
         unsafe {
             let buffer = sample
                 .ConvertToContiguousBuffer()
@@ -216,7 +299,7 @@ impl H264Decoder {
             buffer.Lock(&mut start, None, Some(&mut size)).context("o quadro não abriu para leitura")?;
 
             let nv12 = std::slice::from_raw_parts(start, size as usize);
-            let converted = nv12_to_rgb(nv12, self.layout);
+            let converted = nv12_to_rgba(nv12, self.layout, target(self.layout.width, self.layout.height));
 
             buffer.Unlock().context("o quadro não fechou depois da leitura")?;
 
@@ -252,8 +335,7 @@ impl H264Decoder {
 }
 
 enum Output {
-    /// `None` quando o quadro saiu do decodificador sem ser convertido.
-    Frame(Option<DecodedFrame>),
+    Frame(IMFSample),
     Empty,
     StreamChanged,
 }
@@ -395,55 +477,49 @@ unsafe fn layout_of(media_type: &IMFMediaType) -> Layout {
     }
 }
 
-/// NV12 de faixa limitada para RGB, na matriz que o vídeo declarou. Conta inteira em ponto
-/// fixo de 8 bits: cabe num `i32` e não tem divisão nem arredondamento por pixel.
-fn nv12_to_rgb(nv12: &[u8], layout: Layout) -> Result<DecodedFrame> {
+/// NV12 de faixa limitada para RGBA, na matriz que o vídeo declarou, escrito em `rgba` — que
+/// tem de ter o tamanho exato da imagem. Conta inteira em ponto fixo de 8 bits: cabe num `i32` e
+/// não tem divisão nem arredondamento por pixel. RGBA, e não RGB, porque é o que a imagem do
+/// Slint guarda e a placa recebe sem conversão na hora de desenhar.
+fn nv12_to_rgba(nv12: &[u8], layout: Layout, rgba: &mut [u8]) -> Result<()> {
     let Layout { width, height, stride, rows, matrix } = layout;
     let (luma_gain, red_v, green_u, green_v, blue_u) = matrix.coefficients();
     let (width, height, stride, rows) = (width as usize, height as usize, stride as usize, rows as usize);
     let chroma_start = stride * rows;
     let needed = chroma_start + stride * height.div_ceil(2);
 
-    if width == 0 || height == 0 || nv12.len() < needed {
+    if width == 0 || height == 0 || nv12.len() < needed || rgba.len() != width * height * 4 {
         return Err(anyhow!(
-            "quadro de {} bytes não cabe em {width}x{height} com linha de {stride}",
-            nv12.len()
+            "quadro de {} bytes não cabe em {width}x{height} com linha de {stride}, para {} bytes de imagem",
+            nv12.len(),
+            rgba.len()
         ));
     }
 
-    let mut rgb = vec![0_u8; width * height * 3];
-    let band = height.div_ceil(CONVERSION_THREADS);
+    let line = |(row, pixels): (usize, &mut [u8])| {
+        let luma = &nv12[row * stride..row * stride + width];
+        let chroma = &nv12[chroma_start + (row / 2) * stride..];
 
-    // Faixas de linhas, uma por thread: as linhas não dependem umas das outras.
-    std::thread::scope(|scope| {
-        for (index, lines) in rgb.chunks_mut(band * width * 3).enumerate() {
-            scope.spawn(move || {
-                for (offset, line) in lines.chunks_exact_mut(width * 3).enumerate() {
-                    let row = index * band + offset;
-                    let luma = &nv12[row * stride..row * stride + width];
-                    let chroma = &nv12[chroma_start + (row / 2) * stride..];
+        for (column, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let y = (i32::from(luma[column]) - 16) * luma_gain;
+            let u = i32::from(chroma[column & !1]) - 128;
+            let v = i32::from(chroma[(column & !1) + 1]) - 128;
 
-                    for column in 0..width {
-                        let y = (i32::from(luma[column]) - 16) * luma_gain;
-                        let u = i32::from(chroma[column & !1]) - 128;
-                        let v = i32::from(chroma[(column & !1) + 1]) - 128;
-                        let pixel = &mut line[column * 3..column * 3 + 3];
-
-                        pixel[0] = clamp((y + red_v * v + 128) >> 8);
-                        pixel[1] = clamp((y - green_u * u - green_v * v + 128) >> 8);
-                        pixel[2] = clamp((y + blue_u * u + 128) >> 8);
-                    }
-                }
-            });
+            pixel[0] = clamp((y + red_v * v + 128) >> 8);
+            pixel[1] = clamp((y - green_u * u - green_v * v + 128) >> 8);
+            pixel[2] = clamp((y + blue_u * u + 128) >> 8);
+            pixel[3] = 255;
         }
-    });
+    };
 
-    #[allow(clippy::cast_possible_truncation)]
-    Ok(DecodedFrame {
-        width: width as u32,
-        height: height as u32,
-        rgb,
-    })
+    // As linhas não dependem umas das outras. Sem o pool, numa thread só: mais lento, mas a
+    // imagem sai.
+    match conversion_pool() {
+        Some(pool) => pool.install(|| rgba.par_chunks_exact_mut(width * 4).enumerate().for_each(line)),
+        None => rgba.chunks_exact_mut(width * 4).enumerate().for_each(line),
+    }
+
+    Ok(())
 }
 
 fn clamp(value: i32) -> u8 {
@@ -496,8 +572,8 @@ mod tests {
             } else {
                 let last = skipping.decode(unit, timestamp).expect("o último decodificou");
 
-                assert_eq!(last.len(), 1, "o pulo segurou ou soltou quadro a mais");
-                assert_eq!(Some(&last[0]), converted.last(), "o último saiu diferente depois dos pulos");
+                assert!(last.is_some(), "o pulo segurou o último quadro");
+                assert_eq!(last.as_ref(), converted.last(), "o último saiu diferente depois dos pulos");
             }
         }
     }
@@ -518,7 +594,7 @@ mod tests {
 
         for frame in &frames {
             assert_eq!((frame.width, frame.height), (320, 240));
-            assert_eq!(frame.rgb.len(), 320 * 240 * 3);
+            assert_eq!(frame.rgba.len(), 320 * 240 * 4);
         }
 
         // As sete barras do `smpte` do GStreamer, da esquerda para a direita. Cor certa em
@@ -530,30 +606,36 @@ mod tests {
 
         for (index, expected) in bars.iter().enumerate() {
             let x = 320 * (2 * index + 1) / 14;
-            let pixel = &frames[0].rgb[(20 * 320 + x) * 3..(20 * 320 + x) * 3 + 3];
+            let pixel = &frames[0].rgba[(20 * 320 + x) * 4..(20 * 320 + x) * 4 + 3];
             let far = pixel.iter().zip(expected).any(|(&got, &want)| (i32::from(got) - want).abs() > 12);
 
             assert!(!far, "a barra {index} saiu {pixel:?}, esperava {expected:?}");
         }
     }
 
+    fn convert(nv12: &[u8], layout: Layout) -> Result<Vec<u8>> {
+        let mut rgba = vec![0; layout.width as usize * layout.height as usize * 4];
+
+        nv12_to_rgba(nv12, layout, &mut rgba).map(|()| rgba)
+    }
+
     #[test]
-    fn nv12_white_black_and_red_become_the_right_rgb() {
+    fn nv12_white_black_and_red_become_the_right_rgba() {
         // Um bloco 2x2 tem um par de croma só, então cada caso pinta o bloco inteiro.
         let white = Layout { width: 2, height: 2, stride: 2, rows: 2, matrix: Matrix::Bt709 };
-        let frame = nv12_to_rgb(&[235, 235, 235, 235, 128, 128], white).unwrap();
+        let rgba = convert(&[235, 235, 235, 235, 128, 128], white).unwrap();
 
-        assert!(frame.rgb.iter().all(|&channel| channel >= 254), "{:?}", frame.rgb);
+        assert!(rgba.iter().all(|&channel| channel >= 254), "{rgba:?}");
 
-        let frame = nv12_to_rgb(&[16, 16, 16, 16, 128, 128], white).unwrap();
+        let rgba = convert(&[16, 16, 16, 16, 128, 128], white).unwrap();
 
-        assert!(frame.rgb.iter().all(|&channel| channel <= 1), "{:?}", frame.rgb);
+        assert!(rgba.chunks(4).all(|pixel| pixel[..3].iter().all(|&channel| channel <= 1) && pixel[3] == 255), "{rgba:?}");
 
         // Vermelho puro em BT.709 limitado: Y 63, U 102, V 240.
-        let frame = nv12_to_rgb(&[63, 63, 63, 63, 102, 240], white).unwrap();
-        let pixel = &frame.rgb[..3];
+        let rgba = convert(&[63, 63, 63, 63, 102, 240], white).unwrap();
+        let pixel = &rgba[..4];
 
-        assert!(pixel[0] >= 250 && pixel[1] <= 5 && pixel[2] <= 5, "{pixel:?}");
+        assert!(pixel[0] >= 250 && pixel[1] <= 5 && pixel[2] <= 5 && pixel[3] == 255, "{pixel:?}");
     }
 
     #[test]
@@ -566,16 +648,17 @@ mod tests {
         nv12[4..6].copy_from_slice(&[235, 235]);
         nv12[16..18].copy_from_slice(&[128, 128]);
 
-        let frame = nv12_to_rgb(&nv12, layout).unwrap();
+        let rgba = convert(&nv12, layout).unwrap();
 
-        assert_eq!((frame.width, frame.height, frame.rgb.len()), (2, 2, 12));
-        assert!(frame.rgb.iter().all(|&channel| channel >= 254), "{:?}", frame.rgb);
+        assert_eq!(rgba.len(), 16);
+        assert!(rgba.iter().all(|&channel| channel >= 254), "{rgba:?}");
     }
 
     #[test]
-    fn a_short_buffer_is_refused_instead_of_read_past_the_end() {
+    fn a_short_buffer_or_a_wrong_image_is_refused_instead_of_read_past_the_end() {
         let layout = Layout { width: 4, height: 4, stride: 4, rows: 4, matrix: Matrix::Bt709 };
 
-        assert!(nv12_to_rgb(&[0; 10], layout).is_err());
+        assert!(convert(&[0; 10], layout).is_err());
+        assert!(nv12_to_rgba(&[0; 24], layout, &mut [0; 10]).is_err(), "imagem do tamanho errado");
     }
 }

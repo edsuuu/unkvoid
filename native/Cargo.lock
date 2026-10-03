@@ -4802,6 +4802,7 @@ dependencies = [
  "futures-util",
  "opus",
  "rand 0.8.8",
+ "rayon",
  "rtc",
  "serde_json",
  "socket2",

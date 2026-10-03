@@ -44,3 +44,5 @@ windows = { version = "0.62", features = [
 ] }
 # O `#[implement]` gera caminhos `windows_core::`: a crate precisa estar aqui pelo nome.
 windows-core = "0.62"
+# As threads da conversão para RGBA de quem assiste. Já vem compilada pela captura do Windows.
+rayon = "1"

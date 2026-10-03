@@ -150,8 +150,8 @@ async fn main() -> anyhow::Result<()> {
 
                             if newest.get(next.producer_id.as_str()) != Some(&index) {
                                 decoder.skip(&next.data, timestamp)?;
-                            } else if let Some(frame) = decoder.decode(&next.data, timestamp)?.pop() {
-                                std::hint::black_box(frame.rgb.clone());
+                            } else if let Some(frame) = decoder.decode(&next.data, timestamp)? {
+                                std::hint::black_box(frame.rgba);
                                 shown += 1;
                             }
 

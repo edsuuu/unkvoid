@@ -41,12 +41,12 @@ pub use windows::MediaFoundationEncoder as PlatformEncoder;
 #[cfg(target_os = "windows")]
 pub use windows_decoder::H264Decoder;
 
-/// Um quadro decodificado, pronto para desenhar: RGB de 8 bits, sem padding entre as linhas.
+/// Um quadro decodificado, pronto para desenhar: RGBA de 8 bits, sem padding entre as linhas.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedFrame {
     pub width: u32,
     pub height: u32,
-    pub rgb: Vec<u8>,
+    pub rgba: Vec<u8>,
 }
 
 /// Fora do Windows quem assiste decodifica pelo sistema dele — VideoToolbox no macOS,
@@ -60,7 +60,16 @@ impl H264Decoder {
         Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
     }
 
-    pub fn decode(&mut self, _annex_b: &[u8], _timestamp: u32) -> anyhow::Result<Vec<DecodedFrame>> {
+    pub fn decode(&mut self, _annex_b: &[u8], _timestamp: u32) -> anyhow::Result<Option<DecodedFrame>> {
+        Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
+    }
+
+    pub fn decode_into<'target>(
+        &mut self,
+        _annex_b: &[u8],
+        _timestamp: u32,
+        _target: impl FnOnce(u32, u32) -> &'target mut [u8],
+    ) -> anyhow::Result<bool> {
         Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
     }
 

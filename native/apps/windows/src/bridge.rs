@@ -3206,7 +3206,7 @@ fn draw_fresh(window: &Weak<AppWindow>, watch: &Arc<Mutex<Option<Watch>>>) {
             .find_map(|index| tiles.row_data(index).filter(|row| row.producer == producer).map(|row| (index, row)));
 
         if let Some((index, mut row)) = found {
-            row.frame = Image::from_rgb8(buffer);
+            row.frame = Image::from_rgba8(buffer);
             row.has_frame = true;
             tiles.set_row_data(index, row);
         }
