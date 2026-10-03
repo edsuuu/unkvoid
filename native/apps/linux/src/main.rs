@@ -15,20 +15,35 @@ mod streaming;
 mod user_bar;
 mod watching;
 
+use std::path::PathBuf;
+
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, CssProvider, Stack, gdk, glib};
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 use bridge::{Bridge, Update};
 use core_app::Screen;
+use core_app::logbook::DailyLog;
 use core_app::realtime::Notice;
 use screens::{EntryScreen, HubScreen, OfflineScreen, RoomScreen, UpdatingScreen};
 
 const APP_ID: &str = "com.unkvoid.desktop";
 
+/// O log vai para o arquivo do dia, além do terminal: aberto pelo menu do sistema não há
+/// terminal nenhum, e o log só existia no stderr, em nível ERROR — o que acontecia com quem usa
+/// não ficava em lugar nenhum, nem chegava ao site.
 fn main() -> glib::ExitCode {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    let log = DailyLog::open(&log_folder());
+
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr.and(std::sync::Mutex::new(log)))
+        .with_ansi(false)
         .init();
+
+    std::panic::set_hook(Box::new(|information| tracing::error!("pânico: {information}")));
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "Unkvoid abrindo");
 
     let application = Application::builder().application_id(APP_ID).build();
 
@@ -36,6 +51,16 @@ fn main() -> glib::ExitCode {
     application.connect_activate(open);
 
     application.run()
+}
+
+/// Onde fica o log diário: `$XDG_STATE_HOME/unkvoid`, ou `~/.local/state/unkvoid` — a pasta de
+/// estado do XDG, que é onde log de app mora no Linux.
+pub fn log_folder() -> PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"))
+        .join("unkvoid")
 }
 
 fn load_theme() {

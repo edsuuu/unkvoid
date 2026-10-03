@@ -189,6 +189,12 @@ impl Bridge {
         let (core, api, screen) = (self.core.clone(), self.api.clone(), self.to_screen.clone());
         let (sfu, live) = (self.sfu.clone(), self.live.clone());
 
+        self.spawn({
+            let api = self.api.clone();
+
+            async move { core_app::logbook::report_errors(&api, &crate::log_folder()).await }
+        });
+
         self.spawn(async move {
             let mut backoff = Backoff::default();
 
