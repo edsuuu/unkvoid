@@ -1,8 +1,8 @@
 //! A sala: o código para mandar a alguém, quem está dentro, e o que está sendo transmitido.
 //!
 //! O vídeo chega pronto do `watching`: quadros de pixels, já no tamanho do cartão. Aqui eles
-//! só viram textura, no relógio da janela — trinta vezes por segundo, o que chegou por
-//! último e nada mais.
+//! só viram textura, no relógio da janela — a cada quadro da tela, o que chegou por último e
+//! nada mais.
 //!
 //! O desenho é o do `apps/desktop/ui/components/room`: uma barra só, em pílula, com o código
 //! à esquerda e os botões redondos à direita; quem está na sala mora na setinha, não numa
@@ -12,7 +12,7 @@
 //! é só a tela compartilhada, como no React (`RoomToolbar` só desenha isso no modo `voice`).
 //! Botão de mudar mic aqui prometeria um canal de áudio que esta sala não tem.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -30,9 +30,10 @@ use crate::icons;
 use crate::streaming::{Mine, Tile};
 use crate::watching::TILE;
 
-/// De quanto em quanto tempo a janela pega o quadro mais novo. Trinta por segundo é o que o
-/// cartão desenha; pedir mais só acharia o mesmo quadro duas vezes.
-const REDRAW: Duration = Duration::from_millis(33);
+/// Sem um quadro do relógio da janela por isto, ninguém está vendo a sala, e o vídeo pausa no
+/// servidor. Dois segundos, como no Windows: um alt-tab rápido não pode custar um quadro-chave
+/// na volta.
+const AWAY_AFTER: Duration = Duration::from_secs(2);
 
 /// O relógio do "tempo na sala" anda de segundo em segundo, que é o que ele mostra.
 const TICK: Duration = Duration::from_secs(1);
@@ -199,14 +200,36 @@ impl RoomScreen {
             }
         });
 
-        let _redraw = glib::timeout_add_local(REDRAW, {
-            let (bridge, pictures) = (bridge.clone(), pictures.clone());
+        // O quadro novo entra a cada quadro da tela — 60, 144 por segundo —, e não num relógio
+        // de 33 ms que capava tudo em 30 e desenhava fora do ritmo do monitor. A janela fora da
+        // vista (minimizada, escondida, a sala fora da página) para de receber esse relógio, e é
+        // isso que diz que ninguém está olhando.
+        let ticked = Rc::new(Cell::new(Instant::now()));
 
-            move || {
+        root.add_tick_callback({
+            let (bridge, pictures, ticked) = (bridge.clone(), pictures.clone(), ticked.clone());
+
+            move |_, _| {
+                ticked.set(Instant::now());
+
                 for (producer_id, pixels) in bridge.fresh_frames() {
                     if let Some(picture) = pictures.borrow().get(&producer_id) {
                         picture.set_paintable(Some(&texture(pixels)));
                     }
+                }
+
+                glib::ControlFlow::Continue
+            }
+        });
+
+        let _away = glib::timeout_add_local(TICK, {
+            let (bridge, away) = (bridge.clone(), Cell::new(false));
+
+            move || {
+                let unseen = ticked.get().elapsed() >= AWAY_AFTER;
+
+                if away.replace(unseen) != unseen {
+                    bridge.set_away(unseen);
                 }
 
                 glib::ControlFlow::Continue
