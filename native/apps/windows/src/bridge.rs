@@ -61,6 +61,7 @@ fn room_failure(what: &str) -> &'static str {
         "watch" => "Não deu para assistir a uma das transmissões.",
         "mic" => "Não deu para abrir o microfone.",
         "shareClosed" => "A janela que você compartilhava foi fechada, e a transmissão parou.",
+        "serverMuted" => "Um moderador silenciou o seu microfone.",
         _ => "Não deu para compartilhar a tela.",
     }
 }
@@ -616,8 +617,15 @@ impl Bridge {
             let bridge = self.clone();
 
             move |producer| {
-                lock(&bridge.stage).toggle_full(&producer);
+                let focused = {
+                    let mut stage = lock(&bridge.stage);
+
+                    stage.toggle_full(&producer);
+                    stage.full_producer()
+                };
+
                 paint_stage(&bridge.window, &bridge.stage);
+                bridge.with_room(move |room| async move { room.set_focus(focused).await });
             }
         });
 

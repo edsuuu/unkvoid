@@ -777,11 +777,11 @@ impl Broadcast {
 
         tracing::info!("broadcast: abrindo o encoder de áudio");
 
-        let audio = Mutex::new(AudioEncoder::new(if audio_source == Some(Source::Mic) {
-            48_000
+        let audio = Mutex::new(if audio_source == Some(Source::Mic) {
+            AudioEncoder::for_voice(48_000)
         } else {
-            96_000
-        })?);
+            AudioEncoder::new(96_000)
+        }?);
         let capture_target = Arc::clone(&sfu);
         let recipe = config.clone();
         let muted = Arc::new(AtomicBool::new(false));
@@ -1434,7 +1434,7 @@ impl Session {
         Ok(AudioFeed {
             sender: Arc::clone(&self.sender),
             source,
-            encoder: Mutex::new(AudioEncoder::new(48_000)?),
+            encoder: Mutex::new(if source == Source::Mic { AudioEncoder::for_voice(48_000) } else { AudioEncoder::new(48_000) }?),
             muted: AtomicBool::new(false),
             level: LevelMeter::default(),
             gate: Mutex::default(),

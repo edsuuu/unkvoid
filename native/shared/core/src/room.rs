@@ -63,8 +63,14 @@ pub struct Room {
     /// pessoa: volta sozinho quando ela aparece.
     hidden: std::sync::atomic::AtomicBool,
     away: Mutex<HashSet<String>>,
+    /// A transmissão em tela cheia, se há uma (`set_focus`).
+    focus: Mutex<Option<String>>,
     /// Telas que a pessoa mandou assistir pelo "Assistir", acima do `screens_at_once`.
     chosen: Mutex<HashSet<String>>,
+    /// O microfone mutado pela pessoa e o silenciado por um moderador (`serverMuted`): vale o
+    /// que estiver ligado.
+    user_muted: std::sync::atomic::AtomicBool,
+    server_muted: std::sync::atomic::AtomicBool,
     /// "Ver o que a sala vê": assistir à própria tela, que custa um decodificador a mais.
     self_view: std::sync::atomic::AtomicBool,
     /// A receita da tela que está subindo, para republicar depois de uma queda longa.
@@ -102,7 +108,10 @@ impl Room {
             receiving: Mutex::default(),
             hidden: std::sync::atomic::AtomicBool::new(false),
             away: Mutex::default(),
+            focus: Mutex::default(),
             chosen: Mutex::default(),
+            user_muted: std::sync::atomic::AtomicBool::new(false),
+            server_muted: std::sync::atomic::AtomicBool::new(false),
             self_view: std::sync::atomic::AtomicBool::new(false),
             shared: Mutex::default(),
             shown: Mutex::default(),
@@ -294,6 +303,14 @@ impl Room {
                     lock(&self.receiving).remove(producer_id);
                     lock(&self.away).remove(producer_id);
                     lock(&self.chosen).remove(producer_id);
+
+                    // A tela cheia que acabou devolve as outras à vista.
+                    let focused_left = lock(&self.focus).as_deref() == Some(producer_id);
+
+                    if focused_left {
+                        *lock(&self.focus) = None;
+                        self.apply_view().await;
+                    }
                 }
                 local::SESSION_LOST => self.tell("room.session", json!({ "state": "lost" })),
                 local::SESSION_REJOINED => {
@@ -310,6 +327,7 @@ impl Room {
                     self.settle().await;
                 }
                 "producerDead" => self.died(&event.data).await,
+                "serverMuted" => self.silenced(event.data["muted"].as_bool().unwrap_or(false)),
                 "producerReceiving" => {
                     if let (Some(producer_id), Some(receiving)) =
                         (event.data["producerId"].as_str(), event.data["receiving"].as_bool())
@@ -454,7 +472,7 @@ impl Room {
         // Pausado antes de o caminho ser refeito continua pausado: o consumer nasce assim. E o
         // vídeo que chega com a janela fora da vista espera ela voltar.
         let paused = lock(&self.paused).contains(&producer.producer_id);
-        let away = kind == "video" && self.hidden.load(std::sync::atomic::Ordering::Relaxed);
+        let away = kind == "video" && self.unseen(&producer.producer_id);
 
         if away {
             lock(&self.away).insert(producer.producer_id.clone());
@@ -480,6 +498,14 @@ impl Room {
         lock(&self.watching).stop(Some(producer_id));
         lock(&self.closed).insert(producer_id.to_owned());
         lock(&self.paused).remove(producer_id);
+
+        // Fechar a tela que estava em tela cheia devolve as outras à vista.
+        let focused = lock(&self.focus).as_deref() == Some(producer_id);
+
+        if focused {
+            *lock(&self.focus) = None;
+            self.apply_view().await;
+        }
 
         let consumer = lock(&self.consumers).remove(producer_id);
 
@@ -526,33 +552,60 @@ impl Room {
             return;
         }
 
-        let video: HashSet<String> = self
+        self.apply_view().await;
+    }
+
+    /// Uma tela em tela cheia (`Some`) ou nenhuma: com uma em tela cheia, as outras não estão à
+    /// vista, e o vídeo delas pausa no servidor como no app em React — decodificar três telas
+    /// atrás de uma só gasta a CPU do jogo à toa.
+    pub async fn set_focus(&self, producer_id: Option<String>) {
+        if std::mem::replace(&mut *lock(&self.focus), producer_id.clone()) == producer_id {
+            return;
+        }
+
+        self.apply_view().await;
+    }
+
+    /// Se uma transmissão de vídeo não está à vista: a janela está fora, ou outra está em tela
+    /// cheia.
+    fn unseen(&self, producer_id: &str) -> bool {
+        self.hidden.load(std::sync::atomic::Ordering::Relaxed) || lock(&self.focus).as_deref().is_some_and(|focused| focused != producer_id)
+    }
+
+    /// Pausa no servidor o vídeo que deixou de estar à vista e retoma o que voltou — sem mexer no
+    /// que a pessoa pausou.
+    async fn apply_view(&self) {
+        let paused = lock(&self.paused).clone();
+        let unseen: HashSet<String> = self
             .session
             .peers()
             .iter()
             .flat_map(|peer| peer.producers.iter())
-            .filter(|producer| producer.kind == "video")
+            .filter(|producer| producer.kind == "video" && !paused.contains(&producer.producer_id) && self.unseen(&producer.producer_id))
             .map(|producer| producer.producer_id.clone())
             .collect();
-        let chosen: HashSet<String> = if away {
-            let paused = lock(&self.paused).clone();
+        let current = lock(&self.away).clone();
+        let consumers = lock(&self.consumers).clone();
+        let changes = unseen
+            .difference(&current)
+            .map(|producer_id| (producer_id.clone(), true))
+            .chain(current.difference(&unseen).map(|producer_id| (producer_id.clone(), false)));
 
-            video.into_iter().filter(|producer_id| !paused.contains(producer_id)).collect()
-        } else {
-            std::mem::take(&mut *lock(&self.away))
-        };
-        let consumers: Vec<(String, String)> = lock(&self.consumers)
-            .iter()
-            .filter(|(producer_id, _)| chosen.contains(*producer_id))
-            .map(|(producer_id, consumer_id)| (producer_id.clone(), consumer_id.clone()))
-            .collect();
-        let acted = if away { action::PAUSE_CONSUMER } else { action::RESUME_CONSUMER };
+        for (producer_id, away) in changes.collect::<Vec<_>>() {
+            let acted = if away { action::PAUSE_CONSUMER } else { action::RESUME_CONSUMER };
+            let done = match consumers.get(&producer_id) {
+                Some(consumer_id) => self.session.client().call(acted, json!({ "consumerId": consumer_id })).await.is_ok(),
+                None => true,
+            };
 
-        for (producer_id, consumer_id) in consumers {
-            let done = self.session.client().call(acted, json!({ "consumerId": consumer_id })).await.is_ok();
+            if done {
+                let mut away_set = lock(&self.away);
 
-            if away && done {
-                lock(&self.away).insert(producer_id);
+                if away {
+                    away_set.insert(producer_id);
+                } else {
+                    away_set.remove(&producer_id);
+                }
             }
         }
     }
@@ -802,6 +855,8 @@ impl Room {
         let updates = self.updates.clone();
 
         feed.set_input_mode(*lock(&self.input_mode));
+        // O microfone que reabre (depois de uma queda) não fura o silêncio de um moderador.
+        feed.set_muted(self.server_muted.load(std::sync::atomic::Ordering::Relaxed));
         feed.on_level(move |level| {
             let percent = sharing::level_percent(&[level]);
             let _ = updates.send(json!({ "event": "room.level", "channel": null, "data": { "level": level, "percent": percent } }).to_string());
@@ -849,6 +904,21 @@ impl Room {
         let Some(feed) = lock(&self.microphone).clone() else {
             return;
         };
+
+        self.user_muted.store(muted, std::sync::atomic::Ordering::Relaxed);
+
+        // Silenciado por um moderador fica silenciado: o servidor recusa retomar o producer.
+        if self.server_muted.load(std::sync::atomic::Ordering::Relaxed) {
+            feed.set_muted(true);
+
+            if !muted {
+                self.tell("room.failed", json!({ "what": "serverMuted" }));
+            }
+
+            self.announce_mine();
+
+            return;
+        }
 
         feed.set_muted(muted);
 
@@ -977,6 +1047,7 @@ impl Room {
             "selfView": self.self_view.load(std::sync::atomic::Ordering::Relaxed),
             "mic": microphone.is_some(),
             "micMuted": microphone.is_some_and(|feed| feed.is_muted()),
+            "serverMuted": self.server_muted.load(std::sync::atomic::Ordering::Relaxed),
             "camera": lock(&self.producers).contains_key(&Source::Camera),
             "canShare": self.session.can("stream"),
             "canSpeak": self.session.can("speak"),
@@ -1195,6 +1266,23 @@ impl Room {
     fn rewatch(&self) {
         lock(&self.watching).renew();
         lock(&self.consumers).clear();
+    }
+
+    /// Um moderador silenciou (ou devolveu) o microfone desta pessoa. O servidor já pausou o
+    /// producer; aqui o microfone cala de verdade e a interface mostra — antes ele seguia aberto
+    /// na tela, falando para ninguém, e desmutar falhava calado. Como no app em React.
+    fn silenced(&self, muted: bool) {
+        self.server_muted.store(muted, std::sync::atomic::Ordering::Relaxed);
+
+        if let Some(feed) = lock(&self.microphone).as_ref() {
+            feed.set_muted(muted || self.user_muted.load(std::sync::atomic::Ordering::Relaxed));
+        }
+
+        if muted {
+            self.tell("room.failed", json!({ "what": "serverMuted" }));
+        }
+
+        self.announce_mine();
     }
 
     /// O servidor fechou a tela ou o microfone desta pessoa: nada chegou lá em 30 s, ou a
