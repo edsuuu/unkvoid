@@ -498,9 +498,10 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 ## App — o que aparece
 
 - Entrada: a tela de código continua; ao lado, "Entrar" (e-mail/senha ou Google pelo
-  `/oauth2/app?state=`, de volta pelo `unkvoid://`) e "Criar conta". Token do Sanctum em `localStorage`
-  (`unkvoid:token`). Com token válido (`GET /api/me`), abre o modo servidor. Criar conta pelo
-  app é só e-mail e senha.
+  `/oauth2/app?state=&port=`, de volta por uma porta em `127.0.0.1`; o app Tauri de antes voltava
+  pelo `unkvoid://`) e "Criar conta". O token do Sanctum fica cifrado no disco, com a chave no
+  chaveiro do sistema (`shared/storage`; no Tauri de antes, `localStorage` `unkvoid:token`). Com
+  token válido (`GET /api/me`), abre o modo servidor. Criar conta pelo app é só e-mail e senha.
 - Com `nickname_confirmed: false`, um modal que não fecha pede o apelido (já preenchido com o
   automático) a cada abertura do app, até o `PATCH /api/me` dar certo. Dá para sair da conta
   por ele.
@@ -522,17 +523,19 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 - Modo servidor: trilho de servidores | canais (texto e voz, quem está em cada voz) |
   centro (chat ou palco) | membros com cargos. Barra de voz embaixo: mutar, ensurdecer,
   câmera, **compartilhar tela (só aqui)**, sair.
-- Windows/macOS: mic e câmera pelo `getUserMedia` + `sendTransport.produce`. Linux:
-  pelo Rust (`pulsesrc`/`v4l2src` → RTP puro), como a tela.
+- Microfone e câmera sobem pelo núcleo em RTP puro (`producePlain`), como a tela, nos três apps
+  nativos. (O app Tauri de antes usava `getUserMedia` + `sendTransport.produce` no Windows e no
+  macOS.)
 - Áudio de `screenAudio` chega **mudo**. `mic` toca direto. `camera` vira cartão pequeno.
 - Chat: até 3 imagens por mensagem, por botão, colando ou arrastando; o app reduz cada uma para
   caber em 2 MB antes de enviar. Quem está numa voz tem o chat daquele canal ao lado do palco.
-- Cada pessoa da voz tem volume e mudo locais (guardados por conta), e as configurações têm
-  "Saída de áudio" onde o motor da janela tem `setSinkId` (WebView2). No Linux a voz dos outros
-  toca pelo Rust, então esses dois controles não aparecem lá.
-- Variáveis de ambiente do app, para calibrar e diagnosticar: `UNKVOID_ENCODER=cpu` (pula o
-  encoder da placa), `UNKVOID_ABR=off` (taxa fixa, sem acompanhar a perda),
-  `UNKVOID_CAPTURE=x11|portal` (força a captura do Linux).
+- Cada pessoa da voz tem volume e mudo locais (guardados por conta). A saída de áudio e o
+  microfone se escolhem na setinha ao lado de cada botão da barra, e a troca vale na hora. No
+  Linux o volume por pessoa ainda não existe.
+- Variáveis de ambiente do app, para calibrar e diagnosticar: `UNKVOID_SERVER` (outro Laravel),
+  `UNKVOID_ENCODER=cpu` (pula o encoder da placa), `UNKVOID_DECODER=cpu` (assiste sem o DXVA, no
+  Windows), `UNKVOID_ABR=off` (taxa fixa, sem acompanhar a perda), `UNKVOID_CAPTURE=x11|portal`
+  (força a captura do Linux).
 
 ## App — a ABI do núcleo (interfaces nativas)
 
@@ -639,7 +642,8 @@ status ficam no log.
 
 ## App — comandos do Tauri
 
-A interface chama com `invoke`, com os argumentos em camelCase (`serverKey`, `producerId`); o
+**Só o app Tauri de antes** (`native/apps/desktop`), que não é mais publicado; os apps nativos não
+passam por aqui. A interface chama com `invoke`, com os argumentos em camelCase (`serverKey`, `producerId`); o
 Tauri converte para o snake_case do Rust. Mudou um comando, mude aqui e em `ui/core`.
 
 | Comando | Argumentos | Devolve | Para quê |
@@ -684,7 +688,7 @@ cd web && composer dev            # serve em :8000, fila, logs, vite
 cd sfu && pnpm run build && SFU_SECRET=<o mesmo do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node dist/server.js
 
 # 3. App apontando para o Laravel local (o SFU vem do GET /api/config)
-cd native/apps/desktop && VITE_SERVER=http://127.0.0.1:8000 npm run dev:app
+cd native && UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid-windows   # ou unkvoid-linux; no Mac, native/apps/macos/run.sh
 ```
 
 Duas máquinas na mesma rede: troque `127.0.0.1` pelo IP da máquina que roda os
@@ -693,6 +697,5 @@ servidores em `APP_URL` e `SFU_PUBLIC_URL` (`web/.env`), suba o SFU com
 `php artisan serve --host=0.0.0.0`. No WSL2 a rede só enxerga o UDP do SFU com
 `networkingMode=mirrored` no `.wslconfig`.
 
-Windows: o instalador sai de `C:\Users\edsu\unkvoid-build` como descrito em
-[BUILD-WINDOWS.md](BUILD-WINDOWS.md); para apontar para o Laravel local sem rebuildar, grave
-`localStorage.server = 'http://<IP>:8000'` no console do app.
+O app instalado aponta para outro Laravel com `UNKVOID_SERVER=http://<IP>:8000` no ambiente de
+quem o abre.

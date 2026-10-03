@@ -11,35 +11,26 @@ do outro lado não chegava nada. Era porta fechada.
 
 | Faixa | Protocolo | Quem usa | Quantas portas |
 |---|---|---|---|
-| 40000-40006 | UDP **e** TCP | Quem **assiste**, por WebRTC | uma por worker |
-| 41000-42000 | UDP | Quem **transmite** ou **assiste pelo caminho nativo** (Linux), por RTP puro | uma por pessoa que envia, mais uma por pessoa que recebe no Linux |
+| 41000-42000 | UDP | o app nativo, por RTP puro: quem transmite e quem assiste | até duas por pessoa: uma de envio e uma de chegada |
+| 40000 até 40000 + workers − 1 (hoje 40000-40002) | UDP **e** TCP | o WebRTC do app Tauri de antes | uma por worker |
 
-São faixas separadas de propósito. O WebRtcServer do mediasoup não pode dividir
-porta com o transporte plain, e não existe processo que sirva os dois.
+São faixas separadas de propósito: o WebRtcServer do mediasoup não divide porta com o transporte
+plain.
 
-### Quem assiste: uma porta por worker, e só
+### O app nativo: uma porta por sentido
 
-O WebRtcServer **multiplexa**. Um worker atende dez, cinquenta ou duzentos
-espectadores na mesma porta, distinguindo um do outro pelo ICE. Sete workers,
-sete portas: 40000 a 40006.
+Cada pessoa recebe **um** transporte plain de envio — tela, som da tela, microfone e câmera
+juntos, cada um com o seu SSRC, e o `rtcpMux` junta até o RTCP na mesma porta — e **um** de
+chegada, por onde vem tudo o que ela assiste e ouve. Quem está na voz gasta duas portas.
 
-Essa faixa não cresce com o número de pessoas. Ela cresce com o número de
-workers, que é `SFU_WORKERS` e é um por núcleo menos um — o núcleo que sobra é do
-nginx, do php-fpm, do MySQL, do MinIO e do e-mail.
+O tamanho da faixa é o teto de transportes simultâneos.
 
-TCP na mesma faixa é o caminho reserva. Quem estiver numa rede que bloqueia UDP
-— empresa, escola, alguns hotéis — só assiste por ele. Deixar o TCP fechado não
-dá erro visível: o ICE tenta, não conecta, e a pessoa fica olhando para uma sala
-sem imagem.
+### O WebRTC de antes: uma porta por worker
 
-### Quem transmite: uma porta por sentido
-
-Cada pessoa que compartilha a tela recebe **um** transporte plain de envio, e nele
-cabem vídeo e áudio juntos — o `rtcpMux` junta até o RTCP na mesma porta; quem
-participa da voz pelo Linux, que também recebe por RTP puro, gasta **duas** portas
-(envia e recebe), e a faixa é de 64 por worker.
-
-O tamanho da faixa é o teto de transmissões simultâneas.
+O WebRtcServer **multiplexa**: um worker atende muitos espectadores na mesma porta,
+distinguindo um do outro pelo ICE. A faixa cresce com `SFU_WORKERS` (núcleos menos um; o que
+sobra é do nginx, do php-fpm, do MySQL, do MinIO e do e-mail), não com as pessoas. O TCP na
+mesma faixa era o caminho reserva de quem está numa rede que bloqueia UDP.
 
 ## A conta
 
@@ -49,14 +40,13 @@ teto do servidor     = SFU_WORKERS × SFU_PLAIN_PORTS
 faixa a abrir        = SFU_PLAIN_PORT  até  SFU_PLAIN_PORT + (workers × portas) - 1
 ```
 
-Com os valores de hoje, 7 workers e 64 portas, o teto é 448 transports plain
-simultâneos (cada pessoa na voz pelo Linux usa dois: envio e recepção) e a faixa mínima é 41000-41447 — dentro da regra 41000-42000 que o firewall já abre.
+Com os valores de hoje, 3 workers e 64 portas, o teto é 192 transportes plain simultâneos e a
+faixa mínima é 41000-41191 — dentro da regra 41000-42000 que o firewall já abre.
 
-**Mas o teto que se sente não é esse.** Uma sala inteira vive num worker só — o
-registro manda cada sala nova para o worker com menos salas, e ela fica lá. Então
-o limite prático é `SFU_PLAIN_PORTS` transmissões **por sala**: hoje, 64 pessoas
-compartilhando a tela ao mesmo tempo na mesma sala — muito além do teto de banda,
-que é o que se sente primeiro (ver [infra/INSTALAR-VPS.md](INSTALAR-VPS.md)).
+**Mas o teto que se sente não é esse.** Uma sala inteira vive num worker só — o registro manda
+cada sala nova para o worker com menos salas, e ela fica lá. Então o limite prático é
+`SFU_PLAIN_PORTS` transportes **por sala**: 64, ou 32 pessoas na voz (cada uma manda e recebe) —
+além do teto de banda, que é o que se sente primeiro (ver [INSTALAR-VPS.md](INSTALAR-VPS.md)).
 
 Foi por isso que o valor já foi 1, e duas pessoas nunca conseguiram compartilhar
 juntas: o segundo a clicar recebia `no more available ports`.
@@ -102,11 +92,12 @@ Quem transmite **sai** de uma porta efêmera qualquer para a porta do servidor. 
 `comedia` do mediasoup aprende o endereço de origem no primeiro pacote que
 chega, então nada na máquina de quem transmite precisa ser alcançável de fora.
 Roteador doméstico, NAT duplo, CGNAT da operadora: todos funcionam sem
-configuração.
+configuração. Se o endereço mudar no meio (o provedor reconectou, o roteador reiniciou), o
+`comedia` continua preso ao antigo; o app percebe — 5 s mandando sem RTCP de volta, ou o servidor
+recebendo a tela e nada chegando — e abre um transporte novo com chave nova.
 
 O que **precisa** funcionar é a saída UDP. Uma rede que só deixa passar TCP nas
-portas 80 e 443 não transmite de jeito nenhum, e assiste só pelo caminho reserva
-em TCP.
+portas 80 e 443 não transmite nem assiste pelo app nativo.
 
 ## Conferir, e conferir de fora
 
@@ -116,17 +107,17 @@ mesmo quando o firewall descarta tudo antes.
 TCP responde a sondagem:
 
 ```bash
-nc -z -w 4 unkvoid.com 40000 && echo aberta || echo fechada
+nc -z -w 4 unkvoid.com 40000 && echo aberta || echo fechada   # a faixa do WebRTC tem TCP
 ```
 
 UDP não responde nada, então o teste precisa de captura do outro lado:
 
 ```bash
 # na VPS, deixe rodando
-sudo tcpdump -nn -i any 'udp and (dst portrange 40000-40006 or dst portrange 41000-42000)'
+sudo tcpdump -nn -i any 'udp and (dst portrange 40000-40002 or dst portrange 41000-42000)'
 
 # da sua máquina
-for p in 40000 40006 41000 41447 42000; do printf teste | nc -u -w0 unkvoid.com $p; done
+for p in 40000 40002 41000 41191 42000; do printf teste | nc -u -w0 unkvoid.com $p; done
 ```
 
 Toda porta enviada tem de aparecer no tcpdump. A que não aparecer está
@@ -145,6 +136,6 @@ testar cedo demais dá um falso negativo que manda você caçar no lugar errado.
 Subir `SFU_WORKERS` também aumenta o teto total, mas não o de uma sala: a sala
 continua num worker só.
 
-Ver também [infra/INSTALAR-VPS.md](INSTALAR-VPS.md) para a tabela de portas do
+Ver também [INSTALAR-VPS.md](INSTALAR-VPS.md) para a tabela de portas do
 firewall do painel, [SERVIDOR.md](SERVIDOR.md) para por que ele é o primeiro suspeito, e
 [REDE.md](REDE.md) para o caminho da imagem.
