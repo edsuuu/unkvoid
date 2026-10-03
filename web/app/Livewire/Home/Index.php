@@ -34,7 +34,8 @@ final class Index extends Component
                 'macOS' => $link(ReleasePlatformEnum::MacosDmg),
                 'Windows' => $link(ReleasePlatformEnum::WindowsNsis) ?? $link(ReleasePlatformEnum::WindowsMsi),
                 'WindowsExe' => $link(ReleasePlatformEnum::WindowsNsis),
-                'WindowsMsi' => $link(ReleasePlatformEnum::WindowsMsi),
+                // `mode=direct` abre o app da Store no Windows; fora dele, a página do produto.
+                'WindowsStore' => 'https://apps.microsoft.com/detail/9NGPGTV3NPLW?mode=direct',
                 'Linux' => $link(ReleasePlatformEnum::LinuxDeb),
             ],
             'aptUrl' => $aptUrl,

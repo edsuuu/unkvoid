@@ -125,6 +125,7 @@ it('abre a página inicial com o download', function (): void {
     $this->get(route('home'))
         ->assertOk()
         ->assertSee('Baixar Unkvoid')
+        ->assertSee('apps.microsoft.com/detail/9NGPGTV3NPLW', false)
         ->assertSee('apt install unkvoid');
 });
 

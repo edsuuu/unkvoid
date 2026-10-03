@@ -306,23 +306,19 @@
                 <span class="lp-mine" x-show="os === 'Windows'" x-cloak>Seu sistema</span>
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
                     <div class="lp-dl-icon"><x-os.windows /></div>
-                    <span class="lp-ext">.exe / .msi</span>
+                    <span class="lp-ext">Store / .exe</span>
                 </div>
                 <div>
                     <h3 style="font-size:19px;font-weight:600;letter-spacing:-0.02em;margin:0">Windows</h3>
-                    <p style="font-size:13px;color:var(--lp-muted);margin:6px 0 0">Instalador ou pacote MSI.</p>
+                    <p style="font-size:13px;color:var(--lp-muted);margin:6px 0 0">Pela Microsoft Store ou pelo instalador .exe. Em jogos com anti-cheat, os atalhos só funcionam pelo .exe.</p>
                 </div>
                 <div style="margin-top:auto;display:flex;flex-direction:column;gap:8px">
-                    @if (is_null($links['WindowsExe']))
-                        <span class="lp-dl-btn is-off">.exe em breve</span>
-                    @else
-                        <a href="{{ $links['WindowsExe'] }}" class="lp-dl-btn">Baixar .exe</a>
-                    @endif
+                    <a href="{{ $links['WindowsStore'] }}" class="lp-dl-btn">Baixar na Microsoft Store</a>
 
-                    @if (is_null($links['WindowsMsi']))
-                        <span class="lp-dl-sub" style="color:var(--lp-dim);border-style:dashed">.msi em breve</span>
+                    @if (is_null($links['WindowsExe']))
+                        <span class="lp-dl-sub" style="color:var(--lp-dim);border-style:dashed">.exe em breve</span>
                     @else
-                        <a href="{{ $links['WindowsMsi'] }}" @class(['lp-dl-btn' => is_null($links['WindowsExe']), 'lp-dl-sub' => ! is_null($links['WindowsExe'])])>Baixar .msi</a>
+                        <a href="{{ $links['WindowsExe'] }}" class="lp-dl-sub">Baixar .exe</a>
                     @endif
                 </div>
             </div>
