@@ -1723,8 +1723,11 @@ impl Bridge {
         *lock(&self.entered) = None;
         lock(&self.entering).cancel();
 
-        drop(lock(&self.microphone).take());
-        drop(lock(&self.watch).take());
+        // Soltar o que se assiste junta as threads das telas e do som, e uma tela 4K pode estar no
+        // meio de um quadro: na thread da janela, com o cadeado na mão, isso a congelava ao sair.
+        let (microphone, watch) = (lock(&self.microphone).take(), lock(&self.watch).take());
+
+        std::thread::spawn(move || drop((microphone, watch)));
         lock(&self.stage).clear();
         lock(&self.voice).leave();
         *lock(&self.since) = None;

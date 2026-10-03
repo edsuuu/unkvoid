@@ -306,7 +306,7 @@ fn decode_screen(producer: &str, queue: &Receiver<Media>, (fresh, drawn): (&Fres
             };
 
             arrived = true;
-            waiting.push_back(Pending { due: playout.due(timestamp, Instant::now()), keyframe, timestamp, data: item.data });
+            waiting.push_back(Pending { due: playout.due(timestamp, item.arrived), keyframe, timestamp, data: item.data });
         }
 
         // Atrás demais: os mais velhos passam pelo decodificador sem virar imagem, porque todo

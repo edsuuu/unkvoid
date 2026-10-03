@@ -1231,6 +1231,7 @@ mod tests {
                 timestamp: 0x0102_0304,
             },
             data: vec![9, 8, 7],
+            arrived: std::time::Instant::now(),
         });
 
         assert_eq!(block, [0, 1, 3, 0, 4, 3, 2, 1, b'a', b'b', b'c', 9, 8, 7]);

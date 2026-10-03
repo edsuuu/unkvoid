@@ -20,12 +20,20 @@ const MOST_REPORTED: usize = 19_000;
 /// O quanto do log de hoje já foi relatado, `AAAA-MM-DD bytes`, ao lado dos logs.
 const MARKER: &str = "unkvoid.sent";
 
-// ponytail: sem teto de tamanho por dia. Um aviso em laço pode encher o arquivo do dia; se
-// aparecer, cortar a escrita passado um teto (o antigo era 5 MB).
+/// O teto de um dia de log: um aviso em laço enchia o disco de quem deixa o app aberto na
+/// bandeja. Passado o teto sai uma linha dizendo que encheu, e nada mais até o dia seguinte. Um
+/// dia inteiro de transmissão escreve uns poucos MB.
+///
+/// A escrita segue síncrona, sem buffer, de propósito: o encoder anuncia cada passo antes de dá-lo,
+/// e a última linha no arquivo é o passo que derrubou o processo. Um buffer perderia justo ela.
+const MOST_PER_DAY: u64 = 50 * 1024 * 1024;
+
 pub struct DailyLog {
     folder: PathBuf,
     day: String,
     file: Option<File>,
+    written: u64,
+    cap: u64,
 }
 
 impl DailyLog {
@@ -35,7 +43,7 @@ impl DailyLog {
 
         forget_old_logs(folder);
 
-        let mut log = Self { folder: folder.to_owned(), day: String::new(), file: None };
+        let mut log = Self { folder: folder.to_owned(), day: String::new(), file: None, written: 0, cap: MOST_PER_DAY };
 
         log.roll(&today());
 
@@ -45,6 +53,7 @@ impl DailyLog {
     fn roll(&mut self, day: &str) {
         day.clone_into(&mut self.day);
         self.file = OpenOptions::new().create(true).append(true).open(self.folder.join(format!("{PREFIX}{day}{SUFFIX}"))).ok();
+        self.written = self.file.as_ref().and_then(|file| file.metadata().ok()).map_or(0, |metadata| metadata.len());
 
         let names = std::fs::read_dir(&self.folder)
             .map(|entries| entries.filter_map(|entry| entry.ok()?.file_name().into_string().ok()).collect())
@@ -65,10 +74,19 @@ impl Write for DailyLog {
             self.roll(&day);
         }
 
-        match &mut self.file {
-            Some(file) => file.write(buffer),
-            None => Ok(buffer.len()),
+        let Some(file) = self.file.as_mut().filter(|_| self.written < self.cap) else {
+            return Ok(buffer.len());
+        };
+        let written = file.write(buffer)?;
+
+        self.written += written as u64;
+
+        if self.written >= self.cap {
+            let _ = file.write_all("[log] o log de hoje passou do teto: nada mais sai aqui até amanhã
+".as_bytes());
         }
+
+        Ok(written)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -230,6 +248,29 @@ mod tests {
     fn the_user_name_leaves_the_report() {
         assert_eq!(scrub(r"C:\Users\mank\AppData", "mank"), r"C:\Users\<usuario>\AppData");
         assert_eq!(scrub("ed foi", "ed"), "ed foi", "nome curto demais fica");
+    }
+
+    /// Passado o teto, o arquivo do dia para de crescer, com uma linha dizendo por quê.
+    #[test]
+    fn the_day_stops_growing_past_the_cap() {
+        let folder = std::env::temp_dir().join(format!("unkvoid-logbook-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let mut log = DailyLog::open(&folder);
+
+        log.cap = 100;
+
+        for _ in 0..50 {
+            log.write_all("2026-10-03T10:00:00Z  WARN core_app: aviso em laço
+".as_bytes()).unwrap();
+        }
+
+        let written = std::fs::read_to_string(folder.join(format!("{PREFIX}{}{SUFFIX}", today()))).unwrap();
+
+        assert!(written.len() < 300, "o arquivo cresceu {} bytes", written.len());
+        assert!(written.ends_with("até amanhã
+"));
+
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]

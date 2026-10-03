@@ -47,6 +47,10 @@ pub struct Media {
     pub producer_id: String,
     pub kind: MediaKind,
     pub data: Vec<u8>,
+    /// Quando ele ficou pronto aqui, saído da rede. É a chegada que o jitter buffer de quem
+    /// assiste mede: carimbada depois, na fila da interface, a CPU ocupada pelo jogo virava
+    /// atraso de rede, e a espera subia a meio segundo por um tranco que a rede nem teve.
+    pub arrived: Instant,
 }
 
 /// O que o `consumePlain` respondeu sobre uma transmissão.
@@ -299,6 +303,7 @@ fn pump_audio(socket: &UdpSocket, producer_id: &str, stop: &AtomicBool, out: &Sy
             producer_id: producer_id.to_owned(),
             kind: MediaKind::Audio,
             data: samples.iter().flat_map(|sample| sample.to_le_bytes()).collect(),
+            arrived: Instant::now(),
         };
 
         if let Err(TrySendError::Disconnected(_)) = out.try_send(media) {
@@ -329,6 +334,7 @@ fn pump_video(socket: &UdpSocket, producer_id: &str, stop: &AtomicBool, out: &Sy
                 producer_id: producer_id.to_owned(),
                 kind: MediaKind::Video { keyframe: unit.keyframe, timestamp: unit.timestamp },
                 data: unit.data,
+                arrived: now,
             };
 
             match out.try_send(media) {
