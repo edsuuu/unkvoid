@@ -4,6 +4,9 @@
 //! cargo run -p core-app --example room -- ws://127.0.0.1:3000/sfu sala-de-teste share
 //! cargo run -p core-app --example room -- ws://127.0.0.1:3000/sfu sala-de-teste watch
 //! ```
+//!
+//! Depois dos segundos, `share` aceita a origem como o seletor a manda: `window:<id>` (no X11
+//! é o `xid` da janela — no XWayland do WSLg a tela inteira sai preta) ou `display:<n>`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,6 +29,7 @@ async fn main() -> anyhow::Result<()> {
         .next()
         .and_then(|text| text.parse().ok())
         .unwrap_or(10);
+    let source = arguments.next();
 
     let identity = {
         let (room, name) = (
@@ -61,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
 
     if sharing {
         room.share(core_app::sharing::capture_config(
-            &serde_json::json!({ "quality": "720", "fps": 30 }),
+            &serde_json::json!({ "quality": "720", "fps": 30, "source": source }),
         ))
         .await?;
         println!("compartilhando por {seconds} s: {}", room.mine());
