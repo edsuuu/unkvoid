@@ -176,6 +176,23 @@ espera passa de 250 ms o buraco é largado e vai um PLI (PT 206, FMT 1) pedindo 
 Os dois RTCP saem cifrados (SRTCP) pelo mesmo socket e com a mesma chave do `consumePlain`.
 Sem `rtx`, o receptor ainda reordena e pede keyframe; só não recebe o reenvio.
 
+**O servidor diz se a tela está chegando nele.** A sala inteira (o dono também, por causa
+do "ver o que a sala vê") recebe
+`producerReceiving { producerId, receiving }` quando o RTP de um producer começa ou para de
+chegar ao SFU — o mediasoup zera a nota ~1,5 s depois do último pacote —, e o `consumePlain`
+devolve o estado do momento em `receiving`. É assim que o app de quem assiste separa a tela
+parada de quem transmite (`receiving: false`, nada a fazer) do caminho até ele que morreu
+(`receiving: true` e nada chegando há 5 s: refaz o transporte de chegada).
+
+**Chave nova troca o transporte.** O `producePlain` e o `consumePlain` reaproveitam o
+transporte de RTP puro da pessoa (um de subida, um de chegada) enquanto a `keyBase64` for a
+mesma; com outra chave, o SFU fecha o antigo — e com ele os producers ou consumers que
+estavam nele, com o `producerClosed` de sempre para a sala — e abre um novo. É assim que o
+app refaz o caminho: o `comedia` prende o transporte ao primeiro endereço de onde veio
+pacote, e quando o roteador da pessoa troca de endereço (o provedor reconectou, o roteador
+reiniciou) tudo o que vem do endereço novo é descartado. O app troca a chave de chegada a
+cada retomada do `join` e a de subida quando passa 5 s mandando sem nenhum RTCP de volta.
+
 Webhook do SFU para o Laravel, **fora do caminho do `join`**, fire-and-forget, para conta
 (`user:`) e visitante da sala por código (`guest:<installId>`, `room` com o código de 3 a
 32 caracteres). Em sala por código (qualquer `room` que não tenha 26 caracteres) o aviso só vira linha
