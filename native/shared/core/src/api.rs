@@ -492,6 +492,21 @@ impl Api {
             .map(|_| ())
     }
 
+    /// Manda ao site o pedaço do log em que houve erro (`POST /api/errors`), para o problema de
+    /// quem usa chegar a quem conserta sem ninguém pedir arquivo. Sem token: o relatório não é
+    /// de conta nenhuma. `true` quando o site guardou.
+    pub async fn report_error(&self, version: &str, platform: &str, log: &str) -> bool {
+        let body = serde_json::json!({ "version": version, "platform": platform, "log": log });
+
+        self.http
+            .post(self.url("/api/errors"))
+            .header("accept", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .is_ok_and(|response| response.status().is_success())
+    }
+
     /// A versão publicada mais nova do que esta, com o instalador desta plataforma
     /// (`darwin-aarch64`, `windows-x86_64-nsis`…) e a assinatura dele. `None` quando não há
     /// nada mais novo — inclusive quando nada foi publicado ainda, que é o 404 do `latest.json`.

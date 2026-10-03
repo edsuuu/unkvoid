@@ -695,6 +695,13 @@ impl Bridge {
             returning
         };
 
+        #[cfg(target_os = "windows")]
+        self.spawn({
+            let api = self.api.clone();
+
+            async move { report_errors(&api).await }
+        });
+
         self.spawn(async move {
             let mut backoff = Backoff::default();
 
@@ -3281,6 +3288,24 @@ fn model<T: Clone + 'static>(rows: Vec<T>) -> ModelRc<T> {
 /// termina é o Rust.
 fn initial(name: &str) -> SharedString {
     name.chars().next().map(|letter| letter.to_uppercase().to_string()).unwrap_or_default().into()
+}
+
+/// O que deu erro no log vai ao site de meio em meio minuto, enquanto o app estiver aberto: o
+/// problema de quem usa chega a quem conserta sem ninguém pedir arquivo. O pedaço só sai do
+/// pendente quando o site confirma, então um envio que falhou vai de novo na volta seguinte.
+#[cfg(target_os = "windows")]
+async fn report_errors(api: &Api) {
+    let folder = crate::clips::shell::local_folder();
+
+    loop {
+        if let Some(pending) = crate::logbook::unreported(&folder)
+            && api.report_error(env!("CARGO_PKG_VERSION"), std::env::consts::OS, &pending.log).await
+        {
+            pending.sent();
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    }
 }
 
 /// Instalado pela Microsoft Store, quem atualiza é a Store: o app não procura versão no site,

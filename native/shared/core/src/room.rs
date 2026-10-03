@@ -15,7 +15,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use base64::Engine;
@@ -28,8 +29,14 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::models::ProducerInfo;
 use crate::protocol::{Event, action, local};
 use crate::session::{Identity, Session};
-use crate::sharing::{self, AudioFeed};
+use crate::sharing::{self, AudioFeed, Stall, StallWatch};
 use crate::watching::{Incoming, Media, Watching};
+
+/// De quanto em quanto tempo o vigia confere a tela que esta pessoa transmite.
+const GUARD_EVERY: Duration = Duration::from_secs(1);
+
+/// De quanto em quanto tempo os números da transmissão vão para o log.
+const NUMBERS_EVERY: Duration = Duration::from_secs(10);
 
 /// A única suíte combinada com o servidor, dos dois lados.
 const CRYPTO_SUITE: &str = "AES_CM_128_HMAC_SHA1_80";
@@ -96,8 +103,72 @@ impl Room {
 
             async move { room.run(events).await }
         });
+        tokio::spawn(Self::guard_sending(Arc::downgrade(&room)));
 
         Ok((room, media))
+    }
+
+    /// O vigia da tela que esta pessoa transmite: de segundo em segundo confere se captura,
+    /// encoder e envio continuam produzindo (`StallWatch`) e refaz captura e encoder no mesmo
+    /// producer quando uma etapa para — quem assiste vê a imagem voltar no quadro-chave
+    /// seguinte, sem a tela sumir da sala. Termina com a sala.
+    async fn guard_sending(room: Weak<Self>) {
+        let mut beat = tokio::time::interval(GUARD_EVERY);
+        let mut watch: Option<StallWatch> = None;
+        let mut numbers_at = Instant::now();
+
+        loop {
+            beat.tick().await;
+
+            let Some(room) = room.upgrade() else {
+                return;
+            };
+            let now = Instant::now();
+            let stall = {
+                let sending = lock(&room.sending);
+
+                match sending.screen.as_ref().filter(|broadcast| !broadcast.is_muted()) {
+                    Some(broadcast) => {
+                        if now.duration_since(numbers_at) >= NUMBERS_EVERY {
+                            broadcast.log_numbers();
+                            numbers_at = now;
+                        }
+
+                        watch.get_or_insert_with(|| StallWatch::new(now)).tick(broadcast.counts(), now)
+                    }
+                    None => {
+                        watch = None;
+
+                        None
+                    }
+                }
+            };
+
+            match stall {
+                Some(Stall::Transport) => tracing::error!("transmissão: o encoder devolve quadros e nada sai para a rede"),
+                Some(stall) => {
+                    match stall {
+                        Stall::Encoder => tracing::error!("transmissão: o encoder parou de devolver quadros, refazendo captura e encoder"),
+                        _ => tracing::warn!("transmissão: a captura parou de mandar quadros (tela parada ou captura travada), refazendo"),
+                    }
+
+                    let refreshed = tokio::task::block_in_place(|| match lock(&room.sending).screen.as_mut() {
+                        Some(broadcast) => broadcast.refresh(),
+                        None => Ok(()),
+                    });
+
+                    match refreshed {
+                        Ok(()) => {
+                            if let Some(watch) = watch.as_mut() {
+                                watch.restarted(Instant::now());
+                            }
+                        }
+                        Err(error) => tracing::error!(error = %error, "transmissão: não deu para refazer a captura"),
+                    }
+                }
+                None => {}
+            }
+        }
     }
 
     async fn run(self: Arc<Self>, mut events: UnboundedReceiver<Event>) {

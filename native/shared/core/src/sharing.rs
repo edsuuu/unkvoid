@@ -38,6 +38,132 @@ const RATE_WINDOW: Duration = Duration::from_secs(1);
 /// sai quando o intervalo acaba.
 const KEYFRAME_SPACING: Duration = Duration::from_secs(2);
 
+/// Quanto a captura pode ficar sem quadro antes de ser refeita. Tela parada também não manda
+/// quadro (o Windows só entrega quando algo muda), então a espera dobra a cada vez que a
+/// captura refeita volta a calar, até `MOST_WAIT`: numa tela parada isso vira um quadro-chave
+/// de tempos em tempos, e numa captura travada a imagem volta em segundos.
+const CAPTURE_WAIT: Duration = Duration::from_secs(3);
+
+/// Captura chegando e encoder sem devolver nada por isto é encoder travado. Medido em 02/10 na
+/// tela do mank: 4 s a 60 fps e depois 25 s sem um pacote, com a tela no ar e a rede limpa — e
+/// o quadro que o encoder não devolvia só ia para o log em nível de depuração, que não é gravado.
+const ENCODER_WAIT: Duration = Duration::from_secs(2);
+
+/// As esperas dobram a cada refeita que não resolve, e param aqui.
+const MOST_WAIT: Duration = Duration::from_secs(60);
+
+/// Quadros seguidos que provam que a etapa refeita está viva: a espera volta ao começo.
+const ALIVE_FRAMES: u64 = 120;
+
+/// Os contadores de uma transmissão, de onde o vigia tira se alguma etapa parou.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Counts {
+    pub captured: u64,
+    pub encoded: u64,
+    pub sent: u64,
+}
+
+/// A etapa que parou de produzir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stall {
+    /// A captura calou: tela parada ou captura travada. Refazer custa um quadro-chave.
+    Capture,
+    /// A captura chega e o encoder não devolve nada.
+    Encoder,
+    /// O encoder devolve e nada sai para a rede: refazer não ajuda, só vai para o log.
+    Transport,
+}
+
+/// O vigia de uma transmissão: de segundo em segundo recebe os contadores e diz que etapa
+/// parou. Lógica pura, com o relógio passado por quem chama.
+#[derive(Debug)]
+pub struct StallWatch {
+    last: Counts,
+    captured_at: Instant,
+    encoded_at: Instant,
+    sent_at: Instant,
+    capture_wait: Duration,
+    encoder_wait: Duration,
+    captured_since_restart: u64,
+    encoded_since_restart: u64,
+    transport_told: bool,
+}
+
+impl StallWatch {
+    pub fn new(now: Instant) -> Self {
+        Self {
+            last: Counts::default(),
+            captured_at: now,
+            encoded_at: now,
+            sent_at: now,
+            capture_wait: CAPTURE_WAIT,
+            encoder_wait: ENCODER_WAIT,
+            captured_since_restart: 0,
+            encoded_since_restart: 0,
+            transport_told: false,
+        }
+    }
+
+    pub fn tick(&mut self, counts: Counts, now: Instant) -> Option<Stall> {
+        if counts.captured > self.last.captured {
+            self.captured_since_restart += counts.captured - self.last.captured;
+            self.captured_at = now;
+
+            if self.captured_since_restart >= ALIVE_FRAMES {
+                self.capture_wait = CAPTURE_WAIT;
+            }
+        }
+
+        if counts.encoded > self.last.encoded {
+            self.encoded_since_restart += counts.encoded - self.last.encoded;
+            self.encoded_at = now;
+
+            if self.encoded_since_restart >= ALIVE_FRAMES {
+                self.encoder_wait = ENCODER_WAIT;
+            }
+        }
+
+        if counts.sent > self.last.sent {
+            self.sent_at = now;
+            self.transport_told = false;
+        }
+
+        self.last = counts;
+
+        let fresh = |at: Instant| now.duration_since(at) < Duration::from_secs(1);
+
+        if fresh(self.captured_at) && now.duration_since(self.encoded_at) >= self.encoder_wait {
+            self.encoder_wait = (self.encoder_wait * 2).min(MOST_WAIT);
+
+            return Some(Stall::Encoder);
+        }
+
+        if fresh(self.encoded_at) && now.duration_since(self.sent_at) >= ENCODER_WAIT && !self.transport_told {
+            self.transport_told = true;
+
+            return Some(Stall::Transport);
+        }
+
+        if now.duration_since(self.captured_at) >= self.capture_wait {
+            self.capture_wait = (self.capture_wait * 2).min(MOST_WAIT);
+
+            return Some(Stall::Capture);
+        }
+
+        None
+    }
+
+    /// A transmissão foi refeita: os contadores do `Broadcast` novo começam do zero.
+    pub fn restarted(&mut self, now: Instant) {
+        self.last = Counts::default();
+        self.captured_at = now;
+        self.encoded_at = now;
+        self.sent_at = now;
+        self.captured_since_restart = 0;
+        self.encoded_since_restart = 0;
+    }
+}
+
 /// Os pedidos de quadro-chave de quem assiste, atendidos com o espaço do `KEYFRAME_SPACING`.
 #[derive(Default)]
 struct KeyframeGate {
@@ -638,9 +764,12 @@ impl Broadcast {
                         // começo de toda transmissão, que é justamente quando o encoder
                         // de placa está enchendo a fila dele.
                         Err(media::EncoderError::NeedsMoreInput) => return,
+                        // Uma linha, na primeira vez: em nível de depuração ela não era gravada,
+                        // e o encoder travado sumia do log de quem transmitiu.
                         Err(error) => {
-                            encode_errors_callback.fetch_add(1, Ordering::Relaxed);
-                            tracing::debug!(error = %error, "encoder: quadro sem saída");
+                            if encode_errors_callback.fetch_add(1, Ordering::Relaxed) == 0 {
+                                tracing::warn!(error = %error, "encoder: quadro sem saída (os próximos só contam)");
+                            }
 
                             return;
                         }
@@ -761,6 +890,44 @@ impl Broadcast {
 
     pub fn frames(&self) -> u64 {
         self.capturer.frames_captured()
+    }
+
+    pub fn counts(&self) -> Counts {
+        Counts {
+            captured: self.captured.load(Ordering::Relaxed),
+            encoded: self.encoded.load(Ordering::Relaxed),
+            sent: self.sent.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.muted.load(Ordering::Relaxed)
+    }
+
+    /// Refaz captura e encoder com a mesma receita, no mesmo producer: é o que o vigia faz
+    /// quando uma etapa para de produzir.
+    pub fn refresh(&mut self) -> anyhow::Result<()> {
+        self.restart(self.config.quality, self.config.frame_rate, None)
+    }
+
+    /// Os números da transmissão no log, de tempos em tempos: é por eles que se vê, no log de
+    /// quem transmitiu, em que etapa a imagem parou.
+    pub fn log_numbers(&self) {
+        let counts = self.counts();
+
+        tracing::info!(
+            captured = counts.captured,
+            encoded = counts.encoded,
+            sent = counts.sent,
+            encode_errors = self.encode_errors.load(Ordering::Relaxed),
+            send_errors = self.send_errors.load(Ordering::Relaxed),
+            send_dropped = self.send_dropped.load(Ordering::Relaxed),
+            keyframes_asked = self.keyframes.load(Ordering::Relaxed),
+            target_bitrate = self.target_bitrate.load(Ordering::Relaxed),
+            loss_permille = self.loss_permille.load(Ordering::Relaxed),
+            capture_error = ?self.capturer.error(),
+            "transmissão: números"
+        );
     }
 
     pub fn stats(&self) -> serde_json::Value {
@@ -1060,6 +1227,88 @@ pub fn start_native(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Um segundo de vigia: os contadores andaram `captured`, `encoded` e `sent` quadros.
+    fn second(watch: &mut StallWatch, counts: &mut Counts, start: Instant, at: u64, (captured, encoded, sent): (u64, u64, u64)) -> Option<Stall> {
+        counts.captured += captured;
+        counts.encoded += encoded;
+        counts.sent += sent;
+
+        watch.tick(*counts, start + Duration::from_secs(at))
+    }
+
+    #[test]
+    fn a_flowing_broadcast_is_left_alone() {
+        let (start, mut counts) = (Instant::now(), Counts::default());
+        let mut watch = StallWatch::new(start);
+
+        for at in 1..=30 {
+            assert_eq!(second(&mut watch, &mut counts, start, at, (60, 60, 60)), None, "no segundo {at}");
+        }
+    }
+
+    #[test]
+    fn an_encoder_that_stops_returning_frames_is_restarted() {
+        let (start, mut counts) = (Instant::now(), Counts::default());
+        let mut watch = StallWatch::new(start);
+
+        for at in 1..=4 {
+            second(&mut watch, &mut counts, start, at, (60, 60, 60));
+        }
+
+        assert_eq!(second(&mut watch, &mut counts, start, 5, (60, 0, 0)), None);
+        assert_eq!(second(&mut watch, &mut counts, start, 6, (60, 0, 0)), Some(Stall::Encoder));
+    }
+
+    #[test]
+    fn a_still_screen_is_refreshed_ever_less_often() {
+        let (start, mut counts) = (Instant::now(), Counts::default());
+        let mut watch = StallWatch::new(start);
+        let mut refreshed = Vec::new();
+
+        second(&mut watch, &mut counts, start, 1, (60, 60, 60));
+
+        for at in 2..=40 {
+            if second(&mut watch, &mut counts, start, at, (0, 0, 0)) == Some(Stall::Capture) {
+                refreshed.push(at);
+                watch.restarted(start + Duration::from_secs(at));
+                counts = Counts::default();
+            }
+        }
+
+        assert_eq!(refreshed, [4, 10, 22], "a espera dobra: 3 s, 6 s, 12 s");
+    }
+
+    #[test]
+    fn a_capture_that_comes_back_waits_the_short_time_again() {
+        let (start, mut counts) = (Instant::now(), Counts::default());
+        let mut watch = StallWatch::new(start);
+
+        second(&mut watch, &mut counts, start, 1, (60, 60, 60));
+
+        assert_eq!(second(&mut watch, &mut counts, start, 4, (0, 0, 0)), Some(Stall::Capture));
+
+        watch.restarted(start + Duration::from_secs(4));
+        counts = Counts::default();
+
+        for at in 5..=8 {
+            second(&mut watch, &mut counts, start, at, (60, 60, 60));
+        }
+
+        assert_eq!(second(&mut watch, &mut counts, start, 11, (0, 0, 0)), Some(Stall::Capture), "voltou aos 3 s");
+    }
+
+    #[test]
+    fn frames_that_never_reach_the_network_are_told_once() {
+        let (start, mut counts) = (Instant::now(), Counts::default());
+        let mut watch = StallWatch::new(start);
+
+        second(&mut watch, &mut counts, start, 1, (60, 60, 60));
+
+        let told: Vec<_> = (2..=8).filter_map(|at| second(&mut watch, &mut counts, start, at, (60, 60, 0))).collect();
+
+        assert_eq!(told, [Stall::Transport]);
+    }
 
     #[test]
     fn keyframe_requests_are_spaced_and_none_is_lost() {
