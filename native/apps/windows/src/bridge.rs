@@ -204,11 +204,30 @@ impl Bridge {
 
         every(std::time::Duration::from_secs(1), {
             let (window, watch, room, counted) = (self.window.clone(), self.watch.clone(), self.room.clone(), self.counted.clone());
+            let (runtime, away_for) = (self.runtime.handle().clone(), Arc::new(std::sync::atomic::AtomicU32::new(0)));
 
             move || {
                 let (Some(app), Some(room)) = (window.upgrade(), lock(&room).clone()) else {
                     return;
                 };
+
+                // Dois segundos fora antes de pausar: um alt-tab rápido não pode custar um
+                // quadro-chave na volta.
+                let away = app.window().is_minimized() || !app.window().is_visible();
+                let seconds = if away {
+                    away_for.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+                } else {
+                    away_for.store(0, std::sync::atomic::Ordering::Relaxed);
+
+                    0
+                };
+
+                runtime.spawn({
+                    let room = room.clone();
+
+                    async move { room.set_away(seconds >= 2).await }
+                });
+
                 let drawn = match lock(&watch).as_ref() {
                     Some(watch) => watch.drawn(),
                     None => return,
@@ -2323,15 +2342,51 @@ impl Bridge {
             return;
         };
 
-        let mut held = lock(&self.chosen);
+        tracing::info!(microphone, label = %device.label, "aparelho escolhido");
 
-        if microphone {
-            held.0 = Some(device.id);
-        } else {
-            held.1 = Some(device.id);
+        {
+            let mut held = lock(&self.chosen);
+
+            if microphone {
+                held.0 = Some(device.id.clone());
+            } else {
+                held.1 = Some(device.id.clone());
+            }
         }
 
-        tracing::info!(microphone, label = %device.label, "aparelho escolhido");
+        // O que está aberto passa para o aparelho escolhido na hora, e não só na próxima entrada.
+        if !microphone {
+            if let Some(watch) = lock(&self.watch).as_ref() {
+                watch.speaker().use_device(Some(device.id));
+            }
+
+            return;
+        }
+
+        let (cell, window) = (self.microphone.clone(), self.window.clone());
+
+        if lock(&cell).is_none() {
+            return;
+        }
+
+        let Some(room) = lock(&self.room).clone() else {
+            return;
+        };
+
+        self.spawn(async move {
+            drop(lock(&cell).take());
+
+            let speaking = room.clone();
+            let started = tokio::task::block_in_place(|| Microphone::start(Some(device.id), move |samples| speaking.speak(samples)));
+
+            match started {
+                Ok(opened) => *lock(&cell) = Some(opened),
+                Err(failure) => {
+                    tracing::warn!(failure = %format!("{failure:#}"), "o microfone escolhido não abriu");
+                    complain(&window, room_failure("mic"));
+                }
+            }
+        });
     }
 
     fn listed(&self, microphone: bool) -> Arc<Mutex<Vec<Device>>> {

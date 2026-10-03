@@ -41,17 +41,17 @@ module.exports = {
                 // `.env` ao lado, e sem ele o SFU anuncia 127.0.0.1 e ninguém vê nada — o
                 // item 11 da checagem do infra/INSTALAR-VPS.md existe para pegar isso.
                 SFU_MEDIA_PORT: '40000',
-                // Um worker por core MENOS UM: a VPS tem 8, e o oitavo fica para o nginx, o
-                // php-fpm, o MySQL, o MinIO e o e-mail. A sala é fixada num worker e a voz é
-                // presa a um núcleo, então 7 workers são 7 canais de voz pesados em paralelo.
-                // Cada um usa uma porta a partir de SFU_MEDIA_PORT: 40000-40006, todas
-                // liberadas no firewall.
-                SFU_WORKERS: '7',
+                // Um worker por core MENOS UM: a VPS tem 4 (`nproc`), e o quarto fica para o
+                // nginx, o php-fpm, o MySQL, o MinIO e o e-mail. Eram 7 de quando se achava que
+                // ela tinha 8: sete workers disputando quatro núcleos atrasam a mídia de todo
+                // mundo assim que duas salas pesam. A sala é fixada num worker. Cada um usa uma
+                // porta a partir de SFU_MEDIA_PORT: 40000-40002, liberadas no firewall.
+                SFU_WORKERS: '3',
                 // Teto de conexões novas por IP por minuto. Uma escola inteira atrás de
                 // um NAT só precisa caber aqui.
                 SFU_CONNECTIONS_PER_MINUTE: '120',
-                // RTP puro do app: 64 portas por worker, 7 × 64 = 448, ou seja
-                // 41000-41447 — dentro da regra 41000-42000 do firewall. Quem participa
+                // RTP puro do app: 64 portas por worker, 3 × 64 = 192, ou seja
+                // 41000-41191 — dentro da regra 41000-42000 do firewall. Quem participa
                 // da voz pelo Linux gasta duas (envia e recebe). A faixa PRECISA estar
                 // aberta no firewall, senão o app conecta, publica e ninguém vê nada —
                 // os pacotes morrem antes de chegar.

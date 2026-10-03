@@ -10,10 +10,14 @@
 //! (`Backend::Cpu`).
 
 use std::collections::VecDeque;
-use std::sync::Once;
+use std::sync::{Mutex, Once, PoisonError};
 
-use ::windows::Win32::Foundation::{HANDLE, VARIANT_BOOL};
-use ::windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_1};
+use ::windows::Win32::Foundation::{CloseHandle, E_NOTIMPL, HANDLE, VARIANT_BOOL, WAIT_OBJECT_0};
+use ::windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
+use ::windows::Win32::Graphics::Direct3D::{
+    D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0,
+    D3D_FEATURE_LEVEL_11_1,
+};
 use ::windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
     D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
@@ -38,9 +42,10 @@ use ::windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVEncCommonQualityVsSpeed, CODECAPI_AVEncCommonRateControlMode,
     CODECAPI_AVEncCommonRealTime, CODECAPI_AVEncMPVDefaultBPictureCount, CODECAPI_AVEncMPVGOPSize,
     CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode,
-    ICodecAPI, IMFActivate, IMFDXGIDeviceManager, IMFMediaBuffer, IMFMediaEventGenerator,
+    ICodecAPI, IMFActivate, IMFAsyncCallback, IMFAsyncCallback_Impl, IMFAsyncResult,
+    IMFDXGIDeviceManager, IMFMediaBuffer, IMFMediaEvent, IMFMediaEventGenerator,
     IMFMediaType, IMFSample, IMFTransform, METransformHaveOutput, METransformNeedInput,
-    MF_E_TRANSFORM_NEED_MORE_INPUT, MF_EVENT_TYPE, MF_MT_ALL_SAMPLES_INDEPENDENT,
+    MF_E_MULTIPLE_BEGIN, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_EVENT_TYPE, MF_MT_ALL_SAMPLES_INDEPENDENT,
     MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
     MF_MT_SUBTYPE, MF_MT_TRANSFER_FUNCTION, MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_VIDEO_PRIMARIES,
     MF_MT_YUV_MATRIX, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION, MFCreateDXGIDeviceManager,
@@ -58,7 +63,7 @@ use ::windows::Win32::System::Com::CoTaskMemFree;
 use ::windows::Win32::System::Variant::{
     VARENUM, VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_UI4,
 };
-use ::windows::core::{Interface, PWSTR};
+use ::windows::core::{ComObject, HRESULT, Interface, PWSTR, Ref, implement};
 
 use crate::{EncodedFrame, EncoderConfig, EncoderError, FramePacer, GpuSurface, cpu_forced};
 
@@ -122,6 +127,10 @@ pub struct MediaFoundationEncoder {
     /// bloqueante e sem prazo — pendurava a thread da captura para sempre, sem erro e
     /// sem log. Guardar o pedido é o que impede isso.
     credits: u32,
+
+    /// O último SPS e PPS que o encoder emitiu, com os códigos de início — ver
+    /// `with_parameter_sets`.
+    parameter_sets: Option<Vec<u8>>,
 }
 
 /// O encoder nasce na thread que liga a transmissão e passa a viver na thread da
@@ -139,7 +148,7 @@ unsafe impl Send for MediaFoundationEncoder {}
 /// controle de taxa — é o mesmo para os dois; muda como a amostra é montada e bombeada.
 enum Backend {
     /// O MFT da placa: lê a textura NV12 direto e fala por eventos, assíncrono.
-    Gpu { events: IMFMediaEventGenerator },
+    Gpu { events: IMFMediaEventGenerator, arrival: ComObject<Arrival> },
 
     /// O MFT de H.264 por software do próprio Windows, para quando não há placa que
     /// codifique. Só aceita memória do processador, então a textura NV12 — já convertida
@@ -220,7 +229,7 @@ impl MediaFoundationEncoder {
                 Ok(transform) => {
                     let events = transform.cast().map_err(start_error)?;
 
-                    (transform, Backend::Gpu { events }, config.clone())
+                    (transform, Backend::Gpu { events, arrival: Arrival::new()? }, config.clone())
                 }
                 Err(error) => {
                     let config = config.for_cpu();
@@ -263,6 +272,7 @@ impl MediaFoundationEncoder {
                 pacer: FramePacer::new(config.frame_rate),
                 force_keyframe: false,
                 described: 0,
+                parameter_sets: None,
                 ready: VecDeque::new(),
                 credits: 0,
             })
@@ -389,53 +399,15 @@ impl MediaFoundationEncoder {
         }
 
         let bridge = self.bridge.as_ref().expect("acabou de ser montada");
+        let crossed = unsafe { cross(bridge, surface, &self.video_context) };
 
-        unsafe {
-            // Chave 0 é o lado da captura, chave 1 é o meu: a trava alterna entre os dois
-            // e é o que garante que a cópia terminou antes do blit começar.
-            bridge
-                .capture_lock
-                .AcquireSync(0, LOCK_TIMEOUT_MS)
-                .map_err(encode_error)?;
-
-            surface
-                .context
-                .CopyResource(&bridge.shared_with_capture, &surface.texture);
-
-            // A cópia é assíncrona na GPU. Liberar a mutex antes do Flush deixava o
-            // encoder ler a textura compartilhada antes de a captura terminar de
-            // preenchê-la, produzindo vídeo preto apesar de o preview estar correto.
-            surface.context.Flush();
-
-            bridge
-                .capture_lock
-                .ReleaseSync(1)
-                .map_err(encode_error)?;
-
-            bridge
-                .my_lock
-                .AcquireSync(1, LOCK_TIMEOUT_MS)
-                .map_err(encode_error)?;
-
-            let stream = D3D11_VIDEO_PROCESSOR_STREAM {
-                Enable: true.into(),
-                pInputSurface: std::mem::ManuallyDrop::new(Some(bridge.input.clone())),
-                ..Default::default()
-            };
-
-            let blit =
-                self.video_context
-                    .VideoProcessorBlt(&bridge.processor, &bridge.output, 0, &[stream]);
-
-            // A trava volta antes do erro subir. Com o `?` no blit, um quadro recusado
-            // saía daqui com a chave na mão e o quadro seguinte esperava por ela para
-            // sempre — a transmissão congelava sem ninguém errar de novo.
-            bridge.my_lock.ReleaseSync(0).map_err(encode_error)?;
-
-            blit.map_err(encode_error)?;
+        // Uma chave que não veio deixa as duas desencontradas para sempre: a ponte é montada
+        // de novo no quadro seguinte, com as chaves do começo.
+        if crossed.is_err() {
+            self.bridge = None;
         }
 
-        Ok(())
+        crossed
     }
 
     unsafe fn build_bridge(
@@ -733,10 +705,10 @@ impl MediaFoundationEncoder {
     /// atender os dois — ignorar um evento trava a fila inteira.
     unsafe fn pump(&mut self, mut input: Option<IMFSample>) -> Result<(), EncoderError> {
         unsafe {
-            let Backend::Gpu { events } = &self.backend else {
+            let Backend::Gpu { events, arrival } = &self.backend else {
                 return Err(EncoderError::Encode("fila de eventos num MFT síncrono".into()));
             };
-            let events = events.clone();
+            let (events, arrival) = (events.clone(), arrival.clone());
             let mut delivered = false;
 
             // Pedido guardado de uma chamada anterior: o MFT já disse que quer entrada,
@@ -756,9 +728,7 @@ impl MediaFoundationEncoder {
             // não houver mais nenhuma — o que acontece nos primeiros quadros, enquanto
             // ele enche a própria fila. Sem a segunda saída, isto penduraria a captura.
             while !delivered || self.ready.is_empty() {
-                let event = events
-                    .GetEvent(Default::default())
-                    .map_err(encode_error)?;
+                let event = next_event(&events, &arrival)?;
                 let kind = MF_EVENT_TYPE(event.GetType().map_err(encode_error)? as i32);
 
                 if kind == METransformNeedInput {
@@ -828,6 +798,8 @@ impl MediaFoundationEncoder {
 
             buffer.Unlock().map_err(encode_error)?;
 
+            let data = with_parameter_sets(&mut self.parameter_sets, data);
+
             // Os primeiros quadros saem no log em `debug`: é o que diz, sem adivinhar, se
             // o MFT entregou Annex-B e se o keyframe trouxe SPS e PPS junto.
             if self.described < 3 {
@@ -851,6 +823,161 @@ impl MediaFoundationEncoder {
     }
 }
 
+
+/// Todo IDR sai com SPS e PPS na frente. Alguns MFT (AMD, Intel) só os mandam no primeiro, e
+/// quem entra depois — ou recebe o quadro-chave de um PLI — ficava com a tela preta: o
+/// decodificador não abre sem eles. É o `config-interval=-1` do `h264parse` no Linux.
+fn with_parameter_sets(remembered: &mut Option<Vec<u8>>, data: Vec<u8>) -> Vec<u8> {
+    const IDR: u8 = 5;
+    const SPS: u8 = 7;
+    const PPS: u8 = 8;
+
+    let units = crate::nals(&data);
+    let has = |wanted: u8| units.iter().any(|nal| nal.first().is_some_and(|header| header & 0x1F == wanted));
+
+    if has(SPS) && has(PPS) {
+        *remembered = Some(
+            units
+                .iter()
+                .filter(|nal| nal.first().is_some_and(|header| matches!(header & 0x1F, SPS | PPS)))
+                .flat_map(|nal| [&[0, 0, 0, 1][..], nal].concat())
+                .collect(),
+        );
+
+        return data;
+    }
+
+    match remembered {
+        Some(sets) if has(IDR) => [sets.as_slice(), &data].concat(),
+        _ => data,
+    }
+}
+
+/// Quanto o encoder da placa pode ficar sem dar sinal. Ele responde em poucos ms; passar disso
+/// é driver que reiniciou ou placa removida.
+const EVENT_TIMEOUT_MS: u32 = 1_000;
+
+/// O aviso de que o MFT tem um evento, para esperar com prazo. O `GetEvent` bloqueante não
+/// volta nunca quando o driver reinicia — um jogo pesado abrindo derruba a placa por um
+/// instante —, e quem ficava presa era a thread da captura: o vigia, ao refazê-la, esperava por
+/// ela segurando a transmissão, e a sala inteira parava atrás.
+#[implement(IMFAsyncCallback)]
+struct Arrival {
+    signal: HANDLE,
+    result: Mutex<Option<IMFAsyncResult>>,
+}
+
+impl Arrival {
+    fn new() -> Result<ComObject<Self>, EncoderError> {
+        let signal = unsafe { CreateEventW(None, false, false, None) }.map_err(start_error)?;
+
+        Ok(ComObject::new(Self { signal, result: Mutex::new(None) }))
+    }
+}
+
+impl Drop for Arrival {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.signal);
+        }
+    }
+}
+
+impl IMFAsyncCallback_Impl for Arrival_Impl {
+    fn GetParameters(&self, _flags: *mut u32, _queue: *mut u32) -> ::windows::core::Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+
+    fn Invoke(&self, result: Ref<IMFAsyncResult>) -> ::windows::core::Result<()> {
+        *self.result.lock().unwrap_or_else(PoisonError::into_inner) = result.cloned();
+
+        unsafe { SetEvent(self.signal) }
+    }
+}
+
+/// O próximo evento do MFT, ou erro se ele não der sinal em `EVENT_TIMEOUT_MS`. O erro sobe
+/// para quem transmite, o vigia vê o encoder parado e refaz tudo.
+unsafe fn next_event(events: &IMFMediaEventGenerator, arrival: &ComObject<Arrival>) -> Result<IMFMediaEvent, EncoderError> {
+    unsafe {
+        let callback: IMFAsyncCallback = arrival.to_interface();
+
+        match events.BeginGetEvent(&callback, None) {
+            Ok(()) => {}
+            // O pedido do quadro anterior, que passou do prazo, ainda está de pé: é por ele que
+            // se espera.
+            Err(error) if error.code() == MF_E_MULTIPLE_BEGIN => {}
+            Err(error) => return Err(encode_error(error)),
+        }
+
+        if WaitForSingleObject(arrival.signal, EVENT_TIMEOUT_MS) != WAIT_OBJECT_0 {
+            return Err(EncoderError::Encode(format!("o encoder não deu sinal em {EVENT_TIMEOUT_MS} ms")));
+        }
+
+        let result = arrival
+            .result
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .ok_or_else(|| EncoderError::Encode("o aviso do encoder veio sem resultado".into()))?;
+
+        events.EndGetEvent(&result).map_err(encode_error)
+    }
+}
+
+/// A cópia da textura da captura para a ponte e o blit dela para NV12, cada metade com a sua
+/// chave do keyed mutex.
+unsafe fn cross(bridge: &Bridge, surface: &GpuSurface, video_context: &ID3D11VideoContext) -> Result<(), EncoderError> {
+    unsafe {
+        // Chave 0 é o lado da captura, chave 1 é o meu: a trava alterna entre os dois
+        // e é o que garante que a cópia terminou antes do blit começar.
+        acquire(&bridge.capture_lock, 0)?;
+
+        surface
+            .context
+            .CopyResource(&bridge.shared_with_capture, &surface.texture);
+
+        // A cópia é assíncrona na GPU. Liberar a mutex antes do Flush deixava o
+        // encoder ler a textura compartilhada antes de a captura terminar de
+        // preenchê-la, produzindo vídeo preto apesar de o preview estar correto.
+        surface.context.Flush();
+
+        bridge
+            .capture_lock
+            .ReleaseSync(1)
+            .map_err(encode_error)?;
+
+        acquire(&bridge.my_lock, 1)?;
+
+        let stream = D3D11_VIDEO_PROCESSOR_STREAM {
+            Enable: true.into(),
+            pInputSurface: std::mem::ManuallyDrop::new(Some(bridge.input.clone())),
+            ..Default::default()
+        };
+
+        let blit = video_context.VideoProcessorBlt(&bridge.processor, &bridge.output, 0, &[stream]);
+
+        // A trava volta antes do erro subir. Com o `?` no blit, um quadro recusado
+        // saía daqui com a chave na mão e o quadro seguinte esperava por ela para
+        // sempre — a transmissão congelava sem ninguém errar de novo.
+        bridge.my_lock.ReleaseSync(0).map_err(encode_error)?;
+
+        blit.map_err(encode_error)
+    }
+}
+
+/// Toma uma chave do keyed mutex, com prazo. O `AcquireSync` do windows-rs devolve `Ok` no
+/// `WAIT_TIMEOUT` — 0x102 é um HRESULT de sucesso —, e seguir sem a chave desencontrava as duas:
+/// todo quadro seguinte esperava o prazo inteiro, e a transmissão caía para 1 fps quando um
+/// jogo pesado segurava a placa por um instante.
+unsafe fn acquire(mutex: &IDXGIKeyedMutex, key: u64) -> Result<(), EncoderError> {
+    let code = unsafe { (Interface::vtable(mutex).AcquireSync)(Interface::as_raw(mutex), key, LOCK_TIMEOUT_MS) };
+
+    match code {
+        HRESULT(0) => Ok(()),
+        code if code.is_err() => Err(encode_error(code.into())),
+        code => Err(EncoderError::Encode(format!("a chave do keyed mutex não veio em {LOCK_TIMEOUT_MS} ms ({code})"))),
+    }
+}
 
 /// Quantos segundos entre quadros-chave. Quem perde um pacote pede um na hora (o
 /// `KEYFRAME_SPACING` do núcleo espaça os pedidos), e quem acaba de entrar também: o SFU pede
@@ -973,6 +1100,9 @@ pub(crate) unsafe fn start_media_foundation() -> Result<(), EncoderError> {
 /// Não dá para reaproveitar o da captura: ele nasce sem a flag, e sem ela não há
 /// VideoProcessor nem gerente de device. Um device a mais na mesma placa custa memória,
 /// não desempenho — a cópia entre os dois nunca sai da GPU.
+///
+/// Do 11_1 ao 10_0, como a captura: placa que para no 11_0 (GTX 600 e 700, Intel HD 4000, AMD
+/// HD 6000) recusava o device, e sem ele não sobrava nem o encoder por processador.
 unsafe fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext), EncoderError> {
     unsafe {
         let mut device = None;
@@ -983,7 +1113,7 @@ unsafe fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext), Encoder
             D3D_DRIVER_TYPE_HARDWARE,
             Default::default(),
             D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
-            Some(&[D3D_FEATURE_LEVEL_11_1]),
+            Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0]),
             D3D11_SDK_VERSION,
             Some(&mut device),
             None,
@@ -1403,6 +1533,20 @@ mod tests {
         assert_eq!(color_space(D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255)._bitfield, 0b10_0100);
         // Saída: BT.709, 16–235 → faixa 1.
         assert_eq!(color_space(D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235)._bitfield, 0b01_0100);
+    }
+
+    /// O IDR que vem sem SPS e PPS sai com os últimos que o encoder mandou; o P não ganha nada.
+    #[test]
+    fn an_idr_without_parameter_sets_gets_the_last_ones() {
+        let mut remembered = None;
+        let first = vec![0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x68, 2, 0, 0, 0, 1, 0x65, 3];
+
+        assert_eq!(with_parameter_sets(&mut remembered, first.clone()), first);
+        assert_eq!(with_parameter_sets(&mut remembered, vec![0, 0, 0, 1, 0x41, 4]), [0, 0, 0, 1, 0x41, 4]);
+        assert_eq!(
+            with_parameter_sets(&mut remembered, vec![0, 0, 0, 1, 0x65, 5]),
+            [0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x68, 2, 0, 0, 0, 1, 0x65, 5]
+        );
     }
 
     #[test]

@@ -30,9 +30,12 @@ use crate::recovery::{self, Counters, Recovery};
 const KEY_LEN: usize = 16;
 const SALT_LEN: usize = 14;
 
-/// Entre um pacote de manutenção e o outro. Roteadores de casa esquecem um mapeamento
-/// UDP em trinta segundos de silêncio; aqui o silêncio nunca chega a vinte.
-const KEEPALIVE: Duration = Duration::from_secs(20);
+/// Entre um pacote de manutenção e o outro. Roteadores de casa e a NAT do provedor esquecem
+/// um mapeamento UDP em trinta segundos sem nada saindo — o que chega não conta para muitos
+/// deles —, e o caminho que volta depois disso tem outra porta, que o servidor descarta. Com
+/// vinte, um único pacote perdido já passava dos trinta; com cinco, o WebRTC do navegador
+/// faz o mesmo para provar que a conexão vive.
+const KEEPALIVE: Duration = Duration::from_secs(5);
 
 /// De quanto em quanto tempo o laço acorda sem pacote nenhum, para pedir reenvio e largar
 /// buraco no prazo. Mais longo e o pedido de reenvio atrasaria mais que a própria rede.
@@ -236,11 +239,16 @@ impl PlainReceiver {
     /// Quem decodifica perdeu o fio (largou quadro, o decodificador falhou): o keyframe é
     /// pedido no próximo tique, em vez de a tela esperar o periódico do encoder.
     pub fn request_keyframe(&self, id: &str) {
-        if let Ok(mut routes) = self.routes.lock()
-            && let Some(route) = routes.active.iter_mut().find(|route| route.id == id)
-        {
-            route.keyframe_asked = true;
-        }
+        ask_keyframe(&self.routes, id);
+    }
+
+    /// O mesmo pedido, para quem não guarda o receptor: a thread que remonta os quadros de uma
+    /// transmissão e vê o buraco que a recuperação não viu — a perda no repasse local, a fila
+    /// cheia.
+    pub fn keyframe_asker(&self, id: String) -> impl Fn() + Send + 'static {
+        let routes = Arc::clone(&self.routes);
+
+        move || ask_keyframe(&routes, &id)
     }
 
     /// O que aconteceu com o vídeo de uma transmissão: recebidos, recuperados e perdidos.
@@ -288,6 +296,14 @@ impl PlainReceiver {
 impl Drop for PlainReceiver {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+fn ask_keyframe(routes: &Mutex<Routes>, id: &str) {
+    if let Ok(mut routes) = routes.lock()
+        && let Some(route) = routes.active.iter_mut().find(|route| route.id == id)
+    {
+        route.keyframe_asked = true;
     }
 }
 

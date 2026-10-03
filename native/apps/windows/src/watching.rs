@@ -20,7 +20,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use core_app::speaking::Speaking;
-use core_app::watching::{Media, MediaKind};
+use core_app::watching::{Media, MediaKind, Stalled, WORTH_TELLING};
 use slint::{Rgb8Pixel, SharedPixelBuffer};
 
 use crate::sound::Speaker;
@@ -38,6 +38,11 @@ const SCREEN_QUEUE: usize = 120;
 // ponytail: a imagem espera já em RGB (~6 MB em 1080p, até 30 por tela). Guardar em NV12 e
 // converter na hora de mostrar corta pela metade, se a memória pesar.
 const MOST_WAITING: usize = 30;
+
+/// Tela sem quadro por isto sai, com a thread, o decodificador e as imagens dela: o producer
+/// fechou, ou quem transmite está com a tela parada — aí ela renasce no próximo quadro, que
+/// pede o quadro-chave.
+const SCREEN_IDLE: Duration = Duration::from_secs(20);
 
 /// O quadro mais novo de cada tela que a janela ainda não desenhou.
 type Fresh = Arc<Mutex<HashMap<String, SharedPixelBuffer<Rgb8Pixel>>>>;
@@ -155,6 +160,17 @@ fn route(
         for producer in speaking.quiet(Instant::now()) {
             on_speaking(&producer, false);
         }
+
+        screens.retain(|producer, screen| {
+            let keep = screen.frames.is_some() && screen.last.elapsed() < SCREEN_IDLE;
+
+            if !keep {
+                lock(fresh).remove(producer);
+                lock(drawn).remove(producer);
+            }
+
+            keep
+        });
     }
 }
 
@@ -164,8 +180,14 @@ struct Screen {
     frames: Option<SyncSender<Media>>,
     thread: Option<JoinHandle<()>>,
     /// Largou um quadro: até o próximo keyframe nada entra, porque quadro P depois de um
-    /// buraco só desenharia lixo. O keyframe é pedido na hora em que quebra.
+    /// buraco só desenharia lixo. O keyframe é pedido na hora em que quebra, e de novo a cada
+    /// segundo enquanto não vem.
     broken: bool,
+    stalled: Stalled,
+    /// Os quadros largados desde que quebrou, para o log dizer o tamanho do estrago.
+    dropped: u32,
+    /// O último quadro que chegou.
+    last: Instant,
     ask_keyframe: AskKeyframe,
 }
 
@@ -185,6 +207,9 @@ impl Screen {
                 frames: Some(frames),
                 thread: Some(thread),
                 broken: false,
+                stalled: Stalled::default(),
+                dropped: 0,
+                last: Instant::now(),
                 ask_keyframe: ask_keyframe.clone(),
             }),
             Err(failure) => {
@@ -196,28 +221,40 @@ impl Screen {
     }
 
     fn push(&mut self, item: Media, keyframe: bool) {
-        if self.broken && !keyframe {
-            return;
-        }
+        let now = Instant::now();
+
+        self.last = now;
 
         let Some(frames) = &self.frames else {
             return;
         };
 
-        let broken = match frames.try_send(item) {
-            Ok(()) => false,
+        let sent = if self.broken && !keyframe { Err(TrySendError::Full(item)) } else { frames.try_send(item) };
+
+        match sent {
+            Ok(()) => {
+                if let Some(lasted) = self.stalled.flowing(now) {
+                    tracing::error!(producer = self.producer, seconds = lasted.as_secs_f32(), dropped = self.dropped, "assistir: este PC não acompanhou a tela e largou quadros até o quadro-chave");
+                }
+
+                self.broken = false;
+                self.dropped = 0;
+            }
             Err(TrySendError::Full(_)) => {
                 if !self.broken {
                     tracing::warn!(producer = self.producer, "assistir: a tela não acompanha, largando até o próximo keyframe");
-                    (self.ask_keyframe)(&self.producer);
                 }
 
-                true
-            }
-            Err(TrySendError::Disconnected(_)) => true,
-        };
+                self.broken = true;
+                self.dropped += 1;
 
-        self.broken = broken;
+                if self.stalled.waiting(now) {
+                    (self.ask_keyframe)(&self.producer);
+                }
+            }
+            // A thread da tela morreu: a tela sai, e renasce no próximo quadro.
+            Err(TrySendError::Disconnected(_)) => self.frames = None,
+        }
     }
 }
 
@@ -242,6 +279,9 @@ fn decode_screen(producer: &str, queue: &Receiver<Media>, (fresh, drawn): (&Fres
     let mut playout = media::Playout::default();
     let mut waiting: VecDeque<(Instant, SharedPixelBuffer<Rgb8Pixel>)> = VecDeque::new();
     let mut batch = Vec::new();
+    // Quadro chegando e decodificador fechado: a espera do quadro-chave, que é pedido na hora e
+    // de novo a cada segundo. Inclui a primeira imagem, que assim não espera o GOP de 4 s.
+    let mut stalled = Stalled::default();
 
     while !stop.load(Ordering::Relaxed) {
         let wait = waiting.front().map_or(PATIENCE, |(due, _)| due.saturating_duration_since(Instant::now()).min(PATIENCE));
@@ -254,6 +294,7 @@ fn decode_screen(producer: &str, queue: &Receiver<Media>, (fresh, drawn): (&Fres
 
         batch.extend(queue.try_iter());
 
+        let arrived = !batch.is_empty();
         let newest = batch.len().saturating_sub(1);
 
         for (index, item) in batch.drain(..).enumerate() {
@@ -263,16 +304,14 @@ fn decode_screen(producer: &str, queue: &Receiver<Media>, (fresh, drawn): (&Fres
 
             let now = Instant::now();
             let due = playout.due(timestamp, now);
-            let open = decoder.is_some();
-            let image = show(&mut decoder, producer, &item.data, (keyframe, timestamp), due > now || index == newest);
 
-            if open && decoder.is_none() {
-                ask_keyframe(producer);
-            }
-
-            if let Some(image) = image {
+            if let Some(image) = show(&mut decoder, producer, &item.data, (keyframe, timestamp), due > now || index == newest) {
                 waiting.push_back((due, image));
             }
+        }
+
+        if arrived && decoder.is_none() && stalled.waiting(Instant::now()) {
+            ask_keyframe(producer);
         }
 
         while waiting.len() > MOST_WAITING {
@@ -289,6 +328,12 @@ fn decode_screen(producer: &str, queue: &Receiver<Media>, (fresh, drawn): (&Fres
         let Some((_, image)) = latest else {
             continue;
         };
+
+        if let Some(lasted) = stalled.flowing(now)
+            && lasted >= WORTH_TELLING
+        {
+            tracing::error!(producer, seconds = lasted.as_secs_f32(), "assistir: a imagem ficou parada aqui, o decodificador recusou um quadro e esperou o quadro-chave");
+        }
 
         let height = image.height();
 

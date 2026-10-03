@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use rand::Rng;
 
-/// Depois disto o app desiste e avisa quem está olhando a tela.
+/// Depois disto o app desiste e avisa quem está olhando a tela. Conta recusas do servidor, não
+/// a rede fora do ar: essa o app espera voltar (`next_patient_delay`).
 pub const MAX_ATTEMPTS: u32 = 8;
 
 const FIRST_MS: u64 = 1_000;
@@ -27,22 +28,23 @@ pub struct Backoff {
 impl Backoff {
     /// `None` quando não vale mais tentar.
     pub fn next_delay(&mut self) -> Option<Duration> {
-        if self.attempt >= MAX_ATTEMPTS {
-            return None;
-        }
+        (self.attempt < MAX_ATTEMPTS).then(|| self.next_patient_delay())
+    }
 
+    /// A mesma conta, sem desistir: para a rede fora do ar, que volta quando volta — o roteador
+    /// reiniciando, o provedor caído por minutos. O Discord espera; o app desistia em ~50 s e
+    /// tirava a pessoa da sala. Passado o teto, toda espera fica perto dele.
+    pub fn next_patient_delay(&mut self) -> Duration {
         let ceiling = FIRST_MS
-            .saturating_mul(1_u64 << self.attempt)
+            .saturating_mul(1_u64 << self.attempt.min(16))
             .min(CEILING_MS);
         let half = ceiling / 2;
 
-        self.attempt += 1;
+        self.attempt = self.attempt.saturating_add(1);
 
         // Metade fixa e metade sorteada: garante um mínimo de espera e ainda assim
         // espalha as voltas.
-        Some(Duration::from_millis(
-            half + rand::thread_rng().gen_range(0..=half),
-        ))
+        Duration::from_millis(half + rand::thread_rng().gen_range(0..=half))
     }
 
     /// Uma conexão que deu certo zera a conta.
