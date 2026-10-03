@@ -5,13 +5,38 @@
 //! transforma em pixels que a interface desenha. O MFT é o da Microsoft, que vem em todo
 //! Windows; nenhum driver de placa precisa estar certo para alguém conseguir assistir.
 //!
-//! ponytail: decodifica na CPU, e a conversão de NV12 para RGB também é na CPU. Uma tela
-//! 1080p60 custa uma fração de um núcleo — e quem assiste não está jogando. Teto: se pesar,
-//! o gerente de device do Direct3D põe o MFT no DXVA e a conversão vira um VideoProcessor,
-//! com uma cópia da textura para a interface no fim.
+//! Decodifica na placa quando dá (DXVA, ver `Gpu`) e na CPU quando não: device que não abre,
+//! MFT que não aceita o gerente do Direct3D, ou uma falha da placa no meio — essa vale para o
+//! resto do processo, que passa a abrir todo decodificador na CPU.
 
 use std::mem::ManuallyDrop;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use ::windows::Win32::Foundation::RECT;
+use ::windows::Win32::Graphics::Direct3D11::{
+    D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_TEX2D_VPIV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
+    D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
+    D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC,
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255,
+    D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,
+    D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_PLAYBACK_NORMAL, D3D11_VPIV_DIMENSION_TEXTURE2D,
+    D3D11_VPOV_DIMENSION_TEXTURE2D, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread,
+    ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoContext1, ID3D11VideoDevice,
+    ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorInputView,
+    ID3D11VideoProcessorOutputView,
+};
+use ::windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601,
+    DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
+    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
+};
+use ::windows::Win32::Media::MediaFoundation::{
+    IMFDXGIBuffer, IMFDXGIDeviceManager, MF_SA_D3D11_AWARE, MFCreateDXGIDeviceManager,
+    MFT_MESSAGE_SET_D3D_MANAGER,
+};
+use ::windows::core::Interface;
 
 use ::windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFMediaType, IMFSample, IMFTransform, MF_E_NOTACCEPTING,
@@ -29,7 +54,7 @@ use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
 use crate::DecodedFrame;
-use crate::windows::start_media_foundation;
+use crate::windows::{color_space, create_device, start_media_foundation};
 
 /// O relógio do RTP para vídeo, e a unidade de tempo do Media Foundation (100 ns).
 const RTP_CLOCK: i64 = 90_000;
@@ -92,6 +117,242 @@ impl Matrix {
     }
 }
 
+/// A placa já falhou decodificando neste processo: os decodificadores seguintes abrem na CPU.
+static GPU_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// `UNKVOID_DECODER=cpu` decodifica na CPU, para comparar os dois caminhos na mesma máquina.
+fn gpu_allowed() -> bool {
+    !GPU_FAILED.load(Ordering::Relaxed) && !std::env::var("UNKVOID_DECODER").is_ok_and(|value| value == "cpu")
+}
+
+/// A decodificação na placa (DXVA): o MFT recebe o gerente do Direct3D e devolve cada quadro numa
+/// textura NV12; o VideoProcessor converte para RGBA na própria placa, e só a imagem pronta desce,
+/// uma vez por quadro mostrado. Na CPU, decodificar e converter uma tela 1080p60 custava perto de
+/// um núcleo, e uma 4K quatro — num PC de quatro núcleos com o jogo aberto, era a diferença entre
+/// acompanhar e congelar. Até um Intel integrado antigo decodifica H.264 4K no chip de vídeo.
+struct Gpu {
+    device: ID3D11Device,
+    context: ID3D11DeviceContext,
+    video_device: ID3D11VideoDevice,
+    video_context: ID3D11VideoContext,
+    manager: IMFDXGIDeviceManager,
+    converter: Option<Converter>,
+}
+
+/// A conversão de um tamanho: refeita quando a textura ou a imagem mudam de tamanho.
+struct Converter {
+    /// O tamanho da textura do decodificador (com o enchimento, 1088 para 1080), o da imagem e a
+    /// matriz de cor que o vídeo declarou.
+    sizes: ((u32, u32), (u32, u32), Matrix),
+    enumerator: ID3D11VideoProcessorEnumerator,
+    processor: ID3D11VideoProcessor,
+    output: ID3D11Texture2D,
+    output_view: ID3D11VideoProcessorOutputView,
+    staging: ID3D11Texture2D,
+    /// A placa só converte para BGRA: a troca de canal vai na cópia para a imagem.
+    swapped: bool,
+}
+
+impl Gpu {
+    fn open() -> Result<Self> {
+        unsafe {
+            let (device, context) = create_device().map_err(|failure| anyhow!("{failure}"))?;
+
+            let _ = device.cast::<ID3D11Multithread>().context("sem proteção multithread")?.SetMultithreadProtected(true);
+
+            let video_device: ID3D11VideoDevice = device.cast().context("o device não decodifica vídeo")?;
+            let video_context: ID3D11VideoContext = context.cast().context("o contexto não decodifica vídeo")?;
+            let mut token = 0_u32;
+            let mut manager: Option<IMFDXGIDeviceManager> = None;
+
+            MFCreateDXGIDeviceManager(&mut token, &mut manager).context("sem gerente de device")?;
+
+            let manager = manager.ok_or_else(|| anyhow!("o Media Foundation não devolveu o gerente"))?;
+
+            manager.ResetDevice(&device, token).context("o gerente recusou o device")?;
+
+            Ok(Self { device, context, video_device, video_context, manager, converter: None })
+        }
+    }
+
+    /// O quadro decodificado (`sample`, uma fatia de um array de texturas) em RGBA no `target`.
+    unsafe fn read_into<'target>(&mut self, sample: &IMFSample, (visible, matrix): ((u32, u32), Matrix), target: impl FnOnce(u32, u32) -> &'target mut [u8]) -> Result<()> {
+        unsafe {
+            let buffer: IMFDXGIBuffer = sample.GetBufferByIndex(0).context("quadro sem buffer")?.cast().context("o quadro não está na placa")?;
+            let mut raw = std::ptr::null_mut();
+
+            buffer.GetResource(&ID3D11Texture2D::IID, &mut raw).context("o quadro não deu a textura")?;
+
+            let texture = ID3D11Texture2D::from_raw(raw);
+            let slice = buffer.GetSubresourceIndex().context("o quadro não disse a fatia")?;
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+
+            texture.GetDesc(&mut desc);
+
+            let sizes = ((desc.Width, desc.Height), visible, matrix);
+
+            if self.converter.as_ref().is_none_or(|converter| converter.sizes != sizes) {
+                self.converter = Some(self.converter_for(sizes)?);
+            }
+
+            let converter = self.converter.as_ref().ok_or_else(|| anyhow!("sem conversão"))?;
+            let view_desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
+                FourCC: 0,
+                ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
+                Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 { Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: slice } },
+            };
+            let mut input: Option<ID3D11VideoProcessorInputView> = None;
+
+            self.video_device
+                .CreateVideoProcessorInputView(&texture, &converter.enumerator, &view_desc, Some(&mut input))
+                .context("a fatia do quadro não virou entrada")?;
+
+            let (width, height) = visible;
+            let shown = RECT { left: 0, top: 0, right: width as i32, bottom: height as i32 };
+            let stream = D3D11_VIDEO_PROCESSOR_STREAM {
+                Enable: true.into(),
+                pInputSurface: ManuallyDrop::new(input),
+                ..Default::default()
+            };
+
+            // Só o que se vê: as linhas de enchimento do fim da textura ficam de fora.
+            self.video_context.VideoProcessorSetStreamSourceRect(&converter.processor, 0, true, Some(&shown));
+
+            let blit = self.video_context.VideoProcessorBlt(&converter.processor, &converter.output_view, 0, std::slice::from_ref(&stream));
+
+            drop(ManuallyDrop::into_inner(stream.pInputSurface));
+            blit.context("a placa não converteu o quadro")?;
+            self.context.CopyResource(&converter.staging, &converter.output);
+
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+
+            self.context
+                .Map(&converter.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                .context("a imagem convertida não abriu para leitura")?;
+
+            let rgba = target(width, height);
+            let row = width as usize * 4;
+            let copied = if rgba.len() == row * height as usize {
+                let pitch = mapped.RowPitch as usize;
+                let source = std::slice::from_raw_parts(mapped.pData.cast::<u8>(), pitch * (height as usize - 1) + row);
+
+                for (line, from) in rgba.chunks_exact_mut(row).zip(source.chunks(pitch)) {
+                    line.copy_from_slice(&from[..row]);
+
+                    if converter.swapped {
+                        for pixel in line.as_chunks_mut::<4>().0 {
+                            pixel.swap(0, 2);
+                        }
+                    }
+                }
+
+                Ok(())
+            } else {
+                Err(anyhow!("imagem de {} bytes para {width}x{height}", rgba.len()))
+            };
+
+            // Solta antes de qualquer erro subir: mapeada, ela trava a próxima cópia da placa.
+            self.context.Unmap(&converter.staging, 0);
+
+            copied
+        }
+    }
+
+    unsafe fn converter_for(&self, (input, output, matrix): ((u32, u32), (u32, u32), Matrix)) -> Result<Converter> {
+        unsafe {
+            let rate = DXGI_RATIONAL { Numerator: 60, Denominator: 1 };
+            let content = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
+                InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+                InputFrameRate: rate,
+                InputWidth: input.0,
+                InputHeight: input.1,
+                OutputFrameRate: rate,
+                OutputWidth: output.0,
+                OutputHeight: output.1,
+                Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+            };
+            let enumerator = self.video_device.CreateVideoProcessorEnumerator(&content).context("sem conversão de vídeo na placa")?;
+            let processor = self.video_device.CreateVideoProcessor(&enumerator, 0).context("o conversor não abriu")?;
+            let supports = |format: DXGI_FORMAT| {
+                enumerator
+                    .CheckVideoProcessorFormat(format)
+                    .is_ok_and(|support| support & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT.0 as u32 != 0)
+            };
+            let (format, swapped) = if supports(DXGI_FORMAT_R8G8B8A8_UNORM) {
+                (DXGI_FORMAT_R8G8B8A8_UNORM, false)
+            } else {
+                (DXGI_FORMAT_B8G8R8A8_UNORM, true)
+            };
+
+            self.video_context.VideoProcessorSetStreamAutoProcessingMode(&processor, 0, false);
+
+            // O inverso do encoder: entra NV12 limitado (16–235) na matriz que o vídeo declarou —
+            // BT.709 nos nossos encoders, BT.601 em vídeo SD —, sai RGB cheio (0–255). Com a matriz
+            // errada o amarelo puxa para o verde.
+            match self.video_context.cast::<ID3D11VideoContext1>() {
+                Ok(context) => {
+                    let stream = match matrix {
+                        Matrix::Bt709 => DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
+                        Matrix::Bt601 => DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601,
+                    };
+
+                    context.VideoProcessorSetStreamColorSpace1(&processor, 0, stream);
+                    context.VideoProcessorSetOutputColorSpace1(&processor, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+                }
+                Err(_) => {
+                    let mut stream = color_space(D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235);
+
+                    // O bit da matriz (o terceiro) desligado é BT.601.
+                    if matrix == Matrix::Bt601 {
+                        stream._bitfield &= !(1 << 2);
+                    }
+
+                    self.video_context.VideoProcessorSetStreamColorSpace(&processor, 0, &stream);
+                    self.video_context.VideoProcessorSetOutputColorSpace(&processor, &color_space(D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255));
+                }
+            }
+
+            let texture = |staging: bool| -> Result<ID3D11Texture2D> {
+                let descriptor = D3D11_TEXTURE2D_DESC {
+                    Width: output.0,
+                    Height: output.1,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: format,
+                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                    Usage: if staging { D3D11_USAGE_STAGING } else { D3D11_USAGE_DEFAULT },
+                    BindFlags: if staging { 0 } else { D3D11_BIND_RENDER_TARGET.0 as u32 },
+                    CPUAccessFlags: if staging { D3D11_CPU_ACCESS_READ.0 as u32 } else { 0 },
+                    MiscFlags: 0,
+                };
+                let mut created: Option<ID3D11Texture2D> = None;
+
+                self.device.CreateTexture2D(&descriptor, None, Some(&mut created)).context("sem textura para a imagem")?;
+
+                created.ok_or_else(|| anyhow!("a textura da imagem não foi criada"))
+            };
+            let output_texture = texture(false)?;
+            let staging = texture(true)?;
+            let view_desc = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC { ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D, ..Default::default() };
+            let mut output_view: Option<ID3D11VideoProcessorOutputView> = None;
+
+            self.video_device
+                .CreateVideoProcessorOutputView(&output_texture, &enumerator, &view_desc, Some(&mut output_view))
+                .context("a imagem não virou saída do conversor")?;
+
+            Ok(Converter {
+                sizes: (input, output, matrix),
+                enumerator,
+                processor,
+                output: output_texture,
+                output_view: output_view.ok_or_else(|| anyhow!("sem saída do conversor"))?,
+                staging,
+                swapped,
+            })
+        }
+    }
+}
+
 pub struct H264Decoder {
     transform: IMFTransform,
     layout: Layout,
@@ -99,6 +360,8 @@ pub struct H264Decoder {
     /// cada chamada eram vários MB por quadro (12 em 4K), em PC fraco disputando memória com o
     /// jogo. Só existe quando quem aloca a saída é este lado, e cai na troca de formato.
     spare: Option<IMFSample>,
+    /// A placa, quando ela decodifica. `None` é o caminho da CPU.
+    gpu: Option<Gpu>,
 }
 
 // O MFT de software é free-threaded, e o decodificador só é usado por uma thread por vez:
@@ -107,10 +370,27 @@ unsafe impl Send for H264Decoder {}
 
 impl H264Decoder {
     pub fn new() -> Result<Self> {
+        Self::open(gpu_allowed())
+    }
+
+    fn open(on_gpu: bool) -> Result<Self> {
         unsafe {
             start_media_foundation().map_err(|failure| anyhow!("{failure}"))?;
 
-            let transform = open_decoder()?;
+            let gpu = on_gpu
+                .then(|| Gpu::open().inspect_err(|failure| tracing::info!(%failure, "decodificador: a placa não abriu, vai na CPU")).ok())
+                .flatten();
+            let (transform, gpu) = match gpu {
+                Some(gpu) => match open_decoder(Some(&gpu.manager)) {
+                    Ok(transform) => (transform, Some(gpu)),
+                    Err(failure) => {
+                        tracing::info!(%failure, "decodificador: nenhum MFT decodifica na placa, vai na CPU");
+
+                        (open_decoder(None)?, None)
+                    }
+                },
+                None => (open_decoder(None)?, None),
+            };
 
             transform
                 .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
@@ -123,6 +403,7 @@ impl H264Decoder {
                 transform,
                 layout: Layout::default(),
                 spare: None,
+                gpu,
             };
 
             decoder.choose_output()?;
@@ -288,8 +569,21 @@ impl H264Decoder {
         }
     }
 
-    unsafe fn read_into<'target>(&self, sample: &IMFSample, target: impl FnOnce(u32, u32) -> &'target mut [u8]) -> Result<()> {
+    unsafe fn read_into<'target>(&mut self, sample: &IMFSample, target: impl FnOnce(u32, u32) -> &'target mut [u8]) -> Result<()> {
         unsafe {
+            if let Some(gpu) = self.gpu.as_mut() {
+                let read = gpu.read_into(sample, ((self.layout.width, self.layout.height), self.layout.matrix), target);
+
+                // Uma falha da placa no meio (driver que reiniciou, device removido) vale para o
+                // resto do processo: o próximo decodificador — o que nasce no próximo quadro-chave
+                // — abre na CPU em vez de falhar do mesmo jeito.
+                if read.is_err() {
+                    GPU_FAILED.store(true, Ordering::Relaxed);
+                }
+
+                return read;
+            }
+
             let buffer = sample
                 .ConvertToContiguousBuffer()
                 .context("o quadro decodificado não virou um buffer só")?;
@@ -342,7 +636,7 @@ enum Output {
 
 /// O primeiro decodificador de H.264 que aceitar entrar. Só os síncronos: o assíncrono
 /// pede eventos, e o da Microsoft — que todo Windows tem — é síncrono.
-unsafe fn open_decoder() -> Result<IMFTransform> {
+unsafe fn open_decoder(manager: Option<&IMFDXGIDeviceManager>) -> Result<IMFTransform> {
     unsafe {
         let input = MFT_REGISTER_TYPE_INFO {
             guidMajorType: MFMediaType_Video,
@@ -379,7 +673,7 @@ unsafe fn open_decoder() -> Result<IMFTransform> {
         };
 
         for activate in candidates {
-            match try_decoder(&activate) {
+            match try_decoder(&activate, manager) {
                 Ok(transform) => return Ok(transform),
                 Err(failure) => {
                     tracing::warn!(%failure, "decodificador: MFT recusou, tentando o próximo");
@@ -393,9 +687,22 @@ unsafe fn open_decoder() -> Result<IMFTransform> {
     }
 }
 
-unsafe fn try_decoder(activate: &IMFActivate) -> Result<IMFTransform> {
+unsafe fn try_decoder(activate: &IMFActivate, manager: Option<&IMFDXGIDeviceManager>) -> Result<IMFTransform> {
     unsafe {
         let transform: IMFTransform = activate.ActivateObject().context("o MFT não ativou")?;
+
+        // O gerente antes dos tipos: é com ele que o MFT decide em que memória decodifica.
+        if let Some(manager) = manager {
+            let aware = transform.GetAttributes().ok().and_then(|attributes| attributes.GetUINT32(&MF_SA_D3D11_AWARE).ok());
+
+            if aware != Some(1) {
+                return Err(anyhow!("o MFT não decodifica na placa"));
+            }
+
+            transform
+                .ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)
+                .context("o MFT recusou o gerente do Direct3D")?;
+        }
 
         // Sem isto o MFT segura quadros para reordenar, e quem assiste fica um quarto de
         // segundo atrás de quem transmite. Nosso H.264 não tem quadro B: não há o que esperar.
@@ -578,9 +885,17 @@ mod tests {
         }
     }
 
+    /// Os dois caminhos — a placa, quando esta máquina tem, e a CPU — saem com as mesmas cores
+    /// no mesmo lugar.
     #[test]
     fn every_frame_of_a_real_stream_comes_out_as_pixels() {
-        let mut decoder = H264Decoder::new().expect("o decodificador abriu");
+        for on_gpu in [true, false] {
+            every_frame_comes_out_as_pixels(on_gpu);
+        }
+    }
+
+    fn every_frame_comes_out_as_pixels(on_gpu: bool) {
+        let mut decoder = H264Decoder::open(on_gpu).expect("o decodificador abriu");
         let mut frames = Vec::new();
 
         for (index, unit) in access_units(FIXTURE).into_iter().enumerate() {
@@ -609,8 +924,101 @@ mod tests {
             let pixel = &frames[0].rgba[(20 * 320 + x) * 4..(20 * 320 + x) * 4 + 3];
             let far = pixel.iter().zip(expected).any(|(&got, &want)| (i32::from(got) - want).abs() > 12);
 
-            assert!(!far, "a barra {index} saiu {pixel:?}, esperava {expected:?}");
+            assert!(!far, "a barra {index} saiu {pixel:?}, esperava {expected:?} (placa: {})", decoder.gpu.is_some());
         }
+    }
+
+    /// Ida e volta de verdade, na placa desta máquina: 1080p saído do encoder de hardware — cuja
+    /// textura tem 1088 linhas, e as 8 de baixo não podem aparecer — decodificado pelos dois
+    /// caminhos, com o tempo de cada um. Precisa de placa, por isso fica de fora do `cargo test`:
+    ///
+    /// `cargo test -p media --lib a_1080p_stream -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn a_1080p_stream_from_the_hardware_encoder_decodes_on_both_paths() {
+        use ::windows::Win32::Graphics::Direct3D11::{D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT};
+
+        let (width, height) = (1920_u32, 1080_u32);
+        let (device, context) = unsafe { create_device() }.expect("device");
+        let mut texture = None;
+
+        unsafe {
+            device
+                .CreateTexture2D(
+                    &D3D11_TEXTURE2D_DESC {
+                        Width: width,
+                        Height: height,
+                        MipLevels: 1,
+                        ArraySize: 1,
+                        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                        Usage: D3D11_USAGE_DEFAULT,
+                        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                        CPUAccessFlags: 0,
+                        MiscFlags: 0,
+                    },
+                    None,
+                    Some(&mut texture),
+                )
+                .expect("textura");
+        }
+
+        let surface = crate::GpuSurface { texture: texture.expect("textura"), device, context };
+        let mut encoder = crate::PlatformEncoder::new(&crate::EncoderConfig::new(capture::Quality::Hd1080, 60, (width, height))).expect("encoder");
+        let mut stream = Vec::new();
+
+        for index in 0..180_u32 {
+            // Um degradê que anda: muda todo quadro, como um jogo, e tem cor para conferir.
+            let pixels: Vec<u8> = (0..width * height)
+                .flat_map(|pixel| {
+                    let shade = ((pixel % width + index * 8) % 256) as u8;
+
+                    [shade, 64, 255 - shade, 255]
+                })
+                .collect();
+
+            unsafe { surface.context.UpdateSubresource(&surface.texture, 0, None, pixels.as_ptr().cast(), width * 4, 0) };
+
+            if let Ok(frame) = encoder.encode(&surface, u64::from(index) * 16_666_667) {
+                stream.push(frame);
+            }
+        }
+
+        assert!(stream.len() > 150, "o encoder soltou {} quadros", stream.len());
+
+        let mut last = Vec::new();
+
+        for on_gpu in [true, false] {
+            let mut decoder = H264Decoder::open(on_gpu).expect("decodificador");
+            let begun = std::time::Instant::now();
+            let mut image = None;
+
+            for (index, frame) in stream.iter().enumerate() {
+                #[allow(clippy::cast_possible_truncation)]
+                let timestamp = index as u32 * 1_500;
+
+                if let Some(decoded) = decoder.decode(&frame.data, timestamp).expect("decodificou") {
+                    image = Some(decoded);
+                }
+            }
+
+            let spent = begun.elapsed();
+            let image = image.expect("saiu imagem");
+
+            println!(
+                "{}: {:.2} ms por quadro decodificado e convertido ({} quadros)",
+                if decoder.gpu.is_some() { "placa" } else { "CPU" },
+                spent.as_secs_f64() * 1000.0 / stream.len() as f64,
+                stream.len()
+            );
+            assert_eq!((image.width, image.height), (width, height), "o enchimento entrou na imagem");
+            last.push(image.rgba);
+        }
+
+        // Os dois caminhos chegam à mesma imagem, a menos do arredondamento de cada conversão.
+        let differing = last[0].iter().zip(&last[1]).filter(|(gpu, cpu)| (i32::from(**gpu) - i32::from(**cpu)).abs() > 16).count();
+
+        assert!(differing < last[0].len() / 100, "{differing} canais diferentes entre placa e CPU");
     }
 
     fn convert(nv12: &[u8], layout: Layout) -> Result<Vec<u8>> {

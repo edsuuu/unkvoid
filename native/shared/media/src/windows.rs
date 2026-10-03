@@ -1184,7 +1184,7 @@ pub(crate) unsafe fn start_media_foundation() -> Result<(), EncoderError> {
 ///
 /// Do 11_1 ao 10_0, como a captura: placa que para no 11_0 (GTX 600 e 700, Intel HD 4000, AMD
 /// HD 6000) recusava o device, e sem ele não sobrava nem o encoder por processador.
-unsafe fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext), EncoderError> {
+pub(crate) unsafe fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext), EncoderError> {
     unsafe {
         let mut device = None;
         let mut context = None;
@@ -1526,7 +1526,7 @@ unsafe fn set_color(kind: &IMFMediaType) -> Result<(), EncoderError> {
 /// `Usage` no bit 0 (0 = reprodução), `RGB_Range` no bit 1 (0 = 0–255),
 /// `YCbCr_Matrix` no bit 2 (1 = BT.709), `YCbCr_xvYCC` no bit 3 e `Nominal_Range` nos
 /// bits 4–5. Só a faixa nominal varia entre entrada e saída.
-fn color_space(range: D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE) -> D3D11_VIDEO_PROCESSOR_COLOR_SPACE {
+pub(crate) fn color_space(range: D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE) -> D3D11_VIDEO_PROCESSOR_COLOR_SPACE {
     const MATRIX_BT709: u32 = 1 << 2;
 
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE {
