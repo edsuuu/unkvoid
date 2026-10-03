@@ -551,6 +551,7 @@ mídia em outras threads **enquanto** uma ação está em voo.
 | `unkvoid_app(h, ação, json)` | as decisões do app. **Bloqueia** no que fala com o servidor |
 | `unkvoid_next_event(h)` | o próximo aviso, ou nulo. Não bloqueia |
 | `unkvoid_next_media(h, *tamanho)` | o próximo quadro ou bloco de som do que se assiste; espera até 100 ms e devolve nulo. Para **uma** thread só da interface |
+| `unkvoid_chime(nome, *tamanho)` | o toque de um `room.chime` (`joined`, `left`, `streamStarted`, `streamStopped`) ou o de mensagem (`message`) em PCM `f32` estéreo a 48 kHz, para a interface tocar pelo mesmo caminho das vozes; nulo para nome desconhecido; liberar com `unkvoid_bytes_free` |
 | `unkvoid_speak(h, *amostras, n)` | o microfone que a interface capturou: PCM `f32` estéreo intercalado a 48 kHz |
 | `unkvoid_show(h, IOSurfaceRef, ns)` | macOS: um quadro da câmera, no buffer de GPU, **já retido** — quem solta é o núcleo |
 | `unkvoid_string_free(texto)`, `unkvoid_bytes_free(bloco, tamanho)` | devolvem o que o núcleo alocou — uma vez só |

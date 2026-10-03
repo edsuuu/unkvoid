@@ -36,32 +36,12 @@ final class Sound: @unchecked Sendable {
 
     /// Um bloco de som de uma transmissão. Chamado da thread da mídia.
     func play(_ samples: Data, from producer: String) {
-        let frames = samples.count / MemoryLayout<Float>.size / 2
-
-        guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: Self.stereo, frameCapacity: AVAudioFrameCount(frames)) else {
+        guard let (buffer, peak) = Self.buffer(from: samples) else {
             return
         }
 
-        buffer.frameLength = AVAudioFrameCount(frames)
-
-        samples.withUnsafeBytes { raw in
-            let interleaved = raw.bindMemory(to: Float.self)
-
-            guard let channels = buffer.floatChannelData else {
-                return
-            }
-
-            var peak: Float = 0
-
-            for frame in 0 ..< frames {
-                channels[0][frame] = interleaved[frame * 2]
-                channels[1][frame] = interleaved[frame * 2 + 1]
-                peak = max(peak, abs(interleaved[frame * 2]))
-            }
-
-            if peak > Self.loudness {
-                heard(producer)
-            }
+        if peak > Self.loudness {
+            heard(producer)
         }
 
         gate.lock()
@@ -101,6 +81,47 @@ final class Sound: @unchecked Sendable {
             output.stop()
         }
     }
+
+    /// Um toque do app, já sintetizado, pela mesma saída das vozes.
+    func chime(_ samples: Data) {
+        guard let (buffer, _) = Self.buffer(from: samples) else {
+            return
+        }
+
+        gate.lock()
+
+        defer { gate.unlock() }
+
+        player(for: Self.chimePlayer)?.scheduleBuffer(buffer, completionHandler: nil)
+    }
+
+    /// O PCM intercalado do núcleo vira o planar que o `AVAudioEngine` toca; o pico do canal
+    /// esquerdo vem junto, para saber quem está falando sem varrer o bloco de novo.
+    private static func buffer(from samples: Data) -> (AVAudioPCMBuffer, Float)? {
+        let frames = samples.count / MemoryLayout<Float>.size / 2
+
+        guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: stereo, frameCapacity: AVAudioFrameCount(frames)), let channels = buffer.floatChannelData else {
+            return nil
+        }
+
+        buffer.frameLength = AVAudioFrameCount(frames)
+
+        var peak: Float = 0
+
+        samples.withUnsafeBytes { raw in
+            let interleaved = raw.bindMemory(to: Float.self)
+
+            for frame in 0 ..< frames {
+                channels[0][frame] = interleaved[frame * 2]
+                channels[1][frame] = interleaved[frame * 2 + 1]
+                peak = max(peak, abs(interleaved[frame * 2]))
+            }
+        }
+
+        return (buffer, peak)
+    }
+
+    private static let chimePlayer = "unkvoid:chime"
 
     /// A saída escolhida na barra de baixo. `nil` é a do sistema.
     func use(speaker: AudioDeviceID?) {
