@@ -231,9 +231,10 @@ Tudo devolve `Resource`. Erro de permissão é 403 com `{ "message": "…" }`; v
 
 `POST /api/errors` (público, 30 por minuto) recebe `{ version, platform, log }` — `platform` é
 `windows`, `macos` ou `linux`, e `log` tem até 20 mil caracteres — e responde 2xx. O site agrupa
-pela versão, pelo sistema e pela primeira linha de pânico ou `ERROR` do log. O app nativo do
-Windows manda, de meio em meio minuto, o pedaço do log do dia que ganhou um `ERROR` desde o
-último envio, sem o nome do usuário da máquina; o app em Tauri mandava na abertura.
+pela versão, pelo sistema e pela primeira linha de pânico ou `ERROR` do log. Os apps nativos do
+Windows e do Linux mandam (`core_app::logbook`), de meio em meio minuto, o pedaço do log do dia
+que ganhou um `ERROR` desde o último envio, sem o nome do usuário da máquina; o app em Tauri
+mandava na abertura.
 
 Conta:
 
