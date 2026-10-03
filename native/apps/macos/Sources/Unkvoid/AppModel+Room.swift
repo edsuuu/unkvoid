@@ -211,6 +211,8 @@ extension AppModel {
         switch what {
         case "watch": "Não deu para assistir a uma das transmissões."
         case "mic": "Não deu para abrir o microfone."
+        case "shareClosed": "A janela que você compartilhava foi fechada, e a transmissão parou."
+        case "serverMuted": "Um moderador silenciou o seu microfone."
         default: "Não deu para compartilhar a tela."
         }
     }

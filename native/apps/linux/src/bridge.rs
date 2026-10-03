@@ -1155,6 +1155,8 @@ fn translate(update: &Value, mine: &Arc<Mutex<Mine>>) -> Option<Update> {
             match data["what"].as_str()? {
                 "watch" => "Não deu para assistir a uma das transmissões.",
                 "mic" => "Não deu para abrir o microfone.",
+                "shareClosed" => "A janela que você compartilhava foi fechada, e a transmissão parou.",
+                "serverMuted" => "Um moderador silenciou o seu microfone.",
                 _ => "Não deu para compartilhar a tela.",
             }
             .into(),
