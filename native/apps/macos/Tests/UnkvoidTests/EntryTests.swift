@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import Unkvoid
@@ -125,5 +126,34 @@ struct EntryTests {
         #expect(model.nameError == "" && model.codeError == "")
 
         await model.leaveRoom()
+    }
+
+    /// O token de acesso é revogado noutro aparelho com o app aberto: a próxima chamada
+    /// renova o par por baixo e a pessoa nem percebe. (O par que não renova é o `session.ended`,
+    /// coberto no núcleo: a interface só solta a conta e lê a tela nova.)
+    @Test(.enabled(if: HubTests.ready))
+    func aRevokedAccessTokenIsRenewedWithoutAnyoneNoticing() async throws {
+        #expect(EndToEndTests.isolated)
+
+        let model = AppModel(url: Launch.socketUrl())
+
+        await model.start()
+
+        model.email = "grace@teste.local"
+        model.password = ProcessInfo.processInfo.environment["UNKVOID_TEST_PASSWORD"] ?? ""
+
+        await model.signIn(registering: false)
+
+        try #require(model.signedIn, "a Grace não entrou: \(model.loginError)")
+
+        // Revoga só o token de acesso no servidor, sem o núcleo saber.
+        #expect(await model.ask("api", ["name": "signOut", "params": [:], "body": [:]])["failed"] == nil)
+
+        await model.loadServers()
+
+        #expect(model.screen == .hub)
+        #expect(model.signedIn)
+        #expect(!model.serversFailed, "a chamada depois da renovação tinha de passar")
+        #expect(model.notice == nil)
     }
 }
