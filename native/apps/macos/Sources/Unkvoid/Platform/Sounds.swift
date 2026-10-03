@@ -1,18 +1,40 @@
-import AppKit
+import Foundation
 
-/// Os sons curtos do app: alguém entrou, alguém saiu, mensagem nova. São os do próprio
-/// sistema — a pessoa já os conhece, e eles respeitam o volume de alertas dela.
+/// Os toques do app são os do núcleo (`chimes.rs`, os mesmos do React): a sala diz qual toque
+/// (`room.chime`) e a interface só pede o PCM pelo nome e o toca pelo motor de saída da sala —
+/// no fone escolhido, igual nas três plataformas.
 @MainActor
 enum Sounds {
+    /// O motor por onde tocar. Sem ele (sem núcleo) o app fica em silêncio.
+    static var output: Sound?
+
+    private static var cached: [String: Data] = [:]
+
+    static func play(_ chime: String) {
+        guard let output else {
+            return
+        }
+
+        if cached[chime] == nil {
+            cached[chime] = Core.chime(chime)
+        }
+
+        guard let samples = cached[chime] else {
+            return
+        }
+
+        output.chime(samples)
+    }
+
     static func joined() {
-        NSSound(named: "Pop")?.play()
+        play("joined")
     }
 
     static func left() {
-        NSSound(named: "Bottle")?.play()
+        play("left")
     }
 
     static func message() {
-        NSSound(named: "Tink")?.play()
+        play("message")
     }
 }

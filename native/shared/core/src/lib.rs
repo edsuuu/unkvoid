@@ -13,6 +13,7 @@ pub mod failure;
 pub mod ffi;
 pub mod google;
 pub mod keymap;
+pub mod logbook;
 pub mod members;
 pub mod models;
 pub mod permissions;

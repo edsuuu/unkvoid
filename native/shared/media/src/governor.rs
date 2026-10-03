@@ -45,6 +45,14 @@ const INCREASE_PERCENT: u64 = 105;
 /// destruir a imagem, por pior que seja a perda medida.
 const FLOOR_PERCENT: u64 = 35;
 
+/// Janelas congestionadas seguidas com a taxa já no piso antes de pedir um degrau de resolução:
+/// o caminho não leva nem a menor taxa desta qualidade, e o WebRTC desceria a resolução.
+const STARVED_WINDOWS: u32 = 5;
+
+/// Janelas limpas seguidas com a taxa no teto antes de pedir o degrau de volta: um minuto, para
+/// não subir para o congestionamento que acabou de passar.
+const ROOMY_WINDOWS: u32 = 60;
+
 pub struct BitrateGovernor {
     ceiling: u32,
     floor: u32,
@@ -56,6 +64,8 @@ pub struct BitrateGovernor {
     nacked: u64,
     dropped: u64,
     loss_permille: u32,
+    starved_windows: u32,
+    roomy_windows: u32,
 }
 
 impl BitrateGovernor {
@@ -72,7 +82,19 @@ impl BitrateGovernor {
             nacked: 0,
             dropped: 0,
             loss_permille: 0,
+            starved_windows: 0,
+            roomy_windows: 0,
         }
+    }
+
+    /// A perda continua com a taxa no piso: só um degrau de resolução (ou de fps) resolve.
+    pub fn starved(&self) -> bool {
+        self.starved_windows >= STARVED_WINDOWS
+    }
+
+    /// Limpo no teto há um minuto: cabe o degrau de cima de volta.
+    pub fn roomy(&self) -> bool {
+        self.roomy_windows >= ROOMY_WINDOWS
     }
 
     /// `UNKVOID_ABR=off` deixa a taxa fixa no teto. Os limiares acima saíram de conta, não
@@ -122,6 +144,9 @@ impl BitrateGovernor {
         if !self.enabled {
             return None;
         }
+
+        self.starved_windows = if loss >= CONGESTED_PERMILLE && self.target == self.floor { self.starved_windows + 1 } else { 0 };
+        self.roomy_windows = if loss < CLEAN_PERMILLE && self.target == self.ceiling { self.roomy_windows + 1 } else { 0 };
 
         if self.holdoff > 0 {
             self.holdoff -= 1;
@@ -215,6 +240,41 @@ mod tests {
         }
 
         assert_eq!(window(&mut governor, 0), Some(7_350_000));
+    }
+
+    /// Perda que continua com a taxa no piso pede degrau de resolução; limpo no teto por um
+    /// minuto pede o degrau de volta. Qualquer janela fora disso recomeça a conta.
+    #[test]
+    fn loss_at_the_floor_asks_for_a_step_and_a_clean_minute_gives_it_back() {
+        let mut governor = BitrateGovernor::new(CEILING, true);
+
+        while governor.target() > CEILING * 35 / 100 {
+            window(&mut governor, 200);
+        }
+
+        let windows = (1..=20).find(|_| {
+            window(&mut governor, 200);
+
+            governor.starved()
+        });
+
+        assert_eq!(windows, Some(STARVED_WINDOWS), "pede depois de cinco janelas no piso");
+
+        window(&mut governor, 20);
+
+        assert!(!governor.starved(), "uma janela sem congestionamento recomeça a conta");
+
+        let mut roomy = BitrateGovernor::new(CEILING, true);
+
+        for _ in 1..ROOMY_WINDOWS {
+            window(&mut roomy, 0);
+        }
+
+        assert!(!roomy.roomy());
+
+        window(&mut roomy, 0);
+
+        assert!(roomy.roomy(), "um minuto limpo no teto");
     }
 
     #[test]

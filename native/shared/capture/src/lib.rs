@@ -43,6 +43,35 @@ pub fn uses_system_picker() -> bool {
     false
 }
 
+/// Se a janela escolhida ainda existe. A captura calada pode ser a janela que fechou — o jogo
+/// que saiu —, e aí refazê-la só falharia de novo a cada espera do vigia: quem transmite tem de
+/// parar e saber por quê. Monitor e o resto: sempre.
+pub fn source_exists(source: CaptureSource) -> bool {
+    #[cfg(target_os = "windows")]
+    return windows::window_alive(source);
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = source;
+
+        true
+    }
+}
+
+/// Se a janela escolhida está minimizada. Minimizada ela não entrega quadro nenhum, e refazer a
+/// captura ali só custa engasgos ao jogo que está por cima.
+pub fn source_minimized(source: CaptureSource) -> bool {
+    #[cfg(target_os = "windows")]
+    return windows::window_minimized(source);
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = source;
+
+        false
+    }
+}
+
 /// O que tem de acontecer antes de `source_size` e `start` e pode esperar pela pessoa:
 /// no Wayland é aqui que o seletor do sistema abre, uma vez só, e o que ela escolher fica
 /// guardado para os dois. Bloqueia; quem chama não pode estar com cadeado nenhum na mão.

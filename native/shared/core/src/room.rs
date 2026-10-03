@@ -63,8 +63,14 @@ pub struct Room {
     /// pessoa: volta sozinho quando ela aparece.
     hidden: std::sync::atomic::AtomicBool,
     away: Mutex<HashSet<String>>,
+    /// A transmissão em tela cheia, se há uma (`set_focus`).
+    focus: Mutex<Option<String>>,
     /// Telas que a pessoa mandou assistir pelo "Assistir", acima do `screens_at_once`.
     chosen: Mutex<HashSet<String>>,
+    /// O microfone mutado pela pessoa e o silenciado por um moderador (`serverMuted`): vale o
+    /// que estiver ligado.
+    user_muted: std::sync::atomic::AtomicBool,
+    server_muted: std::sync::atomic::AtomicBool,
     /// "Ver o que a sala vê": assistir à própria tela, que custa um decodificador a mais.
     self_view: std::sync::atomic::AtomicBool,
     /// A receita da tela que está subindo, para republicar depois de uma queda longa.
@@ -102,7 +108,10 @@ impl Room {
             receiving: Mutex::default(),
             hidden: std::sync::atomic::AtomicBool::new(false),
             away: Mutex::default(),
+            focus: Mutex::default(),
             chosen: Mutex::default(),
+            user_muted: std::sync::atomic::AtomicBool::new(false),
+            server_muted: std::sync::atomic::AtomicBool::new(false),
             self_view: std::sync::atomic::AtomicBool::new(false),
             shared: Mutex::default(),
             shown: Mutex::default(),
@@ -197,15 +206,41 @@ impl Room {
             match stall {
                 Some(Stall::Transport) => tracing::error!("transmissão: o encoder devolve quadros e nada sai para a rede"),
                 Some(stall) => {
+                    let (source, on_hardware) = lock(&room.sending)
+                        .screen
+                        .as_ref()
+                        .map_or((None, false), |broadcast| (Some(broadcast.source), broadcast.on_hardware()));
+
+                    // A janela que fechou (o jogo que saiu) não volta refazendo: a transmissão
+                    // para, e quem transmite fica sabendo — antes ela seguia "no ar" com o último
+                    // quadro parado para quem assistia, e o vigia falhava a cada espera.
+                    if source.is_some_and(|source| !capture::source_exists(source)) {
+                        tracing::warn!("transmissão: a janela compartilhada foi fechada");
+                        room.stop_sharing().await;
+                        room.tell("room.failed", json!({ "what": "shareClosed" }));
+                        watch = None;
+
+                        continue;
+                    }
+
+                    // Minimizada ela não entrega quadro; refazer só custaria engasgos ao jogo.
+                    if stall == Stall::Capture && source.is_some_and(capture::source_minimized) {
+                        continue;
+                    }
+
+                    let fall_back = stall == Stall::Encoder && on_hardware && watch.as_ref().is_some_and(StallWatch::encoder_keeps_failing);
+
                     match stall {
+                        _ if fall_back => tracing::error!("transmissão: o encoder da placa parou de novo, passando para o do processador"),
                         Stall::Encoder => tracing::error!("transmissão: o encoder parou de devolver quadros, refazendo captura e encoder"),
                         _ => tracing::warn!("transmissão: a captura parou de mandar quadros (tela parada ou captura travada), refazendo"),
                     }
 
-                    let refreshed = tokio::task::block_in_place(|| match lock(&room.sending).screen.as_mut() {
-                        Some(broadcast) => broadcast.refresh(),
-                        None => Ok(()),
-                    });
+                    let refreshed = if fall_back {
+                        room.redo_screen(sharing::Broadcast::fall_back_to_cpu)
+                    } else {
+                        room.redo_screen(sharing::Broadcast::refresh)
+                    };
 
                     match refreshed {
                         Ok(()) => {
@@ -217,6 +252,25 @@ impl Room {
                     }
                 }
                 None => {}
+            }
+
+            // A perda que não cede no piso da taxa desce um degrau de qualidade (720p, depois
+            // 720p30); um minuto limpo no teto sobe um de volta.
+            let (starved, roomy) = lock(&room.sending)
+                .screen
+                .as_ref()
+                .map_or((false, false), |broadcast| (broadcast.starved(), broadcast.roomy()));
+
+            if starved || roomy {
+                let stepped = room.redo_screen(|broadcast| if starved { broadcast.step_down() } else { broadcast.step_up() });
+
+                if let Err(error) = stepped {
+                    tracing::error!(error = %error, "transmissão: o degrau de qualidade não abriu");
+                }
+
+                if let Some(watch) = watch.as_mut() {
+                    watch.restarted(Instant::now());
+                }
             }
 
             let lost = lock(&room.sending).lost_the_server();
@@ -249,6 +303,14 @@ impl Room {
                     lock(&self.receiving).remove(producer_id);
                     lock(&self.away).remove(producer_id);
                     lock(&self.chosen).remove(producer_id);
+
+                    // A tela cheia que acabou devolve as outras à vista.
+                    let focused_left = lock(&self.focus).as_deref() == Some(producer_id);
+
+                    if focused_left {
+                        *lock(&self.focus) = None;
+                        self.apply_view().await;
+                    }
                 }
                 local::SESSION_LOST => self.tell("room.session", json!({ "state": "lost" })),
                 local::SESSION_REJOINED => {
@@ -265,6 +327,7 @@ impl Room {
                     self.settle().await;
                 }
                 "producerDead" => self.died(&event.data).await,
+                "serverMuted" => self.silenced(event.data["muted"].as_bool().unwrap_or(false)),
                 "producerReceiving" => {
                     if let (Some(producer_id), Some(receiving)) =
                         (event.data["producerId"].as_str(), event.data["receiving"].as_bool())
@@ -409,7 +472,7 @@ impl Room {
         // Pausado antes de o caminho ser refeito continua pausado: o consumer nasce assim. E o
         // vídeo que chega com a janela fora da vista espera ela voltar.
         let paused = lock(&self.paused).contains(&producer.producer_id);
-        let away = kind == "video" && self.hidden.load(std::sync::atomic::Ordering::Relaxed);
+        let away = kind == "video" && self.unseen(&producer.producer_id);
 
         if away {
             lock(&self.away).insert(producer.producer_id.clone());
@@ -435,6 +498,14 @@ impl Room {
         lock(&self.watching).stop(Some(producer_id));
         lock(&self.closed).insert(producer_id.to_owned());
         lock(&self.paused).remove(producer_id);
+
+        // Fechar a tela que estava em tela cheia devolve as outras à vista.
+        let focused = lock(&self.focus).as_deref() == Some(producer_id);
+
+        if focused {
+            *lock(&self.focus) = None;
+            self.apply_view().await;
+        }
 
         let consumer = lock(&self.consumers).remove(producer_id);
 
@@ -481,33 +552,60 @@ impl Room {
             return;
         }
 
-        let video: HashSet<String> = self
+        self.apply_view().await;
+    }
+
+    /// Uma tela em tela cheia (`Some`) ou nenhuma: com uma em tela cheia, as outras não estão à
+    /// vista, e o vídeo delas pausa no servidor como no app em React — decodificar três telas
+    /// atrás de uma só gasta a CPU do jogo à toa.
+    pub async fn set_focus(&self, producer_id: Option<String>) {
+        if std::mem::replace(&mut *lock(&self.focus), producer_id.clone()) == producer_id {
+            return;
+        }
+
+        self.apply_view().await;
+    }
+
+    /// Se uma transmissão de vídeo não está à vista: a janela está fora, ou outra está em tela
+    /// cheia.
+    fn unseen(&self, producer_id: &str) -> bool {
+        self.hidden.load(std::sync::atomic::Ordering::Relaxed) || lock(&self.focus).as_deref().is_some_and(|focused| focused != producer_id)
+    }
+
+    /// Pausa no servidor o vídeo que deixou de estar à vista e retoma o que voltou — sem mexer no
+    /// que a pessoa pausou.
+    async fn apply_view(&self) {
+        let paused = lock(&self.paused).clone();
+        let unseen: HashSet<String> = self
             .session
             .peers()
             .iter()
             .flat_map(|peer| peer.producers.iter())
-            .filter(|producer| producer.kind == "video")
+            .filter(|producer| producer.kind == "video" && !paused.contains(&producer.producer_id) && self.unseen(&producer.producer_id))
             .map(|producer| producer.producer_id.clone())
             .collect();
-        let chosen: HashSet<String> = if away {
-            let paused = lock(&self.paused).clone();
+        let current = lock(&self.away).clone();
+        let consumers = lock(&self.consumers).clone();
+        let changes = unseen
+            .difference(&current)
+            .map(|producer_id| (producer_id.clone(), true))
+            .chain(current.difference(&unseen).map(|producer_id| (producer_id.clone(), false)));
 
-            video.into_iter().filter(|producer_id| !paused.contains(producer_id)).collect()
-        } else {
-            std::mem::take(&mut *lock(&self.away))
-        };
-        let consumers: Vec<(String, String)> = lock(&self.consumers)
-            .iter()
-            .filter(|(producer_id, _)| chosen.contains(*producer_id))
-            .map(|(producer_id, consumer_id)| (producer_id.clone(), consumer_id.clone()))
-            .collect();
-        let acted = if away { action::PAUSE_CONSUMER } else { action::RESUME_CONSUMER };
+        for (producer_id, away) in changes.collect::<Vec<_>>() {
+            let acted = if away { action::PAUSE_CONSUMER } else { action::RESUME_CONSUMER };
+            let done = match consumers.get(&producer_id) {
+                Some(consumer_id) => self.session.client().call(acted, json!({ "consumerId": consumer_id })).await.is_ok(),
+                None => true,
+            };
 
-        for (producer_id, consumer_id) in consumers {
-            let done = self.session.client().call(acted, json!({ "consumerId": consumer_id })).await.is_ok();
+            if done {
+                let mut away_set = lock(&self.away);
 
-            if away && done {
-                lock(&self.away).insert(producer_id);
+                if away {
+                    away_set.insert(producer_id);
+                } else {
+                    away_set.remove(&producer_id);
+                }
             }
         }
     }
@@ -589,10 +687,7 @@ impl Room {
         frame_rate: u32,
         source: Option<capture::CaptureSource>,
     ) -> Result<()> {
-        let changed = tokio::task::block_in_place(|| match lock(&self.sending).screen.as_mut() {
-            Some(broadcast) => broadcast.restart(quality, frame_rate, source),
-            None => Ok(()),
-        });
+        let changed = self.redo_screen(|broadcast| broadcast.restart(quality, frame_rate, source));
 
         if let Some(config) = lock(&self.shared).as_mut() {
             config.quality = quality;
@@ -606,6 +701,39 @@ impl Room {
         changed
     }
 
+    /// Refaz a tela no ar (`work`) fora do cadeado de quem transmite: reabrir captura e encoder
+    /// leva de 0,3 a 2 s em PC fraco, e com o cadeado na mão a sala inteira esperava atrás — a
+    /// lista, os cartões, o próprio ping. Se a pessoa parou de transmitir no meio, a transmissão
+    /// refeita para aqui em vez de voltar ao ar.
+    ///
+    /// ponytail: um `change_quality` que chegue durante um refazer do vigia acha a tela fora e
+    /// só troca a receita; a troca vale no próximo refazer. Um cadeado assíncrono em volta de
+    /// tudo o que abre e fecha origem resolveria os dois.
+    fn redo_screen(&self, work: impl FnOnce(&mut sharing::Broadcast) -> Result<()>) -> Result<()> {
+        let Some(mut broadcast) = lock(&self.sending).screen.take() else {
+            return Ok(());
+        };
+        let done = tokio::task::block_in_place(|| work(&mut broadcast));
+        let still_sharing = lock(&self.shared).is_some();
+        let leftover = {
+            let mut sending = lock(&self.sending);
+
+            if still_sharing && sending.screen.is_none() {
+                sending.screen = Some(broadcast);
+
+                None
+            } else {
+                Some(broadcast)
+            }
+        };
+
+        if let Some(mut leftover) = leftover {
+            let _ = tokio::task::block_in_place(|| leftover.stop());
+        }
+
+        done
+    }
+
     /// A receita da tela no ar. É ela que diz se uma troca no seletor cabe no
     /// `change_quality` (mesmo áudio) ou se a transmissão tem de parar e recomeçar.
     pub fn sharing_recipe(&self) -> Option<CaptureConfig> {
@@ -615,7 +743,7 @@ impl Room {
     /// Compartilhar a tela. Abre a origem no servidor e só então captura: sem o
     /// `producePlain` não há porta para onde mandar, e o quadro sairia no vazio.
     pub async fn share(&self, config: CaptureConfig) -> Result<()> {
-        if lock(&self.sending).screen.is_some() {
+        if lock(&self.shared).is_some() || lock(&self.sending).screen.is_some() {
             return Ok(());
         }
 
@@ -623,19 +751,16 @@ impl Room {
         let producers = self.open(&[Some(Source::Screen), audio]).await?;
         let recipe = config.clone();
 
-        let started = tokio::task::block_in_place(|| {
-            let mut sending = lock(&self.sending);
-            let broadcast = sending.start(config, Some(Source::Screen), audio)?;
+        // Fora do cadeado: abrir captura e encoder leva até segundos, e a sala não espera.
+        let launch = lock(&self.sending).launcher();
 
-            sending.screen = Some(broadcast);
+        match tokio::task::block_in_place(|| launch(config, Some(Source::Screen), audio)) {
+            Ok(broadcast) => lock(&self.sending).screen = Some(broadcast),
+            Err(failure) => {
+                self.close(producers).await;
 
-            anyhow::Ok(())
-        });
-
-        if let Err(failure) = started {
-            self.close(producers).await;
-
-            return Err(failure);
+                return Err(failure);
+            }
         }
 
         lock(&self.producers).insert(Source::Screen, producers);
@@ -730,6 +855,8 @@ impl Room {
         let updates = self.updates.clone();
 
         feed.set_input_mode(*lock(&self.input_mode));
+        // O microfone que reabre (depois de uma queda) não fura o silêncio de um moderador.
+        feed.set_muted(self.server_muted.load(std::sync::atomic::Ordering::Relaxed));
         feed.on_level(move |level| {
             let percent = sharing::level_percent(&[level]);
             let _ = updates.send(json!({ "event": "room.level", "channel": null, "data": { "level": level, "percent": percent } }).to_string());
@@ -777,6 +904,21 @@ impl Room {
         let Some(feed) = lock(&self.microphone).clone() else {
             return;
         };
+
+        self.user_muted.store(muted, std::sync::atomic::Ordering::Relaxed);
+
+        // Silenciado por um moderador fica silenciado: o servidor recusa retomar o producer.
+        if self.server_muted.load(std::sync::atomic::Ordering::Relaxed) {
+            feed.set_muted(true);
+
+            if !muted {
+                self.tell("room.failed", json!({ "what": "serverMuted" }));
+            }
+
+            self.announce_mine();
+
+            return;
+        }
 
         feed.set_muted(muted);
 
@@ -899,10 +1041,13 @@ impl Room {
         let microphone = lock(&self.microphone).clone();
 
         json!({
-            "sharing": lock(&self.sending).screen.is_some(),
+            // Pela receita, e não pela transmissão: enquanto o vigia a refaz ela está fora do
+            // cadeado, e a interface piscaria "parou de transmitir".
+            "sharing": lock(&self.shared).is_some(),
             "selfView": self.self_view.load(std::sync::atomic::Ordering::Relaxed),
             "mic": microphone.is_some(),
             "micMuted": microphone.is_some_and(|feed| feed.is_muted()),
+            "serverMuted": self.server_muted.load(std::sync::atomic::Ordering::Relaxed),
             "camera": lock(&self.producers).contains_key(&Source::Camera),
             "canShare": self.session.can("stream"),
             "canSpeak": self.session.can("speak"),
@@ -1121,6 +1266,23 @@ impl Room {
     fn rewatch(&self) {
         lock(&self.watching).renew();
         lock(&self.consumers).clear();
+    }
+
+    /// Um moderador silenciou (ou devolveu) o microfone desta pessoa. O servidor já pausou o
+    /// producer; aqui o microfone cala de verdade e a interface mostra — antes ele seguia aberto
+    /// na tela, falando para ninguém, e desmutar falhava calado. Como no app em React.
+    fn silenced(&self, muted: bool) {
+        self.server_muted.store(muted, std::sync::atomic::Ordering::Relaxed);
+
+        if let Some(feed) = lock(&self.microphone).as_ref() {
+            feed.set_muted(muted || self.user_muted.load(std::sync::atomic::Ordering::Relaxed));
+        }
+
+        if muted {
+            self.tell("room.failed", json!({ "what": "serverMuted" }));
+        }
+
+        self.announce_mine();
     }
 
     /// O servidor fechou a tela ou o microfone desta pessoa: nada chegou lá em 30 s, ou a

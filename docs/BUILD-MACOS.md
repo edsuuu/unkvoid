@@ -1,69 +1,42 @@
 # Build e teste no macOS
 
-O build do macOS precisa ser feito em um Mac. O projeto não faz cross-compilação
-confiável para gerar o `.app` ou o `.dmg` a partir do Windows/Linux.
+O app do macOS é o nativo (`native/apps/macos`, SwiftUI sobre o núcleo em Rust pela ABI C). Só
+compila num Mac. **Ainda não há versão publicada.**
 
 ## Preparar o Mac
 
-Instale:
-
 - Xcode Command Line Tools: `xcode-select --install`
-- Rust: https://rustup.rs
-- Node.js 22 ou superior
+- Rust: <https://rustup.rs>
 
-Confirme:
-
-```bash
-xcode-select -p
-rustc --version
-node --version
-```
-
-## Gerar o build
-
-Na raiz do repositório:
+## Rodar e testar
 
 ```bash
-cd native/apps/desktop
-npm ci
-npm run check
-npx tauri build --bundles app,dmg
+cd native/apps/macos
+./run.sh            # compila o núcleo e abre o app
+./run.sh test       # os testes do núcleo e do app, em série, contra a pilha local
+./run.sh app        # monta o build/Unkvoid.app e abre
 ```
 
-Os arquivos serão gerados em:
+Os detalhes (variáveis, contas de teste, por que os testes rodam em série) estão no
+[`native/apps/macos/README.md`](../native/apps/macos/README.md).
 
-```text
-native/target/release/bundle/macos/Unkvoid.app.tar.gz
-native/target/release/bundle/dmg/Unkvoid_<versao>_aarch64.dmg
-```
-
-Em Mac Intel, o sufixo do instalador será `x64` em vez de `aarch64`.
-
-## Testar
-
-Abra o aplicativo pelo Finder ou pelo terminal:
+## Gerar o `.app`
 
 ```bash
-open native/target/release/bundle/macos/Unkvoid.app
+cd native/apps/macos
+./bundle.sh                                         # build/Unkvoid.app, assinado ad-hoc
+./bundle.sh --sign "Developer ID Application: …"    # com certificado de editor
 ```
 
-Na primeira execução, permita **Gravação de Tela** em:
+Na primeira execução, permita **Gravação de Tela**, **Microfone** e **Câmera** em `Ajustes do
+Sistema > Privacidade e Segurança`. A permissão vai para o app que *lançou* o processo: pelo
+`./run.sh`, é o terminal que aparece na lista; pelo `.app`, é o Unkvoid.
 
-`Ajustes do Sistema > Privacidade e Segurança > Gravação de Tela`
+Teste nesta ordem: o app passa da tela "Sem conexão"; crie uma sala; entre com o código de outro
+computador; compartilhe a tela e confirme vídeo e áudio.
 
-A permissão vai para o app que *lançou* o processo: rodando pelo terminal, é o terminal que
-aparece na lista, e não o Unkvoid.
+## Publicar
 
-Teste nesta ordem:
-
-1. O app passa da tela “Sem conexão” e mostra a tela de entrada.
-2. Crie uma sala e copie o código.
-3. Abra o mesmo instalador em outro Mac ou Windows e entre com o código.
-4. Compartilhe a tela e confirme vídeo e áudio.
-
-## Assinar e publicar
-
-O `.dmg` é para quem instala pela primeira vez; quem já tem o app se atualiza pelo
-`.app.tar.gz` assinado. A chave, o comando de publicação e o que conferir quando alguém
-não atualiza estão em [AUTO-UPDATE.md](AUTO-UPDATE.md#macos). Sem o `.sig` o instalador
-funciona, mas não atualiza ninguém.
+Falta o caminho: empacotar o `.dmg` e registrar a plataforma `darwin-aarch64` com o
+`publish-release.sh` ([AUTO-UPDATE.md](AUTO-UPDATE.md)). Sem certificado da Apple, o macOS pede
+para liberar o app na primeira abertura.

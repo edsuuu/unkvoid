@@ -169,6 +169,11 @@ impl Stage {
         self.full.is_some()
     }
 
+    /// A transmissão em tela cheia, se há uma.
+    pub fn full_producer(&self) -> Option<String> {
+        self.full.clone()
+    }
+
     pub fn placed(&self) -> Vec<Placed> {
         let (columns, _) = self.grid();
         let mut rank = 0;

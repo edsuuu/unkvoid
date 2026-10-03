@@ -275,6 +275,41 @@ mod tests {
         assert_eq!(samples.len(), 1920, "20 ms em estéreo");
     }
 
+    /// A voz sai com FEC, e o bloco que se perdeu volta refeito pelo pacote seguinte em vez de
+    /// virar silêncio.
+    #[test]
+    fn a_lost_voice_packet_comes_back_from_the_next_one() {
+        let tone: Vec<f32> = (0..1920 * 4).map(|index| (index as f32 * 0.03).sin() * 0.5).collect();
+        let block = capture::AudioChunk { sample_rate: 48_000, channels: 2, samples: tone };
+        let packets = |mut encoder: crate::AudioEncoder| -> Vec<Vec<u8>> {
+            encoder
+                .push(&block)
+                .expect("push")
+                .into_iter()
+                .enumerate()
+                .map(|(index, opus)| {
+                    let header = Header { version: 2, payload_type: 111, sequence_number: index as u16, ..Header::default() };
+
+                    Packet { header, payload: Bytes::from(opus) }.marshal().expect("marshal").to_vec()
+                })
+                .collect()
+        };
+        let energy = |samples: &[f32]| samples.iter().map(|sample| sample * sample).sum::<f32>();
+        let refilled = |packets: &[Vec<u8>]| {
+            let mut unpacker = AudioUnpacker::new().expect("decoder");
+
+            unpacker.push(&packets[0]).expect("pcm");
+            unpacker.push(&packets[1]).expect("pcm");
+
+            let pcm = unpacker.push(&packets[3]).expect("pcm");
+
+            energy(&pcm[..1920])
+        };
+        let voice = refilled(&packets(crate::AudioEncoder::for_voice(48_000).expect("encoder")));
+
+        assert!(voice > 1.0, "o bloco perdido voltou mudo: energia {voice}");
+    }
+
     /// O bloco que não chegou sai estimado junto com o seguinte, e o atrasado não toca de novo.
     #[test]
     fn a_lost_opus_packet_is_filled_and_a_late_one_is_dropped() {

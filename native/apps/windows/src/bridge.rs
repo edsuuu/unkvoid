@@ -60,6 +60,8 @@ fn room_failure(what: &str) -> &'static str {
     match what {
         "watch" => "Não deu para assistir a uma das transmissões.",
         "mic" => "Não deu para abrir o microfone.",
+        "shareClosed" => "A janela que você compartilhava foi fechada, e a transmissão parou.",
+        "serverMuted" => "Um moderador silenciou o seu microfone.",
         _ => "Não deu para compartilhar a tela.",
     }
 }
@@ -615,8 +617,15 @@ impl Bridge {
             let bridge = self.clone();
 
             move |producer| {
-                lock(&bridge.stage).toggle_full(&producer);
+                let focused = {
+                    let mut stage = lock(&bridge.stage);
+
+                    stage.toggle_full(&producer);
+                    stage.full_producer()
+                };
+
                 paint_stage(&bridge.window, &bridge.stage);
+                bridge.with_room(move |room| async move { room.set_focus(focused).await });
             }
         });
 
@@ -1637,6 +1646,7 @@ impl Bridge {
 
     /// Sai da voz ou da sala por código, o que estiver aberto. É o que fechar a janela faz: ela
     /// só se esconde (os Clips seguem na bandeja), e a chamada não pode ficar aberta sem ela.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub fn hang_up(self: &Rc<Self>) {
         if lock(&self.voice_channel).is_some() {
             self.leave_voice();
@@ -1722,8 +1732,11 @@ impl Bridge {
         *lock(&self.entered) = None;
         lock(&self.entering).cancel();
 
-        drop(lock(&self.microphone).take());
-        drop(lock(&self.watch).take());
+        // Soltar o que se assiste junta as threads das telas e do som, e uma tela 4K pode estar no
+        // meio de um quadro: na thread da janela, com o cadeado na mão, isso a congelava ao sair.
+        let (microphone, watch) = (lock(&self.microphone).take(), lock(&self.watch).take());
+
+        std::thread::spawn(move || drop((microphone, watch)));
         lock(&self.stage).clear();
         lock(&self.voice).leave();
         *lock(&self.since) = None;
@@ -2071,11 +2084,16 @@ impl Bridge {
 
                 serde_json::Value::Null
             });
-            let displays = sources_of(&listed["displays"], |display| Source {
+            let mut displays = sources_of(&listed["displays"], |display| Source {
                 value: format!("display:{}", display["id"]),
-                label: format!("Tela {}", display["id"]),
+                label: String::new(),
                 detail: format!("{}×{}", display["width"], display["height"]),
             });
+
+            // O id é o número que o Windows deu ao monitor, não a posição: o rótulo é a posição.
+            for (index, display) in displays.iter_mut().enumerate() {
+                display.label = format!("Tela {}", index + 1);
+            }
             let windows = sources_of(&listed["windows"], |shown| Source {
                 value: format!("window:{}", shown["id"]),
                 label: shown["title"].as_str().unwrap_or_default().to_owned(),
@@ -3206,7 +3224,7 @@ fn draw_fresh(window: &Weak<AppWindow>, watch: &Arc<Mutex<Option<Watch>>>) {
             .find_map(|index| tiles.row_data(index).filter(|row| row.producer == producer).map(|row| (index, row)));
 
         if let Some((index, mut row)) = found {
-            row.frame = Image::from_rgb8(buffer);
+            row.frame = Image::from_rgba8(buffer);
             row.has_frame = true;
             tiles.set_row_data(index, row);
         }

@@ -461,8 +461,8 @@ impl PlainSender {
         let _ = self.socket.send(&protected);
     }
 
-    /// Lê o que o servidor devolveu: reenvia na hora os pacotes de vídeo que ele diz não
-    /// ter recebido, e diz quantos foram e se ele pediu um quadro-chave.
+    /// Lê o que o servidor devolveu: reenvia os pacotes de vídeo que ele diz não ter recebido —
+    /// pelo ritmo, na frente do vídeo novo —, e diz quantos foram e se ele pediu um quadro-chave.
     ///
     /// O caminho até o servidor é a internet aberta, do Brasil aos EUA, e 1% de perda ali
     /// congelava quem assiste por segundos: o servidor pedia o pacote de volta (o `nack`
@@ -504,10 +504,7 @@ impl PlainSender {
                 };
 
                 self.pending.lost += u32::from(!std::mem::replace(asked, true));
-
-                if let Ok(written) = self.socket.send(packet) {
-                    self.sent_bytes += written as u64;
-                }
+                self.pacer.push_repair(packet.clone());
             }
         }
     }

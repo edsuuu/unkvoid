@@ -223,6 +223,7 @@ final class AppModel: ObservableObject {
         self.core = core
         media = core.map(MediaRouter.init)
 
+        Sounds.output = media?.sound
         media?.sound.onSpeaking = { [weak self] producer, speaking in
             Task { @MainActor in
                 if speaking {
@@ -265,7 +266,7 @@ final class AppModel: ObservableObject {
         let announced = reachable ? await ask("config")["sfu"] as? String : nil
         let sfu = Launch.chosenSocketUrl() ?? announced ?? url
 
-        updateStatus = "Conectando em \(sfu)…"
+        updateStatus = "Conectando ao servidor de mídia…"
 
         let connected = await offMain { core.connect(to: sfu) }
 
@@ -306,10 +307,6 @@ final class AppModel: ObservableObject {
         let answer = await ask("me")
 
         guard let restored: User = decode(answer["user"]) else {
-            if answer["failed"] as? String == "signedOut" {
-                await readState()
-            }
-
             return
         }
 
@@ -476,7 +473,9 @@ final class AppModel: ObservableObject {
 
     static let device = "macOS"
 
-    static let server = ProcessInfo.processInfo.environment["UNKVOID_SERVER"] ?? "http://127.0.0.1:8000"
+    /// O site de verdade, salvo quem desenvolve: o `run.sh` passa `UNKVOID_SERVER` com o
+    /// Laravel local. O `.app` instalado pelo site não tem variável nenhuma.
+    static let server = ProcessInfo.processInfo.environment["UNKVOID_SERVER"] ?? "https://unkvoid.com"
 
     func openHub() {
         screen = .hub
@@ -630,6 +629,25 @@ final class AppModel: ObservableObject {
 
         _ = await ask("signOut")
 
+        await forgetAccount()
+    }
+
+    /// A sessão acabou sem a pessoa pedir — o par não renovou, ou o token foi revogado noutro
+    /// aparelho: solta a conta, cai na entrada e diz por quê.
+    func sessionEnded() async {
+        guard signedIn else {
+            return
+        }
+
+        await leaveVoice()
+        await forgetAccount()
+
+        notice = Self.sentence(for: "signedOut")
+    }
+
+    /// Solta o que era da conta e lê do núcleo em que tela se fica — a regra de qual tela
+    /// é dele.
+    private func forgetAccount() async {
         user = nil
         signedIn = false
         servers = []
@@ -700,6 +718,12 @@ final class AppModel: ObservableObject {
 
         let answered: JSONPayload = await offMain {
             JSONPayload((try? core.app(action, payload.value)) ?? ["failed": "unreachable"])
+        }
+
+        // O núcleo já apagou o token e voltou a tela para a entrada; aqui só se solta o que
+        // era da conta. Sem isto o hub ficava na tela, sem conta, e nada mais respondia.
+        if answered.value["failed"] as? String == "signedOut", signedIn {
+            await sessionEnded()
         }
 
         return answered.value

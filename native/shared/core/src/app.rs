@@ -209,7 +209,9 @@ impl App {
     /// Preferência qualquer, menos os dois tokens: eles só entram e saem cifrados, pelo
     /// `token` e pelo `keep_session`.
     pub fn preference(&self, key: &str) -> Option<serde_json::Value> {
-        (key != TOKEN_KEY && key != REFRESH_KEY).then(|| self.storage.get(key)).flatten()
+        (key != TOKEN_KEY && key != REFRESH_KEY)
+            .then(|| self.storage.get(key))
+            .flatten()
     }
 
     pub fn set_preference(&self, key: &str, value: serde_json::Value) {
@@ -235,7 +237,9 @@ impl App {
     /// que sumiu — não é sessão: sai do disco na hora. Sem isto a tela contava a conta pela
     /// chave no arquivo, abria o hub sem conta, e a pessoa ficava presa lá sem voltar ao login.
     pub fn token(&self) -> Option<String> {
-        let token = self.cipher().and_then(|cipher| self.storage.get_secret(TOKEN_KEY, cipher));
+        let token = self
+            .cipher()
+            .and_then(|cipher| self.storage.get_secret(TOKEN_KEY, cipher));
 
         if token.is_none() && self.has_token() {
             tracing::info!("o token guardado não abre: a sessão volta para a entrada");
@@ -249,7 +253,7 @@ impl App {
         self.storage.get_secret(REFRESH_KEY, self.cipher()?)
     }
 
-    fn set_refresh_token(&self, refresh: &str) {
+    pub(crate) fn set_refresh_token(&self, refresh: &str) {
         let Some(cipher) = self.cipher() else {
             return;
         };
@@ -262,7 +266,11 @@ impl App {
     /// Liga a sessão da `Api` ao disco: o par renovado vai para o chaveiro, e a sessão que
     /// acabou sai dele — e aí `ended` leva a interface de volta ao login. Chamado uma vez, na
     /// abertura, antes de qualquer pedido com conta.
-    pub fn keep_session(self: &Arc<Self>, api: &crate::api::Api, ended: impl Fn() + Send + Sync + 'static) {
+    pub fn keep_session(
+        self: &Arc<Self>,
+        api: &crate::api::Api,
+        ended: impl Fn() + Send + Sync + 'static,
+    ) {
         api.set_refresh(self.refresh_token());
 
         let app = Arc::clone(self);
@@ -274,6 +282,8 @@ impl App {
             }
             crate::api::Renewal::Ended => {
                 app.set_token(None);
+                // A tela também: quem lê o estado depois disto já encontra a entrada.
+                app.show(app.home());
                 ended();
             }
         });
@@ -316,7 +326,10 @@ impl App {
                 .unwrap_or_else(|| guess.to_owned())
         };
 
-        (saved(QUALITY_KEY, &QUALITIES, quality), saved(FPS_KEY, &FRAME_RATES, fps))
+        (
+            saved(QUALITY_KEY, &QUALITIES, quality),
+            saved(FPS_KEY, &FRAME_RATES, fps),
+        )
     }
 
     pub fn set_share_quality(&self, quality: &str, fps: &str) {
@@ -409,7 +422,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let storage = Storage::open_at(dir.path()).expect("open");
 
-        storage.set(TOKEN_KEY, serde_json::json!("cifrado-por-outra-chave")).expect("write");
+        storage
+            .set(TOKEN_KEY, serde_json::json!("cifrado-por-outra-chave"))
+            .expect("write");
 
         let app = App::new(storage);
 

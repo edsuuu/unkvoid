@@ -18,9 +18,14 @@ VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$NATIVE/Cargo.toml" | head -1)
 if [ -z "${UNKVOID_IN_CONTAINER:-}" ]; then
     docker build -q -t unkvoid-linux-native -f Dockerfile.deb . > /dev/null
 
-    # Tudo o que o build escreve fica dentro do `target/`, com o uid de quem chama.
+    # Tudo o que o build escreve fica dentro do `target/`, com o uid de quem chama. Um núcleo
+    # de folga: com um rustc por núcleo, uma máquina de 4 GB (o WSL daqui) troca memória com
+    # o disco até travar.
+    CORES=$(nproc)
+
     exec docker run --rm --user "$(id -u):$(id -g)" -v "$NATIVE:/work" -w /work/apps/linux \
         -e UNKVOID_IN_CONTAINER=1 -e HOME=/work/target/deb12/home \
+        -e CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$(( CORES > 1 ? CORES - 1 : 1 ))}" \
         -e CARGO_HOME=/work/target/deb12/cargo-home -e CARGO_TARGET_DIR=/work/target/deb12 \
         unkvoid-linux-native ./build-deb.sh
 fi

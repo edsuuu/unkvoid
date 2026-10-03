@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use core_app::speaking::Speaking;
 use core_app::watching::{Media, MediaKind, Stalled, WORTH_TELLING};
-use slint::{Rgb8Pixel, SharedPixelBuffer};
+use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use crate::sound::Speaker;
 
@@ -33,10 +33,9 @@ const PATIENCE: Duration = Duration::from_millis(100);
 /// conta; aí o quadro é largado e o keyframe é pedido na hora.
 const SCREEN_QUEUE: usize = 120;
 
-/// Imagens prontas esperando o horário delas: meio segundo a 60 fps, a espera mais longa do
-/// `Playout`.
-// ponytail: a imagem espera já em RGB (~6 MB em 1080p, até 30 por tela). Guardar em NV12 e
-// converter na hora de mostrar corta pela metade, se a memória pesar.
+/// Quadros esperando o horário deles: meio segundo a 60 fps, a espera mais longa do `Playout`.
+/// Esperam ainda comprimidos — KB cada, e não os 8 MB de uma imagem 1080p (33 MB em 4K) que
+/// esperavam antes, até 750 MB por tela 4K numa rede com perda.
 const MOST_WAITING: usize = 30;
 
 /// Tela sem quadro por isto sai, com a thread, o decodificador e as imagens dela: o producer
@@ -45,7 +44,7 @@ const MOST_WAITING: usize = 30;
 const SCREEN_IDLE: Duration = Duration::from_secs(20);
 
 /// O quadro mais novo de cada tela que a janela ainda não desenhou.
-type Fresh = Arc<Mutex<HashMap<String, SharedPixelBuffer<Rgb8Pixel>>>>;
+type Fresh = Arc<Mutex<HashMap<String, SharedPixelBuffer<Rgba8Pixel>>>>;
 
 /// Quantos quadros cada tela decodificou desde a última pergunta, e a altura do último.
 type Drawn = Arc<Mutex<HashMap<String, (u32, u32)>>>;
@@ -100,7 +99,7 @@ impl Watch {
 
     /// O último quadro de cada tela desde a última pergunta. Quadro que a janela não chegou
     /// a desenhar é substituído pelo mais novo: atrasar a imagem para mostrar tudo é pior.
-    pub fn fresh(&self) -> Vec<(String, SharedPixelBuffer<Rgb8Pixel>)> {
+    pub fn fresh(&self) -> Vec<(String, SharedPixelBuffer<Rgba8Pixel>)> {
         lock(&self.fresh).drain().collect()
     }
 
@@ -268,64 +267,73 @@ impl Drop for Screen {
     }
 }
 
-/// A thread de uma tela: decodifica tudo o que chegou, na ordem, e mostra cada quadro no
-/// horário dele, que o `Playout` tira do relógio do RTP de quem transmite. É o "jitter buffer"
-/// do navegador: um bolo de quadros segurado por um reenvio sai espaçado, e não de uma vez.
-/// Quadro que já passou da hora só vira imagem se for o último que chegou: é assim que quem
-/// ficou para trás alcança o presente.
+/// Um quadro que chegou, ainda comprimido, com o horário de aparecer.
+struct Pending {
+    due: Instant,
+    keyframe: bool,
+    timestamp: u32,
+    data: Vec<u8>,
+}
+
+/// A thread de uma tela: guarda cada quadro com o horário dele, que o `Playout` tira do relógio
+/// do RTP de quem transmite — é o "jitter buffer" do navegador: um bolo de quadros segurado por
+/// um reenvio sai espaçado, e não de uma vez. Na hora, os que venceram passam pelo
+/// decodificador na ordem e só o último vira imagem: é assim que quem ficou para trás alcança o
+/// presente.
 fn decode_screen(producer: &str, queue: &Receiver<Media>, (fresh, drawn): (&Fresh, &Drawn), stop: &AtomicBool, (on_frame, ask_keyframe): (&OnFrame, &AskKeyframe)) {
     let _timer = FineTimer::start();
     let mut decoder = None;
     let mut playout = media::Playout::default();
-    let mut waiting: VecDeque<(Instant, SharedPixelBuffer<Rgb8Pixel>)> = VecDeque::new();
-    let mut batch = Vec::new();
+    let mut waiting: VecDeque<Pending> = VecDeque::new();
     // Quadro chegando e decodificador fechado: a espera do quadro-chave, que é pedido na hora e
     // de novo a cada segundo. Inclui a primeira imagem, que assim não espera o GOP de 4 s.
     let mut stalled = Stalled::default();
 
     while !stop.load(Ordering::Relaxed) {
-        let wait = waiting.front().map_or(PATIENCE, |(due, _)| due.saturating_duration_since(Instant::now()).min(PATIENCE));
-
-        match queue.recv_timeout(wait) {
-            Ok(item) => batch.push(item),
-            Err(RecvTimeoutError::Timeout) => {}
+        let wait = waiting
+            .front()
+            .map_or(PATIENCE, |pending| pending.due.saturating_duration_since(Instant::now()).min(PATIENCE));
+        let first = match queue.recv_timeout(wait) {
+            Ok(item) => Some(item),
+            Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => return,
-        }
+        };
+        let mut arrived = false;
 
-        batch.extend(queue.try_iter());
-
-        let arrived = !batch.is_empty();
-        let newest = batch.len().saturating_sub(1);
-
-        for (index, item) in batch.drain(..).enumerate() {
+        for item in first.into_iter().chain(queue.try_iter()) {
             let MediaKind::Video { keyframe, timestamp } = item.kind else {
                 continue;
             };
 
-            let now = Instant::now();
-            let due = playout.due(timestamp, now);
+            arrived = true;
+            waiting.push_back(Pending { due: playout.due(timestamp, item.arrived), keyframe, timestamp, data: item.data });
+        }
 
-            if let Some(image) = show(&mut decoder, producer, &item.data, (keyframe, timestamp), due > now || index == newest) {
-                waiting.push_back((due, image));
+        // Atrás demais: os mais velhos passam pelo decodificador sem virar imagem, porque todo
+        // quadro P precisa do anterior.
+        while waiting.len() > MOST_WAITING {
+            if let Some(pending) = waiting.pop_front() {
+                show(&mut decoder, producer, &pending, false);
             }
         }
 
-        if arrived && decoder.is_none() && stalled.waiting(Instant::now()) {
+        let now = Instant::now();
+        let ready = waiting.iter().take_while(|pending| pending.due <= now).count();
+        let mut image = None;
+
+        for index in 0..ready {
+            let Some(pending) = waiting.pop_front() else {
+                break;
+            };
+
+            image = show(&mut decoder, producer, &pending, index + 1 == ready);
+        }
+
+        if arrived && decoder.is_none() && !waiting.iter().any(|pending| pending.keyframe) && stalled.waiting(now) {
             ask_keyframe(producer);
         }
 
-        while waiting.len() > MOST_WAITING {
-            waiting.pop_front();
-        }
-
-        let now = Instant::now();
-        let mut latest = None;
-
-        while waiting.front().is_some_and(|(due, _)| *due <= now) {
-            latest = waiting.pop_front();
-        }
-
-        let Some((_, image)) = latest else {
+        let Some(image) = image else {
             continue;
         };
 
@@ -375,16 +383,11 @@ impl Drop for FineTimer {
 
 /// Um quadro de uma tela. O decodificador só nasce num keyframe: quadro P sem o I de antes
 /// só desenharia lixo. Se ele falhar, morre e renasce no próximo keyframe. Devolve a imagem
-/// do quadro — com `convert` falso, ele passa pelo decodificador e nenhuma imagem sai.
-fn show(
-    decoder: &mut Option<media::H264Decoder>,
-    producer: &str,
-    data: &[u8],
-    (keyframe, timestamp): (bool, u32),
-    convert: bool,
-) -> Option<SharedPixelBuffer<Rgb8Pixel>> {
+/// do quadro, em RGBA escrito direto nela — com `convert` falso, ele passa pelo decodificador e
+/// nenhuma imagem sai.
+fn show(decoder: &mut Option<media::H264Decoder>, producer: &str, pending: &Pending, convert: bool) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     if decoder.is_none() {
-        if !keyframe {
+        if !pending.keyframe {
             return None;
         }
 
@@ -399,14 +402,19 @@ fn show(
     }
 
     let opened = decoder.as_mut()?;
-    let decoded = if convert { opened.decode(data, timestamp).map(|frames| frames.into_iter().last()) } else { opened.skip(data, timestamp).map(|()| None) };
+    let decoded = if convert {
+        let mut image = None::<SharedPixelBuffer<Rgba8Pixel>>;
+        let drawn = opened.decode_into(&pending.data, pending.timestamp, |width, height| {
+            image.insert(SharedPixelBuffer::new(width, height)).make_mut_bytes()
+        });
+
+        drawn.map(|drawn| image.filter(|_| drawn))
+    } else {
+        opened.skip(&pending.data, pending.timestamp).map(|()| None)
+    };
 
     match decoded {
-        Ok(frame) => {
-            let frame = frame?;
-
-            Some(SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(&frame.rgb, frame.width, frame.height))
-        }
+        Ok(image) => image,
         Err(failure) => {
             tracing::warn!(failure = %format!("{failure:#}"), producer, "assistir: quadro recusado, esperando o próximo keyframe");
             *decoder = None;
@@ -502,7 +510,8 @@ mod tests {
     #[test]
     fn a_screen_only_starts_drawing_at_a_keyframe() {
         let mut decoder = None;
-        let drawn = show(&mut decoder, "tela", &[0, 0, 0, 1, 0x09, 0x10], (false, 0), true);
+        let pending = Pending { due: Instant::now(), keyframe: false, timestamp: 0, data: vec![0, 0, 0, 1, 0x09, 0x10] };
+        let drawn = show(&mut decoder, "tela", &pending, true);
 
         assert!(drawn.is_none());
 

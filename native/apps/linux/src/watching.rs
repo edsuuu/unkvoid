@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use core_app::speaking::Speaking;
-use core_app::watching::{Media, MediaKind};
+use core_app::watching::{Media, MediaKind, Stalled, WORTH_TELLING};
 
 /// O tamanho do cartão. Fixo para o quadro ter sempre o mesmo número de bytes: é isso que
 /// permite ler a saída do GStreamer sem procurar separador nenhum.
@@ -35,25 +35,46 @@ const FRAME_BYTES: usize = TILE.0 as usize * TILE.1 as usize * 3;
 /// De quanto em quanto tempo a thread olha se mandaram parar, e se alguém calou.
 const PATIENCE: Duration = Duration::from_millis(100);
 
-/// Quantos blocos esperam o tocador. Passou disso, o decodificador não está acompanhando.
-const WAITING: usize = 16;
+/// Quantos blocos de som esperam o tocador. Passou disso, ele não está acompanhando.
+const WAITING_SOUND: usize = 16;
 
-/// Tocador sem nada chegando há mais que isto é de transmissão que acabou ou pausou.
+/// Quantos quadros esperam o horário deles: meio segundo a 60 fps — a espera mais longa do
+/// `Playout` — com folga. Passou disso, o decodificador não está acompanhando.
+const WAITING_VIDEO: usize = 48;
+
+/// Tocador de som sem nada chegando há mais que isto é de quem saiu ou pausou.
 const IDLE: Duration = Duration::from_secs(3);
+
+/// Tela sem quadro há mais que isto solta o `gst-launch`: o producer fechou, ou quem transmite
+/// está com a tela parada (o Windows fica até um minuto sem mandar quadro) — aí ela renasce no
+/// próximo quadro-chave, que é pedido. Com os 3 s do som, a tela parada que voltava a mexer
+/// ficava congelada até o quadro-chave periódico.
+const SCREEN_IDLE: Duration = Duration::from_secs(20);
 
 /// O quadro mais novo de uma transmissão. A janela desenha este e larga o que ficou para
 /// trás: quadro atrasado não interessa a ninguém.
 type LatestFrame = Arc<Mutex<Option<Vec<u8>>>>;
 
-/// Um `gst-launch` por transmissão, com a thread que escreve na entrada dele.
+/// O pedido de quadro-chave ao servidor, para a tela que quebrou do lado de cá.
+type AskKeyframe = Box<dyn Fn(&str) + Send>;
+
+/// A espera de quadro-chave de cada tela.
+type Stalls = HashMap<String, Stalled>;
+
+/// Um `gst-launch` por transmissão, com a thread que escreve na entrada dele. No vídeo cada
+/// quadro vai com o horário de entrar.
 struct Player {
     child: Child,
-    feed: SyncSender<Vec<u8>>,
+    feed: SyncSender<(Option<Instant>, Vec<u8>)>,
     frame: Option<LatestFrame>,
     /// Vídeo que perdeu um bloco na fila espera o próximo keyframe: quadro P sem o que veio
     /// antes só desenharia lixo.
     waiting_keyframe: bool,
     last: Instant,
+    /// O "jitter buffer" do navegador: o horário de cada quadro sai do relógio do RTP de quem
+    /// transmite, e um bolo de quadros segurado por um reenvio entra no decodificador
+    /// espaçado, e não de uma vez — antes a imagem andava aos trancos.
+    playout: media::Playout,
 }
 
 impl Drop for Player {
@@ -75,14 +96,20 @@ pub struct Watch {
 
 impl Watch {
     /// `on_speaking` recebe o producer e se ele começou (`true`) ou parou de falar.
-    pub fn start(queue: Receiver<Media>, on_speaking: impl Fn(&str, bool) + Send + 'static) -> Self {
+    /// `ask_keyframe` pede ao servidor um keyframe da transmissão cuja tela quebrou aqui.
+    pub fn start(
+        queue: Receiver<Media>,
+        on_speaking: impl Fn(&str, bool) + Send + 'static,
+        ask_keyframe: impl Fn(&str) + Send + 'static,
+    ) -> Self {
         let (frames, reopen_sound, stop) = (Frames::default(), Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let ask_keyframe: AskKeyframe = Box::new(ask_keyframe);
         let thread = std::thread::Builder::new()
             .name("unkvoid-assistir".into())
             .spawn({
                 let (frames, reopen_sound, stop) = (frames.clone(), reopen_sound.clone(), stop.clone());
 
-                move || route(&queue, &frames, (&reopen_sound, &stop), &on_speaking)
+                move || route(&queue, &frames, (&reopen_sound, &stop), (&on_speaking, &ask_keyframe))
             })
             .ok();
 
@@ -117,21 +144,28 @@ fn route(
     queue: &Receiver<Media>,
     frames: &Frames,
     (reopen_sound, stop): (&AtomicBool, &AtomicBool),
-    on_speaking: &impl Fn(&str, bool),
+    (on_speaking, ask_keyframe): (&impl Fn(&str, bool), &AskKeyframe),
 ) {
     let mut players: HashMap<String, Player> = HashMap::new();
+    let mut stalls = Stalls::new();
     let mut speaking = Speaking::default();
 
     while !stop.load(Ordering::Relaxed) {
         match queue.recv_timeout(PATIENCE) {
             Ok(item) => match item.kind {
-                MediaKind::Video { keyframe, .. } => play(&mut players, frames, &item.producer_id, item.data, Some(keyframe)),
+                MediaKind::Video { keyframe, timestamp } => play(
+                    (&mut players, frames),
+                    (&mut stalls, ask_keyframe.as_ref()),
+                    &item.producer_id,
+                    item.data,
+                    Some((keyframe, timestamp)),
+                ),
                 MediaKind::Audio => {
                     if speaking.heard(&item.producer_id, &pcm(&item.data), Instant::now()) {
                         on_speaking(&item.producer_id, true);
                     }
 
-                    play(&mut players, frames, &item.producer_id, item.data, None);
+                    play((&mut players, frames), (&mut stalls, ask_keyframe.as_ref()), &item.producer_id, item.data, None);
                 }
             },
             Err(RecvTimeoutError::Timeout) => {}
@@ -149,7 +183,7 @@ fn route(
         let now = Instant::now();
         let before = players.len();
 
-        players.retain(|_, player| now.duration_since(player.last) < IDLE);
+        players.retain(|_, player| now.duration_since(player.last) < if player.frame.is_some() { SCREEN_IDLE } else { IDLE });
 
         if players.len() != before {
             let alive: Vec<String> = players.keys().cloned().collect();
@@ -159,18 +193,34 @@ fn route(
     }
 }
 
-/// Um bloco de uma transmissão para o tocador dela. `keyframe` é `Some` no vídeo: o
-/// tocador só nasce num keyframe, e o que se perdeu na fila espera o próximo.
-fn play(players: &mut HashMap<String, Player>, frames: &Frames, producer: &str, data: Vec<u8>, keyframe: Option<bool>) {
-    let video = keyframe.is_some();
-    let keyframe = keyframe.unwrap_or(false);
+/// Um bloco de uma transmissão para o tocador dela. `video` é `Some((keyframe, timestamp))` no
+/// vídeo: o tocador só nasce num keyframe, e o que se perdeu na fila espera o próximo. Enquanto
+/// a imagem espera, o quadro-chave é pedido ao servidor — na hora e de novo a cada segundo —,
+/// em vez de ela ficar parada até o periódico; e a parada que passa de `WORTH_TELLING` vai para
+/// o log com a duração.
+fn play(
+    (players, frames): (&mut HashMap<String, Player>, &Frames),
+    (stalls, ask_keyframe): (&mut Stalls, &dyn Fn(&str)),
+    producer: &str,
+    data: Vec<u8>,
+    video: Option<(bool, u32)>,
+) {
+    let now = Instant::now();
+    let keyframe = video.is_some_and(|(keyframe, _)| keyframe);
+    let waiting = |stalls: &mut Stalls| {
+        if stalls.entry(producer.to_owned()).or_default().waiting(now) {
+            ask_keyframe(producer);
+        }
+    };
 
     if !players.contains_key(producer) {
-        if video && !keyframe {
+        if video.is_some() && !keyframe {
+            waiting(stalls);
+
             return;
         }
 
-        match open(video) {
+        match open(video.is_some()) {
             Ok(player) => {
                 if let Some(frame) = &player.frame {
                     lock(frames).insert(producer.to_owned(), Arc::clone(frame));
@@ -190,19 +240,37 @@ fn play(players: &mut HashMap<String, Player>, frames: &Frames, producer: &str, 
         return;
     };
 
-    player.last = Instant::now();
+    player.last = now;
 
-    if player.waiting_keyframe {
-        if !keyframe {
-            return;
-        }
+    if player.waiting_keyframe && !keyframe {
+        waiting(stalls);
 
-        player.waiting_keyframe = false;
+        return;
     }
 
-    match player.feed.try_send(data) {
-        Ok(()) => {}
-        Err(TrySendError::Full(_)) => player.waiting_keyframe = video,
+    let due = video.map(|(_, timestamp)| player.playout.due(timestamp, now));
+
+    match player.feed.try_send((due, data)) {
+        Ok(()) => {
+            player.waiting_keyframe = false;
+
+            if video.is_some()
+                && let Some(lasted) = stalls.entry(producer.to_owned()).or_default().flowing(now)
+                && lasted >= WORTH_TELLING
+            {
+                tracing::error!(producer, seconds = lasted.as_secs_f32(), "assistir: a imagem ficou parada esperando um quadro-chave");
+            }
+        }
+        Err(TrySendError::Full(_)) => {
+            if video.is_some() {
+                if !player.waiting_keyframe {
+                    tracing::warn!(producer, "assistir: o decodificador não acompanha, largando até o próximo quadro-chave");
+                }
+
+                player.waiting_keyframe = true;
+                waiting(stalls);
+            }
+        }
         Err(TrySendError::Disconnected(_)) => {
             players.remove(producer);
         }
@@ -219,7 +287,7 @@ fn open(video: bool) -> Result<Player> {
         .spawn()
         .context("gst-launch-1.0 não abriu; instale gstreamer1.0-tools e os plugins good/libav")?;
     let stdin = child.stdin.take().context("o gst-launch abriu sem entrada")?;
-    let (feed, blocks) = sync_channel(WAITING);
+    let (feed, blocks) = sync_channel(if video { WAITING_VIDEO } else { WAITING_SOUND });
 
     write_blocks(stdin, blocks);
 
@@ -234,7 +302,7 @@ fn open(video: bool) -> Result<Player> {
         _ => None,
     };
 
-    Ok(Player { child, feed, frame, waiting_keyframe: false, last: Instant::now() })
+    Ok(Player { child, feed, frame, waiting_keyframe: false, last: Instant::now(), playout: media::Playout::default() })
 }
 
 /// Um toque do app pela saída de som do PulseAudio — a que a pessoa escolheu, que o seletor
@@ -285,10 +353,16 @@ fn pipeline(video: bool) -> String {
 }
 
 /// A entrada do tocador numa thread só dela: um decodificador lento não trava a fila de
-/// todo mundo, só enche a própria.
-fn write_blocks(mut stdin: ChildStdin, blocks: Receiver<Vec<u8>>) {
+/// todo mundo, só enche a própria. O quadro com horário espera por ele; o que já passou da
+/// hora entra na hora — é assim que quem ficou para trás alcança o presente, e a janela só
+/// desenha o mais novo.
+fn write_blocks(mut stdin: ChildStdin, blocks: Receiver<(Option<Instant>, Vec<u8>)>) {
     std::thread::spawn(move || {
-        for block in blocks {
+        for (due, block) in blocks {
+            if let Some(wait) = due.and_then(|due| due.checked_duration_since(Instant::now())) {
+                std::thread::sleep(wait);
+            }
+
             if stdin.write_all(&block).is_err() {
                 break;
             }
@@ -359,13 +433,19 @@ mod tests {
         assert!(pipeline(false).contains("pulsesink"));
     }
 
+    /// O quadro P sem tocador não abre nada e pede o quadro-chave — uma vez, não um pedido por
+    /// quadro: o próximo só depois de um segundo.
     #[test]
-    fn a_screen_only_opens_its_player_at_a_keyframe() {
-        let (mut players, frames) = (HashMap::new(), Frames::default());
+    fn a_screen_only_opens_its_player_at_a_keyframe_and_asks_for_one() {
+        let (mut players, frames, mut stalls) = (HashMap::new(), Frames::default(), HashMap::new());
+        let asked = std::cell::Cell::new(0);
+        let ask = |_: &str| asked.set(asked.get() + 1);
 
-        play(&mut players, &frames, "tela", vec![0, 0, 0, 1, 0x09], Some(false));
+        play((&mut players, &frames), (&mut stalls, &ask), "tela", vec![0, 0, 0, 1, 0x09], Some((false, 0)));
+        play((&mut players, &frames), (&mut stalls, &ask), "tela", vec![0, 0, 0, 1, 0x09], Some((false, 3_000)));
 
         assert!(players.is_empty(), "um quadro P abriu tocador");
+        assert_eq!(asked.get(), 1, "o quadro-chave não foi pedido, ou foi pedido a cada quadro");
     }
 
     /// Contra o GStreamer de verdade: o arquivo de teste do `media` entra pela entrada padrão
@@ -377,7 +457,7 @@ mod tests {
         let player = open(true).expect("o gst-launch abriu");
         let frame = player.frame.clone().expect("vídeo tem quadro");
 
-        player.feed.send(stream.to_vec()).expect("entrou");
+        player.feed.send((None, stream.to_vec())).expect("entrou");
 
         let deadline = Instant::now() + Duration::from_secs(10);
 

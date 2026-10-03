@@ -204,6 +204,16 @@ impl Handle {
 
         match work(&api, &self.runtime) {
             Ok(answer) => answer,
+            // Token vencido ou revogado não é a falha de uma chamada: é o fim da sessão, em
+            // qualquer chamada. O token sai do disco e a tela volta a ser a de entrada — a
+            // interface só lê o estado; sem isto ela ficava no hub, sem conta, presa.
+            Err(HttpError::Failed(Failure::SignedOut)) => {
+                self.app.set_token(None);
+                api.set_token(None);
+                self.app.show(self.app.home());
+
+                json!({ "failed": Failure::SignedOut })
+            }
             Err(HttpError::Failed(failure)) => json!({ "failed": failure }),
             Err(HttpError::Invalid { field, message }) => {
                 json!({ "invalid": { "field": field, "message": message } })
@@ -630,16 +640,7 @@ pub unsafe extern "C" fn unkvoid_app(
         "config" => handle.with_api(|api, runtime| Ok(json!({ "sfu": runtime.block_on(api.config())?.sfu }))),
         // Quem é a conta do token guardado. Token vencido ou revogado não é falha: é login
         // de novo, e o token sai do disco para a próxima abertura não tentar outra vez.
-        "me" => handle.with_api(|api, runtime| match runtime.block_on(api.me()) {
-            Ok(user) => Ok(json!({ "ok": true, "user": user })),
-            Err(HttpError::Failed(Failure::SignedOut)) => {
-                handle.app.set_token(None);
-                api.set_token(None);
-
-                Err(HttpError::Failed(Failure::SignedOut))
-            }
-            Err(failure) => Err(failure),
-        }),
+        "me" => handle.with_api(|api, runtime| Ok(json!({ "ok": true, "user": runtime.block_on(api.me())? }))),
         // Entrar e criar conta só diferem no caminho; as duas guardam o token e abrem a
         // sessão do mesmo jeito.
         "login" | "register" => handle.with_api(|api, runtime| {
@@ -1012,6 +1013,33 @@ pub unsafe extern "C" fn unkvoid_bytes_free(block: *mut u8, length: usize) {
     drop(unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(block, length)) });
 }
 
+/// O toque de um `room.chime` — ou o de mensagem — em PCM `f32` estéreo intercalado a 48 kHz,
+/// para a interface que não fala Rust tocar pelo mesmo caminho das vozes. Nome desconhecido
+/// devolve nulo. Liberar com `unkvoid_bytes_free`, com o mesmo `length`.
+///
+/// # Safety
+/// `name` é uma C string válida; `length` aponta para um `usize` gravável.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn unkvoid_chime(name: *const c_char, length: *mut usize) -> *mut u8 {
+    if name.is_null() || length.is_null() {
+        return ptr::null_mut();
+    }
+
+    let name = unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned();
+    let Ok(chime) = serde_json::from_value::<crate::chimes::Chime>(Value::String(name)) else {
+        return ptr::null_mut();
+    };
+    let block: Box<[u8]> = chime
+        .samples()
+        .iter()
+        .flat_map(|sample| sample.to_ne_bytes())
+        .collect();
+
+    unsafe { *length = block.len() };
+
+    Box::into_raw(block).cast()
+}
+
 /// O som do microfone que a interface captura: PCM `f32` estéreo intercalado a 48 kHz.
 /// Sem sala ou sem microfone aberto, não faz nada.
 ///
@@ -1231,6 +1259,7 @@ mod tests {
                 timestamp: 0x0102_0304,
             },
             data: vec![9, 8, 7],
+            arrived: std::time::Instant::now(),
         });
 
         assert_eq!(block, [0, 1, 3, 0, 4, 3, 2, 1, b'a', b'b', b'c', 9, 8, 7]);
@@ -1425,6 +1454,89 @@ mod tests {
             unsafe { unkvoid_connect(handle, url.as_ptr()) },
             "o SFU de mentira não atendeu"
         );
+    }
+
+    /// Um Laravel de mentira para quem o token venceu: 401 em tudo.
+    fn a_laravel_that_expired_the_token() -> String {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+
+        std::thread::spawn(move || {
+            for socket in listener.incoming().flatten() {
+                let mut socket = socket;
+                let mut request = [0_u8; 2048];
+                let _ = socket.read(&mut request);
+                let body = r#"{"message":"Unauthenticated."}"#;
+                let _ = socket.write_all(
+                    format!("HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len())
+                        .as_bytes(),
+                );
+            }
+        });
+
+        format!("http://{address}")
+    }
+
+    /// Token vencido em qualquer chamada, com o par que não renova, leva de volta à entrada —
+    /// e não só no `me` da abertura. Era assim que o app ficava preso no hub sem conta. O
+    /// `session.ended` sai junto, para a interface que ouve eventos.
+    #[test]
+    fn an_expired_token_lands_on_the_entry_screen_from_any_call() {
+        let (handle, _dir) = isolated_core();
+
+        unsafe {
+            (*handle).app.set_token(Some("vencido"));
+            (*handle).app.set_refresh_token("tambem-vencido");
+        }
+        assert_eq!(
+            app_call(handle, "state", "{}")["signedIn"],
+            true,
+            "com token a conta conta como entrada"
+        );
+        assert_eq!(
+            app_call(
+                handle,
+                "useServer",
+                &format!(r#"{{"url":"{}"}}"#, a_laravel_that_expired_the_token())
+            )["ok"],
+            true
+        );
+
+        let answer = app_call(handle, "servers", "{}");
+
+        assert_eq!(answer["failed"], "signedOut", "{answer}");
+
+        let state = app_call(handle, "state", "{}");
+
+        assert_eq!(state["signedIn"], false);
+        assert_eq!(state["screen"], "entry", "{state}");
+
+        let mut events = Vec::new();
+
+        loop {
+            let raw = unsafe { unkvoid_next_event(handle) };
+
+            if raw.is_null() {
+                break;
+            }
+
+            events.push(
+                unsafe { CStr::from_ptr(raw) }
+                    .to_str()
+                    .expect("utf8")
+                    .to_owned(),
+            );
+            unsafe { unkvoid_string_free(raw) };
+        }
+
+        assert!(
+            events.iter().any(|event| event.contains("session.ended")),
+            "sem session.ended: {events:?}"
+        );
+
+        unsafe { unkvoid_core_free(handle) };
     }
 
     fn isolated_core() -> (*mut Handle, tempfile::TempDir) {

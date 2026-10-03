@@ -33,8 +33,12 @@ const PER_MILLISECOND: usize = SAMPLE_RATE as usize * CHANNELS / 1_000;
 const CUSHION: usize = 40 * PER_MILLISECOND;
 
 /// O máximo que se deixa acumular. Relógio de placa nunca bate com o de quem manda, e sem
-/// teto o atraso só cresce: passou disto, o mais velho vai fora até sobrar a folga.
+/// teto o atraso só cresce: passou disto, o mais velho vai saindo até sobrar a folga.
 const LONGEST: usize = 200 * PER_MILLISECOND;
+
+/// Quanto sai por bloco que chega enquanto o acumulado volta à folga. Cortar tudo de uma vez
+/// comia 160 ms — uma palavra inteira; 5 ms por bloco somem no meio da fala e levam ~0,6 s.
+const TRIM_STEP: usize = 5 * PER_MILLISECOND;
 
 /// De quanto em quanto tempo as threads olham o WASAPI. O buffer tem 50 ms: dez de
 /// intervalo deixam folga para a thread atrasar sem a placa ficar sem som.
@@ -50,6 +54,8 @@ struct Lane {
     /// Já juntou a folga desde a última vez que secou.
     primed: bool,
     volume: f32,
+    /// Passou do teto e ainda está voltando à folga.
+    trimming: bool,
 }
 
 type Mix = Arc<Mutex<HashMap<String, Lane>>>;
@@ -96,11 +102,13 @@ impl Speaker {
         });
 
         lane.samples.extend(samples);
+        lane.trimming |= lane.samples.len() > LONGEST;
 
-        if lane.samples.len() > LONGEST {
-            let late = lane.samples.len() - CUSHION;
+        if lane.trimming {
+            let late = lane.samples.len().saturating_sub(CUSHION).min(TRIM_STEP);
 
             lane.samples.drain(..late);
+            lane.trimming = lane.samples.len() > CUSHION;
         }
     }
 
@@ -126,6 +134,7 @@ pub fn chime(device: Option<String>, samples: Vec<f32>) {
                 samples: samples.into(),
                 primed: true,
                 volume: 1.0,
+                trimming: false,
             },
         );
 
@@ -527,6 +536,7 @@ mod tests {
             samples: std::iter::repeat_n(0.25, samples).collect(),
             primed,
             volume: 1.0,
+            trimming: false,
         }
     }
 
@@ -553,7 +563,7 @@ mod tests {
 
         assert!(out.iter().all(|&sample| (sample - 0.5).abs() < 1e-6), "{out:?}");
 
-        let loud = Lane { samples: std::iter::repeat_n(0.9, CUSHION).collect(), primed: true, volume: 1.0 };
+        let loud = Lane { samples: std::iter::repeat_n(0.9, CUSHION).collect(), primed: true, volume: 1.0, trimming: false };
         let mut mix = HashMap::from([("ada".to_owned(), loud), ("bia".to_owned(), lane(CUSHION, true))]);
 
         mix_into(&mut mix, &mut out);
@@ -581,6 +591,7 @@ mod tests {
         assert!(out.iter().all(|&sample| (sample - 0.125).abs() < 1e-6), "{out:?}");
     }
 
+    /// Passado o teto, o acumulado volta à folga aos poucos — um passo por bloco —, e não de uma vez.
     #[test]
     fn a_backlog_longer_than_the_ceiling_is_cut_back_to_the_cushion() {
         let speaker = Speaker {
@@ -592,6 +603,12 @@ mod tests {
         };
 
         speaker.play("ada", &vec![0.1; LONGEST + 10]);
+
+        assert_eq!(lock(&speaker.mix)["ada"].samples.len(), LONGEST + 10 - TRIM_STEP, "só um passo por vez");
+
+        while lock(&speaker.mix)["ada"].trimming {
+            speaker.play("ada", &[]);
+        }
 
         assert_eq!(lock(&speaker.mix)["ada"].samples.len(), CUSHION);
     }

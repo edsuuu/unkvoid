@@ -7,8 +7,11 @@
 //! navegador, que o app em React usava, solta o vídeo a 2,5× a taxa dele: o quadro-chave
 //! atravessa em ~100 ms sem transbordar a fila. Aqui é o mesmo.
 //!
-//! Só o vídeo passa por aqui. O áudio e os reenvios saem na hora: são poucos e pequenos, e
-//! esperar atrás de um quadro-chave custaria mais do que o espaço que eles ocupam.
+//! O vídeo e os reenvios passam por aqui; o áudio sai na hora — é pouco e pequeno, e esperar
+//! atrás de um quadro-chave custaria mais do que o espaço que ele ocupa. O reenvio vai na
+//! frente da fila, mas no mesmo ritmo: o NACK de um quadro-chave perdido pede de 100 a 200
+//! pacotes, e saindo todos de uma vez estouravam de novo a fila do roteador de quem tem upload
+//! fraco — perda de novo, quadro-chave de novo, em ciclo.
 
 use std::collections::VecDeque;
 use std::io::ErrorKind;
@@ -38,6 +41,10 @@ const MOST_BURST_FLOOR: f64 = 12_000.0;
 /// quadro-chave; passar disto é o uplink que não leva nem o vídeo, e segurar mais só
 /// atrasaria a imagem de quem assiste. O mais velho sai, contado como largado.
 const MOST_QUEUED: usize = 4_096;
+
+/// Os reenvios esperando a vez: o histórico do remetente inteiro, que é o que o servidor pode
+/// pedir de volta.
+const MOST_REPAIRS: usize = 1_024;
 
 /// O balde do ritmo: enche com o tempo, na taxa pedida, até o fôlego de uma vez.
 #[derive(Debug)]
@@ -73,8 +80,20 @@ impl Bucket {
 
 #[derive(Default)]
 struct Queue {
+    /// Saem antes dos `packets`: quem assiste já está parado esperando por eles.
+    repairs: VecDeque<Bytes>,
     packets: VecDeque<Bytes>,
     closed: bool,
+}
+
+impl Queue {
+    fn front(&self) -> Option<&Bytes> {
+        self.repairs.front().or_else(|| self.packets.front())
+    }
+
+    fn pop_front(&mut self) -> Option<Bytes> {
+        self.repairs.pop_front().or_else(|| self.packets.pop_front())
+    }
 }
 
 struct Shared {
@@ -121,6 +140,20 @@ impl Pacer {
         self.shared.ready.notify_one();
     }
 
+    /// Um pacote pedido de volta pelo servidor: sai antes do vídeo novo.
+    pub(crate) fn push_repair(&self, packet: Bytes) {
+        let mut queue = lock(&self.shared.queue);
+
+        if queue.repairs.len() == MOST_REPAIRS {
+            queue.repairs.pop_front();
+            self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+
+        queue.repairs.push_back(packet);
+        drop(queue);
+        self.shared.ready.notify_one();
+    }
+
     /// A taxa do vídeo, que o governador decide: o ritmo anda 2,5× à frente dela.
     pub(crate) fn follow(&self, video_bitrate: u64) {
         self.shared.rate.store((video_bitrate * 5 / 2).max(FLOOR), Ordering::Relaxed);
@@ -158,14 +191,14 @@ fn run(shared: &Shared, socket: &UdpSocket) {
                     return;
                 }
 
-                let Some(front) = queue.packets.front() else {
+                let Some(front) = queue.front() else {
                     queue = shared.ready.wait(queue).unwrap_or_else(PoisonError::into_inner);
 
                     continue;
                 };
 
                 match bucket.take(front.len(), shared.rate.load(Ordering::Relaxed), Instant::now()) {
-                    None => break queue.packets.pop_front(),
+                    None => break queue.pop_front(),
                     // Dormir sem o cadeado: quem codifica continua empilhando enquanto isso.
                     Some(wait) => {
                         drop(queue);
@@ -254,6 +287,17 @@ mod tests {
         }
 
         assert!(at_once <= 55, "{at_once} pacotes de uma vez");
+    }
+
+    #[test]
+    fn a_repair_goes_out_before_the_video_waiting_in_line() {
+        let mut queue = Queue::default();
+
+        queue.packets.push_back(Bytes::from_static(b"video"));
+        queue.repairs.push_back(Bytes::from_static(b"repair"));
+
+        assert_eq!(queue.pop_front().as_deref(), Some(&b"repair"[..]));
+        assert_eq!(queue.pop_front().as_deref(), Some(&b"video"[..]));
     }
 
     #[test]

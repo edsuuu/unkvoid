@@ -42,6 +42,11 @@ unsigned char *unkvoid_next_media(Handle *handle, size_t *length);
 
 void unkvoid_bytes_free(unsigned char *block, size_t length);
 
+/* O toque de um evento room.chime ("joined", "left", "streamStarted", "streamStopped") ou o
+ * de mensagem ("message"): PCM f32 estéreo intercalado a 48 kHz. NULL para nome desconhecido.
+ * Liberar com unkvoid_bytes_free, com o mesmo length. */
+unsigned char *unkvoid_chime(const char *name, size_t *length);
+
 /* O som do microfone que a interface captura: PCM f32 estéreo intercalado a 48 kHz.
  * Sem sala ou sem microfone aberto (ação "openMicrophone"), não faz nada. */
 void unkvoid_speak(Handle *handle, const float *samples, size_t count);

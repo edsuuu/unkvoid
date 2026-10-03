@@ -24,12 +24,29 @@ pub struct AudioEncoder {
 
 impl AudioEncoder {
     pub fn new(bitrate: i32) -> Result<Self, EncoderError> {
-        let mut encoder = Encoder::new(SAMPLE_RATE, Channels::Stereo, Application::Audio)
-            .map_err(|error| EncoderError::Start(error.to_string()))?;
+        Self::open(bitrate, Application::Audio, false)
+    }
 
-        encoder
-            .set_bitrate(opus::Bitrate::Bits(bitrate))
-            .map_err(|error| EncoderError::Start(error.to_string()))?;
+    /// O mesmo para a voz: o modo de fala do Opus — o que o WebRTC usa no microfone — com o FEC
+    /// ligado. Cada pacote leva uma cópia barata do anterior, e quem ouve refaz o que se perdeu
+    /// (`AudioUnpacker`) em vez de estimar. É o `opusFec` que o app em React pedia.
+    pub fn for_voice(bitrate: i32) -> Result<Self, EncoderError> {
+        Self::open(bitrate, Application::Voip, true)
+    }
+
+    fn open(bitrate: i32, application: Application, protected: bool) -> Result<Self, EncoderError> {
+        /// A perda que o FEC espera, em %: é ela que decide quanto da taxa vai para a cópia.
+        const EXPECTED_LOSS: i32 = 10;
+
+        let start = |error: opus::Error| EncoderError::Start(error.to_string());
+        let mut encoder = Encoder::new(SAMPLE_RATE, Channels::Stereo, application).map_err(start)?;
+
+        encoder.set_bitrate(opus::Bitrate::Bits(bitrate)).map_err(start)?;
+
+        if protected {
+            encoder.set_inband_fec(true).map_err(start)?;
+            encoder.set_packet_loss_perc(EXPECTED_LOSS).map_err(start)?;
+        }
 
         Ok(Self {
             encoder,

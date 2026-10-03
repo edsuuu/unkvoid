@@ -107,6 +107,19 @@ struct IncomingMedia {
 
 extension Core {
     /// Espera até 100 ms pelo próximo. Só a thread da mídia chama isto.
+    /// O toque pelo nome (`room.chime` ou `message`), em PCM `f32` estéreo a 48 kHz.
+    static func chime(_ name: String) -> Data? {
+        var length = 0
+
+        guard let block = unkvoid_chime(name, &length) else {
+            return nil
+        }
+
+        defer { unkvoid_bytes_free(block, length) }
+
+        return Data(bytes: block, count: length)
+    }
+
     func nextMedia() -> IncomingMedia? {
         var length = 0
 

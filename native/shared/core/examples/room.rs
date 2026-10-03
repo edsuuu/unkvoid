@@ -4,6 +4,9 @@
 //! cargo run -p core-app --example room -- ws://127.0.0.1:3000/sfu sala-de-teste share
 //! cargo run -p core-app --example room -- ws://127.0.0.1:3000/sfu sala-de-teste watch
 //! ```
+//!
+//! Depois dos segundos, `share` aceita a origem como o seletor a manda: `window:<id>` (no X11
+//! é o `xid` da janela — no XWayland do WSLg a tela inteira sai preta) ou `display:<n>`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,6 +29,7 @@ async fn main() -> anyhow::Result<()> {
         .next()
         .and_then(|text| text.parse().ok())
         .unwrap_or(10);
+    let source = arguments.next();
 
     let identity = {
         let (room, name) = (
@@ -61,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
 
     if sharing {
         room.share(core_app::sharing::capture_config(
-            &serde_json::json!({ "quality": "720", "fps": 30 }),
+            &serde_json::json!({ "quality": "720", "fps": 30, "source": source }),
         ))
         .await?;
         println!("compartilhando por {seconds} s: {}", room.mine());
@@ -141,7 +145,10 @@ async fn main() -> anyhow::Result<()> {
                         clock.2 = clock.2.min(lag);
                         arrival_lag = arrival_lag.max(lag - clock.2);
 
-                        if keyframe && !decoders.contains_key(&next.producer_id) {
+                        // O decodificador do `media` é só do Windows: no Linux e no macOS a conta
+                        // fica no que chega — quadros, keyframes, pausas, atraso e pacotes —, que é
+                        // o que mostra congelamento de rede, e as colunas de imagem ficam em zero.
+                        if cfg!(target_os = "windows") && keyframe && !decoders.contains_key(&next.producer_id) {
                             decoders.insert(next.producer_id.clone(), media::H264Decoder::new()?);
                         }
 
@@ -150,8 +157,8 @@ async fn main() -> anyhow::Result<()> {
 
                             if newest.get(next.producer_id.as_str()) != Some(&index) {
                                 decoder.skip(&next.data, timestamp)?;
-                            } else if let Some(frame) = decoder.decode(&next.data, timestamp)?.pop() {
-                                std::hint::black_box(frame.rgb.clone());
+                            } else if let Some(frame) = decoder.decode(&next.data, timestamp)? {
+                                std::hint::black_box(frame.rgba);
                                 shown += 1;
                             }
 
