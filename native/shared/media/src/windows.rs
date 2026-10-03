@@ -21,7 +21,7 @@ use ::windows::Win32::Graphics::Direct3D::{
 use ::windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
     D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+    D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX, D3D11_SDK_VERSION, D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC,
     D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_COLOR_SPACE,
     D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC,
     D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE, D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255,
@@ -131,6 +131,12 @@ pub struct MediaFoundationEncoder {
     /// O último SPS e PPS que o encoder emitiu, com os códigos de início — ver
     /// `with_parameter_sets`.
     parameter_sets: Option<Vec<u8>>,
+
+    /// A amostra de saída da vez anterior, quando quem aloca é este lado.
+    spare_output: Option<IMFSample>,
+
+    /// A imagem preta do `encode_again` antes do primeiro quadro, criada uma vez.
+    black: Option<ID3D11Texture2D>,
 }
 
 /// O encoder nasce na thread que liga a transmissão e passa a viver na thread da
@@ -273,6 +279,8 @@ impl MediaFoundationEncoder {
                 force_keyframe: false,
                 described: 0,
                 parameter_sets: None,
+                spare_output: None,
+                black: None,
                 ready: VecDeque::new(),
                 credits: 0,
             })
@@ -350,11 +358,46 @@ impl MediaFoundationEncoder {
         unsafe {
             self.cross_the_bridge(surface)?;
 
+            let nv12 = self
+                .bridge
+                .as_ref()
+                .map(|bridge| bridge.nv12.clone())
+                .ok_or_else(|| EncoderError::Encode("sem ponte para o encoder".into()))?;
+
+            self.encode_texture(&nv12, timestamp_ns)
+        }
+    }
+
+    /// Codifica de novo a última imagem — ou uma preta, se a captura ainda não entregou nenhuma.
+    /// É o que o WebRTC faz numa tela parada: a captura do Windows só entrega quadro quando algo
+    /// muda, e minimizada não entrega nada. Sem quadro nenhum o servidor derrubava a transmissão
+    /// em 30 s (`producerDead`), e quem assistia não tinha como separar a tela parada da tela
+    /// travada. A imagem repetida sai como um quadro P de poucos bytes.
+    pub fn encode_again(&mut self, timestamp_ns: u64) -> Result<EncodedFrame, EncoderError> {
+        unsafe {
+            let nv12 = match (&self.bridge, &self.black) {
+                (Some(bridge), _) => bridge.nv12.clone(),
+                (None, Some(black)) => black.clone(),
+                (None, None) => {
+                    let black = black_nv12(&self.device, self.width, self.height)?;
+
+                    self.black = Some(black.clone());
+
+                    black
+                }
+            };
+
+            self.encode_texture(&nv12, timestamp_ns)
+        }
+    }
+
+    unsafe fn encode_texture(&mut self, nv12: &ID3D11Texture2D, timestamp_ns: u64) -> Result<EncodedFrame, EncoderError> {
+        unsafe {
             if std::mem::take(&mut self.force_keyframe) {
                 self.mark_keyframe();
             }
 
-            let sample = self.build_sample(timestamp_ns)?;
+            let sample = self.build_sample(nv12, timestamp_ns)?;
 
             match self.backend {
                 Backend::Gpu { .. } => self.pump(Some(sample))?,
@@ -367,15 +410,15 @@ impl MediaFoundationEncoder {
                     while self.collect_output()? {}
                 }
             }
-        }
 
-        self.ready
-            .pop_front()
-            .map(|frame| EncodedFrame {
-                timestamp_ns,
-                ..frame
-            })
-            .ok_or(EncoderError::NeedsMoreInput)
+            self.ready
+                .pop_front()
+                .map(|frame| EncodedFrame {
+                    timestamp_ns,
+                    ..frame
+                })
+                .ok_or(EncoderError::NeedsMoreInput)
+        }
     }
 
     /// Leva o quadro do device da captura para este, já convertido e no tamanho pedido.
@@ -668,19 +711,14 @@ impl MediaFoundationEncoder {
         };
     }
 
-    unsafe fn build_sample(&self, timestamp_ns: u64) -> Result<IMFSample, EncoderError> {
+    unsafe fn build_sample(&self, nv12: &ID3D11Texture2D, timestamp_ns: u64) -> Result<IMFSample, EncoderError> {
         unsafe {
-            let bridge = self
-                .bridge
-                .as_ref()
-                .ok_or_else(|| EncoderError::Encode("sem ponte para o encoder".into()))?;
-
             let buffer = match &self.backend {
                 Backend::Gpu { .. } => {
-                    MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &bridge.nv12, 0, false)
+                    MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, nv12, 0, false)
                         .map_err(encode_error)?
                 }
-                Backend::Cpu { staging, .. } => self.read_back(&bridge.nv12, staging)?,
+                Backend::Cpu { staging, .. } => self.read_back(nv12, staging)?,
             };
 
             let sample = MFCreateSample().map_err(encode_error)?;
@@ -762,21 +800,40 @@ impl MediaFoundationEncoder {
 
             let info = self.transform.GetOutputStreamInfo(0).map_err(encode_error)?;
 
-            if info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 == 0 {
-                let buffer = MFCreateMemoryBuffer(info.cbSize.max(self.width * self.height * 3 / 2))
-                    .map_err(encode_error)?;
-                let sample = MFCreateSample().map_err(encode_error)?;
+            let allocating = info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 == 0;
 
-                sample.AddBuffer(&buffer).map_err(encode_error)?;
+            if allocating {
+                let sample = match self.spare_output.take() {
+                    Some(sample) => sample,
+                    None => {
+                        let buffer = MFCreateMemoryBuffer(info.cbSize.max(self.width * self.height * 3 / 2))
+                            .map_err(encode_error)?;
+                        let sample = MFCreateSample().map_err(encode_error)?;
+
+                        sample.AddBuffer(&buffer).map_err(encode_error)?;
+
+                        sample
+                    }
+                };
+
                 output[0].pSample = std::mem::ManuallyDrop::new(Some(sample));
             }
 
             let result = self.transform.ProcessOutput(0, &mut output, &mut status);
             let sample = output[0].pSample.take();
 
+            // Os eventos que o MFT pode devolver junto: sem soltá-los, cada saída vazava um.
+            drop(output[0].pEvents.take());
+
             match result {
                 Ok(()) => {}
-                Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(false),
+                Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => {
+                    if allocating {
+                        self.spare_output = sample;
+                    }
+
+                    return Ok(false);
+                }
                 Err(error) => return Err(encode_error(error)),
             }
 
@@ -797,6 +854,12 @@ impl MediaFoundationEncoder {
             let data = std::slice::from_raw_parts(start, size as usize).to_vec();
 
             buffer.Unlock().map_err(encode_error)?;
+
+            // Os bytes já foram copiados: a mesma amostra serve à próxima saída, em vez de um
+            // buffer do tamanho do quadro alocado a cada uma.
+            if allocating {
+                self.spare_output = Some(sample);
+            }
 
             let data = with_parameter_sets(&mut self.parameter_sets, data);
 
@@ -979,6 +1042,24 @@ unsafe fn acquire(mutex: &IDXGIKeyedMutex, key: u64) -> Result<(), EncoderError>
     }
 }
 
+/// O ponto do encoder da placa entre qualidade (100) e velocidade (0). Era 100, o preset mais
+/// lento de cada placa. Medido em 03/10 numa RTX 4060 Ti com o `examples/encoder`: 100, 50 e 0
+/// custam o mesmo (2,6–2,85 ms por quadro em 1080p) e seguem a taxa igual — o NVENC é um chip à
+/// parte. Onde pesa é no Intel: o QuickSync mapeia 67–100 no TU1, o mais caro, rodando nas
+/// mesmas unidades da GPU que o jogo usa no integrado; 34–66 é o TU4, o equilíbrio que a própria
+/// Intel recomenda.
+const QUALITY_VS_SPEED: u32 = 50;
+
+/// `UNKVOID_QUALITY_VS_SPEED` troca o ponto sem recompilar: cada placa mapeia a escala para os
+/// presets dela, e é a medida na placa de quem reclama que diz se ele pesa.
+fn quality_vs_speed() -> u32 {
+    std::env::var("UNKVOID_QUALITY_VS_SPEED")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(QUALITY_VS_SPEED)
+        .min(100)
+}
+
 /// Quantos segundos entre quadros-chave. Quem perde um pacote pede um na hora (o
 /// `KEYFRAME_SPACING` do núcleo espaça os pedidos), e quem acaba de entrar também: o SFU pede
 /// ao criar o consumer. Então o periódico é só rede de segurança — e o quadro-chave é o mais
@@ -1029,7 +1110,7 @@ unsafe fn tune(transform: &IMFTransform, config: &EncoderConfig) {
         ),
         (
             &CODECAPI_AVEncCommonQualityVsSpeed,
-            variant(VT_UI4, VARIANT_0_0_0 { ulVal: 100 }),
+            variant(VT_UI4, VARIANT_0_0_0 { ulVal: quality_vs_speed() }),
             "qualidade sobre velocidade",
         ),
         (
@@ -1312,6 +1393,35 @@ unsafe fn nv12_texture(
     }
 }
 
+/// Uma textura NV12 preta no tamanho do encoder: Y no preto de faixa limitada (16), croma no
+/// neutro (128).
+unsafe fn black_nv12(device: &ID3D11Device, width: u32, height: u32) -> Result<ID3D11Texture2D, EncoderError> {
+    unsafe {
+        let (luma, chroma) = (width as usize * height as usize, width as usize * height as usize / 2);
+        let pixels: Vec<u8> = std::iter::repeat_n(16, luma).chain(std::iter::repeat_n(128, chroma)).collect();
+        let descriptor = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_NV12,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let initial = D3D11_SUBRESOURCE_DATA { pSysMem: pixels.as_ptr().cast(), SysMemPitch: width, SysMemSlicePitch: 0 };
+        let mut texture: Option<ID3D11Texture2D> = None;
+
+        device
+            .CreateTexture2D(&descriptor, Some(&initial), Some(&mut texture))
+            .map_err(encode_error)?;
+
+        texture.ok_or_else(|| EncoderError::Encode("a textura preta não foi criada".into()))
+    }
+}
+
 /// Linhas de NV12 (Y inteiro, depois UV pela metade) de uma textura mapeada para um buffer
 /// contíguo. A textura tem `pitch` bytes por linha — o driver alinha, e o que passa de
 /// `width` é enchimento que o encoder leria como imagem.
@@ -1533,6 +1643,18 @@ mod tests {
         assert_eq!(color_space(D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255)._bitfield, 0b10_0100);
         // Saída: BT.709, 16–235 → faixa 1.
         assert_eq!(color_space(D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235)._bitfield, 0b01_0100);
+    }
+
+    /// Sem quadro nenhum da captura (a janela minimizada desde o começo), o encoder ainda solta
+    /// imagem — a preta —, começando por um quadro-chave que quem assiste consegue abrir.
+    #[test]
+    fn a_still_frame_comes_out_before_any_capture() {
+        let config = EncoderConfig::new(capture::Quality::Hd720, 30, (1280, 720));
+        let mut encoder = MediaFoundationEncoder::new(&config).expect("o encoder abriu");
+        let frames: Vec<EncodedFrame> = (0..30_u64).filter_map(|index| encoder.encode_again(index * 33_333_333).ok()).collect();
+
+        assert!(!frames.is_empty(), "nenhuma imagem repetida saiu");
+        assert!(frames[0].keyframe, "a primeira imagem tem de ser quadro-chave");
     }
 
     /// O IDR que vem sem SPS e PPS sai com os últimos que o encoder mandou; o P não ganha nada.

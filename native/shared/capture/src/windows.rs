@@ -303,12 +303,21 @@ impl GraphicsCaptureApiHandler for Sink {
     ) -> Result<(), Self::Error> {
         self.frames.fetch_add(1, Ordering::Relaxed);
 
+        // A hora em que o quadro foi composto, e não a em que este callback rodou: o atraso de
+        // agendamento — o jogo segurando a CPU — virava variação no relógio do RTP, e quem
+        // assiste aumentava a espera do jitter buffer por um tranco que a rede nem teve.
+        let timestamp_ns = frame
+            .timestamp()
+            .ok()
+            .and_then(|composed| u64::try_from(composed.Duration).ok())
+            .map_or_else(|| self.started_at.elapsed().as_nanos() as u64, |hundreds| hundreds * 100);
+
         // A textura é da rotação interna da captura: vale enquanto este callback roda,
         // e o encoder copia dela antes de devolver. Clonar aqui só soma uma referência.
         (self.on_event)(CaptureEvent::Video(VideoFrame {
             width: frame.width(),
             height: frame.height(),
-            timestamp_ns: self.started_at.elapsed().as_nanos() as u64,
+            timestamp_ns,
             surface: Some(GpuSurface {
                 texture: frame.as_raw_texture().clone(),
                 device: frame.device().clone(),

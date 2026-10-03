@@ -117,6 +117,7 @@ fn main() -> anyhow::Result<()> {
     for bitrate in [ceiling, ceiling * 35 / 100, ceiling] {
         let accepted = bitrate == encoder.bitrate() || encoder.set_bitrate(bitrate);
         let mut per_second = Vec::with_capacity(SECONDS as usize);
+        let mut busy = std::time::Duration::ZERO;
 
         for _ in 0..SECONDS {
             let mut bytes = 0_u64;
@@ -133,7 +134,10 @@ fn main() -> anyhow::Result<()> {
                     );
                 }
 
+                let begun = std::time::Instant::now();
                 let outcome = encoder.encode(&surface, index * FRAME_NS);
+
+                busy += begun.elapsed();
 
                 index += 1;
 
@@ -147,7 +151,13 @@ fn main() -> anyhow::Result<()> {
             per_second.push(bytes * 8 / 1000);
         }
 
-        println!("pedido {:>6} kb/s · aceito: {accepted} · kb/s por segundo: {per_second:?}", bitrate / 1000);
+        // O tempo dentro do `encode` é o que a thread da captura deixa de ter para o próximo
+        // quadro: a 60 fps há 16,7 ms, e cada ms a mais é tempo da placa tirado do jogo.
+        println!(
+            "pedido {:>6} kb/s · aceito: {accepted} · {:.2} ms por quadro · kb/s por segundo: {per_second:?}",
+            bitrate / 1000,
+            busy.as_secs_f64() * 1000.0 / (SECONDS * FRAMES_PER_SECOND) as f64
+        );
     }
 
     Ok(())

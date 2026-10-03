@@ -522,6 +522,101 @@ impl Session {
     }
 }
 
+/// De quanto em quanto a última imagem se repete com a captura calada: um por segundo, como o
+/// WebRTC numa tela parada.
+#[cfg(target_os = "windows")]
+const STILL_EVERY: Duration = Duration::from_secs(1);
+
+/// A thread que repete a última imagem — ou uma preta, antes da primeira — enquanto a captura
+/// não entrega quadro: tela parada, janela minimizada. Sem quadro nenhum o servidor derrubava a
+/// transmissão em 30 s (`producerDead`), e quem assistia não tinha como separar a tela parada da
+/// travada. É também quem atende, na hora, o quadro-chave pedido por quem entra numa tela parada:
+/// antes ele esperava o vigia refazer a captura, até um minuto depois.
+#[cfg(target_os = "windows")]
+struct StillFrames {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(target_os = "windows")]
+impl StillFrames {
+    /// `last_frame` é o carimbo e a hora do último quadro de verdade, que a captura atualiza.
+    fn start(
+        encoding: Arc<Mutex<VideoEncoding>>,
+        sfu: Target,
+        (video, frame_rate): (Source, f64),
+        (last_frame, muted): (Arc<Mutex<(u64, Instant)>>, Arc<AtomicBool>),
+    ) -> Option<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::Builder::new()
+            .name("unkvoid-tela-parada".into())
+            .spawn({
+                let stop = Arc::clone(&stop);
+
+                move || {
+                    let mut still_at = Instant::now();
+
+                    while !stop.load(Ordering::Relaxed) {
+                        std::thread::sleep(STILL_EVERY / 4);
+
+                        let (real_ns, real_at) = *last_frame.lock().unwrap_or_else(PoisonError::into_inner);
+                        let now = Instant::now();
+
+                        if muted.load(Ordering::Relaxed) || now.duration_since(real_at) < STILL_EVERY {
+                            continue;
+                        }
+
+                        let feedback = target(&sfu).as_mut().map(PlainSender::read_feedback).unwrap_or_default();
+                        let Ok(mut encoding) = encoding.lock() else {
+                            continue;
+                        };
+                        let asked = encoding.keyframes.due(feedback.keyframe, now);
+
+                        encoding.nacked += u64::from(feedback.lost);
+
+                        if !asked && now.duration_since(still_at) < STILL_EVERY {
+                            continue;
+                        }
+
+                        if asked {
+                            encoding.encoder.request_keyframe();
+                        }
+
+                        still_at = now;
+
+                        let encoded = encoding.encoder.encode_again(real_ns + now.duration_since(real_at).as_nanos() as u64);
+
+                        if let Ok(frame) = &encoded
+                            && frame.keyframe
+                        {
+                            encoding.keyframes.served(now);
+                        }
+
+                        drop(encoding);
+
+                        if let (Ok(frame), Some(sender)) = (encoded, target(&sfu).as_mut()) {
+                            let _ = sender.send_frame(video, frame, frame_rate);
+                        }
+                    }
+                }
+            })
+            .ok()?;
+
+        Some(Self { stop, thread: Some(thread) })
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for StillFrames {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 pub struct Broadcast {
     capturer: PlatformCapturer,
     pub source: CaptureSource,
@@ -567,6 +662,9 @@ pub struct Broadcast {
     /// O encoder da placa já falhou nesta transmissão: os refazeres seguintes vão pelo do
     /// processador.
     software: bool,
+    /// Quem repete a última imagem quando a captura cala — ver `StillFrames`.
+    #[cfg(target_os = "windows")]
+    still: Option<StillFrames>,
 }
 
 impl Broadcast {
@@ -608,14 +706,15 @@ impl Broadcast {
         let loss_permille = Arc::new(AtomicU64::new(0));
         let video_packets = AtomicU64::new(0);
 
-        let encoding = Mutex::new(VideoEncoding {
+        let encoding = Arc::new(Mutex::new(VideoEncoding {
             governor: BitrateGovernor::from_env(encoder.bitrate()),
             encoder,
             window_started: Instant::now(),
             nacked: 0,
             keyframes: KeyframeGate::default(),
             dropped_before: dropped_so_far,
-        });
+        }));
+        let last_frame = Arc::new(Mutex::new((0_u64, Instant::now())));
 
         tracing::info!("broadcast: abrindo o encoder de áudio");
 
@@ -628,6 +727,15 @@ impl Broadcast {
         let recipe = config.clone();
         let muted = Arc::new(AtomicBool::new(false));
         let muted_callback = Arc::clone(&muted);
+        #[cfg(target_os = "windows")]
+        let still = video.and_then(|video| {
+            StillFrames::start(
+                Arc::clone(&encoding),
+                Arc::clone(&sfu),
+                (video, frame_rate),
+                (Arc::clone(&last_frame), Arc::clone(&muted)),
+            )
+        });
         let level = Arc::new(LevelMeter::default());
         let level_callback = Arc::clone(&level);
         let captured = Arc::new(AtomicU64::new(0));
@@ -654,6 +762,7 @@ impl Broadcast {
         let keyframes_callback = Arc::clone(&keyframes);
         let target_bitrate_callback = Arc::clone(&target_bitrate);
         let loss_permille_callback = Arc::clone(&loss_permille);
+        let last_frame_callback = Arc::clone(&last_frame);
 
         tracing::info!(
             source = ?config.source,
@@ -782,6 +891,7 @@ impl Broadcast {
                     match encoding.encoder.encode(surface, frame.timestamp_ns) {
                         Ok(encoded) => {
                             encoded_callback.fetch_add(1, Ordering::Relaxed);
+                            *last_frame_callback.lock().unwrap_or_else(PoisonError::into_inner) = (frame.timestamp_ns, started);
 
                             if encoded.keyframe {
                                 encoding.keyframes.served(started);
@@ -856,6 +966,8 @@ impl Broadcast {
             video,
             audio_source,
             software,
+            #[cfg(target_os = "windows")]
+            still,
         })
     }
 
@@ -886,7 +998,7 @@ impl Broadcast {
             wanted.source = source;
         }
 
-        self.capturer.stop()?;
+        self.stop()?;
 
         match Self::start(Arc::clone(&self.sfu), wanted, self.video, self.audio_source, self.software) {
             Ok(fresh) => {
@@ -995,6 +1107,11 @@ impl Broadcast {
     }
 
     pub fn stop(&mut self) -> anyhow::Result<()> {
+        // Antes da captura: imagem repetida por um encoder que está fechando misturaria o fim de
+        // uma transmissão com o começo da seguinte, no mesmo SSRC.
+        #[cfg(target_os = "windows")]
+        drop(self.still.take());
+
         self.capturer.stop()?;
 
         Ok(())
