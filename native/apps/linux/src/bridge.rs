@@ -189,6 +189,12 @@ impl Bridge {
         let (core, api, screen) = (self.core.clone(), self.api.clone(), self.to_screen.clone());
         let (sfu, live) = (self.sfu.clone(), self.live.clone());
 
+        self.spawn({
+            let api = self.api.clone();
+
+            async move { core_app::logbook::report_errors(&api, &crate::log_folder()).await }
+        });
+
         self.spawn(async move {
             let mut backoff = Backoff::default();
 
@@ -738,7 +744,15 @@ impl Bridge {
             }
 
             *lock(&held) = Some(opened.clone());
-            *lock(&watch) = Some(Watch::start(media, |_, _| {}));
+
+            // Fraco: a sala que acabou não fica viva só porque o tocador ainda pede quadro-chave.
+            let asking = Arc::downgrade(&opened);
+
+            *lock(&watch) = Some(Watch::start(media, |_, _| {}, move |producer| {
+                if let Some(room) = asking.upgrade() {
+                    room.request_keyframe(producer);
+                }
+            }));
             *lock(&mine) = streaming::mine_of(&opened.mine());
 
             listen(heard, screen.clone(), mine.clone());
@@ -942,6 +956,14 @@ impl Bridge {
 
         if let Some(watch) = lock(&self.watch).as_ref() {
             watch.reopen_sound();
+        }
+    }
+
+    /// A janela saiu da vista ou voltou: fora dela, o vídeo do que se assiste pausa no
+    /// servidor — ver `Room::set_away`. Quem chama só avisa quando muda.
+    pub fn set_away(self: &Rc<Self>, away: bool) {
+        if let Some(room) = lock(&self.room).clone() {
+            self.spawn(async move { room.set_away(away).await });
         }
     }
 

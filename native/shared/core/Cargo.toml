@@ -37,6 +37,8 @@ base64 = "0.22"
 # estão no lock pelo atualizador do Tauri.
 semver = "1"
 minisign-verify = "0.2"
+# A data local do nome do log diário (`logbook.rs`). Já vem compilada por outras dependências.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

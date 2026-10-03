@@ -1646,6 +1646,7 @@ impl Bridge {
 
     /// Sai da voz ou da sala por código, o que estiver aberto. É o que fechar a janela faz: ela
     /// só se esconde (os Clips seguem na bandeja), e a chamada não pode ficar aberta sem ela.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub fn hang_up(self: &Rc<Self>) {
         if lock(&self.voice_channel).is_some() {
             self.leave_voice();
