@@ -141,7 +141,10 @@ async fn main() -> anyhow::Result<()> {
                         clock.2 = clock.2.min(lag);
                         arrival_lag = arrival_lag.max(lag - clock.2);
 
-                        if keyframe && !decoders.contains_key(&next.producer_id) {
+                        // O decodificador do `media` é só do Windows: no Linux e no macOS a conta
+                        // fica no que chega — quadros, keyframes, pausas, atraso e pacotes —, que é
+                        // o que mostra congelamento de rede, e as colunas de imagem ficam em zero.
+                        if cfg!(target_os = "windows") && keyframe && !decoders.contains_key(&next.producer_id) {
                             decoders.insert(next.producer_id.clone(), media::H264Decoder::new()?);
                         }
 
