@@ -1039,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "capture"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "apple-cf",
@@ -1269,7 +1269,7 @@ dependencies = [
 
 [[package]]
 name = "clips"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "capture",
@@ -1408,7 +1408,7 @@ dependencies = [
 
 [[package]]
 name = "core-app"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4793,7 +4793,7 @@ dependencies = [
 
 [[package]]
 name = "media"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "apple-cf",
@@ -8003,7 +8003,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -9387,7 +9387,7 @@ dependencies = [
 
 [[package]]
 name = "unkvoid-desktop"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -9415,7 +9415,7 @@ dependencies = [
 
 [[package]]
 name = "unkvoid-linux"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -9434,7 +9434,7 @@ dependencies = [
 
 [[package]]
 name = "unkvoid-windows"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
