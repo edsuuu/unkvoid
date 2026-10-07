@@ -64,7 +64,8 @@ fn lock(recorder: &Mutex<Recorder>) -> MutexGuard<'_, Recorder> {
 struct App {
     window: AppWindow,
     overlay: OverlayWindow,
-    _tray: ClipsTray,
+    /// Sai daqui na saída (`remove_tray`): o ícone só deixa a bandeja no `Drop` dele.
+    tray: RefCell<Option<ClipsTray>>,
     settings: RefCell<Settings>,
     recorder: Arc<Mutex<Recorder>>,
     hotkeys: Hotkeys,
@@ -119,7 +120,7 @@ pub fn start(window: &AppWindow) -> anyhow::Result<()> {
     let app = Rc::new(App {
         window: window.clone_strong(),
         overlay: OverlayWindow::new()?,
-        _tray: ClipsTray::new()?,
+        tray: RefCell::new(Some(ClipsTray::new()?)),
         settings: RefCell::new(settings),
         recorder: recorder.clone(),
         hotkeys,
@@ -191,6 +192,22 @@ pub fn show_window() {
 /// A janela foi fechada (ela só se esconde, e o replay segue): o player para junto.
 pub fn window_closed() {
     with_app(|app| app.close_player());
+}
+
+/// Tira o ícone da bandeja agora. A saída encerra o processo sem destrutor nenhum, e o ícone
+/// de um processo morto fica na bandeja até alguém passar o mouse: parecia que o "Sair" não
+/// tinha fechado.
+pub fn remove_tray() {
+    with_app(|app| drop(app.tray.take()));
+}
+
+/// A janela já foi mostrada nesta abertura. A cópia que a tarefa agendada abre sempre tem
+/// `--background`, até quando é a resposta a um clique no ícone: é isto que diz se alguém
+/// está olhando para ela.
+static WINDOW_SHOWN: AtomicBool = AtomicBool::new(false);
+
+pub fn window_shown() -> bool {
+    WINDOW_SHOWN.load(Ordering::Relaxed)
 }
 
 fn bind(app: &Rc<App>) {
@@ -346,9 +363,11 @@ fn bind(app: &Rc<App>) {
         });
     });
 
-    app._tray.on_open(|| with_app(|app| app.show_main()));
-    app._tray.on_save(|| with_app(|app| app.save_replay(gallery::Target::desktop())));
-    app._tray.on_quit(|| with_app(|app| app.quit()));
+    if let Some(tray) = app.tray.borrow().as_ref() {
+        tray.on_open(|| with_app(|app| app.show_main()));
+        tray.on_save(|| with_app(|app| app.save_replay(gallery::Target::desktop())));
+        tray.on_quit(|| with_app(|app| app.quit()));
+    }
     app.ui().on_quit(|| with_app(|app| app.quit()));
 }
 
@@ -402,6 +421,7 @@ impl App {
         self.refresh_gallery();
 
         let _ = self.window.show();
+        WINDOW_SHOWN.store(true, Ordering::Relaxed);
 
         if let Some(handle) = shell::window_handle(self.window.window()) {
             shell::restore_if_minimized(handle);
@@ -825,7 +845,9 @@ impl App {
         std::thread::spawn(move || {
             shell::lower_thread_priority();
 
-            let result = (|| -> anyhow::Result<(PathBuf, ClipSummary)> {
+            // Um pânico aqui sem resposta deixava o `saving` ligado para sempre: o "Sair" recusava
+            // e a atualização esperava eternamente.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> anyhow::Result<(PathBuf, ClipSummary)> {
                 let job = lock(&recorder).prepare_save(Duration::from_secs(u64::from(settings.replay_minutes) * 60))?;
                 let folder = settings.clips_folder.join(&target.folder);
 
@@ -835,7 +857,8 @@ impl App {
                 let summary = job.write(&path)?;
 
                 Ok((path, summary))
-            })();
+            }))
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("o salvamento caiu no meio")));
 
             let outcome = result.map_err(|error| {
                 tracing::error!(error = %format!("{error:#}"), "replay: não foi possível salvar");

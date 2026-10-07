@@ -47,4 +47,40 @@ fn main() {
         // Só no app: os exemplos (a `vitrine`) não levam ícone nem pedem administrador.
         resource.compile_for(&["unkvoid"]).expect("o ícone não entrou no .exe");
     }
+
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        static_vcruntime();
+    }
+}
+
+/// O `VCRUNTIME140.dll` dentro do `.exe`. Ele não vem com o Windows, e sim com o
+/// Visual C++ Redistributable: no PC sem ele o Windows recusa abrir o app, sem log nenhum. O
+/// Tauri, que este substitui, já embutia; é a mesma receita do `tauri-build`
+/// (`static_vcruntime.rs`, de github.com/ChrisDenton/static_vcruntime). O UCRT segue do
+/// sistema, que o tem desde o Windows 10. O Rust pede o `msvcrt.lib` por nome, e um vazio na
+/// frente dele no caminho do linker o anula.
+fn static_vcruntime() {
+    let machine: &[u8] = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("x86_64") => &[0x64, 0x86],
+        Ok("x86") => &[0x4C, 0x01],
+        _ => return,
+    };
+    let empty_library: &[u8] = &[
+        1, 0, 94, 3, 96, 98, 60, 0, 0, 0, 1, 0, 0, 0, 0, 0, 132, 1, 46, 100, 114, 101, 99, 116, 118, 101, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 60, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 16, 0, 46, 100, 114, 101, 99, 116, 118,
+        101, 0, 0, 0, 0, 1, 0, 0, 0, 3, 0, 4, 0, 0, 0,
+    ];
+    let out_dir = std::env::var("OUT_DIR").expect("o Cargo sempre passa o OUT_DIR");
+
+    std::fs::write(std::path::Path::new(&out_dir).join("msvcrt.lib"), [machine, empty_library].concat())
+        .expect("o msvcrt.lib vazio não foi gravado");
+    println!("cargo:rustc-link-search=native={out_dir}");
+
+    for library in ["libvcruntimed.lib", "vcruntime.lib", "vcruntimed.lib", "libcmtd.lib", "msvcrt.lib", "msvcrtd.lib", "libucrt.lib", "libucrtd.lib"] {
+        println!("cargo:rustc-link-arg=/NODEFAULTLIB:{library}");
+    }
+
+    for library in ["libcmt.lib", "libvcruntime.lib", "ucrt.lib"] {
+        println!("cargo:rustc-link-arg=/DEFAULTLIB:{library}");
+    }
 }

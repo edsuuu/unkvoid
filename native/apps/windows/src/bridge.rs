@@ -3441,8 +3441,15 @@ async fn updating(api: &Api, window: &Weak<AppWindow>) -> bool {
 
     clips_saved().await;
 
-    // Na abertura, escondida quando veio do logon: a versão nova volta do mesmo jeito.
-    install(&installer, std::env::args().any(|argument| argument == "--background"))
+    // Na abertura, escondida quando veio do logon: a versão nova volta do mesmo jeito. O
+    // `--background` sozinho não diz: a cópia que a tarefa abre em resposta ao clique no ícone
+    // também o tem, e a janela que a pessoa pediu sumia na troca.
+    #[cfg(target_os = "windows")]
+    let hidden = std::env::args().any(|argument| argument == "--background") && !crate::clips::window_shown();
+    #[cfg(not(target_os = "windows"))]
+    let hidden = false;
+
+    install(&installer, hidden)
 }
 
 /// Um replay sendo gravado no disco morreria no meio junto com o app, e o MP4 ficaria

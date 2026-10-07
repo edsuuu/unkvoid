@@ -338,9 +338,11 @@ pub fn elevate() -> bool {
         std::thread::sleep(std::time::Duration::from_millis(150));
     }
 
+    // A tarefa rodou e ninguém respondeu (de outra conta do PC, ou a cópia dela caiu cedo):
+    // sair aqui era o clique que não abre nada. O UAC de sempre abre esta mesma cópia.
     tracing::warn!("elevação: a cópia elevada não ficou pronta a tempo");
 
-    true
+    run_as_administrator()
 }
 
 /// Abre esta mesma cópia pedindo o administrador. Recusado o aviso, `false`: o app segue sem.

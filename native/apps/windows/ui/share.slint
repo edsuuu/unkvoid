@@ -91,39 +91,44 @@ component Choice inherits Rectangle {
     }
 }
 
-// A caixinha de marcar com o violeta da marca, como o `accent-brand` do React.
-component Check inherits HorizontalLayout {
+// A caixinha de marcar com o violeta da marca, como o `accent-brand` do React. O clique fica
+// fora da linha: dentro dela o TouchArea virava uma terceira coluna de largura zero, e a caixa
+// não marcava.
+component Check inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
     in-out property <bool> checked;
 
-    spacing: 8px;
     opacity: root.enabled ? 1.0 : 0.5;
 
-    Rectangle {
-        width: 16px;
-        height: 16px;
-        y: (parent.height - self.height) / 2;
-        border-radius: 4px;
-        border-width: root.checked ? 0px : 1px;
-        border-color: #ffffff4d;
-        background: root.checked ? Skin.brand : transparent;
+    HorizontalLayout {
+        spacing: 8px;
 
-        if root.checked : Glyph {
-            commands: Icons.check;
-            size: 12px;
-            tint: Skin.ink-strong;
-            x: 2px;
-            y: 2px;
+        Rectangle {
+            width: 16px;
+            height: 16px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 4px;
+            border-width: root.checked ? 0px : 1px;
+            border-color: #ffffff4d;
+            background: root.checked ? Skin.brand : transparent;
+
+            if root.checked : Glyph {
+                commands: Icons.check;
+                size: 12px;
+                tint: Skin.ink-strong;
+                x: 2px;
+                y: 2px;
+            }
         }
-    }
 
-    Text {
-        text: root.text;
-        color: Skin.ink-icon;
-        font-family: Skin.sans;
-        font-size: 13px;
-        vertical-alignment: center;
+        Text {
+            text: root.text;
+            color: Skin.ink-icon;
+            font-family: Skin.sans;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
     }
 
     TouchArea {

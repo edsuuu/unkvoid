@@ -29,6 +29,18 @@ use bridge::Bridge;
 slint::include_modules!();
 
 fn main() -> anyhow::Result<()> {
+    let opened = run();
+
+    // Sem console atrás da janela, o erro que o `main` devolve vai para um stderr que não
+    // existe: o app sumia deixando no log só a linha "abrindo".
+    if let Err(error) = &opened {
+        tracing::error!(error = %format!("{error:#}"), "abertura: o app não abriu");
+    }
+
+    opened
+}
+
+fn run() -> anyhow::Result<()> {
     #[cfg(target_os = "windows")]
     let Some(show_request) = start_windows()? else {
         return Ok(());
@@ -96,14 +108,37 @@ fn main() -> anyhow::Result<()> {
         }
 
         slint::run_event_loop_until_quit()?;
-        tracing::info!("Unkvoid fechando");
-
-        return Ok(());
+        closed();
     }
 
     window.run()?;
 
+    closed()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn closed() -> anyhow::Result<()> {
     Ok(())
+}
+
+/// Sai sem destrutor nenhum. O estado do app mora num `thread_local`, e o Rust roda esses
+/// destrutores dentro do `ExitProcess`, com as outras threads já mortas: o `Runtime` do tokio da
+/// `Bridge` caía ali e esperava para sempre threads que não existiam mais. O processo ficava vivo
+/// com o ícone e a instância única, e todo clique depois só sinalizava ele: o app "não abria".
+/// O `std::process::exit` passa pelo mesmo `ExitProcess`. O log é síncrono e não perde a última
+/// linha; a sala e a voz caem com o socket, como já caíam.
+#[cfg(target_os = "windows")]
+fn closed() -> ! {
+    use windows::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+
+    tracing::info!("Unkvoid fechando");
+    clips::remove_tray();
+
+    unsafe {
+        let _ = TerminateProcess(GetCurrentProcess(), 0);
+    }
+
+    std::process::abort()
 }
 
 /// A borda amarela que o Windows pinta em volta do que está sendo capturado — o replay dos
@@ -142,7 +177,7 @@ fn start_windows() -> anyhow::Result<Option<windows::Win32::Foundation::HANDLE>>
     tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::sync::Mutex::new(log)).with_ansi(false).init();
 
     std::panic::set_hook(Box::new(|information| tracing::error!("pânico: {information}")));
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), "Unkvoid abrindo");
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), pid = std::process::id(), background = clips::shell::started_in_background(), "Unkvoid abrindo");
 
     if clips::shell::elevate() {
         return Ok(None);

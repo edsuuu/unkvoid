@@ -191,22 +191,25 @@ component StreamTile inherits Rectangle {
 
                 Rectangle { horizontal-stretch: 1; }
 
+                // O som da tela chega mudo (CONTRATO): o alto-falante e o volume de 0 a 100 só
+                // no hover, ninguém descobria como ouvir. O da própria tela não toca aqui, e os
+                // botões dela não fariam nada.
+                if root.tile.audio && !root.tile.mine : TileButton {
+                    commands: root.tile.heard ? Icons.speaker : Icons.speaker-off;
+                    tone: root.tile.heard ? "idle" : "off";
+                    hint: root.tile.heard ? "Mutar o áudio desta tela" : "Ativar o áudio desta tela";
+                    clicked => { Ui.toggle-heard(root.tile.producer); }
+                }
+
+                if root.tile.audio && !root.tile.mine && !root.thumb : TileButton {
+                    commands: Icons.sliders;
+                    tone: root.adjusting ? "on" : "idle";
+                    hint: "Volume — só do seu lado, não muda o que os outros ouvem";
+                    clicked => { root.adjusting = !root.adjusting; }
+                }
+
                 if !root.thumb && (touch.has-hover || root.adjusting) : HorizontalLayout {
                     spacing: 6px;
-
-                    if root.tile.audio : TileButton {
-                        commands: root.tile.heard ? Icons.speaker : Icons.speaker-off;
-                        tone: root.tile.heard ? "idle" : "off";
-                        hint: root.tile.heard ? "Mutar o áudio desta tela" : "Ativar o áudio desta tela";
-                        clicked => { Ui.toggle-heard(root.tile.producer); }
-                    }
-
-                    if root.tile.audio : TileButton {
-                        commands: Icons.sliders;
-                        tone: root.adjusting ? "on" : "idle";
-                        hint: "Volume — só do seu lado, não muda o que os outros ouvem";
-                        clicked => { root.adjusting = !root.adjusting; }
-                    }
 
                     if !root.tile.mine : TileButton {
                         commands: root.tile.paused ? Icons.play : Icons.eye;
