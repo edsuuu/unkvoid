@@ -1,17 +1,20 @@
-import { Skin } from "skin.slint";
+// A Archivo embutida (OFL, `ui/fonts/`): a mesma letra do React e do site em qualquer sistema.
+import "fonts/Archivo.ttf";
+import { Skin, Theme } from "skin.slint";
 import { Ui } from "state.slint";
 import { EntryScreen } from "entry.slint";
 import { HubScreen } from "hub.slint";
 import { RoomScreen } from "room.slint";
 import { Halo, OfflineScreen, Toast, UpdatingScreen } from "shell.slint";
 import { NicknameModal, SettingsModal } from "settings.slint";
+import { Modals, ServerSettingsModal } from "server.slint";
 import { ShareModal } from "share.slint";
 import { ClipsScreen, ClipsTray, ClipsUi, OverlayWindow, SectionTabs } from "clips.slint";
 import { ResizeEdges, TitleBar } from "frame.slint";
 
 export { Ui, ClipsUi, ClipsTray, OverlayWindow }
 export { ClipItem, MonitorItem } from "clips.slint";
-export { ChannelRow, DeviceRow, MemberGroupRow, MemberRow, MessageRow, PeerRow, ServerRow, SourceRow, ToastRow, VoicePersonRow } from "state.slint";
+export { ActionsRow, AuditRow, BanRow, ChannelRow, DeviceRow, MemberGroupRow, MemberRow, MessageRow, PeerRow, PermissionRow, RoleRow, ServerRow, SourceRow, ToastRow, VoicePersonRow } from "state.slint";
 
 // A janela é a pilha das cinco telas, e quem diz qual está valendo é o núcleo. A moldura é
 // nossa (`frame.slint`): sem ela não há onde pôr o botão da atualização ao lado do minimizar.
@@ -19,8 +22,10 @@ export component AppWindow inherits Window {
     title: "Unkvoid";
     icon: @image-url("../../desktop/src-tauri/icons/128x128.png");
     no-frame: true;
-    background: Skin.back;
-    default-font-family: Skin.sans;
+    // O fundo é o do centro do Discord; a entrada e a sala por código pintam o delas por
+    // cima (o halo). A Archivo embutida vale na entrada e na sala por código (`Skin.sans`);
+    // o hub do Discord usa a fonte do sistema, como o macOS.
+    background: Theme.surface-chat;
     // Os números do `expand_window` do Tauri, que o macOS também usa: com menos largura os
     // cartões da Home quebram em outra ordem.
     preferred-width: 1280px;
@@ -30,7 +35,7 @@ export component AppWindow inherits Window {
 
     property <length> bar: 32px;
 
-    Halo { }
+    if Ui.screen != "hub" : Halo { }
 
     // As telas e os modais moram embaixo da barra: o modal cobre a janela inteira, como o
     // `fixed inset-0` do React, menos a moldura — que continua arrastando e fechando. Logo
@@ -65,6 +70,8 @@ export component AppWindow inherits Window {
             }
         }
 
+        if Ui.modal != "" : Modals { }
+        if Ui.server-settings-open : ServerSettingsModal { }
         if Ui.settings-open : SettingsModal { }
         if Ui.share-open : ShareModal { }
         if Ui.signed-in && Ui.nickname-pending : NicknameModal { }

@@ -54,9 +54,29 @@ perguntas que esperam o dono. O que já existe está no [README](../README.md) e
   trabalho Linux de verdade, com placa de vídeo.
 - Os encoders de placa (`nvh264enc`, `vah264enc`, `vaapih264enc`) nunca rodaram em hardware; só o
   x264 foi provado.
+- **PLI → keyframe e taxa no ar** (09/10/2026): o vídeo da captura saiu do `gst-launch` e roda
+  dentro do processo (`gstreamer-rs`). Provado no contêiner só com o `x264enc`: o keyframe pedido
+  chega num GOP de 10 s, e a taxa cai tocando. Nos encoders de placa, a troca de taxa só vale se
+  o `bitrate` deles for mutável tocando (o código confere a flag; se não for, o governador desiste
+  e a taxa fica a de abertura, como antes). Na NVIDIA, conferir no log do `broadcast` a linha "a
+  perda mudou a taxa do vídeo".
 - **Captura no Wayland pelo portal**: tudo a partir do `create_session` nunca rodou (o seletor, o
-  cancelar, o nó do PipeWire, o fd herdado pelo `gst-launch`, o `keepalive-time` com tela parada,
-  o fechamento da sessão). Provado só o caminho de falha. O roteiro está abaixo.
+  cancelar, o nó do PipeWire, o fd do portal entregue ao `pipewiresrc` dentro do processo, o
+  `keepalive-time` com tela parada, o fechamento da sessão). Provado só o caminho de falha. O
+  roteiro está abaixo.
+
+- **O app Slint no Linux** (09/10/2026, `apps/windows`, o mesmo crate do Windows): compila,
+  passa nos testes e abre sob `xvfb` no contêiner (`apps/windows/Dockerfile`), com a Archivo
+  embutida. O que só um Linux de verdade prova:
+  - a janela num Wayland real (o contêiner é X11 pelo Xvfb) e o OpenGL de uma placa (lá é o
+    `llvmpipe` do Mesa);
+  - o som: o `pacat` tocando na saída escolhida e o `pulsesrc` lendo o microfone escolhido
+    (no contêiner não há PulseAudio de pé, e `pactl` responde vazio);
+  - o portal do Wayland abrindo o seletor antes da captura — o `capture::prepare` que o
+    `bridge.rs` precisa chamar (patch em `_relatorios/`, para o Sable aplicar);
+  - o `.deb` do `build-deb.sh` instalando e abrindo num Debian 12 e num Ubuntu 24.04 de verdade;
+  - assistir: o `media::H264Decoder` do Linux (`linux_decoder.rs`, com o Tux) ainda não existe —
+    até lá o Linux entra na voz, fala e ouve, mas não vê a tela de ninguém.
 
 <details>
 <summary>Roteiro para provar o Wayland (GNOME ou KDE)</summary>
@@ -77,7 +97,9 @@ perguntas que esperam o dono. O que já existe está no [README](../README.md) e
 8. Com um app de chamada tocando e um jogo com som: `pactl list sinks short` mostra
    `unkvoid_share` enquanto a transmissão está no ar; quem assiste ouve o jogo e não a chamada.
    Ao parar, o sink some.
-9. `UNKVOID_CAPTURE=x11` numa sessão Wayland e `UNKVOID_CAPTURE=portal` numa X11 do GNOME.
+9. `UNKVOID_CAPTURE=x11` numa sessão Wayland e `UNKVOID_CAPTURE=portal` numa X11 do GNOME. E
+   com `PIPEWIRE_NODE=<outro nó>` no ambiente, a tela que sobe continua sendo a escolhida no
+   seletor: o pipeline agora roda dentro do processo, e não dá mais para tirar a variável só dele.
 
 </details>
 

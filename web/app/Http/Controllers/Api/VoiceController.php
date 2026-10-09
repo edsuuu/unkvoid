@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api;
 
+use App\Http\Requests\Api\Servers\UpdateVoiceMemberRequest;
 use App\Http\Resources\Api\VoiceTokenResource;
 use App\Models\Channel;
 use App\Models\User;
@@ -14,7 +15,8 @@ use Illuminate\Http\Response;
 use Throwable;
 
 /**
- * A voz de um canal: o token de 60 s que o SFU confere, e derrubar alguém de lá.
+ * A voz de um canal: o token de 60 s que o SFU confere, mover alguém para outra voz e
+ * derrubar alguém de lá.
  */
 final class VoiceController
 {
@@ -24,6 +26,16 @@ final class VoiceController
     public function token(Request $request, Channel $channel, #[CurrentUser] User $user, SfuClient $sfu): VoiceTokenResource
     {
         return new VoiceTokenResource($channel->voiceToken($user, (string) $request->ip(), $request->userAgent(), $sfu));
+    }
+
+    /**
+     * @throws Throwable
+     */
+    public function update(UpdateVoiceMemberRequest $request, Channel $channel, User $user, #[CurrentUser] User $actor, SfuClient $sfu): Response
+    {
+        $channel->move($actor, $user, Channel::query()->findOrFail($request->string('channel_id')->toString()), $sfu);
+
+        return response()->noContent();
     }
 
     /**

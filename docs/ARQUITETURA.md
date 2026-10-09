@@ -138,7 +138,7 @@ O Node não vê um único pacote de vídeo. Por que o SFU é Node: [DECISOES.md]
 
 | Nome | O que é |
 |---|---|
-| `Room` | uma sala. O id é o código da sala por código (3 a 32 caracteres) ou o ULID de um canal de voz (26). A sala inteira mora num worker só, escolhido pelo que tem menos salas |
+| `Room` | uma sala. O id é o código da sala por código (3 a 32 caracteres) ou o ULID de um canal de voz (26). A sala começa num router do worker com menos routers; passando de `SFU_PEERS_PER_ROUTER` pessoas (padrão 10), quem chega vai para um router noutro worker, e o que assiste de lá chega por `pipeToRouter` |
 | `Peer` | uma pessoa conectada: um WebSocket, com uma `resumeKey` para voltar depois de cair |
 | producer | uma origem que alguém manda: `screen`, `screenAudio`, `mic` ou `camera` |
 | consumer | a cópia de um producer indo para uma pessoa; nasce pausado |
@@ -247,8 +247,9 @@ SFU            aprende o endereço no primeiro pacote e replica para cada consum
 ```
 
 - O som da tela vai junto: Opus 48 kHz estéreo, no mesmo transporte, com SSRC próprio.
-- Quadro-chave a cada 4 s no Windows e a cada 1 s no Linux (o `gst-launch` da captura não atende
-  pedido de fora), mais os pedidos de quem assiste, espaçados de 2 a 4 s.
+- Quadro-chave a cada 4 s no Windows e a cada 1 s no Linux, mais os pedidos de quem assiste,
+  espaçados de 2 a 4 s. No Linux o vídeo da captura roda dentro do processo (`gstreamer-rs`): é
+  assim que o pedido chega ao encoder e que a taxa muda com a transmissão no ar.
 - Perda entre o app e o SFU: o SFU pede o pacote de volta (NACK por SRTCP) e o app reenvia do
   histórico, pelo pacer; se não der, pede quadro-chave (PLI).
 - A taxa acompanha a perda: muito NACK numa janela e o governador baixa o alvo do encoder, até

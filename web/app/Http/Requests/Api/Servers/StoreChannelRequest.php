@@ -20,6 +20,7 @@ final class StoreChannelRequest extends FormRequest
             'type' => ['required', Rule::enum(ChannelTypeEnum::class)],
             'topic' => ['nullable', 'string', 'max:1024'],
             'user_limit' => ['nullable', 'integer', 'min:1', 'max:99'],
+            'parent_id' => ['nullable', 'string', 'size:26', 'exists:channels,id'],
         ];
     }
 }

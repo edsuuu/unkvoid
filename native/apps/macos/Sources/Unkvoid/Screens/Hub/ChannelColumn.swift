@@ -1,300 +1,411 @@
 import SwiftUI
 
-/// `ui/components/hub/ChannelColumn.tsx`: 300 de largura, três caixas de vidro empilhadas
-/// com 12 entre elas — o nome do servidor, a lista de canais e a barra do usuário.
+/// A coluna de canais: 240 de largura, `surfaceSide`. O cabeçalho de 48 com o nome do servidor
+/// (que abre o menu dele), as categorias "Canais de texto" e "Canais de voz" com as linhas de
+/// 32, quem está em cada voz embaixo do canal, e a barra do usuário colada no fim.
 struct ChannelColumn: View {
     @EnvironmentObject private var model: AppModel
 
-    private var manage: Bool {
-        model.abilities.allows("manageChannels")
-    }
-
     var body: some View {
         if let tree = model.tree {
-            VStack(spacing: 12) {
-                HStack(spacing: 10) {
-                    Text(tree.name)
-                        .font(Theme.sans(17, .semibold))
-                        .tracking(-0.3)
-                        .foregroundStyle(Theme.ink)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Button {
-                        model.modal = .serverSettings
-                    } label: {
-                        Icon(name: .dots, size: 15)
-                    }
-                    .buttonStyle(IconButton(side: 28, radius: 9))
-                    .help("Configurações do servidor")
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-                .glass()
+            VStack(spacing: 0) {
+                ServerHeader(tree: tree)
 
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        ChannelGroup(section: "Canais de texto", empty: tree.textChannels.isEmpty ? "Nenhum canal de texto visível." : nil, create: manage ? "text" : nil) {
-                            ForEach(tree.textChannels) { item in
-                                TextChannelRow(channel: item, active: item.id == model.channel?.id)
+                    VStack(alignment: .leading, spacing: 0) {
+                        let loose = tree.children(of: nil)
+
+                        if tree.categories.isEmpty || !loose.isEmpty {
+                            ChannelCategory(name: "Canais de texto", kind: "text", parent: nil, channels: loose.filter { !$0.isVoice }, empty: "Nenhum canal de texto visível.") { channel in
+                                TextChannelRow(channel: channel, active: channel.id == model.channel?.id && !model.stageOpen)
+                            }
+
+                            ChannelCategory(name: "Canais de voz", kind: "voice", parent: nil, channels: loose.filter(\.isVoice), empty: "Nenhum canal de voz visível.") { channel in
+                                VoiceChannelRow(channel: channel)
                             }
                         }
 
-                        ChannelGroup(section: "Canais de voz", empty: tree.voiceChannels.isEmpty ? "Nenhum canal de voz visível." : nil, create: manage ? "voice" : nil) {
-                            ForEach(tree.voiceChannels) { item in
-                                VoiceChannelRow(channel: item)
+                        ForEach(tree.categories) { category in
+                            ChannelCategory(name: category.name, kind: "text", parent: category.id, channels: tree.children(of: category.id), empty: "Nenhum canal visível.") { channel in
+                                if channel.isVoice {
+                                    VoiceChannelRow(channel: channel)
+                                } else {
+                                    TextChannelRow(channel: channel, active: channel.id == model.channel?.id && !model.stageOpen)
+                                }
+                            }
+                            .contextMenu {
+                                ChannelMenuItems(channel: category)
                             }
                         }
                     }
-                    .padding(16)
+                    .padding(.top, 8)
+                    .padding(.bottom, 16)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollIndicators(.never)
                 .frame(maxHeight: .infinity)
-                .glass()
 
                 UserBar()
             }
-            .frame(width: 300)
+            .frame(width: Theme.Size.side)
+            .background(Theme.surfaceSide)
         }
     }
 }
 
-/// Um bloco da lista: o rótulo mono lá em cima e as linhas embaixo, com 8 de respiro.
-private struct ChannelGroup<Content: View>: View {
+/// O cabeçalho de 48: o nome do servidor e a seta que abre o menu dele.
+private struct ServerHeader: View {
     @EnvironmentObject private var model: AppModel
 
-    var section: String
-    var empty: String?
-    /// O tipo de canal que o "+" cria; `nil` para quem não gerencia canais.
-    var create: String?
-    @ViewBuilder var content: Content
+    let tree: ServerTree
+
+    @State private var hovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(section).labelMono()
+        Menu {
+            ServerMenuItems(server: ServerSummary(id: tree.id, name: tree.name, owner_id: tree.owner_id, icon_url: tree.icon_url, last_accessed_at: nil))
+        } label: {
+            HStack(spacing: 8) {
+                Text(tree.name)
+                    .font(Theme.header)
+                    .foregroundStyle(Theme.inkStrong)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                Spacer(minLength: 0)
+                Icon(name: .chevronDown, size: 18)
+                    .foregroundStyle(Theme.inkStrong)
+            }
+            .padding(.horizontal, 16)
+            .frame(height: Theme.Size.header)
+            .frame(maxWidth: .infinity)
+            .background(hovering ? Theme.hover : .clear)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .onHover { hovering = $0 }
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.black.opacity(0.2)).frame(height: 1)
+        }
+        .help("Menu do servidor")
+    }
+}
 
-                if let create {
-                    Button {
-                        model.channelEditor = ChannelEditor(channel: nil, kind: create)
-                    } label: {
-                        Icon(name: .plus, size: 11)
+/// Uma categoria: o rótulo em caixa alta com a seta que recolhe e, sob o mouse, o "+" de
+/// criar canal. Sem canal visível, a frase que diz isso.
+private struct ChannelCategory<Row: View>: View {
+    @EnvironmentObject private var model: AppModel
+
+    let name: String
+    let kind: String
+    let parent: String?
+    let channels: [Channel]
+    let empty: String
+    @ViewBuilder let row: (Channel) -> Row
+
+    @State private var collapsed = false
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 2) {
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { collapsed.toggle() }
+                } label: {
+                    HStack(spacing: 2) {
+                        Icon(name: .chevronRight, size: 12)
+                            .rotationEffect(.degrees(collapsed ? 0 : 90))
+
+                        Text(name)
+                            .labelMono()
+                            .lineLimit(1)
                     }
-                    .buttonStyle(IconButton(side: 20, radius: 7))
-                    .help(create == "voice" ? "Criar canal de voz" : "Criar canal de texto")
+                    .foregroundStyle(hovering ? Theme.ink : Theme.inkDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.pointer)
+                .help(collapsed ? "Mostrar a categoria" : "Recolher a categoria")
+
+                if model.abilities.allows("manageChannels"), hovering {
+                    Button {
+                        model.channelEditor = ChannelEditor(channel: nil, kind: kind, parent: parent)
+                    } label: {
+                        Icon(name: .plus, size: 16)
+                    }
+                    .buttonStyle(IconButton(side: 20))
+                    .help("Criar canal")
                 }
             }
+            .padding(.leading, 8)
+            .padding(.trailing, 8)
+            .frame(height: 24)
+            .padding(.top, 16)
+            .onHover { hovering = $0 }
 
-            if let empty {
-                Text(empty)
-                    .font(Theme.sans(12))
-                    .foregroundStyle(Theme.inkDim)
-            } else {
-                VStack(spacing: 6) {
-                    content
+            if !collapsed {
+                if channels.isEmpty {
+                    Text(empty)
+                        .font(Theme.meta)
+                        .foregroundStyle(Theme.inkDim)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 6)
+                } else {
+                    ForEach(channels) { channel in
+                        row(channel)
+                    }
                 }
             }
         }
     }
 }
 
-private struct TextChannelRow: View {
-    var channel: Channel
-    var active: Bool
-
+/// O menu de contexto de um canal (ou de uma categoria): editar, convidar, e excluir, para quem pode.
+private struct ChannelMenuItems: View {
     @EnvironmentObject private var model: AppModel
+
+    let channel: Channel
+
+    var body: some View {
+        if model.abilities.allows("manageChannels") {
+            Button(channel.isCategory ? "Editar categoria" : "Editar canal") { model.channelEditor = ChannelEditor(channel: channel, kind: channel.type) }
+        }
+
+        if model.abilities.allows("createInvite"), !channel.isCategory {
+            Button("Criar convite") { model.modal = .invitePeople }
+        }
+
+        if model.abilities.allows("manageChannels") {
+            Divider()
+
+            Button(channel.isCategory ? "Excluir categoria" : "Excluir canal", role: .destructive) { model.deleteChannel(channel) }
+        }
+    }
+}
+
+/// Os dois ícones de 16 que aparecem sob o mouse à direita da linha: convidar e editar.
+private struct ChannelRowTools: View {
+    @EnvironmentObject private var model: AppModel
+
+    let channel: Channel
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if model.abilities.allows("createInvite") {
+                Button {
+                    model.modal = .invitePeople
+                } label: {
+                    Icon(name: .userPlus, size: 16)
+                }
+                .buttonStyle(IconButton(side: 20))
+                .help("Criar convite")
+            }
+
+            if model.abilities.allows("manageChannels") {
+                Button {
+                    model.channelEditor = ChannelEditor(channel: channel, kind: channel.type)
+                } label: {
+                    Icon(name: .gear, size: 16)
+                }
+                .buttonStyle(IconButton(side: 20))
+                .help("Editar canal")
+            }
+        }
+    }
+}
+
+/// A linha de 32 de um canal de texto: `#`, o nome, e as ferramentas sob o mouse.
+private struct TextChannelRow: View {
+    @EnvironmentObject private var model: AppModel
+
+    let channel: Channel
+    let active: Bool
+
+    @State private var hovering = false
 
     var body: some View {
         Button {
             Task { await model.openChannel(channel) }
         } label: {
-            HStack(spacing: 10) {
-                Text("#")
-                    .font(Theme.mono(11))
-                    .foregroundStyle(active ? Theme.lilac2 : Theme.inkDim)
+            HStack(spacing: 6) {
+                Icon(name: .hash, size: 20)
+                    .foregroundStyle(Theme.inkDim)
 
                 Text(channel.name)
-                    .font(Theme.sans(13, active ? .medium : .regular))
-                    .foregroundStyle(active ? Theme.inkStrong : Theme.inkIcon)
+                    .font(Theme.list)
+                    .foregroundStyle(active ? Theme.inkStrong : hovering ? Theme.ink : Theme.inkDim)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
+
+                if hovering {
+                    ChannelRowTools(channel: channel)
+                }
             }
-            .rowItem(selected: active)
+            .padding(.horizontal, 8)
+            .frame(height: Theme.Size.row)
+            .background(active ? Theme.selected : hovering ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: Theme.Size.radius, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.pointer)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 1)
+        .onHover { hovering = $0 }
         .contextMenu {
-            if model.abilities.allows("manageChannels") {
-                Button("Editar canal") {
-                    model.channelEditor = ChannelEditor(channel: channel, kind: channel.type)
+            ChannelMenuItems(channel: channel)
+        }
+    }
+}
+
+/// A linha de um canal de voz e, embaixo dela, quem está lá: avatar de 24 com o anel de quem
+/// fala, o nome, e à direita o microfone e o fone cortados, o "AO VIVO" e a câmera.
+private struct VoiceChannelRow: View {
+    @EnvironmentObject private var model: AppModel
+
+    let channel: Channel
+
+    @State private var hovering = false
+
+    private var here: Bool {
+        model.voiceChannel?.id == channel.id
+    }
+
+    var body: some View {
+        let people = model.voicePeople(in: channel)
+
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                Task { await model.joinVoice(channel) }
+            } label: {
+                HStack(spacing: 6) {
+                    Icon(name: .speaker, size: 20)
+                        .foregroundStyle(Theme.inkDim)
+
+                    Text(channel.name)
+                        .font(Theme.list)
+                        .foregroundStyle(here ? Theme.inkStrong : hovering ? Theme.ink : Theme.inkDim)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if model.voiceTarget == channel.id || (here && model.reconnecting) {
+                        ProgressView().controlSize(.mini)
+                    } else if hovering {
+                        ChannelRowTools(channel: channel)
+                    } else if let limit = channel.user_limit {
+                        Text("\(people.count)/\(limit)")
+                            .font(Theme.meta)
+                            .foregroundStyle(Theme.inkDim)
+                    }
                 }
+                .padding(.horizontal, 8)
+                .frame(height: Theme.Size.row)
+                .background(here ? Theme.selected : hovering ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: Theme.Size.radius, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.pointer)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 1)
+            .onHover { hovering = $0 }
+            .help(here ? "Ping \(model.ping.map(String.init) ?? "--") ms" : "Entrar na voz")
+            .contextMenu {
+                ChannelMenuItems(channel: channel)
+            }
+
+            ForEach(people) { person in
+                VoicePersonRow(channel: channel, person: person)
             }
         }
     }
 }
 
-/// `VoiceChannelItem.tsx`: o canal e, indentado embaixo, quem está lá dentro. No canal em que
-/// se está o cartão fica lilás, com o tempo de conexão e o botão da sala focada.
-private struct VoiceChannelRow: View {
-    var channel: Channel
-
+/// Uma pessoa embaixo do canal de voz: linha de 30, recuo de 36.
+private struct VoicePersonRow: View {
     @EnvironmentObject private var model: AppModel
-    @State private var hovered: Int?
 
-    var body: some View {
-        let people = model.voicePeople(in: channel)
+    let channel: Channel
+    let person: VoicePerson
 
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Button {
-                    Task { await model.joinVoice(channel) }
-                } label: {
-                    HStack(spacing: 8) {
-                        Icon(name: .speaker, size: 14)
-                            .foregroundStyle(here ? Theme.lilac2 : Theme.inkDim)
+    @State private var hovering = false
 
-                        Text(channel.name)
-                            .font(Theme.sans(13, here ? .medium : .regular))
-                            .foregroundStyle(here ? Theme.inkBody : Theme.inkIcon)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    // A área de clique vai até a moldura do canal (10 em cima e embaixo, 12 à
-                    // esquerda): o respiro entra no botão e sai de volta do desenho.
-                    .padding(.vertical, 10)
-                    .padding(.leading, 12)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.pointer)
-                .padding(.vertical, -10)
-                .padding(.leading, -12)
-                .help(here ? "Ping \(model.ping.map(String.init) ?? "--") ms" : "Entrar na voz")
+    private var me: Bool {
+        person.user_id == model.user?.id
+    }
 
-                if model.voiceTarget == channel.id || (here && model.reconnecting) {
-                    ProgressView().controlSize(.mini)
-                } else if here {
-                    Button {
-                        model.focusedRoom = true
-                        model.stageOpen = true
-                    } label: {
-                        Icon(name: .focus, size: 11).foregroundStyle(Theme.lilac2)
-                    }
-                    .buttonStyle(.pointer)
-                    .frame(width: 22, height: 22)
-                    .background(Theme.brand.opacity(0.15), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Theme.brand.opacity(0.35), lineWidth: 1))
-                    .help("Mudar visual para focado")
-
-                    if let since = model.enteredRoomAt {
-                        Text(since, style: .timer)
-                            .font(Theme.mono(9.5))
-                            .monospacedDigit()
-                            .foregroundStyle(Theme.inkDim)
-                    }
-                }
-            }
-
-            if !people.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(people) { person in
-                        row(person)
-                    }
-                }
-                .padding(.leading, 20)
-            }
-        }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 12)
-        .background(here ? Theme.brand.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(here ? Theme.brand.opacity(0.3) : Theme.lineSoft, lineWidth: 1)
-        )
-        .contextMenu {
-            if model.abilities.allows("manageChannels") {
-                Button("Editar canal") {
-                    model.channelEditor = ChannelEditor(channel: channel, kind: channel.type)
-                }
-            }
-        }
+    private var member: Member? {
+        model.tree?.members.first { $0.user_id == person.user_id }
     }
 
     private var here: Bool {
         model.voiceChannel?.id == channel.id
     }
 
-    private func row(_ person: VoicePerson) -> some View {
-        let me = person.user_id == model.user?.id
-        let member = model.tree?.members.first { $0.user_id == person.user_id }
+    var body: some View {
+        let speaking = model.isSpeaking(person.user_id)
         let live = person.sources?.contains("screen") == true
 
-        return HStack(spacing: 8) {
-            Button {
-                model.memberMenu = member
-            } label: {
-                HStack(spacing: 8) {
-                    Avatar(name: person.name, url: member?.avatar_url, size: 22, mine: me)
-                        .overlay(Circle().strokeBorder(Theme.online, lineWidth: 2).padding(-2).opacity(model.isSpeaking(person.user_id) ? 1 : 0))
-                        .animation(.easeOut(duration: 0.12), value: model.isSpeaking(person.user_id))
+        Button {
+            model.memberMenu = member
+        } label: {
+            HStack(spacing: 8) {
+                Avatar(name: member?.displayName ?? person.name, url: member?.avatar_url, size: 24, mine: me)
+                    .overlay(Circle().strokeBorder(Theme.online, lineWidth: 2).padding(-2).opacity(speaking ? 1 : 0))
+                    .animation(.easeOut(duration: 0.1), value: speaking)
 
-                    Text(person.name)
-                        .font(Theme.sans(12.5))
-                        .foregroundStyle(me ? Theme.inkBody : Theme.inkIcon)
-                        .lineLimit(1)
+                Text(member?.displayName ?? person.name)
+                    .font(Theme.voicePerson)
+                    .foregroundStyle(hovering ? Theme.ink : Theme.inkSoft)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                    // O fone cortado fica por cima do microfone cortado: quem não ouve também
-                    // não conversa, e um ícone só diz as duas coisas.
-                    if me, model.deafened {
-                        Icon(name: .headphonesOff, size: 12).foregroundStyle(Theme.danger).help("Áudio mutado")
-                    } else if me ? model.micShownOff : person.muted == true {
-                        Icon(name: .micOff, size: 12).foregroundStyle(Theme.danger).help("Microfone mutado")
-                    }
-
-                    if person.sources?.contains("camera") == true {
-                        Icon(name: .camera, size: 12).foregroundStyle(Theme.inkDim).help("Câmera ligada")
-                    }
-
-                    Spacer(minLength: 0)
+                // O fone cortado fica por cima do microfone cortado: quem não ouve também
+                // não conversa, e um ícone só diz as duas coisas.
+                if member?.server_deaf == true || (me && model.deafened) {
+                    Icon(name: .headphonesOff, size: 16)
+                        .foregroundStyle(member?.server_deaf == true ? Theme.danger : Theme.inkDim)
+                        .help(member?.server_deaf == true ? "Ensurdecido pelo servidor" : "Ensurdecido")
+                } else if member?.server_mute == true || (me ? model.micShownOff : person.muted == true) {
+                    Icon(name: .micOff, size: 16)
+                        .foregroundStyle(member?.server_mute == true ? Theme.danger : Theme.inkDim)
+                        .help(member?.server_mute == true ? "Mutado pelo servidor" : "Mutado")
                 }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.pointer)
-            .disabled(member == nil)
-            .help(member == nil ? person.name : "Ações do membro")
 
-            if member != nil, !me, hovered == person.user_id {
-                Button {
-                    model.memberMenu = member
-                } label: {
-                    Icon(name: .dots, size: 13)
-                }
-                .buttonStyle(IconButton(side: 22, radius: 7))
-                .help("Banir, expulsar, desconectar e mais")
-            }
-
-            if live {
-                Button {
-                    Task { await watch() }
-                } label: {
-                    HStack(spacing: 4) {
-                        Circle().fill(.white).frame(width: 5, height: 5)
-
+                if live {
+                    Button {
+                        Task { await watch() }
+                    } label: {
                         Text("AO VIVO")
+                            .font(Theme.sans(11, .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .frame(height: 16)
+                            .background(Theme.live, in: RoundedRectangle(cornerRadius: Theme.Size.radius, style: .continuous))
                     }
-                    .font(Theme.mono(9, .semibold))
-                    .foregroundStyle(Theme.inkStrong)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Theme.danger, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .buttonStyle(.pointer)
+                    .help(here ? "Assistir transmissão" : "Assistir transmissão — entra na voz")
                 }
-                .buttonStyle(.pointer)
-                .help(here ? "Assistir transmissão — abre aqui do lado" : "Assistir transmissão — entra na voz e abre ao lado")
+
+                if person.sources?.contains("camera") == true {
+                    Icon(name: .camera, size: 16)
+                        .foregroundStyle(Theme.inkDim)
+                        .help("Câmera ligada")
+                }
+            }
+            .padding(.leading, 28)
+            .padding(.trailing, 8)
+            .frame(height: Theme.Size.voiceRow)
+            .background(hovering ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: Theme.Size.radius, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.pointer)
+        .disabled(member == nil)
+        .padding(.horizontal, 8)
+        .onHover { hovering = $0 }
+        .help(member == nil ? person.name : "Ações do membro")
+        .contextMenu {
+            if let member {
+                MemberMenuItems(member: member)
             }
         }
-        .onHover { hovered = $0 ? person.user_id : (hovered == person.user_id ? nil : hovered) }
     }
 
     /// Fora da voz, entra; dentro, abre o palco e reabre o que tinha sido fechado.

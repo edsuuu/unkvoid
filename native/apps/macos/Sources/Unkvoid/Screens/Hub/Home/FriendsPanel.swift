@@ -30,7 +30,7 @@ struct FriendsPanel: View {
                         .foregroundStyle(tab == key ? Theme.inkStrong : Theme.inkDim)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)
-                        .background(tab == key ? Theme.row : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .background(tab == key ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     }
                     .buttonStyle(.pointer)
                 }
@@ -93,7 +93,7 @@ struct FriendsPanel: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .glass()
+        .surface()
     }
 
     private var rows: [Friendship] {

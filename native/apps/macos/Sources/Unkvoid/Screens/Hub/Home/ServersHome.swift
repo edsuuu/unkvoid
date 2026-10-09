@@ -64,7 +64,7 @@ struct ServersHome: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .glass()
+        .surface()
     }
 
     private var roomByCode: some View {
@@ -100,7 +100,7 @@ struct ServersHome: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .glass()
+        .surface()
     }
 
     private func submit() {

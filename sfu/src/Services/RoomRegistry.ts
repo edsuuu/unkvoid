@@ -2,36 +2,47 @@ import * as mediasoup from 'mediasoup';
 import type { WebRtcServer, Worker } from 'mediasoup/types';
 
 import type { Peer } from './Peer.js';
-import { Room } from './Room.js';
+import { Room, type MediaRouter } from './Room.js';
 import { config } from '../Config/index.js';
+import { ServiceUnavailableException } from '../Exceptions/ApiException.js';
 
-type WorkerSlot = { worker: Worker; webRtcServer: WebRtcServer; rooms: number };
+type WorkerSlot = { worker: Worker; webRtcServer: WebRtcServer; routers: number };
+
+const RESPAWN_CEILING_MS = 30_000;
 
 export class RoomRegistry {
     private readonly slots: WorkerSlot[] = [];
 
     private readonly rooms = new Map<string, Room>();
 
-    private readonly slotByRoom = new Map<string, WorkerSlot>();
+    private readonly creating = new Map<string, Promise<Room>>();
 
     public async boot(): Promise<void> {
         for (let index = 0; index < config.workerCount; index += 1) {
-            const rtcMinPort = config.plainPortBase + index * config.plainPortsPerWorker;
+            this.slots.push(await this.spawn(index));
+        }
 
-            const worker = await mediasoup.createWorker({
-                ...config.worker,
-                rtcMinPort,
-                rtcMaxPort: rtcMinPort + config.plainPortsPerWorker - 1,
-            });
+        const lastPlain =
+            config.plainPortBase + config.workerCount * config.plainPortsPerWorker - 1;
 
-            worker.on('died', () => {
-                console.error('[ERROR] mediasoup worker died — exiting so pm2 can restart');
-                process.exit(1);
-            });
+        console.log(
+            `[INFO] ${this.slots.length} media workers on ports ${config.mediaPort}-${config.mediaPort + this.slots.length - 1} · plain RTP on ${config.plainPortBase}-${lastPlain}`,
+        );
+    }
 
-            const port = config.mediaPort + index;
+    private async spawn(index: number): Promise<WorkerSlot> {
+        const rtcMinPort = config.plainPortBase + index * config.plainPortsPerWorker;
 
-            const webRtcServer = await worker.createWebRtcServer({
+        const worker = await mediasoup.createWorker({
+            ...config.worker,
+            rtcMinPort,
+            rtcMaxPort: rtcMinPort + config.plainPortsPerWorker - 1,
+        });
+
+        const port = config.mediaPort + index;
+
+        const webRtcServer = await worker
+            .createWebRtcServer({
                 listenInfos: [
                     {
                         protocol: 'udp',
@@ -46,48 +57,115 @@ export class RoomRegistry {
                         port,
                     },
                 ],
+            })
+            .catch((failure: unknown) => {
+                worker.close();
+                throw failure;
             });
 
-            this.slots.push({ worker, webRtcServer, rooms: 0 });
-        }
+        const slot: WorkerSlot = { worker, webRtcServer, routers: 0 };
 
-        const lastPlain =
-            config.plainPortBase + config.workerCount * config.plainPortsPerWorker - 1;
+        worker.on('died', (error) => this.revive(index, slot, error));
 
-        console.log(
-            `[INFO] ${this.slots.length} media workers on ports ${config.mediaPort}-${config.mediaPort + this.slots.length - 1} · plain RTP on ${config.plainPortBase}-${lastPlain}`,
-        );
+        return slot;
     }
 
-    private leastLoadedSlot(): WorkerSlot {
-        return this.slots.reduce((smallest, slot) =>
-            slot.rooms < smallest.rooms ? slot : smallest,
+    /**
+     * Antes, worker morto derrubava o processo inteiro, e com ele as salas dos workers
+     * sãos. Agora só quem estava nele cai: o socket fechado faz cada app voltar sozinho, e a
+     * volta cai num worker vivo — este mesmo, se já tiver renascido.
+     */
+    private revive(index: number, dead: WorkerSlot, error: Error): void {
+        const rooms = [...this.rooms.values()].filter((room) => room.uses(dead.worker));
+
+        console.error(
+            `[ERROR] media worker ${index} died (${error.message}) · closing it in ${rooms.length} rooms`,
         );
+
+        for (const room of rooms) {
+            room.evacuate(dead.worker);
+            this.release(room);
+        }
+
+        const attempt = (delay: number): void => {
+            this.spawn(index)
+                .then((slot) => {
+                    this.slots[index] = slot;
+                    console.log(`[INFO] media worker ${index} is back (pid ${slot.worker.pid})`);
+                })
+                .catch((failure: unknown) => {
+                    console.error(
+                        `[ERROR] media worker ${index} did not come back, retrying in ${delay / 1000}s: ${String(failure)}`,
+                    );
+                    setTimeout(() => attempt(Math.min(delay * 2, RESPAWN_CEILING_MS)), delay);
+                });
+        };
+
+        attempt(1000);
+    }
+
+    /**
+     * O router vai para o worker vivo com menos routers, fora dos que a sala já usa: dois
+     * routers da mesma sala no mesmo worker dividiriam o mesmo núcleo e só somariam o custo
+     * do pipe. A primeira vez (`busy` vazio) sem worker vivo é erro; a expansão sem worker
+     * livre devolve `null`, e a sala fica onde está.
+     */
+    private async createRouter(busy: Worker[]): Promise<MediaRouter | null> {
+        const alive = this.slots.filter((slot) => !slot.worker.closed);
+
+        if (alive.length === 0) {
+            throw new ServiceUnavailableException('no media worker is running');
+        }
+
+        const free = alive.filter((slot) => !busy.includes(slot.worker));
+
+        if (free.length === 0) {
+            return null;
+        }
+
+        const slot = free.reduce((smallest, candidate) =>
+            candidate.routers < smallest.routers ? candidate : smallest,
+        );
+        const router = await slot.worker.createRouter({ mediaCodecs: config.router.mediaCodecs });
+
+        slot.routers += 1;
+        router.observer.once('close', () => (slot.routers -= 1));
+
+        return { router, webRtcServer: slot.webRtcServer, worker: slot.worker };
     }
 
     public find(roomId: string): Room | undefined {
         return this.rooms.get(roomId);
     }
 
-    public async findOrCreate(roomId: string): Promise<Room> {
+    /**
+     * Duas entradas na mesma sala nova chegam juntas com frequência (o link colado no
+     * grupo). Sem a promessa compartilhada, cada uma criava o seu router: as duas pessoas
+     * ficavam em salas diferentes com o mesmo código, e o primeiro router vazava.
+     */
+    public findOrCreate(roomId: string): Promise<Room> {
         const existing = this.rooms.get(roomId);
 
         if (existing) {
-            return existing;
+            return Promise.resolve(existing);
         }
 
-        if (this.slots.length === 0) {
-            throw new Error('the room registry was not initialized');
+        let pending = this.creating.get(roomId);
+
+        if (!pending) {
+            pending = this.create(roomId).finally(() => this.creating.delete(roomId));
+            this.creating.set(roomId, pending);
         }
 
-        const slot = this.leastLoadedSlot();
-        const room = await Room.create(slot.worker, slot.webRtcServer, roomId);
+        return pending;
+    }
+
+    private async create(roomId: string): Promise<Room> {
+        const room = await Room.create(roomId, (busy) => this.createRouter(busy));
 
         room.onEvicted = (empty) => this.release(empty);
 
-        slot.rooms += 1;
         this.rooms.set(roomId, room);
-        this.slotByRoom.set(roomId, slot);
 
         return room;
     }
@@ -107,22 +185,18 @@ export class RoomRegistry {
     }
 
     public release(room: Room): void {
-        if (room.activeCount() > 0 || !room.isEmpty()) {
+        if (this.rooms.get(room.id) !== room || room.activeCount() > 0 || !room.isEmpty()) {
             return;
-        }
-
-        const slot = this.slotByRoom.get(room.id);
-
-        if (slot) {
-            slot.rooms -= 1;
-            this.slotByRoom.delete(room.id);
         }
 
         room.close();
         this.rooms.delete(room.id);
     }
 
-    public presence(): Record<string, { sub: string; name: string; sources: string[] }[]> {
+    public presence(): Record<
+        string,
+        { sub: string; name: string; sources: string[]; muted: boolean; deafened: boolean }[]
+    > {
         return Object.fromEntries(
             [...this.rooms.values()].map((room) => [
                 room.id,
@@ -132,16 +206,25 @@ export class RoomRegistry {
                         sub: peer.userId,
                         name: peer.name,
                         sources: peer.sources(),
+                        muted: peer.muted,
+                        deafened: peer.deafened,
                     })),
             ]),
         );
     }
 
-    public stats(): { rooms: number; peers: number; workers: number[] } {
+    /** `workers` é quantos routers cada worker carrega: uma sala espalhada conta em cada um. */
+    public stats(): {
+        rooms: number;
+        peers: number;
+        workers: number[];
+        workersDown: number;
+    } {
         return {
             rooms: this.rooms.size,
             peers: [...this.rooms.values()].reduce((total, room) => total + room.peers.size, 0),
-            workers: this.slots.map((slot) => slot.rooms),
+            workers: this.slots.map((slot) => slot.routers),
+            workersDown: this.slots.filter((slot) => slot.worker.closed).length,
         };
     }
 }

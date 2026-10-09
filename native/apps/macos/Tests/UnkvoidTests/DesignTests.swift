@@ -77,4 +77,125 @@ struct DesignTests {
         #expect(Theme.hex("vermelho") == nil)
         #expect(Theme.hex("#abc") == nil)
     }
+
+    /// Cada token tem um valor por tema, e são os da nota: o centro é `#313338` no escuro e
+    /// branco no claro; o destaque é o mesmo violeta nos dois. Se o `NSColor` dinâmico deixar
+    /// de seguir a aparência, o tema claro inteiro sai escuro sem ninguém notar.
+    @Test
+    func theTokensFollowTheAppearance() {
+        #expect(Self.resolved(Theme.surfaceChat, dark: true) == "#313338")
+        #expect(Self.resolved(Theme.surfaceChat, dark: false) == "#ffffff")
+        #expect(Self.resolved(Theme.surfaceRail, dark: true) == "#1e1f22")
+        #expect(Self.resolved(Theme.surfaceRail, dark: false) == "#e3e5e8")
+        #expect(Self.resolved(Theme.inkStrong, dark: true) == "#f2f3f5")
+        #expect(Self.resolved(Theme.inkStrong, dark: false) == "#060607")
+        #expect(Self.resolved(Theme.brand, dark: true) == "#6a55e0")
+        #expect(Self.resolved(Theme.brand, dark: false) == "#6a55e0")
+    }
+
+    /// A grade da chamada: `ceil(sqrt(n))` colunas, e o cartão cabe na largura e na altura.
+    @Test
+    func theCallGridHasAsManyColumnsAsTheSquareRoot() {
+        #expect(CallLayout.columns(for: 0) == 1)
+        #expect(CallLayout.columns(for: 1) == 1)
+        #expect(CallLayout.columns(for: 2) == 2)
+        #expect(CallLayout.columns(for: 4) == 2)
+        #expect(CallLayout.columns(for: 5) == 3)
+        #expect(CallLayout.columns(for: 9) == 3)
+        #expect(CallLayout.columns(for: 10) == 4)
+
+        // Dois cartões numa caixa larga: a altura é o que limita, e o cartão fica 16:9 dentro dela.
+        #expect(CallLayout.cardWidth(in: CGSize(width: 2000, height: 180), count: 2) == 320)
+        // Quatro cartões numa caixa estreita: a largura é o que limita, e cada um leva metade menos o vão.
+        #expect(CallLayout.cardWidth(in: CGSize(width: 408, height: 2000), count: 4) == 200)
+    }
+
+    /// As telas principais do Hub viram PNG numa pasta (`UNKVOID_SNAPSHOT_DIR`), com um servidor
+    /// de exemplo e sem rede: é a foto que vai para a nota quando a pilha local não está no ar.
+    /// Sem a variável, pulado — não é uma verificação, é uma ferramenta.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["UNKVOID_SNAPSHOT_DIR"] != nil))
+    @MainActor
+    func theHubRendersToAPictureForTheNote() async throws {
+        let folder = URL(fileURLWithPath: ProcessInfo.processInfo.environment["UNKVOID_SNAPSHOT_DIR"]!)
+
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        let model = AppModel(url: "ws://127.0.0.1:1/sfu")
+        let general = Channel(id: "t1", name: "geral", type: "text", topic: "Conversa do estúdio, sem pressa.", position: 0, permissions: 0x3FFFF, user_limit: nil, overwrites: [])
+        let rules = Channel(id: "t2", name: "regras", type: "text", topic: nil, position: 1, permissions: 0x3FFFF, user_limit: nil, overwrites: [])
+        let meeting = Channel(id: "v1", name: "Reunião", type: "voice", topic: nil, position: 2, permissions: 0x3FFFF, user_limit: 5, overwrites: [])
+        let gaming = Channel(id: "v2", name: "Jogatina", type: "voice", topic: nil, position: 3, permissions: 0x3FFFF, user_limit: nil, overwrites: [])
+        let work = Channel(id: "c1", name: "Trabalho", type: "category", topic: nil, position: 4, permissions: 0x3FFFF, user_limit: nil, overwrites: [])
+        let standup = Channel(id: "t3", name: "daily", type: "text", topic: nil, position: 5, permissions: 0x3FFFF, user_limit: nil, overwrites: [], parent_id: "c1")
+        let focus = Channel(id: "v3", name: "Foco", type: "voice", topic: nil, position: 6, permissions: 0x3FFFF, user_limit: nil, overwrites: [], parent_id: "c1")
+        let moderator = Role(id: 1, name: "Moderação", color: "#f0b232", position: 1, permissions: 0, is_everyone: false)
+        let everyone = Role(id: 2, name: "@everyone", color: nil, position: 0, permissions: 0, is_everyone: true)
+        let members = [
+            Member(user_id: 1, name: "Ada", avatar_url: nil, nickname: nil, role_ids: [], server_mute: false, server_deaf: false, is_owner: true),
+            Member(user_id: 2, name: "Grace", avatar_url: nil, nickname: nil, role_ids: [1], server_mute: false, server_deaf: false, is_owner: false),
+            Member(user_id: 3, name: "Linus", avatar_url: nil, nickname: "Tux", role_ids: [], server_mute: true, server_deaf: false, is_owner: false),
+            Member(user_id: 4, name: "Barbara", avatar_url: nil, nickname: nil, role_ids: [], server_mute: false, server_deaf: false, is_owner: false),
+        ]
+
+        model.user = User(id: 1, name: "Ada", email: "ada@teste.local", avatar_url: nil, avatar_uploaded: false, nickname_confirmed: true)
+        model.servers = [
+            ServerSummary(id: 1, name: "Estúdio Unkvoid", owner_id: 1, icon_url: nil, last_accessed_at: nil),
+            ServerSummary(id: 2, name: "Jogos de sexta", owner_id: 2, icon_url: nil, last_accessed_at: nil),
+        ]
+        model.tree = ServerTree(
+            id: 1, name: "Estúdio Unkvoid", owner_id: 1, invite_code: "abcd1234efgh", icon_url: nil,
+            me: Membership(user_id: 1, permissions: 0x3FFFF), roles: [moderator, everyone],
+            channels: [general, rules, meeting, gaming, work, standup, focus], members: members,
+            voice: ["v1": [
+                VoicePerson(user_id: 2, name: "Grace", sources: ["screen", "mic"], muted: false),
+                VoicePerson(user_id: 3, name: "Linus", sources: ["mic"], muted: true),
+            ]],
+            bans: nil
+        )
+        model.abilities = Abilities(can: ["manageChannels", "createInvite", "manageServer", "manageRoles", "moveMembers"], owner: true, members: [:], roles: [])
+        model.online = ["1", "2", "3"]
+        model.home = false
+
+        await model.chat.open(general)
+        try render(model, to: folder.appendingPathComponent("hub-chat.png"))
+
+        model.voiceChannel = meeting
+        model.stageOpen = true
+        model.voiceChatOpen = true
+        try render(model, to: folder.appendingPathComponent("hub-chamada.png"))
+    }
+
+    /// Uma janela de verdade, fora da tela, no tema escuro: o `ImageRenderer` não desenha o que
+    /// está dentro de um `ScrollView` nem o campo de texto, e cai na aparência do processo.
+    @MainActor
+    private func render(_ model: AppModel, to file: URL) throws {
+        let host = NSHostingView(rootView: HubScreen().environmentObject(model))
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1280, height: 800), styleMask: .borderless, backing: .buffered, defer: false)
+
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.contentView = host
+        host.frame = window.contentView!.bounds
+        host.layoutSubtreeIfNeeded()
+        window.orderFront(nil)
+        window.displayIfNeeded()
+
+        let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        window.orderOut(nil)
+
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
+
+        try png.write(to: file)
+    }
+
+    private static func resolved(_ color: Color, dark: Bool) -> String {
+        var text = ""
+
+        NSAppearance(named: dark ? .darkAqua : .aqua)!.performAsCurrentDrawingAppearance {
+            text = color.hexText
+        }
+
+        return text
+    }
 }

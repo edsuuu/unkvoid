@@ -18,6 +18,7 @@ final class UpdateChannelRequest extends FormRequest
             'topic' => ['sometimes', 'nullable', 'string', 'max:1024'],
             'position' => ['sometimes', 'integer', 'min:0', 'max:4294967295'],
             'user_limit' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:99'],
+            'parent_id' => ['sometimes', 'nullable', 'string', 'size:26', 'exists:channels,id'],
         ];
     }
 }

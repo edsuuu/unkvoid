@@ -8,9 +8,9 @@
 //! thread, e é ela que abre, toca e fecha. A interface só conversa com o `Speaker` e o
 //! `Microphone`, que são `Send`.
 
-// Fora do Windows o app só compila — para o `clippy --workspace` do Linux —, e a mistura que
-// a thread do WASAPI usa fica sem quem chame.
-#![cfg_attr(not(target_os = "windows"), allow(dead_code))]
+// No macOS o app só compila — para conferir o desenho —, e a mistura que a thread do som usa
+// fica sem quem chame.
+#![cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,6 +45,7 @@ const TRIM_STEP: usize = 5 * PER_MILLISECOND;
 const TICK: Duration = Duration::from_millis(10);
 
 /// Em 100 ns, o tamanho do buffer que se pede ao Windows.
+#[cfg(target_os = "windows")]
 const BUFFER: i64 = 500_000;
 
 /// O que cada pessoa mandou e ainda não tocou.
@@ -504,7 +505,175 @@ mod platform {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+/// PulseAudio, e o `pipewire-pulse`, que fala a mesma língua. O som sai por um `pacat` só,
+/// alimentado pela mistura das `Lane` — a folga anti-estalo e o volume por pessoa são os
+/// mesmos do Windows. O microfone entra pela captura do `shared/capture`: o `pulsesrc` de lá
+/// já traz o `webrtcdsp` de ruído e ganho, e um segundo leitor do mesmo microfone seria
+/// escrever a regra duas vezes.
+#[cfg(target_os = "linux")]
+mod platform {
+    use std::collections::HashMap;
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::SyncSender;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use anyhow::{Context, Result, anyhow};
+    use capture::{CaptureConfig, CaptureEvent, CaptureSource, PlatformCapturer};
+
+    use super::{CHANNELS, Lane, PER_MILLISECOND, SAMPLE_RATE, TICK, lock, mix_into};
+
+    /// Quanto o `pacat` guarda antes de tocar: a mesma régua do buffer de 50 ms do Windows.
+    const LATENCY_MS: u32 = 40;
+
+    /// O cano até o `pacat` fica com uma página só (4 KiB, uns 10 ms de som). É ele que dá o
+    /// ritmo — o `write_all` só volta quando a placa consumiu — e o cano padrão de 64 KiB
+    /// poria 170 ms a mais em cada fala.
+    const PIPE_BYTES: libc::c_int = 4096;
+
+    /// Quanto esperar antes de reabrir a saída que caiu.
+    const REOPEN_AFTER: Duration = Duration::from_secs(1);
+
+    /// Toca até mandarem parar. A saída que some (o `pacat` morre) é reaberta de segundo em
+    /// segundo, e trocar de saída (`switch`) é fechar o `pacat` e abrir outro no aparelho novo,
+    /// sem perder o que esperava para tocar — a mistura fica fora dele.
+    pub fn render(chosen: &Mutex<Option<String>>, switch: &AtomicBool, mix: &Arc<Mutex<HashMap<String, Lane>>>, stop: &AtomicBool) {
+        let mut failing = false;
+
+        while !stop.load(Ordering::Relaxed) {
+            let device = lock(chosen).clone();
+
+            match play(device.as_deref(), switch, mix, stop) {
+                Ok(()) => {
+                    if std::mem::replace(&mut failing, false) {
+                        tracing::info!("som: a saída voltou");
+                    }
+                }
+                Err(failure) => {
+                    if !std::mem::replace(&mut failing, true) {
+                        tracing::warn!(failure = %format!("{failure:#}"), "som: a saída caiu, reabrindo");
+                    }
+
+                    std::thread::sleep(REOPEN_AFTER);
+                }
+            }
+        }
+    }
+
+    /// Um `pacat` na saída escolhida, até mandarem parar ou trocar (`Ok`); `Err` quando ele
+    /// não abriu ou fechou a entrada no meio.
+    fn play(device: Option<&str>, switch: &AtomicBool, mix: &Arc<Mutex<HashMap<String, Lane>>>, stop: &AtomicBool) -> Result<()> {
+        let mut command = Command::new("pacat");
+
+        command.args([
+            "--playback",
+            "--raw",
+            "--format=float32le",
+            &format!("--rate={SAMPLE_RATE}"),
+            &format!("--channels={CHANNELS}"),
+            &format!("--latency-msec={LATENCY_MS}"),
+            "--client-name=Unkvoid",
+            "--stream-name=Voz",
+        ]);
+
+        if let Some(device) = device {
+            command.arg(format!("--device={device}"));
+        }
+
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("o pacat não abriu; instale pulseaudio-utils")?;
+        let mut stdin = child.stdin.take().context("o pacat abriu sem entrada")?;
+
+        // SAFETY: `fcntl` num descritor que este processo acabou de abrir e ainda segura.
+        unsafe { libc::fcntl(stdin.as_raw_fd(), libc::F_SETPIPE_SZ, PIPE_BYTES) };
+
+        let mut out = vec![0.0_f32; TICK.as_millis() as usize * PER_MILLISECOND];
+        let mut bytes = Vec::with_capacity(out.len() * 4);
+
+        tracing::info!(device = device.unwrap_or("padrão"), "som: tocando pelo pacat");
+
+        while !stop.load(Ordering::Relaxed) {
+            mix_into(&mut lock(mix), &mut out);
+            bytes.clear();
+            bytes.extend(out.iter().flat_map(|sample| sample.to_le_bytes()));
+
+            if stdin.write_all(&bytes).is_err() {
+                let _ = child.wait();
+
+                return Err(anyhow!("o pacat fechou a entrada: a saída de áudio sumiu?"));
+            }
+
+            if switch.swap(false, Ordering::Relaxed) {
+                tracing::info!("som: a pessoa escolheu outra saída");
+
+                break;
+            }
+        }
+
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait();
+
+        Ok(())
+    }
+
+    pub fn capture(
+        device: Option<&str>,
+        sink: impl FnMut(&[f32]) + Send + 'static,
+        stop: &AtomicBool,
+        opened: &SyncSender<std::result::Result<(), String>>,
+    ) {
+        if let Some(device) = device
+            && !crate::devices::use_microphone(device)
+        {
+            tracing::warn!(device, "microfone: o pactl não aceitou o aparelho; fica o padrão");
+        }
+
+        let sink = Mutex::new(sink);
+        let config = CaptureConfig {
+            source: CaptureSource::Microphone,
+            capture_audio: true,
+            ..CaptureConfig::default()
+        };
+        let started = PlatformCapturer::start(&config, move |event| {
+            if let CaptureEvent::Audio(chunk) = event {
+                let mut sink = lock(&sink);
+
+                sink(&chunk.samples);
+            }
+        });
+
+        let mut capturer = match started {
+            Ok(capturer) => {
+                let _ = opened.send(Ok(()));
+
+                capturer
+            }
+            Err(failure) => {
+                let _ = opened.send(Err(failure.to_string()));
+
+                return;
+            }
+        };
+
+        tracing::info!(device = device.unwrap_or("padrão"), "microfone: aberto pelo pulsesrc");
+
+        while !stop.load(Ordering::Relaxed) {
+            std::thread::sleep(TICK);
+        }
+
+        let _ = capturer.stop();
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 mod platform {
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
@@ -523,7 +692,7 @@ mod platform {
         _: &AtomicBool,
         opened: &SyncSender<std::result::Result<(), String>>,
     ) {
-        let _ = opened.send(Err("sem WASAPI fora do Windows".into()));
+        let _ = opened.send(Err("sem microfone neste sistema".into()));
     }
 }
 

@@ -1,6 +1,7 @@
 import type { Consumer, PlainTransport, Producer, WebRtcTransport } from 'mediasoup/types';
 import type { WebSocket } from 'ws';
 
+import type { MediaRouter } from './Room.js';
 import { PERMISSION_BY_SOURCE, type SourceName } from '../Enums/Source.js';
 import { ForbiddenException, NotFoundException } from '../Exceptions/ApiException.js';
 
@@ -17,6 +18,16 @@ export class Peer {
     public orphanedAt: number | null = null;
 
     public serverMuted = false;
+
+    public muted = false;
+
+    public deafened = false;
+
+    public media: MediaRouter | null = null;
+
+    public routing: Promise<MediaRouter> | null = null;
+
+    private closed = false;
 
     public readonly transports = new Map<string, WebRtcTransport>();
 
@@ -51,11 +62,24 @@ export class Peer {
     }
 
     public addTransport(transport: WebRtcTransport): void {
+        this.admit(transport);
         this.transports.set(transport.id, transport);
     }
 
     public addPlainTransport(transport: PlainTransport): void {
+        this.admit(transport);
         this.plainTransports.set(transport.id, transport);
+    }
+
+    /**
+     * O transporte nasce depois de uma ida ao worker, e a pessoa pode ter saído nesse
+     * meio-tempo. Guardado num peer fechado, ele ficaria aberto no router até a sala acabar.
+     */
+    private admit(transport: WebRtcTransport | PlainTransport): void {
+        if (this.closed) {
+            transport.close();
+            throw new NotFoundException('this participant already left the room');
+        }
     }
 
     public getTransport(transportId: string): WebRtcTransport {
@@ -159,6 +183,8 @@ export class Peer {
     }
 
     public close(): void {
+        this.closed = true;
+
         for (const transport of [...this.transports.values(), ...this.plainTransports.values()]) {
             transport.close();
         }

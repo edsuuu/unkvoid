@@ -18,6 +18,7 @@ export const Action = {
     ResumeConsumer: 'resumeConsumer',
     PauseConsumer: 'pauseConsumer',
     CloseConsumer: 'closeConsumer',
+    VoiceState: 'voiceState',
 } as const;
 
 export type ActionName = (typeof Action)[keyof typeof Action];

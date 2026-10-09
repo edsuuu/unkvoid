@@ -26,6 +26,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libwebkit2gtk-4.1-dev \
         libgtk-3-dev \
+        libgstreamer1.0-dev \
+        libgstreamer-plugins-base1.0-dev \
         libayatana-appindicator3-dev \
         librsvg2-dev \
         libsoup-3.0-dev \

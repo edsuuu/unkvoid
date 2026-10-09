@@ -35,6 +35,66 @@ export global Skin {
     out property <length> stage: 880px;
 }
 
+// Os tokens da réplica do Discord, com os MESMOS nomes do `Theme.swift` do macOS: mudou lá,
+// muda aqui pelo nome. O violeta é o do Unkvoid, não o blurple. Só o tema escuro por ora.
+//
+// ponytail: o claro fica para depois (P2 da nota do Mirror); quando vier, é um segundo
+// global com os mesmos nomes e um `in-out` que escolhe.
+export global Theme {
+    out property <color> surface-rail: #1E1F22;
+    out property <color> surface-side: #2B2D31;
+    out property <color> surface-chat: #313338;
+    out property <color> surface-panel: #232428;
+    out property <color> surface-float: #111214;
+    out property <color> surface-input: #383A40;
+    out property <color> surface-call: #000000;
+    out property <color> surface-tile: #1E1F22;
+    out property <color> hover: #4E50584D;
+    out property <color> selected: #4E505899;
+    out property <color> line: #4E50587A;
+    out property <color> ink-strong: #F2F3F5;
+    out property <color> ink: #DBDEE1;
+    out property <color> ink-soft: #B5BAC1;
+    out property <color> ink-dim: #949BA4;
+    out property <color> ink-ghost: #4E5058;
+    out property <color> brand: #6A55E0;
+    out property <color> brand-hover: #5A3FD6;
+    out property <color> brand-text: #A89BFF;
+    out property <color> online: #23A55A;
+    out property <color> idle: #F0B232;
+    out property <color> danger: #F23F43;
+    out property <color> danger-fill: #DA373C;
+    out property <color> offline: #80848E;
+    out property <color> live: #ED4245;
+    // O hover do botão redondo da chamada, que o Mirror fixou fora da tabela.
+    out property <color> call-hover: #35373C;
+
+    // A tipografia: a fonte do sistema (Segoe UI no Windows, Cantarell no GNOME). Os papéis
+    // são tamanho e peso, na tabela do Mirror.
+    out property <length> label-size: 12px;
+    out property <length> meta-size: 12px;
+    out property <length> button-size: 14px;
+    out property <length> list-size: 16px;
+    out property <length> voice-person-size: 14px;
+    out property <length> body-size: 16px;
+    out property <length> header-size: 16px;
+    out property <length> title-size: 20px;
+    out property <length> welcome-size: 32px;
+
+    // O layout das quatro colunas.
+    out property <length> rail: 72px;
+    out property <length> channels: 240px;
+    out property <length> members: 240px;
+    out property <length> header: 48px;
+    out property <length> user-bar: 52px;
+    out property <length> channel-row: 32px;
+    out property <length> voice-person-row: 30px;
+    out property <length> member-row: 42px;
+    out property <length> voice-chat: 360px;
+    // Abaixo disto a lista de membros começa fechada.
+    out property <length> narrow: 1100px;
+}
+
 // Os ícones do app, os mesmos traçados de `ui/components/common/Icon.tsx`. Emoji ficaria à
 // mercê da fonte do sistema e destoaria do desenho, que é todo de linha.
 export global Icons {
@@ -77,6 +137,9 @@ export global Icons {
     out property <string> fullscreen: "M4 9V4h5 M20 9V4h-5 M4 15v5h5 M20 15v5h-5";
     out property <string> fullscreen-exit: "M9 4v5H4 M15 4v5h5 M9 20v-5H4 M15 20v-5h5";
     out property <string> chat: "M4 5h16v11H9l-4 4v-4H4z";
+    out property <string> chevron-right: "M10 7l5 5-5 5";
+    out property <string> user-plus: "M9 4.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7z M3 20a6 6 0 0 1 12 0 M19 8v6 M16 11h6";
+    out property <string> trash: "M4 7h16 M9 7V4h6v3 M6 7l1 13h10l1-13 M10 11v6 M14 11v6";
     out property <string> arrow-left: "M19 12H5 M11 6l-6 6 6 6";
     out property <string> download: "M12 4v11 M7 10l5 5 5-5 M5 20h14";
     // Os três da moldura, no traço fino dos botões do próprio Windows.

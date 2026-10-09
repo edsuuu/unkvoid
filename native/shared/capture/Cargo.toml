@@ -45,7 +45,7 @@ windows-core = "0.62"
 
 # A tela no Wayland: o portal `org.freedesktop.portal.ScreenCast`, por D-Bus puro. Sem a
 # feature `pipewire` de propósito: ela exigiria `libpipewire-dev` no build, e quem lê o
-# PipeWire aqui é o `pipewiresrc` do `gst-launch`, como o resto da captura.
+# PipeWire aqui é o `pipewiresrc`, como o resto da captura.
 #
 # `async-io`, e não `tokio`: o `zbus` que o Tauri já compila (plugin de instância única)
 # está em `async-io`, e o cargo unifica features — pedir `zbus/tokio` daqui trocaria o
@@ -53,6 +53,11 @@ windows-core = "0.62"
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["async-io", "screencast"] }
 async-io = "2"
+# O vídeo dentro do processo, para o encoder ouvir o pedido de keyframe e a taxa nova no ar.
+# Pede `libgstreamer1.0-dev` e `libgstreamer-plugins-base1.0-dev` no build (o `appsink`); na
+# máquina de quem usa, as `.so` já vêm com os plugins que o `.deb` exige.
+gstreamer = "0.24"
+gstreamer-app = "0.24"
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

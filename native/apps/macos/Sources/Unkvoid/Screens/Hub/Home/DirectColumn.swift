@@ -18,7 +18,7 @@ struct DirectColumn: View {
                 }
             }
             .padding(12)
-            .glass()
+            .surface()
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
@@ -55,7 +55,7 @@ struct DirectColumn: View {
             }
             .scrollIndicators(.never)
             .frame(maxHeight: .infinity)
-            .glass()
+            .surface()
 
             UserBar()
         }
@@ -73,7 +73,7 @@ struct DirectColumn: View {
 
                 Badge(count: badge)
             }
-            .foregroundStyle(selected ? Theme.inkStrong : Theme.inkIcon)
+            .foregroundStyle(selected ? Theme.inkStrong : Theme.inkSoft)
             .rowItem(selected: selected)
             .contentShape(Rectangle())
         }

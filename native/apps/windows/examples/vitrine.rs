@@ -63,8 +63,6 @@ fn main() -> anyhow::Result<()> {
         tile("Bia Linux", 0, 0, 1_400, 900, 3),
         tile("Caio Mac", 1, 0, 1_920, 1_080, 0),
     ]));
-    ui.set_grid_columns(2);
-    ui.set_grid_lines(1);
     shoot("sala-duas-telas")?;
 
     ui.set_screen("hub".into());
@@ -80,19 +78,60 @@ fn main() -> anyhow::Result<()> {
     ui.set_mic_on(true);
     ui.set_speaking(true);
     ui.set_peers(model(vec![peer("Ada", true, true), peer("Bia", false, true), muted(peer("Caio", false, false))]));
+    ui.set_channel_name("geral".into());
+    ui.set_channel_topic("Onde a gente combina as coisas".into());
+    ui.set_invite_code("abcdef1234".into());
+    ui.set_can_invite(true);
+    ui.set_can_manage_channels(true);
+    ui.set_can_manage_server(true);
+    ui.set_can_manage_roles(true);
+    ui.set_can_ban(true);
+    ui.set_can_audit(true);
+    ui.set_is_owner(true);
+    ui.set_messages(model(vec![
+        said(1, "Bia", "Bora testar a tela nova?", "10:02", false, false),
+        said(2, "Bia", "Subi o build no EDSU-DESKTOP.", "10:03", false, true),
+        said(3, "Ada", "Entrando na voz.", "10:05", true, false),
+    ]));
+    ui.set_member_groups(model(vec![
+        group("ADMIN", Some(slint::Color::from_rgb_u8(0xF0, 0xB2, 0x32)), false, vec![member(1, "Ada", true, true, "Na voz: Voz")]),
+        group("ONLINE", None, false, vec![member(2, "Bia", false, false, "Na voz: Voz"), member(3, "Caio", false, false, "")]),
+        group("OFFLINE", None, true, vec![member(4, "Dora", false, false, "")]),
+    ]));
     shoot("voz-falando")?;
 
+    ui.set_modal("channel-new".into());
+    shoot("modal-criar-canal")?;
+    ui.set_modal(SharedString::new());
+
+    ui.set_server_settings_open(true);
+    ui.set_server_settings_tab("roles".into());
+    ui.set_roles(model(vec![role(1, "Admin", true), role(2, "@everyone", false)]));
+    ui.set_selected_role(0);
+    ui.set_role_permissions(model(vec![
+        PermissionRow { bit: 1, label: "Administrador".into(), on: true },
+        PermissionRow { bit: 2, label: "Gerenciar servidor".into(), on: false },
+        PermissionRow { bit: 4096, label: "Falar".into(), on: true },
+    ]));
+    shoot("servidor-cargos")?;
+    ui.set_server_settings_open(false);
+
+    ui.set_settings_open(true);
+    ui.set_microphones(model(vec![DeviceRow { label: "Microfone (Realtek)".into(), current: true }]));
+    ui.set_speakers(model(vec![DeviceRow { label: "Alto-falantes (Realtek)".into(), current: true }]));
+    ui.set_input_mode("voice".into());
+    ui.set_mic_level(0.6);
+    shoot("configuracoes")?;
+    ui.set_settings_open(false);
+
     ui.set_stage_open(true);
+    ui.set_voice_state("connected".into());
     ui.set_tiles(model(vec![tile("Bia", 0, 0, 1_920, 1_080, 2)]));
-    ui.set_grid_columns(1);
-    ui.set_grid_lines(1);
-    shoot("voz-palco")?;
+    shoot("voz-chamada")?;
 
-    ui.set_focused_room(true);
     ui.set_voice_chat_open(true);
-    shoot("sala-focada")?;
+    shoot("voz-chat")?;
 
-    ui.set_focused_room(false);
     ui.set_voice_chat_open(false);
     ui.set_stage_open(false);
     ui.set_tiles(model(Vec::new()));
@@ -306,6 +345,57 @@ fn peer(name: &str, mine: bool, speaking: bool) -> PeerRow {
         muted: false,
         sharing: false,
         reconnecting: false,
+        user_id: 0,
+        camera: false,
+        local_muted: false,
+        actions: ActionsRow::default(),
+    }
+}
+
+fn said(id: i32, author: &str, body: &str, at: &str, mine: bool, continued: bool) -> MessageRow {
+    MessageRow {
+        id,
+        author: author.into(),
+        initial: author.chars().next().unwrap_or('?').to_string().into(),
+        body: body.into(),
+        at: at.into(),
+        mine,
+        continued,
+        color: slint::Color::default(),
+        colored: false,
+    }
+}
+
+fn member(user_id: i32, name: &str, owner: bool, mine: bool, note: &str) -> MemberRow {
+    MemberRow {
+        user_id,
+        name: name.into(),
+        initial: name.chars().next().unwrap_or('?').to_string().into(),
+        owner,
+        mine,
+        note: note.into(),
+        actions: ActionsRow { kick: !mine, ban: !mine, mute: !mine, disconnect: !mine, server_muted: false },
+    }
+}
+
+fn group(label: &str, color: Option<slint::Color>, offline: bool, members: Vec<MemberRow>) -> MemberGroupRow {
+    MemberGroupRow {
+        label: label.into(),
+        colored: color.is_some(),
+        color: color.unwrap_or_default(),
+        offline,
+        members: model(members),
+    }
+}
+
+fn role(id: i32, name: &str, editable: bool) -> RoleRow {
+    RoleRow {
+        id,
+        name: name.into(),
+        color: slint::Color::from_rgb_u8(0xF0, 0xB2, 0x32),
+        colored: id == 1,
+        everyone: name == "@everyone",
+        editable,
     }
 }
 
@@ -320,9 +410,13 @@ fn channel(index: i32, name: &str, voice: bool) -> ChannelRow {
         index,
         id: index.to_string().into(),
         name: name.into(),
+        topic: SharedString::new(),
+        limit: 0,
         voice,
         current: index == 0,
         people: slint::ModelRc::default(),
+        can_move_from: false,
+        can_move_here: false,
     }
 }
 
@@ -346,9 +440,7 @@ fn tile(label: &str, column: i32, line: i32, width: u32, height: u32, watchers: 
         loss_high: false,
         frame: Image::from_rgb8(buffer),
         has_frame: true,
-        column,
-        line,
-        rank: column,
+        rank: column + line,
         focused: false,
         full: false,
     }

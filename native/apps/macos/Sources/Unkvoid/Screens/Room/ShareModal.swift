@@ -33,7 +33,7 @@ struct ShareModal: View {
                 }
                 .toggleStyle(.checkbox)
                 .font(Theme.sans(13))
-                .foregroundStyle(Theme.inkIcon)
+                .foregroundStyle(Theme.inkSoft)
                 .tint(Theme.brand)
             }
         } footer: {
@@ -107,7 +107,7 @@ struct ShareModal: View {
         } label: {
             VStack(alignment: .leading, spacing: 0) {
                 ZStack {
-                    LinearGradient(colors: [Theme.brandDark.opacity(0.3), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+                    LinearGradient(colors: [Theme.brandHover.opacity(0.3), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
 
                     if let preview = model.sharePreviews[item.id] {
                         Image(nsImage: preview)
@@ -136,7 +136,7 @@ struct ShareModal: View {
                 .padding(.vertical, 10)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(Theme.fieldFill)
+            .background(Theme.surfaceInput)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -157,7 +157,7 @@ struct ShareModal: View {
         .foregroundStyle(chosen ? Theme.inkStrong : Theme.inkDim)
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
-        .background(chosen ? Theme.row : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .background(chosen ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     private func picker<Option: Hashable>(

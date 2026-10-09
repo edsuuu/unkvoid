@@ -33,9 +33,15 @@ struct Channel: Decodable, Sendable, Identifiable, Equatable {
     let permissions: Int?
     let user_limit: Int?
     let overwrites: [Overwrite]?
+    /// A categoria em que o canal está; `nil` é a raiz.
+    var parent_id: String?
 
     var isVoice: Bool {
         type == "voice"
+    }
+
+    var isCategory: Bool {
+        type == "category"
     }
 }
 
@@ -160,11 +166,20 @@ struct ServerTree: Decodable, Sendable, Identifiable, Equatable {
     let bans: [Ban]?
 
     var textChannels: [Channel] {
-        channels.filter { !$0.isVoice }.sorted { $0.position < $1.position }
+        channels.filter { !$0.isVoice && !$0.isCategory }.sorted { $0.position < $1.position }
     }
 
     var voiceChannels: [Channel] {
         channels.filter(\.isVoice).sorted { $0.position < $1.position }
+    }
+
+    var categories: [Channel] {
+        channels.filter(\.isCategory).sorted { $0.position < $1.position }
+    }
+
+    /// Os canais de uma categoria (ou da raiz, com `nil`), texto antes de voz.
+    func children(of category: String?) -> [Channel] {
+        (textChannels + voiceChannels).filter { $0.parent_id == category }
     }
 
     var everyone: Role? {

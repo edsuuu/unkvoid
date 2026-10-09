@@ -21,15 +21,18 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Override;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 
 /**
  * @property string $id
  * @property int $server_id
+ * @property ?string $parent_id
  * @property string $name
  * @property ChannelTypeEnum $type
  * @property ?string $topic
@@ -39,13 +42,36 @@ use Throwable;
  * @property-read Collection<int, ChannelOverwrite> $overwrites
  * @property-read Collection<int, Message> $messages
  */
-#[Fillable(['server_id', 'name', 'type', 'topic', 'position', 'user_limit'])]
+#[Fillable(['server_id', 'parent_id', 'name', 'type', 'topic', 'position', 'user_limit'])]
 final class Channel extends Model
 {
     use HasUlids;
     use LogsFailedWrites;
 
     private const int PAGE = 50;
+
+    /**
+     * O passe de quem foi movido vale o mesmo que o token: o app pede o token do destino
+     * na hora, e um passe que sobrevivesse viraria porta aberta num canal cheio.
+     */
+    private const int MOVE_PASS_SECONDS = 60;
+
+    /**
+     * Só categoria agrupa, e só canal de texto ou de voz entra nela; categoria dentro de
+     * categoria não existe, como no Discord.
+     *
+     * @throws ValidationException
+     */
+    public static function parentOrFail(Server $server, ChannelTypeEnum $type, ?string $parentId): void
+    {
+        if (is_null($parentId)) {
+            return;
+        }
+
+        $parent = $server->channels()->find($parentId);
+
+        throw_if($type === ChannelTypeEnum::Category || is_null($parent) || $parent->type !== ChannelTypeEnum::Category, ValidationException::withMessages(['parent_id' => 'A categoria tem de ser deste servidor, e só canal de texto ou de voz entra numa.']));
+    }
 
     /**
      * O id é a sala no SFU, e lá o código é `[a-z0-9]`: o ULID sai em minúsculas.
@@ -81,6 +107,16 @@ final class Channel extends Model
     }
 
     /**
+     * Os canais de uma categoria.
+     *
+     * @return HasMany<self, $this>
+     */
+    public function children(): HasMany
+    {
+        return $this->hasMany(self::class, 'parent_id');
+    }
+
+    /**
      * @throws ForbiddenException
      */
     public function memberOrFail(User $user): ServerMember
@@ -89,7 +125,7 @@ final class Channel extends Model
     }
 
     /**
-     * @param  array{name?: string, topic?: ?string, position?: int, user_limit?: ?int}  $changes
+     * @param  array{name?: string, topic?: ?string, position?: int, user_limit?: ?int, parent_id?: ?string}  $changes
      *
      * @throws Throwable
      */
@@ -97,9 +133,11 @@ final class Channel extends Model
     {
         $this->memberOrFail($actor)->authorize(PermissionEnum::ManageChannels);
 
-        if ($this->type === ChannelTypeEnum::Text && ! is_null($changes['user_limit'] ?? null)) {
+        if ($this->type !== ChannelTypeEnum::Voice && ! is_null($changes['user_limit'] ?? null)) {
             throw ValidationException::withMessages(['user_limit' => 'Só canal de voz tem limite de pessoas.']);
         }
+
+        self::parentOrFail($this->server, $this->type, $changes['parent_id'] ?? null);
 
         self::write('falha ao alterar o canal', fn () => $this->update($changes), ['channel_id' => $this->id]);
 
@@ -117,7 +155,12 @@ final class Channel extends Model
             throw ValidationException::withMessages(['channel' => 'O servidor precisa de pelo menos um canal de texto.']);
         }
 
-        self::write('falha ao apagar o canal', fn () => $this->delete(), ['channel_id' => $this->id]);
+        // Os canais da categoria apagada voltam para a raiz. A chave estrangeira já faz
+        // isso no MySQL, mas o SQLite dos testes ignora chave criada em `alter table`.
+        self::write('falha ao apagar o canal', function (): void {
+            $this->children()->update(['parent_id' => null]);
+            $this->delete();
+        }, ['channel_id' => $this->id]);
 
         self::publish(new ServerUpdated($this->server_id));
     }
@@ -179,7 +222,7 @@ final class Channel extends Model
      */
     public function messagesBefore(User $viewer, ?int $before): Collection
     {
-        $this->memberOrFail($viewer)->authorize(PermissionEnum::ViewChannel, $this);
+        $this->chatOrFail($viewer);
 
         $query = $this->messages()->with(['user', 'replyTo.user', 'files'])->orderByDesc('id')->limit(self::PAGE);
 
@@ -187,7 +230,28 @@ final class Channel extends Model
             $query->where('id', '<', $before);
         }
 
-        return $query->get()->reverse()->values();
+        $messages = $query->get()->reverse()->values();
+
+        // A primeira página é o canal aberto na tela: o que estava lá fica lido. Paginar
+        // para trás não é ler o que chegou depois.
+        if (is_null($before)) {
+            ChannelRead::mark($this, $viewer, null);
+        }
+
+        return $messages;
+    }
+
+    /**
+     * O que o app chama quando a mensagem cai com o canal já aberto: aí não houve `GET`
+     * para marcar.
+     *
+     * @throws Throwable
+     */
+    public function markRead(User $viewer, ?int $upTo): void
+    {
+        $this->chatOrFail($viewer);
+
+        ChannelRead::mark($this, $viewer, $upTo);
     }
 
     /**
@@ -200,9 +264,7 @@ final class Channel extends Model
      */
     public function post(User $author, string $body, BucketService $bucket, ?int $replyToId = null, array $images = []): Message
     {
-        $member = $this->memberOrFail($author);
-        $member->authorize(PermissionEnum::ViewChannel, $this);
-        $member->authorize(PermissionEnum::SendMessages, $this);
+        $this->chatOrFail($author)->authorize(PermissionEnum::SendMessages, $this);
 
         // Responder só vale dentro do mesmo canal: aceitar um id de fora vazaria o texto
         // de um canal que a pessoa talvez nem enxergue.
@@ -288,11 +350,22 @@ final class Channel extends Model
 
         $member = $this->memberOrFail($user);
         $member->authorize(PermissionEnum::ViewChannel, $this);
-        $member->authorize(PermissionEnum::Connect, $this);
+
+        // O app antigo não conhece o `moved` do SFU: trata o fechamento como queda e volta
+        // para a origem com token novo. A origem fica fechada para a pessoa pelo tempo do passe.
+        throw_if(Cache::has($this->moveOutKey($user)), ForbiddenException::class, 'Você acabou de ser movido para outro canal.');
+
+        // Quem foi movido para cá entra como no Discord: canal trancado ou cheio não barra o
+        // moderador. O passe é de uma vez só.
+        $moved = Cache::pull($this->movePassKey($user)) === true;
+
+        if (! $moved) {
+            $member->authorize(PermissionEnum::Connect, $this);
+        }
 
         // Quem pede o token para reconectar ainda consta na presença (a carência do SFU), e não
         // conta contra o limite: sem isto, cair da rede num canal cheio impedia de voltar.
-        throw_if(! is_null($this->user_limit) && count(array_filter($sfu->peers($this, fresh: true), fn (array $peer): bool => $peer['sub'] !== $user->subject())) >= $this->user_limit, ForbiddenException::class, 'O canal está cheio.');
+        throw_if(! $moved && ! is_null($this->user_limit) && count(array_filter($sfu->peers($this, fresh: true), fn (array $peer): bool => $peer['sub'] !== $user->subject())) >= $this->user_limit, ForbiddenException::class, 'O canal está cheio.');
 
         $can = [];
 
@@ -311,6 +384,40 @@ final class Channel extends Model
         ChannelAccess::open($this, $user, $ip, $userAgent, null, now()->toImmutable());
 
         return $sfu->token($this, $user, $can);
+    }
+
+    /**
+     * Mover é derrubar daqui com destino: o SFU avisa o peer, e o app dele entra no destino
+     * com o token de sempre — o passe gravado aqui faz esse token pular CONNECT e o limite.
+     * Quem move precisa de MOVE_MEMBERS nos dois canais e de CONNECT no destino (como no
+     * Discord); quem é movido não precisa de CONNECT nem de vaga, só de ver o destino, para
+     * ninguém cair num canal que a árvore dele não mostra.
+     *
+     * @throws Throwable
+     */
+    public function move(User $actor, User $target, self $destination, SfuClient $sfu): void
+    {
+        throw_if($destination->is($this), ValidationException::withMessages(['channel_id' => 'A pessoa já está neste canal.']));
+        throw_if($destination->type !== ChannelTypeEnum::Voice || $destination->server_id !== $this->server_id, ValidationException::withMessages(['channel_id' => 'O destino tem de ser um canal de voz deste servidor.']));
+
+        $me = $this->memberOrFail($actor);
+        $me->authorize(PermissionEnum::MoveMembers, $this);
+        $me->authorize(PermissionEnum::MoveMembers, $destination);
+        $me->authorize(PermissionEnum::Connect, $destination);
+
+        $other = $this->memberOrFail($target);
+        $me->authorizeOutranks($other);
+
+        throw_unless($other->can(PermissionEnum::ViewChannel, $destination), ForbiddenException::class, 'Essa pessoa não vê o canal de destino.');
+
+        $inVoice = array_any($sfu->peers($this, fresh: true), fn (array $peer): bool => $peer['sub'] === $target->subject());
+
+        throw_unless($inVoice, NotFoundHttpException::class, 'Essa pessoa não está neste canal de voz.');
+
+        Cache::put($destination->movePassKey($target), true, self::MOVE_PASS_SECONDS);
+        Cache::put($this->moveOutKey($target), true, self::MOVE_PASS_SECONDS);
+
+        $sfu->move($this, $destination, $target->subject(), $actor->name);
     }
 
     /**
@@ -347,6 +454,31 @@ final class Channel extends Model
             'position' => 'integer',
             'user_limit' => 'integer',
         ];
+    }
+
+    private function movePassKey(User $user): string
+    {
+        return "voice-move:{$user->id}:{$this->id}";
+    }
+
+    private function moveOutKey(User $user): string
+    {
+        return "voice-move-out:{$user->id}:{$this->id}";
+    }
+
+    /**
+     * Quem lê e escreve aqui: membro que vê o canal, e o canal tem chat (categoria não tem).
+     *
+     * @throws ForbiddenException
+     */
+    private function chatOrFail(User $user): ServerMember
+    {
+        throw_if($this->type === ChannelTypeEnum::Category, ForbiddenException::class, 'Categoria não tem chat.');
+
+        $member = $this->memberOrFail($user);
+        $member->authorize(PermissionEnum::ViewChannel, $this);
+
+        return $member;
     }
 
     /**

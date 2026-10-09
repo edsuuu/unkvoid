@@ -12,9 +12,14 @@ export class ConsumerController {
     public async store(request: ConsumeRequest): Promise<Payload> {
         const room = request.room();
         const peer = request.peer();
+        const transport = peer.getTransport(request.transportId());
+        const owner = room.findProducerOwner(request.producerId());
+        const media = await room.routerOf(peer);
+
+        await room.pipe(request.producerId(), media);
 
         if (
-            !room.router.canConsume({
+            !media.router.canConsume({
                 producerId: request.producerId(),
                 rtpCapabilities: request.rtpCapabilities(),
             })
@@ -22,9 +27,7 @@ export class ConsumerController {
             throw new ValidationException('this participant cannot receive this media');
         }
 
-        const owner = room.findProducerOwner(request.producerId());
-
-        const consumer = await peer.getTransport(request.transportId()).consume({
+        const consumer = await transport.consume({
             producerId: request.producerId(),
             rtpCapabilities: request.rtpCapabilities(),
             paused: true,
@@ -50,10 +53,13 @@ export class ConsumerController {
         const peer = request.peer();
         const owner = room.findProducerOwner(request.producerId());
         const transport = await room.plainReceiveTransportFor(peer, request.srtpParameters());
+        const media = await room.routerOf(peer);
+
+        await room.pipe(request.producerId(), media);
 
         const consumer = await transport.consume({
             producerId: request.producerId(),
-            rtpCapabilities: room.router.rtpCapabilities,
+            rtpCapabilities: media.router.rtpCapabilities,
             paused: true,
         });
 

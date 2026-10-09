@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Enums\ChannelTypeEnum;
 use App\Enums\PermissionEnum;
 use App\Events\VoiceStateUpdated;
 use App\Models\ChannelAccess;
@@ -272,4 +273,63 @@ it('quem entra logado na sala por código vai para a auditoria com a conta', fun
 
     expect(GuestAccess::query()->sole()->install_id)->toBe("user:{$user->id}")
         ->and(ChannelAccess::query()->count())->toBe(0);
+});
+
+it('mover exige MOVE_MEMBERS nos dois canais, hierarquia e a pessoa na voz, e avisa o SFU com o destino', function (): void {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+    $origin = $server->channels()->where('type', 'voice')->firstOrFail();
+    $destination = $server->createChannel($owner, 'Reunião', ChannelTypeEnum::Voice, null, 1);
+    $text = $server->channels()->where('type', 'text')->firstOrFail();
+
+    // O membro está na origem e o dono já ocupa a única vaga do destino.
+    Http::fake([
+        '*/presence' => Http::response(['rooms' => [
+            $origin->id => [['sub' => "user:{$member->id}", 'name' => $member->name, 'sources' => ['mic']]],
+            $destination->id => [['sub' => "user:{$owner->id}", 'name' => $owner->name, 'sources' => ['mic']]],
+        ]]),
+        '*' => Http::response(['kicked' => 1]),
+    ]);
+
+    $this->actingAs($member, 'sanctum')->patchJson("/api/channels/{$origin->id}/voice/members/{$owner->id}", ['channel_id' => $destination->id])->assertForbidden();
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$origin->id}/voice/members/{$member->id}", ['channel_id' => $text->id])->assertUnprocessable();
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$origin->id}/voice/members/{$member->id}", ['channel_id' => $origin->id])->assertUnprocessable();
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$destination->id}/voice/members/{$member->id}", ['channel_id' => $origin->id])->assertNotFound();
+
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$origin->id}/voice/members/{$member->id}", ['channel_id' => $destination->id])->assertNoContent();
+
+    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), "/rooms/{$origin->id}/kick") && $request['userId'] === "user:{$member->id}" && $request['to'] === $destination->id && $request['by'] === $owner->name);
+
+    // O passe faz o token do destino pular o limite — uma vez só.
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$destination->id}/voice/token")->assertOk();
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$destination->id}/voice/token")->assertForbidden();
+});
+
+it('mover para canal que a pessoa não vê é recusado, quem move precisa de CONNECT no destino, e o passe pula o CONNECT do movido', function (): void {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $manager = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+    joinServer($server, $manager);
+    giveRole($server, $manager, PermissionEnum::MoveMembers->value, 3);
+    $origin = $server->channels()->where('type', 'voice')->firstOrFail();
+    $destination = $server->createChannel($owner, 'Trancado', ChannelTypeEnum::Voice, null, null);
+    $everyone = $server->everyoneRole()->id;
+    fakeSfu($origin->id, $member);
+
+    $destination->overwrites()->create(['target_type' => 'role', 'target_id' => $everyone, 'allow' => 0, 'deny' => PermissionEnum::ViewChannel->value]);
+
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$origin->id}/voice/members/{$member->id}", ['channel_id' => $destination->id])->assertForbidden();
+
+    $destination->overwrites()->delete();
+    $destination->overwrites()->create(['target_type' => 'role', 'target_id' => $everyone, 'allow' => 0, 'deny' => PermissionEnum::Connect->value]);
+    $destination->unsetRelation('overwrites');
+
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$destination->id}/voice/token")->assertForbidden();
+    $this->actingAs($manager, 'sanctum')->patchJson("/api/channels/{$origin->id}/voice/members/{$member->id}", ['channel_id' => $destination->id])->assertForbidden();
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$origin->id}/voice/members/{$member->id}", ['channel_id' => $destination->id])->assertNoContent();
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$destination->id}/voice/token")->assertOk();
 });

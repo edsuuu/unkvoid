@@ -47,7 +47,7 @@ struct DirectPanel: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .glass()
+            .surface()
         }
     }
 
@@ -133,7 +133,7 @@ private struct DirectRow: View {
                 HStack(spacing: 6) {
                     Text(message.sender.name)
                         .font(Theme.sans(12.5, .semibold))
-                        .foregroundStyle(Theme.inkBody)
+                        .foregroundStyle(Theme.ink)
 
                     Text(Clock.short(message.created_at))
                         .font(Theme.sans(11))
@@ -142,10 +142,10 @@ private struct DirectRow: View {
                     if message.edited_at != nil {
                         Text("editado")
                             .font(Theme.sans(10))
-                            .foregroundStyle(Theme.inkIcon)
+                            .foregroundStyle(Theme.inkSoft)
                             .padding(.vertical, 2)
                             .padding(.horizontal, 6)
-                            .background(Theme.row, in: Capsule())
+                            .background(Theme.hover, in: Capsule())
                     }
                 }
 
@@ -160,7 +160,7 @@ private struct DirectRow: View {
                 } else {
                     Text(message.body)
                         .font(Theme.sans(13))
-                        .foregroundStyle(Theme.inkBody)
+                        .foregroundStyle(Theme.ink)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -169,7 +169,7 @@ private struct DirectRow: View {
         }
         .padding(.vertical, 1)
         .padding(.horizontal, 4)
-        .background(hovering ? Theme.row.opacity(0.5) : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .background(hovering ? Theme.hover.opacity(0.5) : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(alignment: .topTrailing) {
             if hovering, !editing, mine {
                 HStack(spacing: 4) {
@@ -296,4 +296,18 @@ enum Clock {
     static func day(_ text: String) -> String {
         date(text).map(day.string) ?? ""
     }
+
+    /// Só a hora, para a calha da mensagem que continua a anterior.
+    static func hour(_ text: String) -> String {
+        date(text).map(hourWriter.string) ?? ""
+    }
+
+    private static let hourWriter: DateFormatter = {
+        let writer = DateFormatter()
+
+        writer.locale = Locale(identifier: "pt_BR")
+        writer.dateFormat = "HH:mm"
+
+        return writer
+    }()
 }

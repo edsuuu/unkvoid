@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use core_app::models::Peer;
+use core_app::permissions::MemberActions;
 use core_app::room::Mine;
 use serde::Deserialize;
 use serde_json::Value;
@@ -29,12 +30,11 @@ pub struct Tile {
     pub audio: Option<String>,
 }
 
-/// Onde um cartão cai no palco.
+/// Onde um cartão cai na chamada. A grade (colunas = ⌈√n⌉) é conta da própria tela, que
+/// também sabe quantas pessoas sem vídeo entram nela.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placed {
     pub tile: Tile,
-    pub column: usize,
-    pub line: usize,
     /// A posição entre os que não estão no foco.
     pub rank: usize,
     pub focused: bool,
@@ -148,18 +148,6 @@ impl Stage {
         *self = Self::default();
     }
 
-    /// Colunas e linhas da grade: uma com uma tela, duas até quatro, três daí em diante.
-    pub fn grid(&self) -> (usize, usize) {
-        let count = self.tiles.len().max(1);
-        let columns = match count {
-            1 => 1,
-            2..=4 => 2,
-            _ => 3,
-        };
-
-        (columns, count.div_ceil(columns))
-    }
-
     /// Há um cartão no foco e outros para ir à fila de baixo.
     pub fn focusing(&self) -> bool {
         self.focused.is_some() && self.tiles.len() > 1 && self.full.is_none()
@@ -175,17 +163,13 @@ impl Stage {
     }
 
     pub fn placed(&self) -> Vec<Placed> {
-        let (columns, _) = self.grid();
         let mut rank = 0;
 
         self.tiles
             .iter()
-            .enumerate()
-            .map(|(index, tile)| {
+            .map(|tile| {
                 let focused = self.focused.as_deref() == Some(tile.producer_id.as_str());
                 let placed = Placed {
-                    column: index % columns,
-                    line: index / columns,
                     rank,
                     focused,
                     full: self.full.as_deref() == Some(tile.producer_id.as_str()),
@@ -222,6 +206,14 @@ pub struct Voice {
     pub speaking: HashSet<String>,
     /// Quem está na sala, como o último `room.peers` contou.
     pub peers: Vec<Peer>,
+    /// O que eu posso com cada membro do servidor aberto (pelo id de usuário), e quem está
+    /// mutado pelo servidor — vem da árvore, e a lista da voz desenha por aqui.
+    pub moderation: HashMap<i64, MemberActions>,
+    pub server_muted: HashSet<i64>,
+    /// Quem eu calei só para mim, pelo menu.
+    pub muted_people: HashSet<i64>,
+    /// "Silenciar ao entrar": o microfone nasce mutado em cada voz.
+    pub mute_on_join: bool,
 }
 
 impl Voice {
@@ -260,6 +252,23 @@ impl Voice {
         self.spoke_at = None;
         self.speaking.clear();
         self.peers.clear();
+        self.muted_people.clear();
+    }
+
+    /// O id de usuário de quem está na sala; visitante da sala por código não tem.
+    pub fn user_of(peer: &Peer) -> Option<i64> {
+        peer.user_id.as_deref()?.strip_prefix("user:")?.parse().ok()
+    }
+
+    /// O producer do microfone de uma pessoa, pelo id de usuário.
+    pub fn microphone_of(&self, user: i64) -> Option<String> {
+        self.peers
+            .iter()
+            .find(|peer| Self::user_of(peer) == Some(user))?
+            .producers
+            .iter()
+            .find(|producer| producer.source == "mic")
+            .map(|producer| producer.producer_id.clone())
     }
 
     /// Alguém dentro da sala está falando: pelo microfone dele, ou por mim mesmo.
@@ -354,25 +363,17 @@ mod tests {
     }
 
     #[test]
-    fn the_grid_has_one_column_for_one_two_up_to_four_and_three_after() {
-        let mut stage = Stage::default();
+    fn a_person_in_the_room_is_known_by_the_account_id_and_the_microphone() {
+        let peers = peers_of(&json!({ "peers": [
+            { "peerId": "b", "name": "Bia", "userId": "user:12", "producers": [{ "producerId": "m", "kind": "audio", "source": "mic" }] },
+            { "peerId": "g", "name": "Visita", "userId": "guest:abc", "producers": [] },
+        ] }));
+        let voice = Voice { peers, ..Voice::default() };
 
-        for (count, expected) in [(1, (1, 1)), (2, (2, 1)), (3, (2, 2)), (4, (2, 2)), (5, (3, 2)), (7, (3, 3))] {
-            stage.set_tiles(&tiles(count));
-
-            assert_eq!(stage.grid(), expected, "{count} telas");
-        }
-    }
-
-    #[test]
-    fn each_tile_falls_in_its_column_and_line() {
-        let mut stage = Stage::default();
-
-        stage.set_tiles(&tiles(5));
-
-        let places: Vec<(usize, usize)> = stage.placed().iter().map(|placed| (placed.column, placed.line)).collect();
-
-        assert_eq!(places, [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1)]);
+        assert_eq!(Voice::user_of(&voice.peers[0]), Some(12));
+        assert_eq!(Voice::user_of(&voice.peers[1]), None);
+        assert_eq!(voice.microphone_of(12).as_deref(), Some("m"));
+        assert_eq!(voice.microphone_of(99), None);
     }
 
     #[test]

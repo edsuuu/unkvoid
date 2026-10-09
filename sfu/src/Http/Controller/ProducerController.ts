@@ -10,6 +10,8 @@ import type { ProducerRequest } from '../Request/ProducerRequest.js';
 
 const MEDIA_IDLE_MS = 30_000;
 
+const KEYFRAME_REQUEST_DELAY_MS = 1000;
+
 export class ProducerController {
     public async store(request: ProduceRequest): Promise<Payload> {
         const peer = request.peer();
@@ -20,6 +22,7 @@ export class ProducerController {
         const producer = await peer.getTransport(request.transportId()).produce({
             kind: request.kind(),
             rtpParameters: request.rtpParameters(),
+            keyFrameRequestDelay: KEYFRAME_REQUEST_DELAY_MS,
             appData: { source: request.source() },
         });
 
@@ -43,6 +46,7 @@ export class ProducerController {
         const producer = await transport.produce({
             kind: request.kind(),
             rtpParameters: request.rtpParameters(),
+            keyFrameRequestDelay: KEYFRAME_REQUEST_DELAY_MS,
             appData: { plain: true },
         });
 
