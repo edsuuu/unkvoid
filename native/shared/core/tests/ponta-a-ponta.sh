@@ -43,6 +43,13 @@ mkdir -p "$PASTA" && chmod 755 "$PASTA"
 anuncia() { printf '\n=== %s ===\n' "$1"; }
 passou()  { printf 'PASSOU: %s\n' "$1"; }
 falhou()  { printf 'FALHOU: %s\n' "$1"; FALHAS=$((FALHAS + 1)); }
+# Os testes que falharam, pela lista do fim do `cargo test` (com `--nocapture` a linha do teste
+# sai misturada com o que ele imprime).
+falharam() {
+    local nomes
+    nomes=$(sed -n '/^failures:$/,/^test result/p' "$1" | grep -E '^    [a-z_]+$' | tr -d ' ' | tr '\n' ' ')
+    echo "${nomes:-não chegou a rodar (compilação? ver $1)}"
+}
 
 FILHOS=()
 MODULOS=()
@@ -142,7 +149,7 @@ if UNKVOID_SFU="$SFU_URL" SFU_SECRET="$SEGREDO" UNKVOID_CAMERA_SOURCE="videotest
     --skip late_viewers_see --skip five_percent_lost >"$PASTA/live_room.log" 2>&1; then
     passou "$(grep -oE '[0-9]+ passed' "$PASTA/live_room.log" | head -1 | cut -d' ' -f1) cenários de sala viva"
 else
-    falhou "a sala viva: $(grep -E '\.\.\. FAILED' "$PASTA/live_room.log" | tr '\n' ' ')"
+    falhou "a sala viva: $(falharam "$PASTA/live_room.log")"
 fi
 grep -E 'primeira imagem|depois da troca|a imagem voltou|blocos de voz' "$PASTA/live_room.log"
 
@@ -159,7 +166,7 @@ if UNKVOID_SFU="$SFU_URL" UNKVOID_KEYFRAME_SECONDS=4 UNKVOID_CAMERA_SOURCE="vide
     cargo test -p core-app --test live_room -- --ignored --test-threads=1 --nocapture late_viewers_see five_percent_lost >"$PASTA/live_room-gop.log" 2>&1; then
     passou "quem entra vê em até 1 s, e 5% de perda não param a imagem 1 s"
 else
-    falhou "o quadro-chave ou a perda: $(grep -E '\.\.\. FAILED' "$PASTA/live_room-gop.log" | tr '\n' ' ')"
+    falhou "o quadro-chave ou a perda: $(falharam "$PASTA/live_room-gop.log")"
 fi
 grep -E 'primeira imagem de quem entra|5% de perda' "$PASTA/live_room-gop.log"
 

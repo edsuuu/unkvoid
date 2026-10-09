@@ -434,7 +434,9 @@ async fn a_camera_is_watched_beside_the_screen() {
 }
 
 /// Entra na sala e espera a primeira imagem da tela e da câmera de quem transmite: quanto cada
-/// uma levou desde antes de entrar (o clique), ou `None` se não veio em 4 s.
+/// uma levou desde antes de entrar (o clique), ou `None` se não veio em 4 s. Só o Linux captura
+/// a câmera pelo núcleo.
+#[cfg(target_os = "linux")]
 async fn late_join(code: &str, name: &str) -> (String, Option<Duration>, Option<Duration>) {
     let started = Instant::now();
     let (room, media, _) = enter(code, name).await;
