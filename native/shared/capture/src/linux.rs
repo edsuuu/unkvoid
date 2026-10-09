@@ -1,11 +1,12 @@
 //! Captura no Linux: X11 ou Wayland pelo GStreamer, já codificada.
 //!
-//! Ligar a biblioteca do GStreamer ao binário exigiria as `-dev` no build e as `.so`
-//! certas em cada máquina. Então o app fala com o `gst-launch-1.0` como processo:
-//! `ximagesrc` (X11) ou `pipewiresrc` (Wayland) lê a tela, o encoder da placa que abrir
-//! (`LinuxCapturer::video_encoder`) ou o `x264enc` comprime, e o H.264 (Annex-B) chega
-//! por um pipe. O `.deb` já exige os plugins; o `gstreamer1.0-tools` e o
-//! `gstreamer1.0-pipewire` são as dependências a mais.
+//! O vídeo roda dentro do processo, pelo `gstreamer-rs`: `ximagesrc` (X11) ou `pipewiresrc`
+//! (Wayland) lê a tela, o encoder da placa que abrir (`LinuxCapturer::video_encoder`) ou o
+//! `x264enc` comprime, e o H.264 (Annex-B) sai num `appsink`. Dentro, e não num `gst-launch`,
+//! porque é o único jeito de falar com o encoder no ar: o PLI de quem assiste vira keyframe e
+//! a perda vira taxa menor (`EncoderControl`). O som, a prévia e a sondagem dos encoders
+//! continuam em `gst-launch-1.0` — nada disso precisa ouvir pedido, e a sondagem de um driver
+//! que pendura fica isolada num processo que dá para matar.
 //!
 //! O que sai daqui NÃO é buffer de GPU: é o quadro pronto, e `PlatformEncoder` no
 //! Linux só o repassa. É o jeito de encaixar no fluxo dos outros sistemas sem mexer
@@ -19,7 +20,7 @@
 //! ponytail: no X11 continua sem lista de janelas; o `ximagesrc xid=` a traria.
 
 use std::io::{BufRead, BufReader, Read};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
@@ -28,6 +29,9 @@ use std::time::{Duration, Instant};
 use ashpd::desktop::screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType};
 use ashpd::desktop::{ResponseError, Session};
 use ashpd::enumflags2::BitFlags;
+use gstreamer as gst;
+use gstreamer::prelude::*;
+use gstreamer_app as gst_app;
 
 use crate::linux_audio::{self, SharedSink};
 use crate::{
@@ -40,13 +44,55 @@ use crate::{
 pub struct EncodedVideo {
     pub data: Vec<u8>,
     pub keyframe: bool,
+    /// O encoder que o comprimiu. Vai junto com o quadro para o `PlatformEncoder` do `media`,
+    /// que é quem recebe o pedido de keyframe e a taxa nova, achá-lo sem o núcleo mudar.
+    pub encoder: Option<EncoderControl>,
+}
+
+/// O encoder de um pipeline no ar.
+#[derive(Clone)]
+pub struct EncoderControl {
+    encoder: gst::Element,
+    sink: gst::Element,
+    /// A taxa com que o pipeline abriu, em bit/s.
+    launched: u32,
+}
+
+impl EncoderControl {
+    pub fn launched_bitrate(&self) -> u32 {
+        self.launched
+    }
+
+    /// Um keyframe agora, com SPS/PPS na frente. O evento sobe do `appsink` pelo `h264parse`
+    /// até o encoder — o mesmo que o `GstVideoEncoder` de cada um deles entende.
+    pub fn request_keyframe(&self) {
+        let keyframe = gst::Structure::builder("GstForceKeyUnit").field("all-headers", true).build();
+
+        self.sink.send_event(gst::event::CustomUpstream::new(keyframe));
+    }
+
+    /// A taxa nova com o pipeline tocando, em bit/s. `false` quando este encoder não aceita
+    /// a troca no ar: quem chama desiste, e a taxa fica a de abertura.
+    pub fn set_bitrate(&self, bits_per_second: u32) -> bool {
+        let Some(property) = self.encoder.find_property("bitrate") else {
+            return false;
+        };
+
+        if !property.flags().contains(gst::PARAM_FLAG_MUTABLE_PLAYING) || property.value_type() != u32::static_type() {
+            return false;
+        }
+
+        self.encoder.set_property("bitrate", (bits_per_second / 1000).max(1));
+
+        true
+    }
 }
 
 /// 48 kHz estéreo em `f32`, 20 ms por bloco — o que o `AudioEncoder` espera.
 const AUDIO_BLOCK_BYTES: usize = 48_000 / 50 * 2 * 4;
 
 pub struct LinuxCapturer {
-    video: Option<Child>,
+    video: Option<VideoPipeline>,
     audio: Option<Child>,
     /// O sink que filtra o som por app; cai no `stop`, e o som volta à saída padrão.
     shared_sink: Option<SharedSink>,
@@ -204,11 +250,12 @@ impl LinuxCapturer {
         }
 
         if let CaptureSource::Camera(index) = config.source {
-            let (width, height) = CAMERA_SIZE;
-            let mut video = launch(&camera_pipeline(index), Stdio::null())?;
-
-            watch_stderr(&mut video, Arc::clone(&error));
-            read_video(&mut video, width, height, Arc::clone(&frames), on_event);
+            let video = VideoPipeline::start(
+                &camera_pipeline(index),
+                (None, CAMERA_SIZE, CAMERA_BITRATE * 1000),
+                (Arc::clone(&frames), Arc::clone(&error)),
+                on_event,
+            )?;
 
             return Ok(Self { video: Some(video), audio: None, shared_sink: None, frames, audio_chunks, error, _portal: None });
         }
@@ -240,20 +287,32 @@ impl LinuxCapturer {
             / 60;
 
         // BT.709 fixo antes do x264: sem ele a colorimetria dependia da resolução escolhida,
-        // e o VUI que o x264 escreve saía diferente do que o decodificador supõe.
-        // ponytail: sem pedido de keyframe por fora; um a cada segundo é o que quem entra
-        // na sala espera no pior caso.
+        // e o VUI que o x264 escreve saía diferente do que o decodificador supõe. O keyframe
+        // por segundo continua: é o que quem entra na sala espera no pior caso, se o PLI dele
+        // se perder.
         let (format, encoder) = encoder_tail(Self::video_encoder(), frame_rate, bitrate);
 
-        let (source, stdin) = match &portal {
-            Some(session) => (portal_source(session.node, frame_rate), Stdio::from(session.remote()?)),
-            None => (x11_source(config.show_cursor, region(config.source), window_of(config.source)), Stdio::null()),
+        let (source, remote) = match &portal {
+            Some(session) => {
+                // O fd fica neste processo enquanto a captura roda. O `try_clone` o devolve com
+                // `CLOEXEC`: sem isso o `gst-launch` do som, que nasce logo depois, herdaria o
+                // acesso à tela (passo 7 do roteiro do Wayland).
+                let remote = session
+                    .remote()?
+                    .try_clone()
+                    .map_err(|failure| CaptureError::Platform(format!("o fd do PipeWire não duplicou ({failure})")))?;
+
+                (portal_source(remote.as_raw_fd(), session.node, frame_rate), Some(remote))
+            }
+            None => (x11_source(config.show_cursor, region(config.source), window_of(config.source)), None),
         };
 
-        let mut video = launch(&screen_pipeline(&source, frame_rate, width, format, &encoder), stdin)?;
-
-        watch_stderr(&mut video, Arc::clone(&error));
-        read_video(&mut video, width, height, Arc::clone(&frames), Arc::clone(&on_event));
+        let video = VideoPipeline::start(
+            &screen_pipeline(&source, frame_rate, (width, height), format, &encoder),
+            (remote, (width, height), bitrate * 1000),
+            (Arc::clone(&frames), Arc::clone(&error)),
+            Arc::clone(&on_event),
+        )?;
 
         let shared_sink = if config.capture_audio {
             SharedSink::open(config.mute_listed_apps)
@@ -299,7 +358,9 @@ impl LinuxCapturer {
     }
 
     pub fn stop(&mut self) -> Result<(), CaptureError> {
-        for child in [self.video.as_mut(), self.audio.as_mut()].into_iter().flatten() {
+        self.video = None;
+
+        if let Some(child) = self.audio.as_mut() {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -378,22 +439,36 @@ fn window_of(source: CaptureSource) -> Option<u64> {
 /// cadência, que é o que o `ximagesrc use-damage=false` já entrega no X11. O `videorate`
 /// vem antes da conversão para que o excedente de um monitor de 144 Hz caia sem custar
 /// `videoconvert`.
-fn portal_source(node: u32, frame_rate: u32) -> String {
+///
+/// `fd` é o do PipeWire que o portal deu, e o `path=` é o alvo explícito do stream. Dentro do
+/// processo não dá para tirar o `PIPEWIRE_NODE` do ambiente só do pipeline, como se fazia com
+/// o `gst-launch`; o alvo explícito é o que tem de prevalecer sobre ele (passo 9 do roteiro
+/// do Wayland no `docs/ESTADO.md`).
+fn portal_source(fd: i32, node: u32, frame_rate: u32) -> String {
     format!(
-        "pipewiresrc fd=0 path={node} do-timestamp=true keepalive-time={} ! videorate",
+        "pipewiresrc fd={fd} path={node} do-timestamp=true keepalive-time={} ! videorate",
         1000 / frame_rate.max(1)
     )
 }
 
-/// Da origem ao pipe. Só a largura é fixa: a altura sai da proporção do que chegar, e no
-/// portal o que chega pode ser maior do que o `size` anunciado (monitor com escala).
-fn screen_pipeline(source: &str, frame_rate: u32, width: u32, format: &str, encoder: &str) -> String {
+/// Da origem ao pipe, no tamanho que o `fit` deu — par nos dois lados. A altura não pode
+/// sair da proporção do que chegar: uma janela do portal com altura ímpar chegava ímpar ao
+/// x264, que recusa 4:2:0 ímpar e derrubava a transmissão; e a janela que muda de tamanho
+/// no meio trocava o tamanho do encoder no ar. Com os dois fixos, o que chegar maior (monitor
+/// com escala) ou noutra proporção ganha tarja preta do `videoscale`, não outro tamanho.
+fn screen_pipeline(source: &str, frame_rate: u32, (width, height): (u32, u32), format: &str, encoder: &str) -> String {
     format!(
         "{source} ! video/x-raw,framerate={frame_rate}/1 \
-         ! videoconvert ! videoscale ! video/x-raw,format={format},colorimetry=bt709,width={width},pixel-aspect-ratio=1/1 \
-         ! {encoder}"
+         ! videoconvert ! videoscale \
+         ! video/x-raw,format={format},colorimetry=bt709,width={width},height={height},pixel-aspect-ratio=1/1 \
+         ! {encoder} ! {VIDEO_SINK}"
     )
 }
+
+/// Onde o H.264 sai para o app. Cheio, segura o encoder em vez de largar quadro: quadro
+/// comprimido que some estraga a imagem até o keyframe seguinte, e era o que o cano do
+/// `gst-launch` fazia — encher e esperar.
+const VIDEO_SINK: &str = "appsink name=sink sync=false max-buffers=8";
 
 fn is_screen(source: CaptureSource) -> bool {
     matches!(
@@ -593,16 +668,19 @@ fn microphone_pipeline() -> String {
     format!("pulsesrc device=@DEFAULT_SOURCE@ {cleanup}! {AUDIO_TAIL}")
 }
 
+/// A taxa da câmera, em kbit/s.
+const CAMERA_BITRATE: u32 = 800;
+
 /// O encoder da tela, mas em 640x360 a 30 fps e 800 kbit/s: um cartão pequeno não
 /// precisa de mais, e é banda que a tela de alguém está usando.
 fn camera_pipeline(index: u32) -> String {
     let (width, height) = CAMERA_SIZE;
-    let (format, encoder) = encoder_tail(LinuxCapturer::video_encoder(), 30, 800);
+    let (format, encoder) = encoder_tail(LinuxCapturer::video_encoder(), 30, CAMERA_BITRATE);
 
     format!(
         "v4l2src device=/dev/video{index} ! videoconvert ! videoscale ! videorate \
          ! video/x-raw,format={format},colorimetry=bt709,width={width},height={height},framerate=30/1 \
-         ! {encoder}"
+         ! {encoder} ! {VIDEO_SINK}"
     )
 }
 
@@ -620,11 +698,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// nesse tempo quem clicou em compartilhar so ve o app travado.
 const X_QUERY_TIMEOUT: &str = "3";
 
-/// O formato cru que o encoder quer e o pipeline dele até o pipe.
+/// O formato cru que o encoder quer e o pipeline dele até o H.264 pronto, sem a saída. O
+/// encoder se chama `encoder`: é por esse nome que o `EncoderControl` o acha.
 ///
 /// Todos terminam iguais: H.264 byte-stream em constrained baseline (o `profile-level-id`
-/// que o servidor anuncia), com AUD separando os quadros e SPS/PPS na frente de cada IDR —
-/// é disso que `take_access_unit` e quem entra no meio dependem. Quem garante as duas
+/// que o servidor anuncia), um quadro por buffer e SPS/PPS na frente de cada IDR — é disso
+/// que quem empacota e quem entra no meio dependem. Quem garante as duas
 /// últimas é o `h264parse`: ele insere o AUD que falta e repete SPS/PPS por IDR
 /// (`config-interval=-1`), o que o x264 fazia sozinho e os de placa nem sempre fazem.
 ///
@@ -634,22 +713,22 @@ fn encoder_tail(element: &str, key_interval: u32, bitrate: u32) -> (&'static str
     let (format, encoder) = match element {
         "nvh264enc" => (
             "NV12",
-            format!("nvh264enc preset=low-latency-hp zerolatency=true bframes=0 gop-size={key_interval} bitrate={bitrate}"),
+            format!("nvh264enc name=encoder preset=low-latency-hp zerolatency=true bframes=0 gop-size={key_interval} bitrate={bitrate}"),
         ),
         "vah264enc" => (
             "NV12",
-            format!("vah264enc rate-control=cbr b-frames=0 cabac=false dct8x8=false key-int-max={key_interval} bitrate={bitrate}"),
+            format!("vah264enc name=encoder rate-control=cbr b-frames=0 cabac=false dct8x8=false key-int-max={key_interval} bitrate={bitrate}"),
         ),
         "vaapih264enc" => (
             "NV12",
-            format!("vaapih264enc rate-control=cbr max-bframes=0 keyframe-period={key_interval} bitrate={bitrate}"),
+            format!("vaapih264enc name=encoder rate-control=cbr max-bframes=0 keyframe-period={key_interval} bitrate={bitrate}"),
         ),
         // `vbv-buf-capacity=100` (ms) é o que segura o pico de um keyframe dentro de um
         // décimo de segundo de banda, em vez de um segundo inteiro.
         _ => (
             "I420",
             format!(
-                "x264enc tune=zerolatency speed-preset=ultrafast byte-stream=true aud=true \
+                "x264enc name=encoder tune=zerolatency speed-preset=ultrafast byte-stream=true aud=true \
                  key-int-max={key_interval} bitrate={bitrate} vbv-buf-capacity=100 threads=0"
             ),
         ),
@@ -659,8 +738,7 @@ fn encoder_tail(element: &str, key_interval: u32, bitrate: u32) -> (&'static str
         format,
         format!(
             "{encoder} ! h264parse config-interval=-1 \
-             ! video/x-h264,stream-format=byte-stream,alignment=au,profile=constrained-baseline \
-             ! fdsink fd=1 sync=false"
+             ! video/x-h264,stream-format=byte-stream,alignment=au,profile=constrained-baseline"
         ),
     )
 }
@@ -669,7 +747,7 @@ fn encoder_tail(element: &str, key_interval: u32, bitrate: u32) -> (&'static str
 fn encoder_opens(element: &str) -> bool {
     let (format, encoder) = encoder_tail(element, 30, 1_000);
     let pipeline = format!(
-        "videotestsrc num-buffers=1 ! videoconvert ! video/x-raw,format={format},width=640,height=360 ! {encoder}"
+        "videotestsrc num-buffers=1 ! videoconvert ! video/x-raw,format={format},width=640,height=360 ! {encoder} ! fakesink"
     );
 
     let Ok(mut child) = Command::new("gst-launch-1.0")
@@ -749,46 +827,98 @@ fn watch_stderr(child: &mut Child, error: Arc<Mutex<Option<String>>>) {
     });
 }
 
-/// O H.264 do pipe, um quadro por vez, para o callback.
-fn read_video(
-    child: &mut Child,
-    width: u32,
-    height: u32,
-    frames: Arc<AtomicU64>,
-    on_event: Arc<dyn Fn(CaptureEvent) + Send + Sync>,
-) {
-    let mut stdout = child.stdout.take().expect("stdout piped");
+/// O vídeo dentro do processo, da origem ao `appsink`.
+struct VideoPipeline {
+    pipeline: gst::Pipeline,
+    /// O fd do PipeWire que o portal deu, vivo enquanto o `pipewiresrc` o usa.
+    _remote: Option<OwnedFd>,
+}
 
-    std::thread::spawn(move || {
-        let started = Instant::now();
-        let mut pending = Vec::new();
-        let mut chunk = vec![0_u8; 64 * 1024];
+impl VideoPipeline {
+    /// Sobe o pipeline e a thread que entrega cada quadro ao callback — fora da thread do
+    /// GStreamer, para empacotar e mandar não atrasar a captura. O erro do GStreamer vai
+    /// para `error`: é o que o app mostra quando a captura não gera quadro nenhum.
+    fn start(
+        description: &str,
+        (remote, (width, height), bitrate): (Option<OwnedFd>, (u32, u32), u32),
+        (frames, error): (Arc<AtomicU64>, Arc<Mutex<Option<String>>>),
+        on_event: Arc<dyn Fn(CaptureEvent) + Send + Sync>,
+    ) -> Result<Self, CaptureError> {
+        let refused = |what: &str, failure: &dyn std::fmt::Display| {
+            CaptureError::Platform(format!("{what} ({failure}); instale os plugins good, bad e ugly do GStreamer"))
+        };
 
-        loop {
-            let read = match stdout.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(read) => read,
-            };
+        gst::init().map_err(|failure| refused("o GStreamer não iniciou", &failure))?;
 
-            pending.extend_from_slice(&chunk[..read]);
+        let pipeline = gst::parse::launch(description)
+            .map_err(|failure| refused("o pipeline da captura não montou", &failure))?
+            .downcast::<gst::Pipeline>()
+            .map_err(|_| CaptureError::Platform("o pipeline da captura não é um pipeline".into()))?;
+        let video = Self { pipeline, _remote: remote };
+        let (Some(encoder), Some(sink)) = (video.pipeline.by_name("encoder"), video.pipeline.by_name("sink")) else {
+            return Err(CaptureError::Platform("o pipeline da captura veio sem encoder ou sem saída".into()));
+        };
+        let appsink = sink
+            .clone()
+            .downcast::<gst_app::AppSink>()
+            .map_err(|_| CaptureError::Platform("a saída da captura não é um appsink".into()))?;
+        let control = EncoderControl { encoder, sink, launched: bitrate };
 
-            while let Some(data) = take_access_unit(&mut pending) {
-                frames.fetch_add(1, Ordering::Relaxed);
+        if let Some(bus) = video.pipeline.bus() {
+            bus.set_sync_handler(move |_, message| {
+                if let gst::MessageView::Error(failure) = message.view() {
+                    let line = format!("{} ({})", failure.error(), failure.debug().map(|debug| debug.to_string()).unwrap_or_default());
 
-                on_event(CaptureEvent::Video(VideoFrame {
-                    width,
-                    height,
-                    timestamp_ns: started.elapsed().as_nanos() as u64,
-                    surface: Some(EncodedVideo {
-                        keyframe: has_idr(&data),
-                        data,
-                    }),
-                }));
-            }
+                    tracing::warn!(%line, "gst");
+
+                    if let Ok(mut slot) = error.lock() {
+                        *slot = Some(line);
+                    }
+                }
+
+                gst::BusSyncReply::Drop
+            });
         }
 
-        tracing::warn!("captura: o gst-launch de vídeo terminou");
-    });
+        video
+            .pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|failure| refused("a captura não começou", &failure))?;
+
+        std::thread::Builder::new()
+            .name("unkvoid-captura".into())
+            .spawn(move || {
+                let started = Instant::now();
+
+                // Com o pipeline parado o `appsink` esvazia, e o `pull_sample` devolve erro.
+                while let Ok(sample) = appsink.pull_sample() {
+                    let Some(map) = sample.buffer().and_then(|buffer| buffer.map_readable().ok()) else {
+                        continue;
+                    };
+                    let data = without_delimiter(&map).to_vec();
+
+                    frames.fetch_add(1, Ordering::Relaxed);
+
+                    on_event(CaptureEvent::Video(VideoFrame {
+                        width,
+                        height,
+                        timestamp_ns: started.elapsed().as_nanos() as u64,
+                        surface: Some(EncodedVideo { keyframe: has_idr(&data), data, encoder: Some(control.clone()) }),
+                    }));
+                }
+
+                tracing::info!("captura: o vídeo parou");
+            })
+            .map_err(|failure| refused("a thread da captura não abriu", &failure))?;
+
+        Ok(video)
+    }
+}
+
+impl Drop for VideoPipeline {
+    fn drop(&mut self) {
+        let _ = self.pipeline.set_state(gst::State::Null);
+    }
 }
 
 /// O áudio do pipe, em blocos de 20 ms, para o callback.
@@ -820,9 +950,6 @@ fn launch(pipeline: &str, stdin: Stdio) -> Result<Child, CaptureError> {
     Command::new("gst-launch-1.0")
         .arg("-q")
         .args(pipeline.split_whitespace())
-        // Com `PIPEWIRE_NODE` no ambiente o PipeWire liga o stream nesse nó, e não no que
-        // o portal devolveu.
-        .env_remove("PIPEWIRE_NODE")
         .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -944,24 +1071,19 @@ fn screen_size() -> Option<(u32, u32)> {
 
 const AUD: [u8; 5] = [0, 0, 0, 1, 9];
 
-/// Um quadro inteiro do pipe: do primeiro delimitador (`AUD`) até o seguinte, sem o
-/// delimitador. Só devolve quando o quadro seguinte já começou — antes disso o quadro
-/// atual pode ainda estar chegando.
-fn take_access_unit(pending: &mut Vec<u8>) -> Option<Vec<u8>> {
-    let first = find(pending, &AUD, 0)?;
-    let second = find(pending, &AUD, first + AUD.len())?;
-    let mut body = find(&pending[..second], &[0, 0, 1], first + AUD.len())?;
+/// O quadro sem o delimitador (`AUD`) da frente, quando há um. Cada buffer do `appsink` já
+/// é um quadro inteiro (`alignment=au`); o delimitador não vai para a rede.
+fn without_delimiter(data: &[u8]) -> &[u8] {
+    let Some(rest) = data.strip_prefix(&AUD) else {
+        return data;
+    };
 
-    // O código de início pode ter quatro bytes; o zero a mais fica com o quadro.
-    if body > first + AUD.len() && pending[body - 1] == 0 {
-        body -= 1;
+    match find(rest, &[0, 0, 1], 0) {
+        // O código de início pode ter quatro bytes; o zero a mais fica com o quadro.
+        Some(start) if start > 0 && rest[start - 1] == 0 => &rest[start - 1..],
+        Some(start) => &rest[start..],
+        None => &[],
     }
-
-    let data = pending[body..second].to_vec();
-
-    pending.drain(..second);
-
-    Some(data)
 }
 
 fn find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
@@ -1017,11 +1139,11 @@ mod tests {
         let region = Monitor { width: 1920, height: 1080, x: 1920, y: 0 };
         let words = |pipeline: String| pipeline.split_whitespace().map(str::to_string).collect::<Vec<_>>().join(" ");
 
-        let x11 = words(screen_pipeline(&x11_source(false, Some(region), None), 60, 1920, format, &encoder));
-        let portal = words(screen_pipeline(&portal_source(47, 60), 60, 1920, format, &encoder));
+        let x11 = words(screen_pipeline(&x11_source(false, Some(region), None), 60, (1920, 1080), format, &encoder));
+        let portal = words(screen_pipeline(&portal_source(12, 47, 60), 60, (1920, 1080), format, &encoder));
         let shared = words(format!(
             "! video/x-raw,framerate=60/1 ! videoconvert ! videoscale \
-             ! video/x-raw,format=I420,colorimetry=bt709,width=1920,pixel-aspect-ratio=1/1 ! {encoder}"
+             ! video/x-raw,format=I420,colorimetry=bt709,width=1920,height=1080,pixel-aspect-ratio=1/1 ! {encoder} ! {VIDEO_SINK}"
         ));
 
         assert_eq!(
@@ -1030,8 +1152,8 @@ mod tests {
         );
         assert_eq!(
             portal,
-            format!("pipewiresrc fd=0 path=47 do-timestamp=true keepalive-time=16 ! videorate {shared}"),
-            "o fd é a entrada padrão do filho, e tela parada continua gerando quadro"
+            format!("pipewiresrc fd=12 path=47 do-timestamp=true keepalive-time=16 ! videorate {shared}"),
+            "o fd é o que o portal deu, e tela parada continua gerando quadro"
         );
 
         assert_eq!(words(x11_source(true, None, None)), "ximagesrc use-damage=false show-pointer=true");
@@ -1040,8 +1162,8 @@ mod tests {
             "ximagesrc use-damage=false show-pointer=false xid=6291458",
             "a janela escolhida, e não o monitor inteiro"
         );
-        assert!(portal_source(3, 30).contains("keepalive-time=33 "), "um reenvio por quadro a 30 fps");
-        assert!(portal_source(3, 0).contains("keepalive-time=1000 "), "fps zero não divide por zero");
+        assert!(portal_source(5, 3, 30).contains("keepalive-time=33 "), "um reenvio por quadro a 30 fps");
+        assert!(portal_source(5, 3, 0).contains("keepalive-time=1000 "), "fps zero não divide por zero");
     }
 
     #[test]
@@ -1088,12 +1210,12 @@ mod tests {
         for element in HARDWARE_H264_ENCODERS.into_iter().chain(["x264enc"]) {
             let (format, tail) = encoder_tail(element, 60, 5_000);
 
-            assert!(tail.starts_with(element), "{tail}");
+            assert!(tail.starts_with(&format!("{element} name=encoder ")), "o `EncoderControl` acha o encoder pelo nome: {tail}");
             assert!(["NV12", "I420"].contains(&format), "{element}: {format}");
             assert!(tail.contains("=60 ") && tail.contains("bitrate=5000"), "{element}: keyframe por segundo e a taxa: {tail}");
             assert!(
                 tail.split_whitespace().collect::<Vec<_>>().join(" ").ends_with(
-                    "! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=constrained-baseline ! fdsink fd=1 sync=false"
+                    "! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=constrained-baseline"
                 ),
                 "{element}: sem o h264parse o pipe perde o AUD ou o SPS/PPS por IDR: {tail}"
             );
@@ -1118,29 +1240,90 @@ mod tests {
         );
     }
 
+    type Seen = Arc<Mutex<Vec<(Instant, EncodedVideo)>>>;
+
+    /// O pipeline da captura com o x264, sem tela: o `videotestsrc` no lugar da origem.
+    fn running(pattern: &str, key_interval: u32, bitrate: u32) -> (VideoPipeline, Seen) {
+        let (format, encoder) = encoder_tail("x264enc", key_interval, bitrate);
+        let description = format!(
+            "videotestsrc is-live=true pattern={pattern} ! video/x-raw,width=640,height=360,framerate=30/1 \
+             ! videoconvert ! video/x-raw,format={format} ! {encoder} ! {VIDEO_SINK}"
+        );
+        let seen = Seen::default();
+        let on_event = {
+            let seen = Arc::clone(&seen);
+
+            move |event| {
+                if let CaptureEvent::Video(frame) = event
+                    && let Some(surface) = frame.surface
+                {
+                    seen.lock().expect("a lista").push((Instant::now(), surface));
+                }
+            }
+        };
+        let video = VideoPipeline::start(&description, (None, (640, 360), bitrate * 1000), (Arc::default(), Arc::default()), Arc::new(on_event))
+            .expect("o pipeline subiu");
+
+        (video, seen)
+    }
+
+    fn control(seen: &Seen) -> EncoderControl {
+        seen.lock().expect("a lista").last().and_then(|(_, frame)| frame.encoder.clone()).expect("o quadro traz o encoder")
+    }
+
+    /// O PLI de quem assiste vira keyframe na hora, e não só no fim do GOP. Contra o GStreamer
+    /// de verdade: `cargo test -p capture -- --ignored`.
     #[test]
-    fn splits_frames_on_the_delimiter_and_drops_it() {
-        let mut pending = Vec::new();
+    #[ignore]
+    fn a_keyframe_comes_when_asked_and_not_only_once_per_gop() {
+        let (_video, seen) = running("ball", 300, 1_000);
 
-        pending.extend([0, 0, 0, 1, 9, 0x10]);
-        pending.extend([0, 0, 0, 1, 0x67, 1, 2]);
-        pending.extend([0, 0, 1, 0x65, 3, 4]);
+        std::thread::sleep(Duration::from_millis(1_500));
 
-        assert!(take_access_unit(&mut pending).is_none(), "quadro ainda aberto");
+        let opening = seen.lock().expect("a lista").iter().filter(|(_, frame)| frame.keyframe).count();
+        let asked = Instant::now();
 
-        pending.extend([0, 0, 0, 1, 9, 0x30]);
-        pending.extend([0, 0, 1, 0x41, 5]);
+        control(&seen).request_keyframe();
+        std::thread::sleep(Duration::from_millis(700));
 
-        let frame = take_access_unit(&mut pending).expect("keyframe fechado");
+        let answered = seen.lock().expect("a lista").iter().any(|(at, frame)| *at > asked && frame.keyframe);
 
-        assert_eq!(frame, [0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x65, 3, 4]);
-        assert!(has_idr(&frame));
-        assert!(take_access_unit(&mut pending).is_none());
+        assert_eq!(opening, 1, "num GOP de 10 s só o keyframe da abertura");
+        assert!(answered, "o pedido não virou keyframe");
+    }
 
-        pending.extend(AUD);
-        let frame = take_access_unit(&mut pending).expect("quadro P fechado");
+    /// A perda baixa a taxa com a captura no ar. Contra o GStreamer de verdade.
+    #[test]
+    #[ignore]
+    fn the_bitrate_drops_with_the_pipeline_playing() {
+        let (_video, seen) = running("snow", 30, 2_000);
+        let bytes_in_the_last_second = |seen: &Seen| {
+            let since = Instant::now() - Duration::from_secs(1);
 
-        assert_eq!(frame, [0, 0, 1, 0x41, 5]);
-        assert!(! has_idr(&frame));
+            seen.lock().expect("a lista").iter().filter(|(at, _)| *at > since).map(|(_, frame)| frame.data.len()).sum::<usize>()
+        };
+
+        std::thread::sleep(Duration::from_secs(2));
+
+        let before = bytes_in_the_last_second(&seen);
+
+        assert!(control(&seen).set_bitrate(200_000), "o x264enc aceita a taxa nova tocando");
+        std::thread::sleep(Duration::from_millis(2_500));
+
+        let after = bytes_in_the_last_second(&seen);
+
+        assert!(after * 3 < before, "a taxa não caiu: {before} bytes/s antes, {after} depois");
+    }
+
+    #[test]
+    fn the_delimiter_in_front_of_a_frame_is_dropped() {
+        let keyframe = [0, 0, 0, 1, 9, 0x10, 0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x65, 3, 4];
+        let delta = [0, 0, 0, 1, 9, 0x30, 0, 0, 1, 0x41, 5];
+
+        assert_eq!(without_delimiter(&keyframe), [0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x65, 3, 4]);
+        assert!(has_idr(without_delimiter(&keyframe)));
+        assert_eq!(without_delimiter(&delta), [0, 0, 1, 0x41, 5]);
+        assert!(! has_idr(without_delimiter(&delta)));
+        assert_eq!(without_delimiter(&[0, 0, 1, 0x41, 5]), [0, 0, 1, 0x41, 5], "sem delimitador, o quadro passa inteiro");
     }
 }

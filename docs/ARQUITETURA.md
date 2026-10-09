@@ -247,8 +247,9 @@ SFU            aprende o endereço no primeiro pacote e replica para cada consum
 ```
 
 - O som da tela vai junto: Opus 48 kHz estéreo, no mesmo transporte, com SSRC próprio.
-- Quadro-chave a cada 4 s no Windows e a cada 1 s no Linux (o `gst-launch` da captura não atende
-  pedido de fora), mais os pedidos de quem assiste, espaçados de 2 a 4 s.
+- Quadro-chave a cada 4 s no Windows e a cada 1 s no Linux, mais os pedidos de quem assiste,
+  espaçados de 2 a 4 s. No Linux o vídeo da captura roda dentro do processo (`gstreamer-rs`): é
+  assim que o pedido chega ao encoder e que a taxa muda com a transmissão no ar.
 - Perda entre o app e o SFU: o SFU pede o pacote de volta (NACK por SRTCP) e o app reenvia do
   histórico, pelo pacer; se não der, pede quadro-chave (PLI).
 - A taxa acompanha a perda: muito NACK numa janela e o governador baixa o alvo do encoder, até

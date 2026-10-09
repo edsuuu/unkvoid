@@ -54,9 +54,16 @@ perguntas que esperam o dono. O que já existe está no [README](../README.md) e
   trabalho Linux de verdade, com placa de vídeo.
 - Os encoders de placa (`nvh264enc`, `vah264enc`, `vaapih264enc`) nunca rodaram em hardware; só o
   x264 foi provado.
+- **PLI → keyframe e taxa no ar** (09/10/2026): o vídeo da captura saiu do `gst-launch` e roda
+  dentro do processo (`gstreamer-rs`). Provado no contêiner só com o `x264enc`: o keyframe pedido
+  chega num GOP de 10 s, e a taxa cai tocando. Nos encoders de placa, a troca de taxa só vale se
+  o `bitrate` deles for mutável tocando (o código confere a flag; se não for, o governador desiste
+  e a taxa fica a de abertura, como antes). Na NVIDIA, conferir no log do `broadcast` a linha "a
+  perda mudou a taxa do vídeo".
 - **Captura no Wayland pelo portal**: tudo a partir do `create_session` nunca rodou (o seletor, o
-  cancelar, o nó do PipeWire, o fd herdado pelo `gst-launch`, o `keepalive-time` com tela parada,
-  o fechamento da sessão). Provado só o caminho de falha. O roteiro está abaixo.
+  cancelar, o nó do PipeWire, o fd do portal entregue ao `pipewiresrc` dentro do processo, o
+  `keepalive-time` com tela parada, o fechamento da sessão). Provado só o caminho de falha. O
+  roteiro está abaixo.
 
 <details>
 <summary>Roteiro para provar o Wayland (GNOME ou KDE)</summary>
@@ -77,7 +84,9 @@ perguntas que esperam o dono. O que já existe está no [README](../README.md) e
 8. Com um app de chamada tocando e um jogo com som: `pactl list sinks short` mostra
    `unkvoid_share` enquanto a transmissão está no ar; quem assiste ouve o jogo e não a chamada.
    Ao parar, o sink some.
-9. `UNKVOID_CAPTURE=x11` numa sessão Wayland e `UNKVOID_CAPTURE=portal` numa X11 do GNOME.
+9. `UNKVOID_CAPTURE=x11` numa sessão Wayland e `UNKVOID_CAPTURE=portal` numa X11 do GNOME. E
+   com `PIPEWIRE_NODE=<outro nó>` no ambiente, a tela que sobe continua sendo a escolhida no
+   seletor: o pipeline agora roda dentro do processo, e não dá mais para tirar a variável só dele.
 
 </details>
 

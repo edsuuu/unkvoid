@@ -38,6 +38,10 @@ pub use linux::LinuxCapturer as PlatformCapturer;
 #[cfg(target_os = "linux")]
 pub use linux::uses_system_picker;
 
+/// O encoder do pipeline de vídeo no ar: o `media` pede o keyframe e troca a taxa por ele.
+#[cfg(target_os = "linux")]
+pub use linux::EncoderControl;
+
 #[cfg(not(target_os = "linux"))]
 pub fn uses_system_picker() -> bool {
     false
