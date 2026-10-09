@@ -927,6 +927,14 @@ impl Bridge {
             async move { report_errors(&api).await }
         });
 
+        // O mesmo no Linux, pelo log do dia que o núcleo sabe ler.
+        #[cfg(target_os = "linux")]
+        if let Some(folder) = crate::log_folder() {
+            let api = self.api.clone();
+
+            self.spawn(async move { core_app::logbook::report_errors(&api, &folder).await });
+        }
+
         self.spawn(async move {
             let mut backoff = Backoff::default();
 

@@ -140,12 +140,7 @@ fn start_logbook() {
     use tracing_subscriber::fmt::writer::MakeWriterExt;
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
-    let folder = std::env::var_os("XDG_STATE_HOME")
-        .map(std::path::PathBuf::from)
-        .filter(|state| state.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".local/state")))
-        .map(|state| state.join("unkvoid"));
-    let Some(folder) = folder else {
+    let Some(folder) = log_folder() else {
         tracing_subscriber::fmt().with_env_filter(filter).init();
 
         return;
@@ -154,6 +149,16 @@ fn start_logbook() {
 
     tracing_subscriber::fmt().with_env_filter(filter).with_writer(log.and(std::io::stderr)).with_ansi(false).init();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), folder = %folder.display(), "Unkvoid abrindo");
+}
+
+/// A pasta do log do dia fora do Windows: a de estado do XDG.
+#[cfg(not(target_os = "windows"))]
+pub fn log_folder() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|state| state.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".local/state")))
+        .map(|state| state.join("unkvoid"))
 }
 
 #[cfg(target_os = "windows")]
