@@ -52,18 +52,15 @@ const DEFAULT_SERVER: &str = "https://unkvoid.com";
 /// a despedida, quem assiste fica vendo a tela parada até o servidor desistir de esperar.
 const LEAVING: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// ponytail: a câmera do Windows ainda não existe — o `capture` não abre webcam aqui, e o
-/// `Room` só aceita câmera no macOS e no Linux. Teto: quem está no Windows vê a câmera dos
-/// outros mas não liga a dele. A saída é a captura por Media Foundation empurrando `room.show`.
-#[cfg(not(target_os = "linux"))]
+/// ponytail: a câmera do Windows ainda não existe — o `capture` não abre webcam aqui
+/// (`capture::captures_cameras`). Teto: quem está no Windows vê a câmera dos outros mas não
+/// liga a dele. A saída é a captura por Media Foundation no `capture` do Windows.
 const NO_CAPTURE: &str = "A câmera ainda não está ligada nesta versão do app.";
 
 /// O computador não tem webcam que o sistema enxergue.
-#[cfg(target_os = "linux")]
 const NO_CAMERA: &str = "Nenhuma câmera foi encontrada neste computador.";
 
 /// O servidor desta voz não deixa esta pessoa ligar a câmera.
-#[cfg(target_os = "linux")]
 const NO_VIDEO: &str = "Você não tem permissão para ligar a câmera aqui.";
 
 /// As falhas que a sala anuncia, na frase do Mac.
@@ -119,6 +116,7 @@ pub struct Bridge {
     /// O que o popover mostrou por último, para o índice clicado virar um aparelho.
     microphones: Arc<Mutex<Vec<Device>>>,
     speakers: Arc<Mutex<Vec<Device>>>,
+    cameras: Arc<Mutex<Vec<capture::Camera>>>,
     /// O microfone e a saída escolhidos, pelo id do endpoint. Vazio é o padrão do sistema.
     ///
     /// ponytail: a escolha só vive nesta sessão do app. Teto: reabrir o app volta ao padrão.
@@ -205,6 +203,7 @@ impl Bridge {
             me: Arc::default(),
             microphones: Arc::default(),
             speakers: Arc::default(),
+            cameras: Arc::default(),
             chosen: Arc::default(),
             live: Arc::default(),
             followed: Arc::default(),
@@ -699,6 +698,7 @@ impl Bridge {
                 // tem de aparecer sem reiniciar nada.
                 bridge.show_devices(true);
                 bridge.show_devices(false);
+                bridge.show_cameras();
                 paint(&bridge.window, |app| app.global::<Ui>().set_settings_open(true));
             }
         });
@@ -731,6 +731,12 @@ impl Bridge {
             let bridge = self.clone();
 
             move |index| bridge.choose(false, index)
+        });
+
+        ui.on_use_camera({
+            let bridge = self.clone();
+
+            move |index| bridge.use_camera(index)
         });
 
         ui.on_install_update({
@@ -2498,9 +2504,9 @@ impl Bridge {
         });
     }
 
-    /// Liga ou desliga a câmera, dentro da sala. Só o Linux a captura pelo núcleo (`v4l2src`, a
-    /// primeira webcam da lista); no Windows ela ainda não existe.
-    #[cfg(target_os = "linux")]
+    /// Liga ou desliga a câmera, dentro da sala. Quem diz se dá é a captura
+    /// (`capture::captures_cameras`): hoje só o Linux a abre pelo núcleo, e no Windows ela
+    /// ainda não existe.
     fn toggle_camera(self: &Rc<Self>) {
         let (inside, mine) = {
             let voice = lock(&self.voice);
@@ -2518,27 +2524,72 @@ impl Bridge {
             return;
         }
 
+        if !capture::captures_cameras() {
+            return complain(&window, NO_CAPTURE);
+        }
+
         if !mine.can_video {
             return complain(&window, NO_VIDEO);
         }
 
-        let Some(index) = capture::PlatformCapturer::cameras().first().and_then(|(path, _)| path.strip_prefix("/dev/video")?.parse().ok()) else {
+        let Some(camera) = chosen_camera(&capture::cameras(), self.voice_preference()["camera"].as_str()) else {
             return complain(&window, NO_CAMERA);
         };
 
-        self.spawn(async move {
-            let config = capture::CaptureConfig { source: capture::CaptureSource::Camera(index), capture_audio: false, ..capture::CaptureConfig::default() };
+        self.spawn(open_camera(room, camera, window));
+    }
 
-            if let Err(failure) = room.open_captured_camera(config).await {
-                tracing::warn!(failure = %format!("{failure:#}"), "câmera: não abriu");
-                complain(&window, room_failure("camera"));
-            }
+    /// As câmeras na tela de configurações, com a escolhida marcada. Lida na hora de abrir,
+    /// como os aparelhos de som: a webcam ligada depois de o app abrir aparece.
+    fn show_cameras(self: &Rc<Self>) {
+        let (window, known, picked) = (self.window.clone(), self.cameras.clone(), self.voice_preference()["camera"].as_str().map(str::to_owned));
+
+        self.spawn(async move {
+            let found = capture::cameras();
+            let current = chosen_camera(&found, picked.as_deref()).map(|camera| camera.index);
+            let rows: Vec<DeviceRow> = found.iter().map(|camera| DeviceRow { label: camera.name.clone().into(), current: Some(camera.index) == current }).collect();
+
+            *lock(&known) = found;
+
+            paint(&window, move |app| {
+                let ui = app.global::<Ui>();
+
+                ui.set_cameras(model(rows));
+                ui.set_camera_supported(capture::captures_cameras());
+            });
         });
     }
 
-    #[cfg(not(target_os = "linux"))]
-    fn toggle_camera(self: &Rc<Self>) {
-        complain(&self.window, NO_CAPTURE);
+    /// Guarda a câmera escolhida pelo nome (o número do `/dev/video` muda de uma tomada para
+    /// outra). Ligada, a câmera passa para a escolhida na hora.
+    fn use_camera(self: &Rc<Self>, index: i32) {
+        let Some(camera) = at(&self.cameras, index) else {
+            return;
+        };
+
+        tracing::info!(camera = %camera.name, "câmera escolhida");
+
+        let name = camera.name.clone();
+
+        self.save_voice(move |voice| {
+            voice.insert("camera".into(), name.into());
+        });
+        self.show_cameras();
+
+        let (inside, on) = {
+            let voice = lock(&self.voice);
+
+            (voice.inside, voice.mine.camera)
+        };
+        let Some(room) = lock(&self.room).clone().filter(|_| inside && on) else {
+            return;
+        };
+        let window = self.window.clone();
+
+        self.spawn(async move {
+            room.close_captured_camera().await;
+            open_camera(room, camera, window).await;
+        });
     }
 
     /// Ensurdecer cala o que chega. Vale fora da sala também: quem entra surdo continua surdo.
@@ -3451,6 +3502,20 @@ fn at<T: Clone>(cell: &Arc<Mutex<Vec<T>>>, index: i32) -> Option<T> {
     usize::try_from(index).ok().and_then(|index| lock(cell).get(index).cloned())
 }
 
+/// A câmera guardada pelo nome, se ela está ligada ao computador; senão a primeira da lista.
+fn chosen_camera(found: &[capture::Camera], picked: Option<&str>) -> Option<capture::Camera> {
+    found.iter().find(|camera| Some(camera.name.as_str()) == picked).or_else(|| found.first()).cloned()
+}
+
+async fn open_camera(room: Arc<Room>, camera: capture::Camera, window: Weak<AppWindow>) {
+    let config = capture::CaptureConfig { source: capture::CaptureSource::Camera(camera.index), capture_audio: false, ..capture::CaptureConfig::default() };
+
+    if let Err(failure) = room.open_captured_camera(config).await {
+        tracing::warn!(failure = %format!("{failure:#}"), camera = %camera.name, "câmera: não abriu");
+        complain(&window, room_failure("camera"));
+    }
+}
+
 /// O caminho de volta para a tela. Toda novidade passa por aqui porque a janela só aceita
 /// ser mexida na thread dela.
 fn paint(window: &Weak<AppWindow>, work: impl FnOnce(&AppWindow) + Send + 'static) {
@@ -4192,7 +4257,7 @@ fn paint_voice(window: &Weak<AppWindow>, voice: &Arc<Mutex<Voice>>) {
         ui.set_can_share(mine.can_share);
         ui.set_sharing(mine.sharing);
         ui.set_camera_on(mine.camera);
-        ui.set_camera_available(cfg!(target_os = "linux") && inside);
+        ui.set_camera_available(capture::captures_cameras() && inside);
         ui.set_self_view(mine.self_view);
     });
 }

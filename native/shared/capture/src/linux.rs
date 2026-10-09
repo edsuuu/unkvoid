@@ -171,7 +171,7 @@ impl LinuxCapturer {
     /// número seguinte; o de captura é o menor. Por isso a ordem é numérica e o nome
     /// repetido fica com o primeiro índice.
     pub fn cameras() -> Vec<(String, String)> {
-        if std::env::var_os("UNKVOID_CAMERA_SOURCE").is_some_and(|source| !source.is_empty()) {
+        if camera_stand_in().is_some() {
             return vec![("/dev/video0".to_string(), "UNKVOID_CAMERA_SOURCE".to_string())];
         }
 
@@ -675,14 +675,20 @@ fn microphone_pipeline() -> String {
 /// A taxa da câmera, em kbit/s.
 const CAMERA_BITRATE: u32 = 800;
 
-/// `UNKVOID_CAMERA_SOURCE` troca a webcam por qualquer origem do GStreamer (por exemplo
-/// `videotestsrc is-live=true pattern=ball`): é como se prova a câmera de ponta a ponta numa
-/// máquina sem webcam, e num contêiner, que não tem `/dev/video*`.
 fn camera_source(index: u32) -> String {
-    std::env::var("UNKVOID_CAMERA_SOURCE")
-        .ok()
-        .filter(|source| !source.trim().is_empty())
-        .unwrap_or_else(|| format!("v4l2src device=/dev/video{index}"))
+    camera_stand_in().unwrap_or_else(|| format!("v4l2src device=/dev/video{index}"))
+}
+
+/// Ferramenta de teste, só no build de depuração: `UNKVOID_CAMERA_SOURCE` troca a webcam por
+/// qualquer origem do GStreamer (por exemplo `videotestsrc is-live=true pattern=ball`) — é como
+/// se prova a câmera de ponta a ponta numa máquina sem webcam, e num contêiner, que não tem
+/// `/dev/video*`. O binário de release, o que vai para as pessoas, nem lê a variável.
+fn camera_stand_in() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+
+    std::env::var("UNKVOID_CAMERA_SOURCE").ok().filter(|source| !source.trim().is_empty())
 }
 
 /// O encoder da tela, mas em 640x360 a 30 fps e 800 kbit/s: um cartão pequeno não

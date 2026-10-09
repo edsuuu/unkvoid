@@ -431,6 +431,18 @@ export component SettingsModal inherits SettingsFrame {
 
                 Meta { text: "Vale para a voz das pessoas, o áudio das telas e os sons do app."; }
 
+                if Ui.camera-supported : Rectangle { height: 12px; }
+
+                if Ui.camera-supported : Label { text: "CÂMERA"; }
+
+                if Ui.camera-supported && Ui.cameras.length == 0 : Meta { text: "Nenhuma câmera encontrada."; }
+
+                for device[index] in Ui.cameras : Choice {
+                    label: device.label;
+                    on: device.current;
+                    clicked => { Ui.use-camera(index); }
+                }
+
                 Rectangle { height: 20px; }
 
                 Label { text: "MODO DE ENTRADA"; }

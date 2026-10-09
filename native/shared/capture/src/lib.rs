@@ -47,6 +47,33 @@ pub fn uses_system_picker() -> bool {
     false
 }
 
+/// Uma câmera que esta captura abre: `index` é o que vai em `CaptureSource::Camera`, e `name`
+/// é o que a pessoa reconhece ("HD Webcam C920").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Camera {
+    pub index: u32,
+    pub name: String,
+}
+
+/// Se esta captura abre câmera neste sistema. Só o Linux a captura aqui (o GStreamer lê a
+/// webcam e já entrega H.264); no macOS a câmera vem pronta da interface, e no Windows ela
+/// ainda não existe. É isto que a tela pergunta, e não o sistema em que foi compilada.
+pub fn captures_cameras() -> bool {
+    cfg!(target_os = "linux")
+}
+
+/// As câmeras que esta captura abre, a primeira sendo a padrão. Vazia onde ela não abre câmera.
+pub fn cameras() -> Vec<Camera> {
+    #[cfg(target_os = "linux")]
+    return linux::LinuxCapturer::cameras()
+        .into_iter()
+        .filter_map(|(path, name)| Some(Camera { index: path.strip_prefix("/dev/video")?.parse().ok()?, name }))
+        .collect();
+
+    #[cfg(not(target_os = "linux"))]
+    Vec::new()
+}
+
 /// Se a janela escolhida ainda existe. A captura calada pode ser a janela que fechou — o jogo
 /// que saiu —, e aí refazê-la só falharia de novo a cada espera do vigia: quem transmite tem de
 /// parar e saber por quê. Monitor e o resto: sempre.

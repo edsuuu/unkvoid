@@ -349,6 +349,9 @@ export global Ui {
     in-out property <string> settings-tab: "account";
     in property <[DeviceRow]> microphones;
     in property <[DeviceRow]> speakers;
+    /// As câmeras que a captura abre, e se ela abre alguma neste sistema.
+    in property <[DeviceRow]> cameras;
+    in property <bool> camera-supported;
     /// Voz e vídeo: "open", "voice" ou "ptt"; a sensibilidade de 0 a 100; e as marcas.
     in property <string> input-mode: "open";
     in property <int> sensitivity: 35;
@@ -498,6 +501,7 @@ export global Ui {
     callback open-settings();
     callback close-settings();
     callback use-microphone(int);
+    callback use-camera(int);
     callback use-speaker(int);
     /// "open", "voice" ou "ptt", e a sensibilidade.
     callback set-input-mode(string, int);
