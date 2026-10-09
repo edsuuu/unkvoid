@@ -167,6 +167,11 @@ final class AppModel: ObservableObject {
     @Published var tileVolumes: [String: Float] = [:]
     @Published var sharePreviews: [String: NSImage] = [:]
     @Published var mine = Mine()
+    /// Há uma sala aberta deste lado (entre o `openedRoom` e o `closeRoom`). Os avisos `room.*`
+    /// que chegam depois de fechar são da sala que está morrendo, e não mexem em nada aqui.
+    @Published var roomOpen = false
+    /// Quem liga e desliga a captura da câmera: um dono só, com o estado "ligando" à vista.
+    var cameraSync = CameraSync()
     @Published var reconnecting = false
     @Published var deafened = false
     /// Entre o clique no canal e o microfone abrir: o botão ainda não tem o que mostrar, e

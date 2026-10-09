@@ -47,6 +47,26 @@ struct HubTests {
 
     private static var kept: AppModel?
 
+    /// Sair da voz com mic e câmera ligados: o núcleo ainda anuncia `room.mine` com a câmera
+    /// ligada enquanto recolhe o que subia. Com a sala fechada deste lado, isso não religa nada —
+    /// a luz verde não fica acesa fora da chamada.
+    @Test
+    func aRoomMineAfterLeavingDoesNotTurnTheCameraBackOn() async {
+        #expect(EndToEndTests.isolated)
+
+        let model = AppModel(url: "ws://127.0.0.1:1/sfu")
+
+        model.voiceChannel = Channel(id: "v1", name: "Reunião", type: "voice", topic: nil, position: 0, permissions: 0, user_limit: nil, overwrites: [])
+
+        await model.leaveVoice()
+
+        model.heard(["event": "room.mine", "data": ["camera": true, "mic": true]])
+
+        #expect(!model.mine.camera)
+        #expect(!model.cameraSync.starting)
+        #expect(model.media?.camera.isRunning == false)
+    }
+
     /// Entrar numa sala por código estando numa voz solta a voz antes: o núcleo já saía dela,
     /// mas o desenho, o chat da voz e o microfone ficavam vivos deste lado.
     @Test

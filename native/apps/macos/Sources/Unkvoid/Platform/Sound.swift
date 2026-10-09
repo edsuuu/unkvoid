@@ -31,6 +31,9 @@ final class Sound: @unchecked Sendable {
     /// A saída escolhida, para apontar de novo quando o motor religa.
     private var speaker: AudioDeviceID?
     private var configurationWatcher: NSObjectProtocol?
+    /// Com a saída morta (o fone escolhido sumiu), religar a cada bloco de 20 ms seguraria a
+    /// thread da mídia, que também entrega o vídeo: uma tentativa por segundo.
+    private var lastRestart = Date.distantPast
     private var converter: AVAudioConverter?
     /// Só quem abriu o microfone mexe no `inputNode`: tocar nele já pede o aparelho ao
     /// sistema, e fazer isso à toa numa saída de sala custa segundos.
@@ -85,7 +88,8 @@ final class Sound: @unchecked Sendable {
         defer { gate.unlock() }
 
         // O motor parou sem avisar (a notificação ainda não chegou): o mesmo religar.
-        if !output.isRunning, !players.isEmpty {
+        if !output.isRunning, !players.isEmpty, Date().timeIntervalSince(lastRestart) >= 1 {
+            lastRestart = Date()
             restartOutput()
         }
 

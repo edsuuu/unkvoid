@@ -79,4 +79,21 @@ struct MediaTests {
 
         #expect(afterArriving)
     }
+
+    /// Dois pedidos de ligar seguidos (o `room.mine` chega antes da resposta do `openCamera`)
+    /// viram uma sessão só; desligar no meio do "ligando" espera o `start` acabar e para.
+    @Test
+    func theCameraStartsOnceAndStopsIfItWasTurnedOffWhileStarting() {
+        var sync = CameraSync()
+
+        #expect(sync.decide(wanted: true, running: false) == .start)
+        #expect(sync.decide(wanted: true, running: false) == nil, "a segunda chamada não pode abrir outra sessão")
+        #expect(sync.decide(wanted: false, running: false) == nil, "ainda ligando: quem para é o fim do start")
+        #expect(sync.finishedStarting(wanted: false) == .stop)
+
+        #expect(sync.decide(wanted: true, running: false) == .start)
+        #expect(sync.finishedStarting(wanted: true) == nil)
+        #expect(sync.decide(wanted: true, running: true) == nil)
+        #expect(sync.decide(wanted: false, running: true) == .stop)
+    }
 }

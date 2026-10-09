@@ -7,6 +7,7 @@ extension AppModel {
     /// sem esperar o primeiro aviso.
     func openedRoom() async {
         media?.start()
+        roomOpen = true
 
         let now = await ask("room")
 
@@ -99,6 +100,7 @@ extension AppModel {
     }
 
     func closeRoom() {
+        roomOpen = false
         media?.stop()
 
         roomError = nil
@@ -131,6 +133,13 @@ extension AppModel {
     /// Um aviso da fila do núcleo. Os da sala redesenham a sala; os do chat vão para o chat.
     func heard(_ event: [String: Any]) {
         let data = event["data"] as? [String: Any] ?? [:]
+        let name = event["event"] as? String ?? ""
+
+        // Sair da sala ainda faz o núcleo anunciar `room.mine` (a câmera "ligada" enquanto ele
+        // recolhe o que subia): com a sala fechada deste lado, isso é da sala que morreu.
+        if name.hasPrefix("room."), !roomOpen {
+            return
+        }
 
         switch event["event"] as? String {
         case "room.peers":
@@ -504,28 +513,20 @@ extension AppModel {
         _ = await ask("muteMicrophone", ["muted": !mine.micMuted])
     }
 
+    /// O botão só pede ao núcleo; quem liga e desliga a captura é o `syncCamera`, quando o
+    /// `room.mine` responder. Um dono só: o núcleo anuncia a câmera ligada antes de responder ao
+    /// `openCamera`, e dois caminhos ligando a mesma `AVCaptureSession` em threads diferentes
+    /// era a câmera partindo duas vezes.
     func toggleCamera() async {
-        guard let media else {
-            return
-        }
-
         if mine.camera {
-            media.camera.stop()
-
             _ = await ask("closeCamera")
 
             return
         }
 
-        let opened = await ask("openCamera", ["width": Camera.size.width, "height": Camera.size.height, "fps": Camera.frameRate])
-
-        guard opened["ok"] as? Bool == true else {
+        if await ask("openCamera", ["width": Camera.size.width, "height": Camera.size.height, "fps": Camera.frameRate])["ok"] as? Bool != true {
             complain("Não deu para ligar a câmera.")
-
-            return
         }
-
-        await startCapture()
     }
 
     /// A captura segue o que o núcleo diz da câmera: `mine.camera` ligada é a sessão rodando,
@@ -537,12 +538,10 @@ extension AppModel {
             return
         }
 
-        if !mine.camera, media.camera.isRunning {
-            media.camera.stop()
-        }
-
-        if mine.camera, !media.camera.isRunning {
-            Task { await startCapture() }
+        switch cameraSync.decide(wanted: mine.camera, running: media.camera.isRunning) {
+        case .start: Task { await startCapture() }
+        case .stop: media.camera.stop()
+        case nil: break
         }
     }
 
@@ -564,11 +563,54 @@ extension AppModel {
                 ? "O Unkvoid não tem permissão para usar a câmera. Autorize nas Configurações do Sistema."
                 : "Não deu para ligar a câmera.")
         }
+
+        // Enquanto ligava, a câmera pode ter sido desligada (ou a sala fechada): a luz verde
+        // não fica acesa fora de uma chamada.
+        if cameraSync.finishedStarting(wanted: mine.camera && roomOpen) == .stop {
+            media.camera.stop()
+        }
     }
 
     func toggleDeafen() async {
         deafened.toggle()
 
         _ = await ask("deafen", ["deafened": deafened])
+    }
+}
+
+/// O estado "ligando" da câmera, que a `AVCaptureSession` não mostra: entre o pedido e o
+/// `startRunning()` ela diz que não roda, e sem isto um segundo `start` entrava na mesma sessão
+/// de outra thread. Uma decisão por aviso do núcleo; o `start` termina e confere de novo.
+struct CameraSync {
+    enum Action {
+        case start
+        case stop
+    }
+
+    var starting = false
+
+    mutating func decide(wanted: Bool, running: Bool) -> Action? {
+        if starting {
+            return nil
+        }
+
+        if wanted, !running {
+            starting = true
+
+            return .start
+        }
+
+        if !wanted, running {
+            return .stop
+        }
+
+        return nil
+    }
+
+    /// O `start` acabou: se no meio a câmera deixou de ser querida, ela para agora.
+    mutating func finishedStarting(wanted: Bool) -> Action? {
+        starting = false
+
+        return wanted ? nil : .stop
     }
 }
