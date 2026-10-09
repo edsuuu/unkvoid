@@ -426,6 +426,7 @@ export class Room {
         console.log(`[INFO] left room=${this.id} sub=${peer.userId} peer=${peer.id} ip=${peer.ip}`);
         peer.close();
         this.peers.delete(peer.id);
+        this.shrink();
         this.broadcast('peerLeft', { peerId: peer.id }, peer.id);
 
         if (![...this.peers.values()].some((other) => other.userId === peer.userId)) {
@@ -433,6 +434,35 @@ export class Room {
         }
 
         this.onEvicted?.(this);
+    }
+
+    /**
+     * O router que ficou sem ninguém sai da sala. Antes ele ficava até a sala acabar, e o
+     * `pipeToRouter` seguia mandando cada pacote de cada tela para um router vazio, noutro
+     * núcleo: a sala que encheu uma vez pagava o espalhamento para sempre. Fechar o router
+     * fecha o par de pipes nos dois lados. Fica sempre um, e nada fecha enquanto alguém ainda
+     * escolhe o seu (`routing` sem `media`) ou a sala está abrindo outro.
+     */
+    private shrink(): void {
+        if (
+            this.expanding ||
+            [...this.peers.values()].some((peer) => peer.routing && !peer.media)
+        ) {
+            return;
+        }
+
+        for (const media of [...this.routers]) {
+            if (
+                this.routers.length < 2 ||
+                [...this.peers.values()].some((peer) => peer.media === media)
+            ) {
+                continue;
+            }
+
+            this.routers.splice(this.routers.indexOf(media), 1);
+            media.router.close();
+            console.log(`[INFO] room=${this.id} back to ${this.routers.length} media workers`);
+        }
     }
 
     public describePeers(exceptPeerId?: string, withOrphans = false): PeerDescription[] {

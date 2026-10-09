@@ -190,6 +190,7 @@ sobre `ts\nMÉTODO\ncaminho\ncorpo`, janela de 300 s — como o `kick` de hoje):
 | `POST /broadcast` | `{ channel, event, data }` — o tempo real do Laravel | `{ delivered: n }` (quantos sockets inscritos receberam) |
 | `POST /rooms/:code/mute` | `{ "userId": "user:12", "muted": true }` — pausa/retoma o producer `mic` daquela conta | `{ muted: n }` |
 | `GET /presence` | corpo vazio | `{ rooms: { "<room>": [ { sub, name, sources: ["mic","screen"], muted, deafened } ] } }` |
+| `GET /stats` | corpo vazio | `{ rooms, peers, workers: [ { index, pid, closed, routers, transports, producers, consumers, maxRssKb, cpuMs } ], node: { rssKb, heapUsedKb, cpuMs } }` — o que o mediasoup segura de verdade (contado nos `dump()` dele, pipes incluídos), a memória e a CPU de cada worker. Ninguém do produto chama: é o que a prova ponta a ponta (`sfu/e2e`) e o diagnóstico na VPS leem para achar vazamento |
 
 `consumePlain` devolve também `ssrc` do consumer: o receptor nativo (`PlainReceiver`) separa os
 producers de uma mesma porta por SSRC, sem adivinhar pelo primeiro pacote.

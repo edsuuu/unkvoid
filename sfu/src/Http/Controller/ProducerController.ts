@@ -10,7 +10,7 @@ import type { ProducerRequest } from '../Request/ProducerRequest.js';
 
 const MEDIA_IDLE_MS = 30_000;
 
-const KEYFRAME_REQUEST_DELAY_MS = 1000;
+const KEYFRAME_REQUEST_DELAY_MS = 500;
 
 export class ProducerController {
     public async store(request: ProduceRequest): Promise<Payload> {

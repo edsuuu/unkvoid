@@ -115,11 +115,13 @@ export class ConsumerController {
 
     public async resume(request: ConsumerRequest): Promise<Payload> {
         const consumer = request.peer().getConsumer(request.consumerId());
-        await consumer.resume();
 
-        if (consumer.kind === 'video') {
-            await consumer.requestKeyFrame();
-        }
+        // O `resume` já pede o quadro-chave (e o mediasoup pede de novo quando o caminho do
+        // consumer se conecta). Um segundo pedido aqui caía no freio de 1 s do
+        // `keyFrameRequestDelay`, saía um segundo depois e rearmava o freio: cada pessoa que
+        // abria uma tela custava dois quadros-chave a quem transmite, e quem entrava logo
+        // depois esperava até um segundo a mais pela primeira imagem.
+        await consumer.resume();
 
         request.room().announceWatchers(consumer.producerId);
 

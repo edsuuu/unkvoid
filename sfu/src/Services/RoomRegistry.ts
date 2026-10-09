@@ -1,12 +1,24 @@
 import * as mediasoup from 'mediasoup';
-import type { WebRtcServer, Worker } from 'mediasoup/types';
+import type { Router, WebRtcServer, Worker } from 'mediasoup/types';
 
 import type { Peer } from './Peer.js';
 import { Room, type MediaRouter } from './Room.js';
 import { config } from '../Config/index.js';
 import { ServiceUnavailableException } from '../Exceptions/ApiException.js';
 
-type WorkerSlot = { worker: Worker; webRtcServer: WebRtcServer; routers: number };
+type WorkerSlot = { worker: Worker; webRtcServer: WebRtcServer; routers: Set<Router> };
+
+export type WorkerDump = {
+    index: number;
+    pid: number;
+    closed: boolean;
+    routers: number;
+    transports: number;
+    producers: number;
+    consumers: number;
+    maxRssKb: number;
+    cpuMs: number;
+};
 
 const RESPAWN_CEILING_MS = 30_000;
 
@@ -63,7 +75,7 @@ export class RoomRegistry {
                 throw failure;
             });
 
-        const slot: WorkerSlot = { worker, webRtcServer, routers: 0 };
+        const slot: WorkerSlot = { worker, webRtcServer, routers: new Set() };
 
         worker.on('died', (error) => this.revive(index, slot, error));
 
@@ -124,12 +136,12 @@ export class RoomRegistry {
         }
 
         const slot = free.reduce((smallest, candidate) =>
-            candidate.routers < smallest.routers ? candidate : smallest,
+            candidate.routers.size < smallest.routers.size ? candidate : smallest,
         );
         const router = await slot.worker.createRouter({ mediaCodecs: config.router.mediaCodecs });
 
-        slot.routers += 1;
-        router.observer.once('close', () => (slot.routers -= 1));
+        slot.routers.add(router);
+        router.observer.once('close', () => slot.routers.delete(router));
 
         return { router, webRtcServer: slot.webRtcServer, worker: slot.worker };
     }
@@ -223,8 +235,74 @@ export class RoomRegistry {
         return {
             rooms: this.rooms.size,
             peers: [...this.rooms.values()].reduce((total, room) => total + room.peers.size, 0),
-            workers: this.slots.map((slot) => slot.routers),
+            workers: this.slots.map((slot) => slot.routers.size),
             workersDown: this.slots.filter((slot) => slot.worker.closed).length,
+        };
+    }
+
+    /**
+     * O que cada worker segura agora, contado pelo próprio mediasoup: os transportes (os de
+     * pipe também), os producers e os consumers de cada router, a memória e a CPU do processo.
+     */
+    public async dump(): Promise<{
+        rooms: number;
+        peers: number;
+        workers: WorkerDump[];
+        node: { rssKb: number; heapUsedKb: number; cpuMs: number };
+    }> {
+        const workers = await Promise.all(
+            this.slots.map(async (slot, index): Promise<WorkerDump> => {
+                const empty = { transports: 0, producers: 0, consumers: 0 };
+
+                if (slot.worker.closed) {
+                    return {
+                        index,
+                        pid: slot.worker.pid,
+                        closed: true,
+                        routers: 0,
+                        ...empty,
+                        maxRssKb: 0,
+                        cpuMs: 0,
+                    };
+                }
+
+                // Router que fecha no meio da conta já não segura nada: fica fora dela. O worker
+                // que morre no meio também, e o `/stats` responde com o que sobrou.
+                const [usage, ...dumped] = await Promise.all([
+                    slot.worker.getResourceUsage().catch(() => null),
+                    ...[...slot.routers].map((router) => router.dump().catch(() => null)),
+                ]);
+                const routers = dumped.filter((router) => router !== null);
+
+                return {
+                    index,
+                    pid: slot.worker.pid,
+                    closed: false,
+                    routers: routers.length,
+                    ...routers.reduce(
+                        (total, router) => ({
+                            transports: total.transports + router.transportIds.length,
+                            producers: total.producers + router.mapProducerIdConsumerIds.length,
+                            consumers: total.consumers + router.mapConsumerIdProducerId.length,
+                        }),
+                        empty,
+                    ),
+                    maxRssKb: usage?.ru_maxrss ?? 0,
+                    cpuMs: usage ? usage.ru_utime + usage.ru_stime : 0,
+                };
+            }),
+        );
+        const memory = process.memoryUsage();
+        const cpu = process.cpuUsage();
+
+        return {
+            ...this.stats(),
+            workers,
+            node: {
+                rssKb: Math.round(memory.rss / 1024),
+                heapUsedKb: Math.round(memory.heapUsed / 1024),
+                cpuMs: Math.round((cpu.user + cpu.system) / 1000),
+            },
         };
     }
 }
