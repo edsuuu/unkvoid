@@ -29,9 +29,9 @@ diverge no primeiro ajuste.
 | Som do sistema | WASAPI por processo: só o jogo, sem o app de chamada | monitor do PulseAudio/PipeWire, sem o app de chamada | ScreenCaptureKit |
 | Encoder | Media Foundation na placa; sem placa, CPU em 720p30 | `nvh264enc`/`vah264enc`/`vaapih264enc`; sem placa, `x264enc` em 720p30 | VideoToolbox |
 | Microfone | WASAPI, pela interface | `pulsesrc`, pela captura | `AVAudioEngine` (com o cancelamento de eco do sistema) |
-| Câmera | ainda não | `v4l2src` (o botão do app Slint a liga; `UNKVOID_CAMERA_SOURCE` troca a webcam por qualquer origem do GStreamer, para testar sem uma) | AVFoundation, `IOSurface` sem cópia |
+| Câmera | ainda não (`capture::captures_cameras` diz que não, e a tela apaga o botão) | `v4l2src`, a escolhida em Configurações → Voz e vídeo (o botão do app Slint a liga; no build de depuração, `UNKVOID_CAMERA_SOURCE` troca a webcam por qualquer origem do GStreamer, para testar sem uma). Volta sozinha depois de uma queda | AVFoundation, `IOSurface` sem cópia; o núcleo a reabre depois de uma queda |
 | Assistir | Media Foundation na placa (DXVA), com reserva na CPU | `avdec_h264` dentro do processo (`gstreamer-rs`), no tamanho que veio | VideoToolbox (`AVSampleBufferDisplayLayer`) |
-| Som de quem assiste | WASAPI; o som da tela espera o tanto que a imagem dela espera no `Playout` | `pacat`, com a mesma espera | `AVAudioEngine` (o som da tela ainda não segue a espera da imagem: o `follows` não atravessa a ABI) |
+| Som de quem assiste | WASAPI; o som da tela segue a espera da imagem dela no `Playout`, fora de 40 ms de folga e com emendas sem estalo | `pacat`, depois do mesmo mixer, com a mesma espera | `AVAudioEngine` (o som da tela ainda não segue a espera da imagem: o `follows` não atravessa a ABI) |
 | Atualização | pelo site, assinada (ver [AUTO-UPDATE.md](AUTO-UPDATE.md)), ou pela Microsoft Store | pelo APT | ainda sem versão publicada |
 
 ## A ponte do Swift
@@ -48,4 +48,4 @@ por elas no [CONTRATO.md](CONTRATO.md). Duas regras que não perdoam: `unkvoid_c
 |---|---|
 | estado e preferências (`state.json`) | a pasta de configuração do sistema, em `com.unkvoid.desktop` |
 | token da conta | cifrado em AES-256-GCM no mesmo arquivo; a chave fica no chaveiro do sistema (Keychain, Credential Manager, Secret Service) |
-| log do dia | Windows: `%LOCALAPPDATA%\com.unkvoid.desktop\unkvoid-AAAA-MM-DD.log`; Linux: `~/.local/state/unkvoid`. Sete dias, e as linhas com `ERROR` vão para `POST /api/errors` a cada 30 s |
+| log do dia | Windows: `%LOCALAPPDATA%\com.unkvoid.desktop\unkvoid-AAAA-MM-DD.log`; Linux: `~/.local/state/unkvoid/unkvoid-AAAA-MM-DD.log` (`$XDG_STATE_HOME`), a partir do `info`. Sete dias, e as linhas com `ERROR` vão para `POST /api/errors` a cada 30 s |
