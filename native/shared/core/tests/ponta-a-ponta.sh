@@ -5,16 +5,18 @@
 # `native/shared/core/tests/live_room.rs` transmitem e assistem no mesmo processo. No fim, a queda
 # de rede de 10 s de cada lado, com o `iptables` cortando só um dos dois processos.
 #
-# Roda num Ubuntu 24.04 ou Debian 12 com os pacotes do docs/VERIFICAR-WINDOWS-LINUX.md. Como root
-# faz tudo (o `iptables` e o usuário da queda de rede pedem); sem root, ou com SEM_REDE=1, a queda
-# de rede é pulada.
+# Roda num Ubuntu 24.04 ou Debian 12 com os pacotes do docs/VERIFICAR-WINDOWS-LINUX.md, como o seu
+# usuário (o `cargo` e o `pnpm` são os dele). Só a queda de rede pede root, para o `iptables` e um
+# usuário de teste: o script chama `sudo` para isso (a senha é pedida uma vez, no começo). Com
+# SEM_REDE=1, ou sem `sudo`, a queda de rede é pulada.
 #
 #   native/shared/core/tests/ponta-a-ponta.sh                      # tudo
 #   SEM_REDE=1 native/shared/core/tests/ponta-a-ponta.sh           # sem a queda de rede
 #   SFU_DIR=/outro/checkout/sfu native/shared/core/tests/ponta-a-ponta.sh   # outro SFU
 #
 # Variáveis: SFU_DIR (o `sfu/` do repo), SFU_PORT (3300; não é a 3000 de quem desenvolve),
-# SFU_MEDIA_PORT (43000) e SFU_PLAIN_PORT (44000), TELA (:99), PASTA (/tmp/unkvoid-ponta-a-ponta).
+# SFU_MEDIA_PORT (43000) e SFU_PLAIN_PORT (44000), TELA (:99), PASTA (/tmp/unkvoid-ponta-a-ponta),
+# e o CARGO_TARGET_DIR de sempre.
 #
 # A máquina volta como estava: a saída e a entrada de som padrão voltam às de antes, os módulos de
 # som que ele carregou saem, o servidor de som que ele subiu desce, e o usuário e as regras do
@@ -33,7 +35,12 @@ TELA="${TELA:-:99}"
 PASTA="${PASTA:-/tmp/unkvoid-ponta-a-ponta}"
 SEGREDO="ponta-a-ponta-segredo-de-teste-com-mais-de-32-caracteres"
 SFU_URL="ws://127.0.0.1:$SFU_PORT/sfu"
+TARGET="${CARGO_TARGET_DIR:-$NATIVE/target}"
 USUARIO_REDE=unkvoidrede
+# Root só para a queda de rede; quem já é root não precisa do `sudo`.
+if [ "$(id -u)" = 0 ]; then COMO_ROOT=(); else COMO_ROOT=(sudo); fi
+# Na saída, sem pedir senha: se o `sudo` esqueceu, o que sobrar é avisado em vez de travar.
+if [ "$(id -u)" = 0 ]; then NA_SAIDA=(); else NA_SAIDA=(sudo -n); fi
 # O binário da queda de rede roda como outro usuário: fica numa pasta que ele alcança, fora da
 # $PASTA (que pode estar dentro de uma pasta privada), e sai no fim.
 REDE_DIR=""
@@ -58,27 +65,29 @@ SAIDA_ANTES=""
 ENTRADA_ANTES=""
 USUARIO_NOSSO=0
 
+REDE=0
+
 # A regra que marca os pacotes do usuário da queda e as que os derrubam.
 regras_da_rede() {
-    while iptables -D OUTPUT -m connmark --mark 7 -j DROP 2>/dev/null; do :; done
-    while iptables -D INPUT -m connmark --mark 7 -j DROP 2>/dev/null; do :; done
-    while iptables -D OUTPUT -m owner --uid-owner "$USUARIO_REDE" -j CONNMARK --set-mark 7 2>/dev/null; do :; done
+    while "${NA_SAIDA[@]}" iptables -D OUTPUT -m connmark --mark 7 -j DROP 2>/dev/null; do :; done
+    while "${NA_SAIDA[@]}" iptables -D INPUT -m connmark --mark 7 -j DROP 2>/dev/null; do :; done
+    while "${NA_SAIDA[@]}" iptables -D OUTPUT -m owner --uid-owner "$USUARIO_REDE" -j CONNMARK --set-mark 7 2>/dev/null; do :; done
 }
 
 encerra() {
     for pid in "${FILHOS[@]}"; do kill "$pid" 2>/dev/null; done
 
     if [ -n "$REDE_DIR" ]; then
-        pkill -f "$REDE_DIR/room" 2>/dev/null
+        "${NA_SAIDA[@]}" pkill -f "$REDE_DIR/room" 2>/dev/null
         rm -rf "$REDE_DIR"
     fi
 
-    if [ "$(id -u)" = 0 ] && command -v iptables >/dev/null; then
+    if [ "$REDE" = 1 ]; then
         regras_da_rede
     fi
 
-    if [ "$USUARIO_NOSSO" = 1 ]; then
-        userdel -r "$USUARIO_REDE" >/dev/null 2>&1
+    if [ "$USUARIO_NOSSO" = 1 ] && ! "${NA_SAIDA[@]}" userdel -r "$USUARIO_REDE" >/dev/null 2>&1; then
+        echo "AVISO: o usuário $USUARIO_REDE ficou; apague com: sudo userdel -r $USUARIO_REDE"
     fi
 
     # O sink do som da tela, se um teste caiu com ele de pé.
@@ -100,6 +109,25 @@ encerra() {
 }
 trap encerra EXIT
 trap 'exit 130' INT TERM
+
+anuncia "O que o script precisa"
+faltam=""
+for programa in cargo pnpm node Xvfb xdpyinfo pactl ffmpeg gst-launch-1.0 curl; do
+    command -v "$programa" >/dev/null || faltam="$faltam $programa"
+done
+if [ -n "$faltam" ]; then
+    falhou "faltam no PATH:$faltam (os pacotes e as ferramentas do §2.1 do docs/VERIFICAR-WINDOWS-LINUX.md)"
+    exit 1
+fi
+if ! cargo build -q -p core-app --tests --examples >"$PASTA/build.log" 2>&1; then
+    falhou "o núcleo não compilou (ver $PASTA/build.log)"
+    exit 1
+fi
+passou "as ferramentas estão no PATH e o núcleo compilou"
+
+if [ "${SEM_REDE:-0}" != 1 ] && command -v iptables >/dev/null && "${COMO_ROOT[@]}" true; then
+    REDE=1
+fi
 
 anuncia "A tela, o som e o vídeo de sincronia"
 Xvfb "$TELA" -screen 0 1280x720x24 >"$PASTA/xvfb.log" 2>&1 &
@@ -170,22 +198,23 @@ else
 fi
 grep -E 'primeira imagem de quem entra|5% de perda' "$PASTA/live_room-gop.log"
 
-if [ "${SEM_REDE:-0}" = 1 ] || [ "$(id -u)" != 0 ]; then
-    echo "AVISO: queda de rede pulada (precisa de root e do iptables)"
+if [ "$REDE" != 1 ]; then
+    echo "AVISO: queda de rede pulada (SEM_REDE=1, ou sem sudo, ou sem iptables)"
 else
     anuncia "Queda de rede de 10 s"
-    cargo build -q -p core-app --example room || falhou "o exemplo room não compilou"
+    # A senha de novo, se o `sudo` esqueceu nos minutos dos testes: daqui em diante ele roda atrás.
+    [ "${#COMO_ROOT[@]}" -gt 0 ] && sudo -v
     REDE_DIR="$(mktemp -d /tmp/unkvoid-rede.XXXXXX)" && chmod 755 "$REDE_DIR"
-    install -m 755 "$NATIVE/target/debug/examples/room" "$REDE_DIR/room"
+    install -m 755 "$TARGET/debug/examples/room" "$REDE_DIR/room"
     if ! id "$USUARIO_REDE" >/dev/null 2>&1; then
-        useradd -m -s /bin/bash "$USUARIO_REDE" && USUARIO_NOSSO=1
+        "${COMO_ROOT[@]}" useradd -m -s /bin/bash "$USUARIO_REDE" && USUARIO_NOSSO=1
     fi
 
     for lado in transmite assiste; do
         sala="rede${lado}$(date +%s | tail -c 5)"
-        iptables -I OUTPUT 1 -m owner --uid-owner "$USUARIO_REDE" -j CONNMARK --set-mark 7
+        "${COMO_ROOT[@]}" iptables -I OUTPUT 1 -m owner --uid-owner "$USUARIO_REDE" -j CONNMARK --set-mark 7
         if [ "$lado" = transmite ]; then
-            runuser -u "$USUARIO_REDE" -- env DISPLAY="$TELA" "$REDE_DIR/room" "$SFU_URL" "$sala" share 45 >"$PASTA/rede-$lado-share.log" 2>&1 &
+            "${COMO_ROOT[@]}" runuser -u "$USUARIO_REDE" -- env DISPLAY="$TELA" "$REDE_DIR/room" "$SFU_URL" "$sala" share 45 >"$PASTA/rede-$lado-share.log" 2>&1 &
             transmite=$!
             sleep 5
             "$REDE_DIR/room" "$SFU_URL" "$sala" watch 38 >"$PASTA/rede-$lado-watch.log" 2>&1 &
@@ -194,15 +223,15 @@ else
             DISPLAY="$TELA" "$REDE_DIR/room" "$SFU_URL" "$sala" share 45 >"$PASTA/rede-$lado-share.log" 2>&1 &
             transmite=$!
             sleep 5
-            runuser -u "$USUARIO_REDE" -- "$REDE_DIR/room" "$SFU_URL" "$sala" watch 38 >"$PASTA/rede-$lado-watch.log" 2>&1 &
+            "${COMO_ROOT[@]}" runuser -u "$USUARIO_REDE" -- "$REDE_DIR/room" "$SFU_URL" "$sala" watch 38 >"$PASTA/rede-$lado-watch.log" 2>&1 &
             assiste=$!
         fi
         sleep 10
-        iptables -I OUTPUT 2 -m connmark --mark 7 -j DROP
-        iptables -I INPUT 1 -m connmark --mark 7 -j DROP
+        "${COMO_ROOT[@]}" iptables -I OUTPUT 2 -m connmark --mark 7 -j DROP
+        "${COMO_ROOT[@]}" iptables -I INPUT 1 -m connmark --mark 7 -j DROP
         sleep 10
-        iptables -D OUTPUT -m connmark --mark 7 -j DROP
-        iptables -D INPUT -m connmark --mark 7 -j DROP
+        "${COMO_ROOT[@]}" iptables -D OUTPUT -m connmark --mark 7 -j DROP
+        "${COMO_ROOT[@]}" iptables -D INPUT -m connmark --mark 7 -j DROP
         # Só os dois lados: um `wait` sem argumento esperaria também o Xvfb e o SFU, que não acabam.
         wait "$transmite" "$assiste"
         regras_da_rede

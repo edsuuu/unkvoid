@@ -5,8 +5,9 @@ mesmo crate nos dois sistemas) e o núcleo (`native/shared`) em hardware de verd
 09/10/2026 depois de duas rodadas num contêiner Ubuntu 24.04 sem placa de vídeo, sem webcam e
 sem Windows; o relatório de cada rodada está na descrição do PR #53.
 
-Cada comando abaixo roda como está, de cima para baixo, a partir da raiz do repositório. Os
-marcados **(comprovado)** rodaram assim no contêiner. Os do Windows marcados **(derivado)** saíram
+Cada bloco abaixo roda como está, de cima para baixo, e começa indo para a pasta dele (`cd` no
+começo), então tanto faz onde o bloco anterior deixou o terminal. Os marcados **(comprovado)**
+rodaram assim no contêiner, e o roteiro inteiro do Linux foi seguido do zero por outro agente. Os do Windows marcados **(derivado)** saíram
 da compilação cruzada (`x86_64-pc-windows-gnu`) e da leitura do código: ninguém os rodou num
 Windows.
 
@@ -71,7 +72,7 @@ command -v pnpm || sudo npm install -g pnpm@10
 ### 2.2 Build, lint e testes (comprovado)
 
 ```bash
-cd native
+cd "$(git rev-parse --show-toplevel)/native"
 cargo build --workspace --exclude unkvoid-desktop --all-targets
 cargo clippy --workspace --exclude unkvoid-desktop --all-targets -- -D warnings
 cargo test --workspace --exclude unkvoid-desktop
@@ -79,11 +80,14 @@ cargo test --workspace --exclude unkvoid-desktop
 
 `unkvoid-desktop` é o Tauri legado: fora daqui de propósito. O `unkvoid-linux` (GTK) foi
 aposentado pelo dono, mas ainda compila e entra no workspace; quem não instalou o `libgtk-4-dev`
-acrescenta `--exclude unkvoid-linux` aos três.
+acrescenta `--exclude unkvoid-linux` aos três. Os dois apps geram um binário com o mesmo nome
+(o `cargo` avisa `output filename collision`): o `target/debug/unkvoid` é o do último que
+compilou, então rode o app sempre por `cargo run -p unkvoid-windows`.
 
 Os testes que pedem GStreamer com plugins, servidor de som ou SFU no ar ficam `#[ignore]`:
 
 ```bash
+cd "$(git rev-parse --show-toplevel)/native"
 # GStreamer de verdade: encoder, keyframe por PLI, taxa no ar, relógio da captura, decodificador.
 # Os do som ficam de fora aqui: são os do comando seguinte, um de cada vez.
 cargo test -p capture -p media -- --ignored --skip linux_audio
@@ -97,6 +101,7 @@ Precisa de um servidor de som com uma saída padrão. Numa máquina com som, os 
 — mudos: o "jogo" de mentira toca em volume zero. Num contêiner, sobe um:
 
 ```bash
+cd "$(git rev-parse --show-toplevel)/native"
 pulseaudio --start --exit-idle-time=-1
 pactl load-module module-null-sink sink_name=fake && pactl set-default-sink fake
 cargo test -p capture --lib linux_audio -- --ignored --test-threads=1
@@ -112,15 +117,20 @@ O mesmo no PipeWire (`sudo apt-get install -y pipewire pipewire-pulse wireplumbe
 sessão de desktop ele já está no ar; num contêiner:
 
 ```bash
+cd "$(git rev-parse --show-toplevel)/native"
 pulseaudio --kill 2>/dev/null                       # o PipeWire no lugar dele
-export XDG_RUNTIME_DIR=$(mktemp -d) && chmod 700 "$XDG_RUNTIME_DIR"
-dbus-daemon --session --address="unix:path=$XDG_RUNTIME_DIR/bus" --fork --print-pid >"$XDG_RUNTIME_DIR/dbus.pid"
-export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
-(pipewire >/dev/null 2>&1 &); sleep 1; (wireplumber >/dev/null 2>&1 &); sleep 1; (pipewire-pulse >/dev/null 2>&1 &); sleep 2
-pactl info | grep 'Server Name'                      # PulseAudio (on PipeWire 1.0.5)
-pactl load-module module-null-sink sink_name=fake && pactl set-default-sink fake
-cargo test -p capture --lib linux_audio -- --ignored --test-threads=1
-pkill -x pipewire-pulse; pkill -x wireplumber; pkill -x pipewire; kill "$(cat "$XDG_RUNTIME_DIR/dbus.pid")"
+# Num subshell: as variáveis do PipeWire de mentira não vazam para o terminal de quem roda.
+(
+    export XDG_RUNTIME_DIR=$(mktemp -d) && chmod 700 "$XDG_RUNTIME_DIR"
+    dbus-daemon --session --address="unix:path=$XDG_RUNTIME_DIR/bus" --fork --print-pid >"$XDG_RUNTIME_DIR/dbus.pid"
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+    (pipewire >/dev/null 2>&1 &); sleep 1; (wireplumber >/dev/null 2>&1 &); sleep 1; (pipewire-pulse >/dev/null 2>&1 &); sleep 2
+    pactl info | grep 'Server Name'                  # PulseAudio (on PipeWire 1.0.5)
+    pactl load-module module-null-sink sink_name=fake && pactl set-default-sink fake
+    cargo test -p capture --lib linux_audio -- --ignored --test-threads=1
+    pkill -x pipewire-pulse; pkill -x wireplumber; pkill -x pipewire; kill "$(cat "$XDG_RUNTIME_DIR/dbus.pid")"
+    rm -rf "$XDG_RUNTIME_DIR"
+)
 ```
 
 ### 2.4 De ponta a ponta contra o SFU (comprovado)
@@ -130,9 +140,16 @@ tocando na tela e no som, o SFU — e roda os cenários do `native/shared/core/t
 e a queda de rede de 10 s de cada lado:
 
 ```bash
-sudo native/shared/core/tests/ponta-a-ponta.sh          # como root: a queda de rede usa iptables
-SEM_REDE=1 native/shared/core/tests/ponta-a-ponta.sh    # sem root, sem a queda de rede
+cd "$(git rev-parse --show-toplevel)"
+native/shared/core/tests/ponta-a-ponta.sh               # tudo; a queda de rede pede a senha do sudo
+SEM_REDE=1 native/shared/core/tests/ponta-a-ponta.sh    # sem a queda de rede, sem sudo
 ```
+
+Rode como o seu usuário, não com `sudo` na frente: o `sudo` troca o `PATH` e a casa, e o `cargo`
+e o `pnpm` somem (e o que compilasse ficaria com dono root). O script chama `sudo` só para o
+`iptables` e o usuário de teste da queda de rede, e pede a senha uma vez. Leva ~3 min com o build
+pronto e ~15 min do zero; antes de tudo ele confere as ferramentas no `PATH` e compila o núcleo,
+e para ali se faltar alguma coisa.
 
 A máquina volta como estava: a saída e a entrada de som padrão voltam às de antes, os módulos de
 som que ele carregou saem, o PulseAudio que ele subiu (se não havia um) desce, e o usuário
@@ -145,29 +162,48 @@ Cada cenário imprime o que mediu; o esperado (o que saiu no contêiner, sem pla
 
 | Cenário | Esperado |
 |---|---|
-| `a_late_viewer_sees_and_hears_the_screen_in_sync` | primeira imagem < 3 s depois de entrar (saiu ~1 s), ≥ 25 imagens/s, nenhuma parada > 500 ms, 1280x720, desvio A/V mediano < 80 ms (saiu 23–68 ms) |
-| o mesmo com `UNKVOID_LOSS=3` | o mesmo; a espera da imagem cresce e o som acompanha (saiu 23–59 ms) |
+| `a_late_viewer_sees_and_hears_the_screen_in_sync` | primeira imagem < 3 s depois de entrar (saiu ~0,5 s), ≥ 25 imagens/s, nenhuma parada > 500 ms, 1280x720, desvio A/V mediano < 80 ms (saiu 23–69 ms) |
+| o mesmo com `UNKVOID_LOSS=3` | o mesmo; a espera da imagem cresce e o som acompanha (saiu 23–69 ms) |
 | `the_microphone_reaches_the_room` | > 50 blocos de voz em 3 s (saiu 133) |
 | `a_camera_is_watched_beside_the_screen` | ≥ 60 imagens da câmera em 5 s, 640x360, a tela continua |
 | `stopping_and_sharing_again_brings_the_picture_back` | a imagem da tela nova em < 4 s (saiu ~1 s) |
 | `a_quality_change_keeps_the_clock_and_the_picture` | 12–18 imagens/s depois de pedir 15, parada < 1,5 s, relógio do RTP descompassado < 150 ms |
 | `a_moved_person_leaves_for_good_and_shares_in_the_new_room` | o aviso `moved` com o destino, a tela sai da origem e não volta sozinha, e transmite no destino |
 | `late_viewers_see_the_screen_and_the_camera_within_a_second` (GOP de 4 s) | tela e câmera de cada atrasado — sozinho, dois a 300 ms, três juntos — em até 1 s |
-| `five_percent_lost_on_the_way_in_never_holds_the_picture_for_a_second` (GOP de 4 s) | 5% de perda na chegada por 15 s: maior parada ≤ 1 s, ≥ 24 imagens/s |
-| queda de rede de quem transmite / de quem assiste | a imagem volta sozinha de 1 a 3 s depois da rede (o script exige imagem em todo segundo a partir de 6 s depois da volta) |
+| `five_percent_lost_on_the_way_in_never_holds_the_picture_for_a_second` (GOP de 4 s) | 5% de perda na chegada por 15 s: maior parada ≤ 1 s, ≥ 24 imagens/s (saiu 126–219 ms, 30 imagens/s, nenhum buraco largado) |
+| queda de rede de quem transmite / de quem assiste | a imagem volta sozinha em até 3 s depois da rede (saiu no primeiro segundo; o script exige imagem em todo segundo a partir de 6 s depois da volta) |
 
-Os testes um a um, com um SFU já no ar (o `SFU_SECRET` é o dele; o da câmera e os do GOP de 4 s só
-existem no build de depuração, que é o do `cargo test`):
+Os testes um a um, sem o script: precisam de um SFU no ar, de uma tela X com algo mexendo
+(`DISPLAY`) e de um servidor de som com saída padrão — numa sessão de desktop os dois últimos já
+existem. O de sincronia (`a_late_viewer…`) espera, além disso, o vídeo do clarão e do bipe
+tocando na tela e no som: o `sync.mkv` que o script gera em `$PASTA`. O SFU, na mesma porta do
+script:
 
 ```bash
-cd native
-UNKVOID_SFU=ws://127.0.0.1:3300/sfu SFU_SECRET=<o do SFU> UNKVOID_CAMERA_SOURCE="videotestsrc is-live=true pattern=ball" \
-  cargo test -p core-app --test live_room -- --ignored --test-threads=1 --nocapture
+cd "$(git rev-parse --show-toplevel)/sfu"
+pnpm install --frozen-lockfile && pnpm run build
+SFU_SECRET=um-segredo-local-de-teste-com-mais-de-32-letras SFU_PORT=3300 SFU_MEDIA_PORT=43000 SFU_PLAIN_PORT=44000 \
+  SFU_WORKERS=2 SFU_CONNECTIONS_PER_MINUTE=1000 SFU_PLAIN_PORTS=32 node dist/server.js >/tmp/sfu-teste.log 2>&1 &
+echo $! >/tmp/sfu-teste.pid
+```
+
+Os testes (o da câmera e os do GOP de 4 s só existem no build de depuração, que é o do
+`cargo test`), e o SFU desce no fim:
+
+```bash
+cd "$(git rev-parse --show-toplevel)/native"
+export UNKVOID_SFU=ws://127.0.0.1:3300/sfu SFU_SECRET=um-segredo-local-de-teste-com-mais-de-32-letras
+UNKVOID_CAMERA_SOURCE="videotestsrc is-live=true pattern=ball" \
+  cargo test -p core-app --test live_room -- --ignored --test-threads=1 --nocapture --skip late_viewers_see --skip five_percent_lost
+UNKVOID_KEYFRAME_SECONDS=4 UNKVOID_CAMERA_SOURCE="videotestsrc is-live=true pattern=ball" \
+  cargo test -p core-app --test live_room -- --ignored --test-threads=1 --nocapture late_viewers_see five_percent_lost
+kill "$(cat /tmp/sfu-teste.pid)"
 ```
 
 E o medidor de sempre, um processo de cada lado (agora decodifica também no Linux):
 
 ```bash
+cd "$(git rev-parse --show-toplevel)/native"
 cargo run -p core-app --example room -- ws://127.0.0.1:3300/sfu sala-de-teste share 60
 cargo run -p core-app --example room -- ws://127.0.0.1:3300/sfu sala-de-teste watch 30
 ```
@@ -175,7 +211,7 @@ cargo run -p core-app --example room -- ws://127.0.0.1:3300/sfu sala-de-teste wa
 ### 2.5 O app (comprovado no Xvfb)
 
 ```bash
-cd native
+cd "$(git rev-parse --show-toplevel)/native"
 UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid-windows                       # femtovg (OpenGL)
 UNKVOID_SERVER=http://127.0.0.1:8000 SLINT_BACKEND=winit-software cargo run -p unkvoid-windows   # sem OpenGL
 ```
@@ -209,7 +245,7 @@ Código no WSL e Rust no Windows: [BUILD-WINDOWS.md](BUILD-WINDOWS.md).
 ### 3.2 Build, lint e testes (derivado)
 
 ```powershell
-cd native
+Set-Location "$(git rev-parse --show-toplevel)/native"
 cargo clippy --workspace --exclude unkvoid-linux --exclude unkvoid-desktop --all-targets -- -D warnings
 cargo test --workspace --exclude unkvoid-linux --exclude unkvoid-desktop
 # Com hardware: o monitor duplicado, o encoder de verdade, o decodificador de verdade
@@ -221,7 +257,7 @@ No contêiner o que se provou foi a compilação (comprovado):
 
 ```bash
 sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 && rustup target add x86_64-pc-windows-gnu
-cd native && cargo clippy --target x86_64-pc-windows-gnu -p media -p capture -p core-app -p clips -p storage -p unkvoid-windows --all-targets -- -D warnings
+cd "$(git rev-parse --show-toplevel)/native" && cargo clippy --target x86_64-pc-windows-gnu -p media -p capture -p core-app -p clips -p storage -p unkvoid-windows --all-targets -- -D warnings
 ```
 
 O alvo `gnu` confere todo `cfg(windows)`, mas não linka nem roda; o alvo MSVC precisa do SDK da
@@ -248,7 +284,7 @@ Variável de ambiente no PowerShell vale para todos os comandos seguintes da mes
 uma antes de pôr a outra.
 
 ```powershell
-cd native
+Set-Location "$(git rev-parse --show-toplevel)/native"
 $env:UNKVOID_SERVER = "http://127.0.0.1:8000"
 cargo run -p unkvoid-windows
 # o encoder do processador, para comparar
@@ -260,6 +296,7 @@ $env:UNKVOID_DECODER = "cpu"; cargo run -p unkvoid-windows; Remove-Item Env:UNKV
 O teste vivo do decodificador, com alguém transmitindo numa sala:
 
 ```powershell
+Set-Location "$(git rev-parse --show-toplevel)/native"
 $env:UNKVOID_ROOM = "<código>"; cargo test -p unkvoid-windows a_live_screen -- --ignored --nocapture; Remove-Item Env:UNKVOID_ROOM
 ```
 
