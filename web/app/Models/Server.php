@@ -486,9 +486,7 @@ final class Server extends Model implements Auditable
         }, ['server_id' => $this->id, 'user_id' => $target->id]);
 
         if (isset($changes['server_mute'])) {
-            foreach ($this->voiceChannels() as $channel) {
-                $sfu->mute($channel, $target->subject(), $changes['server_mute']);
-            }
+            $sfu->muteEverywhere($target->subject(), $changes['server_mute']);
         }
 
         self::publish(new ServerUpdated($this->id));
@@ -552,22 +550,6 @@ final class Server extends Model implements Auditable
     private static function newInviteCode(): string
     {
         return mb_strtolower(Str::random(10));
-    }
-
-    /**
-     * Expulsar, banir e mutar falam com todo canal de voz do servidor, sem perguntar à
-     * presença onde a pessoa está: a presença esconde quem está na carência de reconexão e
-     * some quando o SFU demora, e nos dois casos o banido continuava transmitindo. O `kick`
-     * e o `mute` numa sala onde a pessoa não está são inofensivos (`{kicked: 0}`).
-     *
-     * ponytail: uma chamada HTTP por canal de voz; com o SFU inalcançável cada uma espera o
-     * timeout. Se pesar, uma rota `kick` sem sala no SFU.
-     *
-     * @return Collection<int, Channel>
-     */
-    private function voiceChannels(): Collection
-    {
-        return $this->channels->where('type', ChannelTypeEnum::Voice)->values();
     }
 
     /**
@@ -636,10 +618,12 @@ final class Server extends Model implements Auditable
             ->delete();
     }
 
+    /**
+     * Sem perguntar à presença onde a pessoa está: ela esconde quem está na carência e some
+     * quando o SFU demora, e nos dois casos o banido continuava transmitindo.
+     */
     private function dropFromVoice(User $user, SfuClient $sfu): void
     {
-        foreach ($this->voiceChannels() as $channel) {
-            $sfu->kick($channel, $user->subject());
-        }
+        $sfu->kickEverywhere($user->subject());
     }
 }

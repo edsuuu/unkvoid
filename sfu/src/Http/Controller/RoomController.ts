@@ -19,22 +19,53 @@ export class RoomController {
         response.json({ kicked: room?.kickUser(this.userId(request), this.move(request)) ?? 0 });
     }
 
+    /**
+     * Sem sala no caminho, vale para o SFU inteiro: expulsar e banir não dependem de o
+     * Laravel saber onde a pessoa está, e saem numa chamada só.
+     */
+    public kickEverywhere(request: Request, response: Response): void {
+        const userId = this.userId(request);
+        let kicked = 0;
+
+        for (const room of this.registry.all()) {
+            kicked += room.kickUser(userId);
+        }
+
+        response.json({ kicked });
+    }
+
     public async mute(request: Request, response: Response): Promise<void> {
+        const room = this.registry.find(this.roomId(request));
+
+        response.json({
+            muted: (await room?.muteUser(this.userId(request), this.muted(request))) ?? 0,
+        });
+    }
+
+    public async muteEverywhere(request: Request, response: Response): Promise<void> {
+        const userId = this.userId(request);
+        const muted = this.muted(request);
+        let touched = 0;
+
+        for (const room of this.registry.all()) {
+            touched += await room.muteUser(userId, muted);
+        }
+
+        response.json({ muted: touched });
+    }
+
+    public presence(_request: Request, response: Response): void {
+        response.json({ rooms: this.registry.presence() });
+    }
+
+    private muted(request: Request): boolean {
         const { muted } = request.body as { muted?: unknown };
 
         if (typeof muted !== 'boolean') {
             throw new ValidationException('field muted must be true or false');
         }
 
-        const room = this.registry.find(this.roomId(request));
-
-        response.json({
-            muted: (await room?.muteUser(this.userId(request), muted)) ?? 0,
-        });
-    }
-
-    public presence(_request: Request, response: Response): void {
-        response.json({ rooms: this.registry.presence() });
+        return muted;
     }
 
     private roomId(request: Request): string {

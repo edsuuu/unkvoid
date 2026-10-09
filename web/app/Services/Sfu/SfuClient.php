@@ -95,6 +95,24 @@ final readonly class SfuClient
         return is_int($moved) ? $moved : 0;
     }
 
+    /**
+     * Sem sala: o SFU inteiro, numa chamada só. Expulsar e banir não dependem de a presença
+     * dizer onde a pessoa está — ela esconde quem está na carência e some quando o SFU demora.
+     */
+    public function kickEverywhere(string $subject): int
+    {
+        $kicked = $this->post('/kick', ['userId' => $subject])['kicked'] ?? 0;
+
+        return is_int($kicked) ? $kicked : 0;
+    }
+
+    public function muteEverywhere(string $subject, bool $muted): int
+    {
+        $mutedCount = $this->post('/mute', ['userId' => $subject, 'muted' => $muted])['muted'] ?? 0;
+
+        return is_int($mutedCount) ? $mutedCount : 0;
+    }
+
     public function mute(Channel $channel, string $subject, bool $muted): int
     {
         $mutedCount = $this->post("/rooms/{$channel->id}/mute", ['userId' => $subject, 'muted' => $muted])['muted'] ?? 0;
@@ -107,7 +125,7 @@ final readonly class SfuClient
      * mesmo request, mesmo que a árvore pergunte canal por canal. `fresh` esquece o cache
      * antes, para quem precisa contar de verdade.
      *
-     * @return array<string, array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool}>> por sala
+     * @return array<string, array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool, reconnecting?: bool}>> por sala
      */
     public function presence(bool $fresh = false): array
     {
@@ -116,7 +134,7 @@ final readonly class SfuClient
                 Cache::forget(self::PRESENCE_CACHE_KEY);
             }
 
-            /** @var array<string, array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool}>> $rooms */
+            /** @var array<string, array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool, reconnecting?: bool}>> $rooms */
             $rooms = Cache::remember(self::PRESENCE_CACHE_KEY, self::PRESENCE_CACHE_SECONDS, fn (): array => (array) ($this->send('GET', '/presence')['rooms'] ?? []));
 
             return $rooms;
@@ -124,7 +142,7 @@ final readonly class SfuClient
     }
 
     /**
-     * @return array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool}>
+     * @return array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool, reconnecting?: bool}>
      */
     public function peers(Channel $channel, bool $fresh = false): array
     {
