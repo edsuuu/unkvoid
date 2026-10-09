@@ -20,8 +20,12 @@ final class Sound: @unchecked Sendable {
     private static let loudness: Float = 0.02
     private static let tail = 0.35
     private var players: [String: AVAudioPlayerNode] = [:]
-    /// Quanto cada tocador ainda tem na fila, e se está aparando o atraso.
+    /// Quanto cada tocador ainda tem na fila, e se está aparando o atraso. Tem cadeado próprio,
+    /// que nunca fica preso durante `stop`/`start`/`detach`: o `stop()` de um tocador espera os
+    /// callbacks dos blocos que descartou, e cada callback precisa deste cadeado — se fosse o
+    /// `gate`, quem sai da voz com alguém mandando som ficaria preso para sempre.
     private var lanes: [String: SoundLane] = [:]
+    private let counter = NSLock()
     /// Escolhido antes de o primeiro bloco de som chegar: o tocador nasce já nesse volume.
     private var volumes: [String: Float] = [:]
     /// A saída escolhida, para apontar de novo quando o motor religa.
@@ -44,7 +48,13 @@ final class Sound: @unchecked Sendable {
         // ao abrir o microfone, uma troca de saída no meio da chamada. Os tocadores que já
         // existiam seguiriam empilhando blocos num motor parado: silêncio até alguém novo.
         configurationWatcher = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: output, queue: nil) { [weak self] _ in
-            self?.restartOutput()
+            guard let self else {
+                return
+            }
+
+            self.gate.lock()
+            self.restartOutput()
+            self.gate.unlock()
         }
     }
 
@@ -56,11 +66,11 @@ final class Sound: @unchecked Sendable {
     func play(_ samples: Data, from producer: String) {
         let frames = samples.count / MemoryLayout<Float>.size / 2
 
-        gate.lock()
+        counter.lock()
 
         let skipped = lanes[producer, default: SoundLane()].skip(for: frames)
 
-        gate.unlock()
+        counter.unlock()
 
         guard let (buffer, peak) = Self.buffer(from: samples, skipping: skipped) else {
             return
@@ -74,40 +84,37 @@ final class Sound: @unchecked Sendable {
 
         defer { gate.unlock() }
 
+        // O motor parou sem avisar (a notificação ainda não chegou): o mesmo religar.
+        if !output.isRunning, !players.isEmpty {
+            restartOutput()
+        }
+
         guard let player = player(for: producer) else {
             return
         }
 
         let queued = Int(buffer.frameLength)
 
+        counter.lock()
         lanes[producer]?.queued += queued
+        counter.unlock()
+
         player.scheduleBuffer(buffer, completionCallbackType: .dataConsumed) { [weak self] _ in
             guard let self else {
                 return
             }
 
-            self.gate.lock()
+            self.counter.lock()
             self.lanes[producer]?.queued -= queued
-            self.gate.unlock()
-        }
-
-        // Motor parado (troca de aparelho) ou tocador que nunca voltou: ninguém ouviria.
-        if !output.isRunning {
-            try? output.start()
-        }
-
-        if !player.isPlaying {
-            player.play()
+            self.counter.unlock()
         }
     }
 
-    /// Depois de o aparelho de saída mudar: o motor religa, cada tocador volta a tocar e a
-    /// saída escolhida é apontada de novo. As filas zeram — o que estava nelas já se perdeu.
+    /// Depois de o aparelho de saída mudar: o motor religa, a saída escolhida é apontada de novo,
+    /// e cada tocador é **parado e tocado de novo** — um tocador que ficou "tocando" num motor
+    /// parado segue com `isPlaying`, e o `play()` sozinho não consome mais nada. A fila zera
+    /// depois do `stop()`, que já esperou os callbacks: o zero fica exato. Chamar com o `gate`.
     private func restartOutput() {
-        gate.lock()
-
-        defer { gate.unlock() }
-
         guard !players.isEmpty else {
             return
         }
@@ -121,7 +128,12 @@ final class Sound: @unchecked Sendable {
         }
 
         for (key, player) in players {
+            player.stop()
+
+            counter.lock()
             lanes[key] = SoundLane()
+            counter.unlock()
+
             player.play()
         }
     }
@@ -146,7 +158,10 @@ final class Sound: @unchecked Sendable {
             player.stop()
             output.detach(player)
             players[key] = nil
+
+            counter.lock()
             lanes[key] = nil
+            counter.unlock()
         }
 
         if players.isEmpty {
@@ -348,28 +363,29 @@ final class Sound: @unchecked Sendable {
     }
 }
 
-/// A fila de som de uma pessoa, em quadros (um quadro = os dois canais). A mesma regra do
-/// `sound.rs` do Windows: passou do teto, o mais velho vai saindo aos poucos até sobrar a
-/// folga — cortar tudo de uma vez comeria uma palavra inteira. Relógio de placa nunca bate
-/// com o de quem manda, e sem teto o atraso só cresce; o microfone mutado manda silêncio, então
-/// a fila nunca esvaziaria sozinha.
+/// A fila de som de uma pessoa, em quadros (um quadro = os dois canais). O teto do `sound.rs`
+/// do Windows: passou de 200 ms, cada bloco que chega perde os seus primeiros 5 ms até a fila
+/// voltar a 40 ms — cortar tudo de uma vez comeria uma palavra inteira. Relógio de placa nunca
+/// bate com o de quem manda, e sem teto o atraso só cresce; o microfone mutado manda silêncio,
+/// então a fila nunca esvaziaria sozinha. (Não há a folga inicial do Windows: um tranco de rede
+/// ainda vira um estalo aqui, como já era.)
 struct SoundLane {
     var queued = 0
     var trimming = false
 
     static let perMillisecond = 48
-    /// Quanto se quer na fila em regime: o que uma rede aos trancos precisa.
-    static let cushion = 40 * perMillisecond
+    /// Até onde se apara depois de passar do teto.
+    static let target = 40 * perMillisecond
     static let longest = 200 * perMillisecond
     static let trimStep = 5 * perMillisecond
 
-    /// Quantos quadros do bloco que chegou devem ficar de fora.
+    /// Quantos quadros do começo do bloco que chegou devem ficar de fora.
     mutating func skip(for incoming: Int) -> Int {
         if queued > Self.longest {
             trimming = true
         }
 
-        if trimming, queued <= Self.cushion {
+        if trimming, queued <= Self.target {
             trimming = false
         }
 

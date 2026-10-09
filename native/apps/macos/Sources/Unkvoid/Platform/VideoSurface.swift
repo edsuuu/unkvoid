@@ -17,9 +17,10 @@ final class VideoSink: @unchecked Sendable {
     private let gate = NSLock()
     private var format: CMVideoFormatDescription?
     /// Pede a quem transmite um quadro-chave agora, em vez de esperar o periódico (até 4 s
-    /// no Windows). Uma vez por falha: o pedido seguinte só depois de um quadro-chave chegar.
+    /// no Windows). O pedido vai por UDP e pode se perder: enquanto o quadro-chave não chega,
+    /// pede de novo a cada segundo.
     private let requestKeyframe: @Sendable () -> Void
-    private var keyframeRequested = false
+    private var asking = KeyframeAsking()
 
     @MainActor
     init(requestKeyframe: @escaping @Sendable () -> Void = {}) {
@@ -43,7 +44,7 @@ final class VideoSink: @unchecked Sendable {
         }
 
         if keyframe {
-            keyframeRequested = false
+            asking.arrived()
         }
 
         // Layer que falhou só volta com `flush`, e depois dele só um keyframe desenha.
@@ -51,8 +52,7 @@ final class VideoSink: @unchecked Sendable {
             renderer.flush()
 
             guard keyframe else {
-                if !keyframeRequested {
-                    keyframeRequested = true
+                if asking.shouldAsk(now: Date()) {
                     requestKeyframe()
                 }
 
@@ -253,5 +253,27 @@ struct VideoSurface: NSViewRepresentable {
         sink.layer.frame = view.bounds
         sink.layer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         view.layer?.addSublayer(sink.layer)
+    }
+}
+
+/// Quando pedir o quadro-chave de novo: na primeira falha, e daí a cada segundo enquanto ele
+/// não chega. Um quadro-chave que chegou zera a conta.
+struct KeyframeAsking {
+    var lastAsked: Date?
+
+    static let again: TimeInterval = 1
+
+    mutating func shouldAsk(now: Date) -> Bool {
+        if let lastAsked, now.timeIntervalSince(lastAsked) < Self.again {
+            return false
+        }
+
+        lastAsked = now
+
+        return true
+    }
+
+    mutating func arrived() {
+        lastAsked = nil
     }
 }

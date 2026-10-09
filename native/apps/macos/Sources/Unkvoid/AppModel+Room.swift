@@ -156,15 +156,8 @@ extension AppModel {
                 self.focusedTile = nil
             }
         case "room.mine":
-            let wasOnCamera = mine.camera
-
             mine = decode(data) ?? mine
-
-            // O núcleo soltou a câmera (uma queda, um `resend`): a luz verde não pode ficar acesa
-            // sem nada subindo, e a captura parada é o que deixa religar depois.
-            if wasOnCamera, !mine.camera {
-                media?.camera.stop()
-            }
+            syncCamera()
         case "room.level":
             micLevel = (data["level"] as? NSNumber)?.floatValue ?? 0
             micPercent = data["percent"] as? Int ?? 0
@@ -512,7 +505,7 @@ extension AppModel {
     }
 
     func toggleCamera() async {
-        guard let core, let media else {
+        guard let media else {
             return
         }
 
@@ -529,6 +522,32 @@ extension AppModel {
         guard opened["ok"] as? Bool == true else {
             complain("Não deu para ligar a câmera.")
 
+            return
+        }
+
+        await startCapture()
+    }
+
+    /// A captura segue o que o núcleo diz da câmera: `mine.camera` ligada é a sessão rodando,
+    /// desligada é a luz verde apagada. É isto que deixa as duas metades do religar depois de
+    /// uma queda baterem — se o núcleo soltar a câmera, a captura para; se ele a reabrir sozinho
+    /// (a receita dela, como a da tela), a captura volta sem ninguém clicar.
+    private func syncCamera() {
+        guard let media else {
+            return
+        }
+
+        if !mine.camera, media.camera.isRunning {
+            media.camera.stop()
+        }
+
+        if mine.camera, !media.camera.isRunning {
+            Task { await startCapture() }
+        }
+    }
+
+    private func startCapture() async {
+        guard let core, let media else {
             return
         }
 

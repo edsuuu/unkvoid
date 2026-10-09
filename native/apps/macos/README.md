@@ -166,5 +166,6 @@ Cada passo abaixo cobre uma correção que não tem como virar teste automático
    Esperado: a voz some da coluna, o chat da voz fecha, o microfone da voz não fica capturando.
 5. **Imagem travada no Windows (P1-10).** Alguém transmitindo do Windows; force o decodificador a
    falhar (pausar e retomar a tela, ou perder pacotes). Esperado: a imagem volta em menos de um
-   segundo. O `VideoSink` chama `requestKeyframe {producerId}` no núcleo — a ação em si está
-   pendente no `ffi.rs` (Stratus): `"requestKeyframe" => handle.in_room(|room, _| { room.request_keyframe(&field("producerId")); json!({ "ok": true }) })`. Até ela entrar, a chamada falha em silêncio e a imagem espera o quadro-chave periódico.
+   segundo. O `VideoSink` pede `requestKeyframe {producerId}` ao núcleo a cada segundo até o
+   quadro-chave chegar; enquanto a ação não existir no núcleo, a chamada falha em silêncio e a
+   imagem espera o quadro-chave periódico.
