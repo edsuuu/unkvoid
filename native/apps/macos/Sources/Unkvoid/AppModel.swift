@@ -19,6 +19,7 @@ enum HubModal: Equatable {
     case account
     case serverSettings
     case invite
+    case invitePeople
     case logs
 }
 

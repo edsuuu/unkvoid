@@ -1,12 +1,11 @@
 import SwiftUI
 
-/// A barra de baixo, no lugar do `ui/components/hub/VoicePanel.tsx`: quem você é, o
-/// microfone, o áudio e o menu da conta.
+/// O rodapé da coluna de canais, em `surfacePanel`: o painel da voz quando se está numa (o
+/// sinal, "Voz conectada", desconectar, câmera e tela) e a barra do usuário de 52 — quem você
+/// é, o microfone, o fone e a engrenagem.
 ///
-/// Fora de um canal de voz os dois botões ficam apagados, como no React. Dentro, o bloco
-/// "Voz conectada" aparece em cima, com desconectar, câmera e compartilhar. A setinha ao
-/// lado de cada botão é o que o Mac ganha a mais — ela abre a lista de aparelhos que o
-/// CoreAudio enxerga, sem depender de estar numa voz para escolher.
+/// A setinha ao lado do microfone e do fone é o que o Mac ganha a mais: abre a lista de
+/// aparelhos que o CoreAudio enxerga, sem depender de estar numa voz para escolher.
 struct UserBar: View {
     @EnvironmentObject private var model: AppModel
     @State private var open: Picker?
@@ -18,32 +17,31 @@ struct UserBar: View {
     }
 
     /// O painel é alinhado pela base da barra; subi-lo a altura dela mais um respiro é o
-    /// que o põe **acima** da barra, e não por cima dela. 12 + 30 + 12 de padding e avatar,
-    /// e mais o bloco da voz (duas fileiras de 32, a divisória e os respiros) quando ele existe.
+    /// que o põe **acima** da barra, e não por cima dela.
     private var barHeight: CGFloat {
-        inVoice ? 62 + 95 : 62
+        inVoice ? Theme.Size.userBar + 104 : Theme.Size.userBar
     }
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 0) {
             if let voice = model.voiceChannel ?? joining {
-                connected(to: voice)
-
-                Divider().overlay(Theme.line)
+                VoicePanel(channel: voice)
             }
 
-            HStack(spacing: 10) {
-                Avatar(name: model.user?.name ?? "?", url: model.user?.avatar_url, size: 30, mine: true)
+            HStack(spacing: 4) {
+                Avatar(name: model.user?.name ?? "?", url: model.user?.avatar_url, size: 32, mine: true, status: true, ring: Theme.surfacePanel)
+                    .padding(.trailing, 4)
 
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 0) {
                     Text(model.user?.name ?? "Conta conectada")
-                        .font(Theme.sans(12.5, .semibold))
-                        .foregroundStyle(Theme.ink)
+                        .font(Theme.sans(14, .semibold))
+                        .foregroundStyle(Theme.inkStrong)
                         .lineLimit(1)
 
                     Text("Online")
-                        .font(Theme.sans(10.5))
+                        .font(Theme.meta)
                         .foregroundStyle(Theme.inkDim)
+                        .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -51,30 +49,31 @@ struct UserBar: View {
                     Task { await model.toggleMute() }
                 }
 
-                device(.speaker, icon: model.deafened ? .headphonesOff : .headphones, off: model.deafened, enabled: true, hint: model.deafened ? "Voltar a ouvir" : "Ensurdecer: não ouvir ninguém", choose: "Escolher a saída de áudio") {
+                device(.speaker, icon: model.deafened ? .headphonesOff : .headphones, off: model.deafened, enabled: true, hint: model.deafened ? "Voltar a ouvir" : "Ensurdecer", choose: "Escolher a saída de áudio") {
                     Task { await model.toggleDeafen() }
                 }
 
-                SmallButton(icon: .gear, active: false, hint: "Configurações") {
+                SmallButton(icon: .gear, active: false, hint: "Configurações do usuário") {
                     open = nil
                     model.modal = .account
                 }
             }
+            .padding(.horizontal, 8)
+            .frame(height: Theme.Size.userBar)
         }
-        .padding(12)
-        .glass()
-        .overlay(alignment: .bottomTrailing) { popover.reportsFrame(to: $popoverFrame).offset(y: -barHeight) }
+        .background(Theme.surfacePanel)
+        .overlay(alignment: .bottomTrailing) { popover.reportsFrame(to: $popoverFrame).offset(x: -8, y: -barHeight) }
         .closesOnOutsideClick(active: open != nil, panel: popoverFrame) { open = nil }
     }
 
-    /// O canal em que se está entrando: o bloco da voz aparece já no clique, com
+    /// O canal em que se está entrando: o painel da voz aparece já no clique, com
     /// "Conectando…", e vira "Voz conectada" quando o SFU responde.
     private var joining: Channel? {
         model.tree?.voiceChannels.first { $0.id == model.voiceTarget }
     }
 
     private var inVoice: Bool {
-        model.voiceChannel != nil
+        model.voiceChannel != nil || joining != nil
     }
 
     private var micOff: Bool {
@@ -90,98 +89,7 @@ struct UserBar: View {
             return "Você não tem permissão para falar neste canal"
         }
 
-        return micOff ? "Ativar o microfone" : "Mutar o microfone"
-    }
-
-    /// O bloco de cima do `VoicePanel.tsx`: o sinal, "Voz conectada", sair, e a fileira de
-    /// câmera e compartilhar.
-    private func connected(to voice: Channel) -> some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                SignalBars(
-                    bars: model.reconnecting ? nil : model.signalBars,
-                    hint: model.voiceJoining ? "Conectando…" : model.reconnecting ? "Reconectando…" : model.ping.map { "\($0) ms" } ?? "Medindo o ping…"
-                )
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model.voiceJoining ? "Conectando…" : model.reconnecting ? "Reconectando…" : "Voz conectada")
-                        .font(Theme.sans(13, .semibold))
-                        .foregroundStyle(model.voiceJoining ? Theme.fair : model.reconnecting ? Theme.danger : Theme.online)
-
-                    Text(voice.name)
-                        .font(Theme.mono(10.5))
-                        .foregroundStyle(Theme.inkDim)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture { model.stageOpen = true }
-
-                Button {
-                    Task { await model.leaveVoice() }
-                } label: {
-                    Icon(name: .phoneOff, size: 14)
-                        .foregroundStyle(Theme.periwinkle)
-                }
-                .buttonStyle(IconButton(side: 28, radius: 9))
-                .help("Desconectar da voz")
-            }
-
-            HStack(spacing: 6) {
-                Button {
-                    Task { await model.toggleCamera() }
-                } label: {
-                    Icon(name: model.mine.camera ? .camera : .cameraOff, size: 16)
-                        .foregroundStyle(model.mine.camera ? Theme.inkStrong : Theme.inkIcon)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 32)
-                        .background(model.mine.camera ? AnyShapeStyle(Theme.brandGradient) : AnyShapeStyle(Theme.chrome), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .strokeBorder(model.mine.camera ? Theme.brand.opacity(0.6) : Theme.lineStrong, lineWidth: 1)
-                        )
-                }
-                .buttonStyle(.pointer)
-                .disabled(!model.mine.canVideo || model.voiceJoining)
-                .opacity(model.mine.canVideo && !model.voiceJoining ? 1 : 0.4)
-                .help(model.mine.camera ? "Desligar a câmera" : "Ligar a câmera")
-
-                shareButton
-            }
-        }
-    }
-
-    private var shareButton: some View {
-            Button {
-                if model.mine.sharing {
-                    Task { await model.stopSharing() }
-                } else {
-                    Task { await model.openShare() }
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    if model.shareStarting {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Icon(name: .screen, size: 16)
-                    }
-
-                    Text(model.mine.sharing ? "Parar" : "Tela")
-                        .font(Theme.sans(12, .medium))
-                }
-                .foregroundStyle(model.mine.sharing ? Theme.inkStrong : Theme.inkIcon)
-                .frame(maxWidth: .infinity)
-                .frame(height: 32)
-                .background(model.mine.sharing ? AnyShapeStyle(Theme.brandGradient) : AnyShapeStyle(Theme.chrome), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .strokeBorder(model.mine.sharing ? Theme.brand.opacity(0.6) : Theme.lineStrong, lineWidth: 1)
-                )
-            }
-            .buttonStyle(.pointer)
-            .disabled(model.shareStarting || !model.mine.canShare)
-            .opacity(model.mine.canShare ? 1 : 0.4)
-            .help(model.mine.canShare ? "Compartilhar tela" : "Você não tem permissão para transmitir neste canal")
+        return micOff ? "Desmutar" : "Mutar"
     }
 
     /// O par "ligar/desligar" e a setinha, colados como nos apps de chamada: o botão à esquerda faz
@@ -235,7 +143,95 @@ struct UserBar: View {
     }
 }
 
-/// O botão de 26 da barra: menor que o `.btn-icon`, sem moldura, como no React.
+/// O painel da voz, acima da barra: o sinal e o estado, o canal e o servidor, desconectar, e
+/// os dois botões meio a meio de câmera e tela.
+private struct VoicePanel: View {
+    @EnvironmentObject private var model: AppModel
+
+    let channel: Channel
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                SignalBars(
+                    bars: model.reconnecting ? nil : model.signalBars,
+                    hint: model.voiceJoining ? "Conectando…" : model.reconnecting ? "Reconectando…" : model.ping.map { "\($0) ms" } ?? "Medindo o ping…"
+                )
+
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(model.voiceJoining ? "Conectando…" : model.reconnecting ? "Reconectando…" : "Voz conectada")
+                        .font(Theme.sans(14, .semibold))
+                        .foregroundStyle(model.voiceJoining || model.reconnecting ? Theme.idle : Theme.online)
+
+                    Text("\(channel.name) / \(model.tree?.name ?? "")")
+                        .font(Theme.meta)
+                        .foregroundStyle(Theme.inkDim)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture { model.stageOpen = true }
+                .help("Abrir a chamada")
+
+                Button {
+                    Task { await model.leaveVoice() }
+                } label: {
+                    Icon(name: .phoneOff, size: 20)
+                }
+                .buttonStyle(IconButton(tone: .off))
+                .help("Desconectar")
+            }
+
+            HStack(spacing: 8) {
+                half(model.mine.camera ? .camera : .cameraOff, "Câmera", on: model.mine.camera, enabled: model.mine.canVideo && !model.voiceJoining, hint: !model.mine.canVideo ? "Você não tem permissão para ligar a câmera neste canal" : model.mine.camera ? "Desligar a câmera" : "Ligar a câmera") {
+                    await model.toggleCamera()
+                }
+
+                half(.screen, model.mine.sharing ? "Parar" : "Tela", on: model.mine.sharing, enabled: model.mine.canShare && !model.shareStarting, hint: !model.mine.canShare ? "Você não tem permissão para transmitir neste canal" : model.mine.sharing ? "Parar de compartilhar" : "Compartilhar tela") {
+                    if model.mine.sharing {
+                        await model.stopSharing()
+                    } else {
+                        await model.openShare()
+                    }
+                }
+            }
+        }
+        .padding(8)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Theme.line).frame(height: 1)
+        }
+    }
+
+    private func half(_ icon: IconName, _ label: String, on: Bool, enabled: Bool, hint: String, _ action: @escaping @MainActor () async -> Void) -> some View {
+        Button {
+            Task { await action() }
+        } label: {
+            HStack(spacing: 6) {
+                if icon == .screen, model.shareStarting {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Icon(name: icon, size: 18)
+                        .foregroundStyle(on ? Theme.online : Theme.inkSoft)
+                }
+
+                Text(label)
+                    .font(Theme.button)
+                    .foregroundStyle(Theme.ink)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: Theme.Size.row)
+            .background(Theme.hover, in: RoundedRectangle(cornerRadius: Theme.Size.radius, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.pointer)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.4)
+        .help(hint)
+    }
+}
+
+/// O botão de 32 da barra, sem moldura: `inkSoft` em repouso, `hover` sob o mouse, vermelho
+/// quando é o cortado.
 private struct SmallButton: View {
     var icon: IconName
     var active: Bool
@@ -250,20 +246,19 @@ private struct SmallButton: View {
 
     var body: some View {
         Button(action: action) {
-            Icon(name: icon, size: 16.5)
-                .scaleEffect(hovering ? 1.12 : 1)
-                .foregroundStyle(danger ? Theme.danger : ringed ? Theme.online : active || hovering ? Theme.inkStrong : Theme.inkIcon)
-                .frame(width: 28, height: 28)
-                .background(active || hovering ? Theme.row : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            Icon(name: icon, size: 20)
+                .foregroundStyle(danger ? Theme.danger : ringed ? Theme.online : active || hovering ? Theme.inkStrong : Theme.inkSoft)
+                .frame(width: Theme.Size.row, height: Theme.Size.row)
+                .background(active || hovering ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: Theme.Size.radius, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: Theme.Size.radius, style: .continuous)
                         .strokeBorder(ringed ? Theme.online.opacity(0.6) : .clear, lineWidth: 1)
                 )
         }
         .buttonStyle(.pointer)
         .opacity(enabled ? 1 : 0.4)
         .onHover { hovering = $0 && enabled }
-        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(.easeOut(duration: 0.1), value: hovering)
         .help(hint)
     }
 }
@@ -281,7 +276,7 @@ private struct SignalBars: View {
     private var tint: Color {
         switch bars {
         case 4: Theme.online
-        case 3: Theme.fair
+        case 3: Theme.idle
         case 2: Theme.poor
         case 1: Theme.danger
         default: Theme.inkDim
@@ -304,25 +299,25 @@ private struct SignalBars: View {
         .overlay(alignment: .bottomLeading) {
             if hovering {
                 Text(hint)
-                    .font(Theme.mono(11))
-                    .foregroundStyle(Theme.inkStrong)
+                    .font(Theme.sans(14, .semibold))
+                    .foregroundStyle(Theme.ink)
                     .fixedSize()
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                     .popoverPanel()
-                    .offset(x: -4, y: -26)
+                    .offset(x: -4, y: -30)
                     .allowsHitTesting(false)
                     .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(.easeOut(duration: 0.1), value: hovering)
         .animation(.easeOut(duration: 0.2), value: bars)
         .accessibilityLabel("Sinal da voz")
         .accessibilityValue(hint)
     }
 }
 
-/// A setinha ao lado do microfone e do fone: acende e cresce sob o mouse, como o botão dela.
+/// A setinha ao lado do microfone e do fone.
 private struct Chevron: View {
     var open: Bool
     var hint: String
@@ -332,16 +327,15 @@ private struct Chevron: View {
 
     var body: some View {
         Button(action: action) {
-            Icon(name: .chevronDown, size: 12.5)
-                .scaleEffect(hovering ? 1.15 : 1)
+            Icon(name: .chevronDown, size: 12)
                 .foregroundStyle(open || hovering ? Theme.inkStrong : Theme.inkDim)
-                .frame(width: 18, height: 28)
-                .background(open || hovering ? Theme.row : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .frame(width: 12, height: Theme.Size.row)
+                .background(open || hovering ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: Theme.Size.radius, style: .continuous))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.pointer)
         .onHover { hovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(.easeOut(duration: 0.1), value: hovering)
         .help(hint)
     }
 }
@@ -356,7 +350,7 @@ private struct DeviceList: View {
     var body: some View {
         PopoverBox(width: 260) {
             Text(title).labelMono()
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 8)
                 .padding(.vertical, 6)
 
             DeviceRow(label: fallback, chosen: chosen == nil) { pick(nil) }
@@ -379,20 +373,20 @@ private struct DeviceRow: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Circle()
-                    .fill(chosen ? Theme.brand : Color.white.opacity(0.2))
+                    .fill(chosen ? Theme.brand : Theme.inkGhost)
                     .frame(width: 9, height: 9)
 
                 Text(label)
-                    .font(Theme.sans(12.5))
-                    .foregroundStyle(chosen || hovering ? Theme.inkStrong : Theme.inkIcon)
+                    .font(Theme.button)
+                    .foregroundStyle(hovering ? .white : chosen ? Theme.inkStrong : Theme.inkSoft)
                     .lineLimit(1)
 
                 Spacer(minLength: 0)
             }
-            .padding(.vertical, 8)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 8)
+            .frame(height: Theme.Size.row)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(hovering ? Theme.row : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .background(hovering ? Theme.brand : .clear, in: RoundedRectangle(cornerRadius: Theme.Size.radius, style: .continuous))
         }
         .buttonStyle(.pointer)
         .onHover { hovering = $0 }

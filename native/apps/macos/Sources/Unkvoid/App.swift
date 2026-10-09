@@ -22,7 +22,7 @@ struct RootView: View {
 
     var body: some View {
         ZStack {
-            Theme.backdrop.ignoresSafeArea()
+            Theme.surfaceChat.ignoresSafeArea()
 
             switch model.screen {
             case .entry: EntryScreen()

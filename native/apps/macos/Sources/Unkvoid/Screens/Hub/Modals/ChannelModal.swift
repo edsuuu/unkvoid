@@ -11,6 +11,7 @@ struct ChannelModal: View {
     @State private var kind = "text"
     @State private var topic = ""
     @State private var limit = ""
+    @State private var parent: String?
     @FocusState private var naming: Bool
 
     var body: some View {
@@ -26,15 +27,29 @@ struct ChannelModal: View {
                     Picker("Tipo", selection: $kind) {
                         Text("Texto").tag("text")
                         Text("Voz").tag("voice")
+                        Text("Categoria").tag("category")
                     }
                     .labelsHidden()
                     .fixedSize()
                     .disabled(editor.channel != nil)
                 }
 
-                TextField("Tópico (opcional)", text: $topic)
-                    .field()
-                    .onChange(of: topic) { topic = String(topic.prefix(200)) }
+                if kind != "category" {
+                    TextField("Tópico (opcional)", text: $topic)
+                        .field()
+                        .onChange(of: topic) { topic = String(topic.prefix(200)) }
+
+                    if let categories = model.tree?.categories, !categories.isEmpty {
+                        Picker("Categoria", selection: $parent) {
+                            Text("Sem categoria").tag(String?.none)
+
+                            ForEach(categories) { category in
+                                Text(category.name).tag(String?.some(category.id))
+                            }
+                        }
+                        .fixedSize()
+                    }
+                }
 
                 if kind == "voice" {
                     TextField("Limite de pessoas", text: $limit)
@@ -71,6 +86,7 @@ struct ChannelModal: View {
             kind = editor.channel?.type ?? editor.kind
             topic = editor.channel?.topic ?? ""
             limit = editor.channel?.user_limit.map(String.init) ?? ""
+            parent = editor.channel?.parent_id ?? editor.parent
             naming = true
         }
     }
@@ -89,12 +105,12 @@ struct ChannelModal: View {
             return "Canal: \(channel.name)"
         }
 
-        return kind == "voice" ? "Novo canal de voz" : "Novo canal de texto"
+        return kind == "voice" ? "Criar canal de voz" : kind == "category" ? "Criar categoria" : "Criar canal de texto"
     }
 
     private func save() {
         Task {
-            if await model.saveChannel(editor.channel, name: name, kind: kind, topic: topic, limit: limit) {
+            if await model.saveChannel(editor.channel, name: name, kind: kind, topic: topic, limit: limit, parent: parent) {
                 model.channelEditor = nil
             }
         }
@@ -157,7 +173,7 @@ private struct OverwriteGrid: View {
                     GridRow {
                         Text(target.name)
                             .font(Theme.sans(13))
-                            .foregroundStyle(Theme.hex(target.color) ?? Theme.inkBody)
+                            .foregroundStyle(Theme.hex(target.color) ?? Theme.ink)
                             .lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -209,9 +225,9 @@ private struct OverwriteGrid: View {
         } label: {
             Text(state == "allow" ? "✓" : state == "deny" ? "✕" : "—")
                 .font(Theme.sans(12))
-                .foregroundStyle(state == "allow" ? Theme.back : state == "deny" ? Theme.inkStrong : Theme.inkDim)
+                .foregroundStyle(state == "allow" ? Theme.surfaceChat : state == "deny" ? Theme.inkStrong : Theme.inkDim)
                 .frame(width: 42, height: 22)
-                .background(state == "allow" ? Theme.online : state == "deny" ? Theme.danger : Theme.row, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .background(state == "allow" ? Theme.online : state == "deny" ? Theme.danger : Theme.hover, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
         }
         .buttonStyle(.pointer)
     }
@@ -255,7 +271,7 @@ struct RoleModal: View {
                         ))
                         .toggleStyle(.checkbox)
                         .font(Theme.sans(13))
-                        .foregroundStyle(Theme.inkIcon)
+                        .foregroundStyle(Theme.inkSoft)
                     }
                 }
             }
@@ -301,7 +317,7 @@ struct ConfirmDialog: View {
         ModalFrame(title: "Tem certeza?", subtitle: nil, width: 420, onClose: { model.confirmation = nil }) {
             Text(confirmation.question)
                 .font(Theme.sans(13.5))
-                .foregroundStyle(Theme.inkBody)
+                .foregroundStyle(Theme.ink)
                 .fixedSize(horizontal: false, vertical: true)
         } footer: {
             Spacer(minLength: 0)

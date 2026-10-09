@@ -670,7 +670,7 @@ sala aberta não têm canal:
 | `room.tiles` | `{tiles: [{producerId, peerId, label, camera, mine, paused, audio}], pending: […]}`: o que dá para desenhar, e o que está ao vivo e a pessoa fechou; `audio` é o producer do som daquela tela |
 | `room.mine` | `{sharing, selfView, mic, micMuted, camera, canShare, canSpeak, canVideo}`: o que esta pessoa manda, e o `can` do servidor |
 | `room.watchers` | `{producerId, watchers: [{peerId, name}]}`: quem está assistindo àquela tela |
-| `room.session` | `{state: "lost" \| "rejoined" \| "gone" \| "replaced" \| "kicked"}`. Os dois últimos são o servidor tirando esta sessão de propósito: o núcleo **não** volta sozinho, e a interface tira a pessoa da sala |
+| `room.session` | `{state: "lost" \| "rejoined" \| "gone" \| "replaced" \| "kicked" \| "moved", to?, by?}`. Os três últimos são o servidor tirando esta sessão de propósito: o núcleo **não** volta sozinho. Em `replaced` e `kicked` a interface tira a pessoa da sala; em `moved` ela entra no canal de `to` (o ULID do destino) e avisa "{by} moveu você para {canal}." |
 | `room.failed` | `{what: "watch" \| "share" \| "mic"}` |
 | `room.ping` | `{ms}`: a ida e volta da sinalização, a cada 5 s |
 | `room.level` | `{level, percent}`: o nível do microfone — de 0 a 1, e na escala de 0 a 100 da sensibilidade —, uns dez por segundo |

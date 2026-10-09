@@ -1,99 +1,135 @@
 import SwiftUI
 
-/// `ui/components/hub/ServerRail.tsx`: a coluna dos servidores, 182 aberta e 58 fechada,
-/// raio 18, com o botão de recolher em cima.
+/// O trilho dos servidores: 72 de largura, ícones de 48, a pílula branca à esquerda que cresce
+/// conforme o estado (8 não lida, 20 sob o mouse, 40 ativo). A Home em cima, uma divisória, os
+/// servidores, e o "+" no fim.
 struct ServerRail: View {
     @EnvironmentObject private var model: AppModel
 
+    private var homeActive: Bool {
+        model.home || model.tree == nil
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                Button {
-                    withAnimation(.easeOut(duration: 0.2)) { model.railOpen.toggle() }
-                } label: {
-                    Icon(name: .menu, size: 15)
-                }
-                .buttonStyle(IconButton())
-                .help(model.railOpen ? "Recolher servidores" : "Expandir servidores")
-
-                RailRow(active: model.home || model.tree == nil, label: "Home") {
+            VStack(spacing: 8) {
+                RailItem(active: homeActive, label: "Mensagens diretas") {
                     Task { await model.showHome() }
-                } badge: {
-                    Icon(name: .home, size: 16)
-                        .foregroundStyle(model.home || model.tree == nil ? Theme.inkStrong : Theme.inkIcon)
-                        .frame(width: 34, height: 34)
-                        .background(
-                            model.home || model.tree == nil ? AnyShapeStyle(Theme.brandGradient) : AnyShapeStyle(Theme.chrome),
-                            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                .strokeBorder(model.home || model.tree == nil ? Theme.brand.opacity(0.6) : Theme.lineStrong, lineWidth: 1)
-                        )
+                } badge: { lit in
+                    Icon(name: .home, size: 24)
+                        .foregroundStyle(lit ? .white : Theme.inkSoft)
+                        .frame(width: Theme.Size.serverIcon, height: Theme.Size.serverIcon)
+                        .background(lit ? Theme.brand : Theme.surfaceChat, in: RoundedRectangle(cornerRadius: lit ? 16 : 24, style: .continuous))
                 }
 
                 Rectangle()
-                    .fill(Theme.lineStrong)
-                    .frame(height: 1)
+                    .fill(Theme.line)
+                    .frame(width: 32, height: 2)
 
                 if model.serversLoading, model.servers.isEmpty {
                     ForEach(0 ..< 3, id: \.self) { _ in
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .fill(Color.white.opacity(0.07))
-                            .frame(width: 34, height: 34)
+                        Circle()
+                            .fill(Theme.surfaceChat)
+                            .frame(width: Theme.Size.serverIcon, height: Theme.Size.serverIcon)
                     }
                 }
 
                 ForEach(model.servers) { server in
                     let active = !model.home && model.tree?.id == server.id
 
-                    RailRow(active: active, label: server.name) {
+                    RailItem(active: active, label: server.name) {
                         Task { await model.openServer(server.id) }
-                    } badge: {
-                        Avatar(name: server.name, url: server.icon_url, size: 34, mine: active, square: true)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                    .strokeBorder(active ? .clear : Color.white.opacity(0.08), lineWidth: 1)
-                            )
+                    } badge: { lit in
+                        Avatar(name: server.name, url: server.icon_url, size: Theme.Size.serverIcon, mine: lit, corner: lit ? 16 : 24)
+                    }
+                    .contextMenu {
+                        ServerMenuItems(server: server)
                     }
                 }
+
+                RailItem(active: false, label: "Adicionar um servidor") {
+                    model.modal = .invite
+                } badge: { lit in
+                    Icon(name: .plus, size: 24)
+                        .foregroundStyle(lit ? .white : Theme.online)
+                        .frame(width: Theme.Size.serverIcon, height: Theme.Size.serverIcon)
+                        .background(lit ? Theme.online : Theme.surfaceChat, in: RoundedRectangle(cornerRadius: lit ? 16 : 24, style: .continuous))
+                }
             }
-            .padding(.vertical, 8)
-            .padding(.horizontal, model.railOpen ? 8 : 12)
+            .padding(.vertical, 12)
         }
         .scrollIndicators(.never)
-        .frame(width: model.railOpen ? 182 : 58)
-        .glass(radius: 18)
+        .frame(width: Theme.Size.rail)
+        .background(Theme.surfaceRail)
     }
 }
 
-/// A linha da trilha: o quadradinho e, quando ela está aberta, o nome ao lado.
-private struct RailRow<Badge: View>: View {
+/// Uma linha do trilho: a pílula à esquerda e o ícone de 48 no meio. `lit` é "ativo ou sob o
+/// mouse": é quando o raio vira 16 e o fundo acende.
+private struct RailItem<Badge: View>: View {
     var active: Bool
     var label: String
     var action: () -> Void
-    @ViewBuilder var badge: Badge
+    @ViewBuilder var badge: (Bool) -> Badge
 
-    @EnvironmentObject private var model: AppModel
+    @State private var hovering = false
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                badge
+        ZStack(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(Theme.inkStrong)
+                .frame(width: 4, height: active ? 40 : hovering ? 20 : 0)
+                .animation(.easeOut(duration: 0.15), value: active)
+                .animation(.easeOut(duration: 0.15), value: hovering)
 
-                if model.railOpen {
-                    Text(label)
-                        .font(Theme.sans(13))
-                        .foregroundStyle(Theme.inkBody)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            Button(action: action) {
+                badge(active || hovering)
+                    .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            .buttonStyle(.pointer)
+            .frame(maxWidth: .infinity)
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.15), value: hovering)
+            .help(label)
+            .accessibilityLabel(label)
         }
-        .buttonStyle(.pointer)
-        .help(label)
+        .frame(width: Theme.Size.rail, height: Theme.Size.serverIcon)
+    }
+}
+
+/// O menu de um servidor, no trilho e no cabeçalho da coluna de canais. O que aparece é o que
+/// o núcleo disse que a pessoa pode fazer; quem autoriza é o Laravel.
+struct ServerMenuItems: View {
+    @EnvironmentObject private var model: AppModel
+
+    let server: ServerSummary
+
+    private var open: Bool {
+        model.tree?.id == server.id
+    }
+
+    var body: some View {
+        if open, model.abilities.allows("createInvite") {
+            Button("Convidar pessoas") { model.modal = .invitePeople }
+        }
+
+        if open, model.abilities.allows("manageServer") || model.abilities.allows("manageRoles") || model.abilities.owner {
+            Button("Configurações do servidor") { model.modal = .serverSettings }
+        }
+
+        if open, model.abilities.allows("manageChannels") {
+            Button("Criar canal") { model.channelEditor = ChannelEditor(channel: nil, kind: "text") }
+            Button("Criar categoria") { model.channelEditor = ChannelEditor(channel: nil, kind: "category") }
+        }
+
+        if !open {
+            Button("Abrir servidor") { Task { await model.openServer(server.id) } }
+        }
+
+        if open, !model.abilities.owner {
+            Divider()
+
+            Button("Sair do servidor", role: .destructive) { model.leaveServer() }
+        }
     }
 }

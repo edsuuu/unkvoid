@@ -10,7 +10,7 @@ struct UpdatingScreen: View {
 
             Text(model.updateStatus)
                 .font(.system(size: 13))
-                .foregroundStyle(Theme.soft)
+                .foregroundStyle(Theme.inkSoft)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

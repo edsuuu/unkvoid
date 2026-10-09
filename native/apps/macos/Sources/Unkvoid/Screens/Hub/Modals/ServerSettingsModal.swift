@@ -52,7 +52,7 @@ struct ServerSettingsModal: View {
                                         .font(Theme.sans(12.5))
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                 }
-                                .foregroundStyle(shown == item ? Theme.inkStrong : Theme.inkIcon)
+                                .foregroundStyle(shown == item ? Theme.inkStrong : Theme.inkSoft)
                                 .rowItem(selected: shown == item)
                                 .contentShape(Rectangle())
                             }
@@ -249,7 +249,7 @@ private struct MembersTab: View {
 
             Text(member.displayName)
                 .font(Theme.sans(13))
-                .foregroundStyle(me ? Theme.inkStrong : Theme.inkIcon)
+                .foregroundStyle(me ? Theme.inkStrong : Theme.inkSoft)
                 .lineLimit(1)
 
             if me {
@@ -274,7 +274,7 @@ private struct MembersTab: View {
 
             Text(member.is_owner ? "dono" : top?.name ?? tree.everyone?.name ?? "@everyone")
                 .font(Theme.mono(9.5))
-                .foregroundStyle(member.is_owner ? Theme.lilac2 : Theme.inkDim)
+                .foregroundStyle(member.is_owner ? Theme.brandText : Theme.inkDim)
 
             Icon(name: .dots, size: 13).foregroundStyle(Theme.inkDim)
         }
@@ -318,7 +318,7 @@ private struct RolesTab: View {
 
             Text(role.name)
                 .font(Theme.sans(13))
-                .foregroundStyle(Theme.inkBody)
+                .foregroundStyle(Theme.ink)
                 .lineLimit(1)
 
             Text("· \(role.position)")
@@ -375,7 +375,7 @@ private struct BansTab: View {
                 HStack(spacing: 10) {
                     Text(ban.name)
                         .font(Theme.sans(13))
-                        .foregroundStyle(Theme.inkBody)
+                        .foregroundStyle(Theme.ink)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -432,7 +432,7 @@ private struct AuditTab: View {
                     VStack(alignment: .leading, spacing: 2) {
                         (Text(entry.actor?.name ?? "alguém").fontWeight(.medium) + Text(" \(entry.summary)"))
                             .font(Theme.sans(12.5))
-                            .foregroundStyle(Theme.inkBody)
+                            .foregroundStyle(Theme.ink)
                             .lineLimit(2)
 
                         Text(Clock.short(entry.at))

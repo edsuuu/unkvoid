@@ -14,6 +14,8 @@ struct ChannelEditor: Identifiable {
     let id = UUID()
     let channel: Channel?
     let kind: String
+    /// A categoria em que o canal novo nasce.
+    var parent: String? = nil
 }
 
 struct RoleEditor: Identifiable {
@@ -215,7 +217,7 @@ extension AppModel {
         }
     }
 
-    func saveChannel(_ channel: Channel?, name: String, kind: String, topic: String, limit: String) async -> Bool {
+    func saveChannel(_ channel: Channel?, name: String, kind: String, topic: String, limit: String, parent: String? = nil) async -> Bool {
         guard let tree else {
             return false
         }
@@ -244,6 +246,10 @@ extension AppModel {
 
         if channel == nil {
             body["type"] = kind
+        }
+
+        if kind != "category" {
+            body["parent_id"] = parent.map { $0 as Any } ?? NSNull()
         }
 
         let saved = channel.map { ("updateChannel", ["channel": $0.id]) } ?? ("createChannel", ["server": tree.id])
@@ -294,14 +300,53 @@ extension AppModel {
         memberMenu = self.tree?.members.first { $0.user_id == member.user_id }
     }
 
+    /// O canal de voz em que o membro está, pela árvore do servidor. `nil` fora de qualquer voz.
+    func voiceChannelId(of member: Member) -> String? {
+        tree?.voice?.first { $0.value.contains { $0.user_id == member.user_id } }?.key
+    }
+
     func disconnectFromVoice(_ member: Member) async {
-        guard let channel = tree?.voice?.first(where: { $0.value.contains { $0.user_id == member.user_id } })?.key else {
+        guard let channel = voiceChannelId(of: member) else {
             return
         }
 
         if await api("disconnectFromVoice", ["channel": channel, "user": member.user_id]) != nil {
             memberMenu = nil
         }
+    }
+
+    /// As vozes para onde este membro pode ser movido: as que não são a dele e em que eu tenho
+    /// `MOVE_MEMBERS` e `CONNECT`; vazio se não tenho `MOVE_MEMBERS` na origem. O Laravel decide
+    /// de verdade; aqui só se esconde o que ele recusaria.
+    func moveDestinations(for member: Member) -> [Channel] {
+        let moveMembers = 1 << 17
+        let connect = 1 << 11
+
+        guard let tree, let current = voiceChannelId(of: member), abilities.actions(on: member).disconnect,
+              let origin = tree.channels.first(where: { $0.id == current }), (origin.permissions ?? 0) & moveMembers != 0
+        else {
+            return []
+        }
+
+        return tree.voiceChannels.filter { $0.id != current && ($0.permissions ?? 0) & (moveMembers | connect) == moveMembers | connect }
+    }
+
+    /// Leva o membro para outro canal de voz do servidor. Quem autoriza (`MOVE_MEMBERS` nos dois
+    /// canais e a hierarquia) é o Laravel; o SFU avisa o movido, que entra no destino sozinho.
+    /// A lista embaixo dos canais muda pelos `VoiceStateUpdated` de sempre.
+    func moveToVoice(_ member: Member, to channel: Channel) async {
+        guard let from = voiceChannelId(of: member), from != channel.id else {
+            return
+        }
+
+        guard await api("moveVoiceMember", ["channel": from, "user": member.user_id], body: ["channel_id": channel.id], quiet: true) != nil else {
+            say("Não deu para mover \(member.displayName).")
+
+            return
+        }
+
+        memberMenu = nil
+        say("\(member.displayName) foi movido para \(channel.name).")
     }
 
     func kick(_ member: Member) {

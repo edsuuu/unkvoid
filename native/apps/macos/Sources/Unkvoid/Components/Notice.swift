@@ -8,7 +8,7 @@ struct Notice: View {
         if let notice = model.notice {
             Text(notice)
                 .font(Theme.sans(13))
-                .foregroundStyle(Theme.inkBody)
+                .foregroundStyle(Theme.ink)
                 .padding(.vertical, 10)
                 .padding(.horizontal, 16)
                 .popoverPanel()

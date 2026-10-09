@@ -19,13 +19,13 @@ struct PeopleMenu: View {
 
                 Text("\(model.peers.count)")
                     .font(Theme.sans(12))
-                    .foregroundStyle(Theme.inkIcon)
+                    .foregroundStyle(Theme.inkSoft)
             }
             .padding(.leading, 6)
             .padding(.trailing, 12)
             .padding(.vertical, 5)
-            .background(Theme.row, in: Capsule())
-            .overlay(Capsule().strokeBorder(Theme.lineStrong, lineWidth: 1))
+            .background(Theme.hover, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.line, lineWidth: 1))
         }
         .buttonStyle(.pointer)
         .help("Quem está na sala")
