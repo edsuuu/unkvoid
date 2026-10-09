@@ -20,8 +20,12 @@ use std::time::{Duration, Instant};
 /// quadro-chave: o quadro mais caro, que apertava a rede de novo. A imagem de quem assistia
 /// parava justamente quando o pacote já vinha a caminho.
 ///
-/// Antes da primeira medida vale o piso: numa rede local o reenvio volta antes disso.
-const RETRY_FLOOR: Duration = Duration::from_millis(40);
+/// Abaixo do piso nunca: o mediasoup não reenvia o mesmo pacote duas vezes dentro da ida e volta
+/// que ele conhece, e quando ela sai zero (o servidor na mesma máquina ou na mesma rede, a conta
+/// do RR arredondando para baixo) ele usa 100 ms. Com 40 ms, o segundo e o terceiro pedido caíam
+/// nessa janela e eram ignorados: perdido o único reenvio, o buraco virava PLI. É também o que o
+/// WebRTC do navegador espera antes de medir.
+const RETRY_FLOOR: Duration = Duration::from_millis(100);
 const RETRY_CEILING: Duration = Duration::from_millis(500);
 
 /// Quantas vezes se pede o mesmo pacote: uma a cada ida e volta, e um pouco mais.
@@ -373,10 +377,10 @@ mod tests {
         recovery.arrive(3, packet(3), now);
 
         assert_eq!(recovery.due(now).nack, [2]);
-        assert!(recovery.due(now + Duration::from_millis(10)).nack.is_empty(), "pediu de novo cedo demais");
-        assert_eq!(recovery.due(now + Duration::from_millis(40)).nack, [2]);
-        assert_eq!(recovery.due(now + Duration::from_millis(80)).nack, [2]);
-        assert!(recovery.due(now + Duration::from_millis(120)).nack.is_empty(), "pediu mais de três vezes");
+        assert!(recovery.due(now + Duration::from_millis(40)).nack.is_empty(), "pediu de novo dentro dos 100 ms em que o mediasoup ignora");
+        assert_eq!(recovery.due(now + Duration::from_millis(100)).nack, [2]);
+        assert_eq!(recovery.due(now + Duration::from_millis(200)).nack, [2]);
+        assert!(recovery.due(now + Duration::from_millis(299)).nack.is_empty(), "pediu mais de três vezes");
     }
 
     #[test]
@@ -387,7 +391,9 @@ mod tests {
         recovery.arrive(3, packet(3), now);
         recovery.arrive(4, packet(4), now);
 
-        let due = recovery.due(now + Duration::from_millis(250));
+        assert!(!recovery.due(now + Duration::from_millis(250)).pli, "largou antes de o terceiro reenvio poder voltar");
+
+        let due = recovery.due(now + Duration::from_millis(300));
 
         assert!(due.pli);
         assert_eq!(sequences(&due.released), [3, 4]);
