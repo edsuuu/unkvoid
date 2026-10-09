@@ -178,7 +178,7 @@ export class Room {
     public addPeer(
         name: string,
         socket: WebSocket,
-        identity: { userId: string; can: string[]; ip: string },
+        identity: { userId: string; can: string[]; muted?: boolean; ip: string },
         options: { resumeKey?: string | null; resume?: boolean } = {},
     ): JoinOutcome {
         const previous = options.resumeKey ? this.findByResumeKey(options.resumeKey) : null;
@@ -227,6 +227,10 @@ export class Room {
             identity.can,
             identity.ip,
         );
+
+        // Mutado pelo servidor já entra calado: o token leva `speak` (a permissão) e a marca
+        // separada, para o desmutar devolver a voz sem a pessoa sair e entrar.
+        peer.serverMuted = identity.muted === true;
 
         this.peers.set(peer.id, peer);
 

@@ -37,9 +37,11 @@ final readonly class SfuClient
      *
      * @throws JsonException
      */
-    public function token(Channel $channel, User $user, array $can): string
+    public function token(Channel $channel, User $user, array $can, bool $muted = false): string
     {
-        return $this->sign(['room' => $channel->id, ...$this->identity($user), 'can' => $can]);
+        // `muted` só vai quando é verdade: o token de quem não está mutado continua igual ao
+        // de sempre, e o SFU antigo ignora a claim.
+        return $this->sign(['room' => $channel->id, ...$this->identity($user), 'can' => $can, ...($muted ? ['muted' => true] : [])]);
     }
 
     /**

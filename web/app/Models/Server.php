@@ -486,9 +486,7 @@ final class Server extends Model implements Auditable
         }, ['server_id' => $this->id, 'user_id' => $target->id]);
 
         if (isset($changes['server_mute'])) {
-            $channel = $this->voiceChannelOf($target, $sfu);
-
-            if (! is_null($channel)) {
+            foreach ($this->voiceChannels() as $channel) {
                 $sfu->mute($channel, $target->subject(), $changes['server_mute']);
             }
         }
@@ -551,27 +549,25 @@ final class Server extends Model implements Auditable
         return $channel;
     }
 
-    public function voiceChannelOf(User $user, SfuClient $sfu): ?Channel
-    {
-        foreach ($this->channels as $channel) {
-            if ($channel->type !== ChannelTypeEnum::Voice) {
-                continue;
-            }
-
-            // Fresca: com a presença de 3 s em cache, quem acabou de entrar escapava do kick e do ban.
-            foreach ($sfu->peers($channel, fresh: true) as $peer) {
-                if ($peer['sub'] === $user->subject()) {
-                    return $channel;
-                }
-            }
-        }
-
-        return null;
-    }
-
     private static function newInviteCode(): string
     {
         return mb_strtolower(Str::random(10));
+    }
+
+    /**
+     * Expulsar, banir e mutar falam com todo canal de voz do servidor, sem perguntar à
+     * presença onde a pessoa está: a presença esconde quem está na carência de reconexão e
+     * some quando o SFU demora, e nos dois casos o banido continuava transmitindo. O `kick`
+     * e o `mute` numa sala onde a pessoa não está são inofensivos (`{kicked: 0}`).
+     *
+     * ponytail: uma chamada HTTP por canal de voz; com o SFU inalcançável cada uma espera o
+     * timeout. Se pesar, uma rota `kick` sem sala no SFU.
+     *
+     * @return Collection<int, Channel>
+     */
+    private function voiceChannels(): Collection
+    {
+        return $this->channels->where('type', ChannelTypeEnum::Voice)->values();
     }
 
     /**
@@ -642,12 +638,8 @@ final class Server extends Model implements Auditable
 
     private function dropFromVoice(User $user, SfuClient $sfu): void
     {
-        $channel = $this->voiceChannelOf($user, $sfu);
-
-        if (is_null($channel)) {
-            return;
+        foreach ($this->voiceChannels() as $channel) {
+            $sfu->kick($channel, $user->subject());
         }
-
-        $sfu->kick($channel, $user->subject());
     }
 }

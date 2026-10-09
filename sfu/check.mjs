@@ -889,6 +889,26 @@ test('o mute assinado pausa só o mic daquela conta, e o silêncio gruda', async
     assert.ok(assistindo.events.some(e => e.event === 'producerResumed' && e.data.producerId === mic.data.producerId), 'e que voltou');
 });
 
+test('o token com `muted` já entra calado, e o desmutar assinado devolve a voz sem sair e entrar', async () => {
+    // O Laravel manda `speak` (a permissão) e a marca `muted` separada: quem entrou mutado pelo
+    // servidor é desmutado pelo /mute, sem precisar de token novo nem de outra entrada.
+    const mutado = await abrir();
+    await entrar(mutado, { token: token({ room, sub: '17', name: 'Mutado', can: TUDO, muted: true }) });
+
+    let reply = await mutado.call('producePlain', audioPuro('mic', 0x22345690));
+    assert.equal(reply.status, 403, 'mutado desde o token não abre o mic');
+
+    const mutePath = `/rooms/${room}/mute`;
+    const unmuteBody = JSON.stringify({ userId: '17', muted: false });
+    const http = await fetch(`${URL_HTTP}${mutePath}`, { method: 'POST', body: unmuteBody, headers: signed('POST', mutePath, unmuteBody) });
+    assert.equal(http.status, 200, 'desmutar assinado passa');
+
+    reply = await mutado.call('producePlain', audioPuro('mic', 0x22345691));
+    assert.equal(reply.ok, true, `desmutado, o mic abre com o speak que o token sempre teve: ${JSON.stringify(reply)}`);
+
+    mutado.close();
+});
+
 test('o /presence assinado lista quem está na sala e o que cada um produz', async () => {
     // Quem está em cada sala, para o site desenhar a lista de voz.
     let http = await fetch(`${URL_HTTP}/presence`);

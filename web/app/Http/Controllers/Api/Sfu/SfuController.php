@@ -62,7 +62,9 @@ final class SfuController
 
         // Expulso ou banido depois de pedir o token (ele vale 60 s): o SFU deixou entrar, e a
         // voz derruba na hora, sem abrir acesso nem avisar o canal.
-        if ($event === 'joined' && is_null($channel->server->memberOf($user))) {
+        $member = $channel->server->memberOf($user);
+
+        if ($event === 'joined' && is_null($member)) {
             $sfu->kick($channel, $user->subject());
 
             return response()->noContent();
@@ -70,6 +72,12 @@ final class SfuController
 
         if ($event === 'joined') {
             ChannelAccess::open($channel, $user, null, null, $request->string('ip')->toString(), $at);
+
+            // O token leva `speak` mesmo mutado pelo servidor: quem cala o mic é o SFU, e ele
+            // fica sabendo aqui (e pela claim `muted`, no SFU que a lê).
+            if ($member->server_mute) {
+                $sfu->mute($channel, $user->subject(), true);
+            }
         } else {
             ChannelAccess::close($channel, $user, $at);
         }

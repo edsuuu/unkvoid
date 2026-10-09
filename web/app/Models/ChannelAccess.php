@@ -74,6 +74,18 @@ final class ChannelAccess extends Model
     }
 
     /**
+     * Quem está sentado no canal agora: o SFU avisou que entrou (`joined`, com `sfu_ip`) e
+     * ainda não avisou que saiu. É o que vale na reconexão: cair da rede não é entrar de novo.
+     *
+     * ponytail: um `left` perdido deixa a pessoa "sentada" até a limpeza de 24 h do `open()`;
+     * o custo é ela pular CONNECT e o limite nesse canal por esse tempo.
+     */
+    public static function seated(Channel $channel, User $user): bool
+    {
+        return self::openFor($channel, $user)->whereNotNull('sfu_ip')->exists();
+    }
+
+    /**
      * @return BelongsTo<Channel, $this>
      */
     public function channel(): BelongsTo
