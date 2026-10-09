@@ -30,9 +30,12 @@ use crate::recovery::{self, Counters, Recovery};
 const KEY_LEN: usize = 16;
 const SALT_LEN: usize = 14;
 
-/// Entre um pacote de manutenção e o outro. Roteadores de casa esquecem um mapeamento
-/// UDP em trinta segundos de silêncio; aqui o silêncio nunca chega a vinte.
-const KEEPALIVE: Duration = Duration::from_secs(20);
+/// Entre um pacote de manutenção e o outro. Roteadores de casa e a NAT do provedor esquecem
+/// um mapeamento UDP em trinta segundos sem nada saindo — o que chega não conta para muitos
+/// deles —, e o caminho que volta depois disso tem outra porta, que o servidor descarta. Com
+/// vinte, um único pacote perdido já passava dos trinta; com cinco, o WebRTC do navegador
+/// faz o mesmo para provar que a conexão vive.
+const KEEPALIVE: Duration = Duration::from_secs(5);
 
 /// De quanto em quanto tempo o laço acorda sem pacote nenhum, para pedir reenvio e largar
 /// buraco no prazo. Mais longo e o pedido de reenvio atrasaria mais que a própria rede.
@@ -41,6 +44,17 @@ const TICK: Duration = Duration::from_millis(10);
 /// O intervalo mínimo entre dois pedidos de keyframe do mesmo fluxo. Um keyframe custa o
 /// quadro mais caro do encoder, e pedir de novo antes de ele chegar só gera outro.
 const PLI_INTERVAL: Duration = Duration::from_millis(300);
+
+/// Quanto um socket de chegada guarda até a thread que o lê acordar. Um keyframe a
+/// 10 Mbps são algumas centenas de pacotes que chegam — e são repassados — de uma vez; o
+/// padrão do Windows é 64 KB e o do Linux 208 KB, menos que um keyframe. O excedente some
+/// sem aviso, o quadro chega furado, e a imagem de quem assiste fica parada esperando o
+/// keyframe seguinte, que cai do mesmo jeito. É o espelho do `SEND_BUFFER` do `plain.rs`.
+///
+/// 16 MB são 2,6 s de 50 Mbps pelo mesmo socket — todas as telas somadas. O que enche o
+/// buffer não é a taxa, é a thread que lê ficar parada; e é teto, não reserva: o sistema
+/// só gasta o que está esperando. Bem mais que isso não salva quadro, só atrasa a imagem.
+const RECEIVE_BUFFER: usize = 16 * 1024 * 1024;
 
 /// A retransmissão de um fluxo, como o servidor a anuncia no `consumePlain`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +91,8 @@ struct Route {
     /// Só no vídeo.
     recovery: Option<Recovery>,
     last_pli: Option<Instant>,
+    /// Quem decodifica pediu um keyframe; sai no próximo tique que o `PLI_INTERVAL` deixar.
+    keyframe_asked: bool,
 }
 
 #[derive(Default)]
@@ -107,6 +123,7 @@ impl PlainReceiver {
 
         socket.connect(server).context("could not point the socket at the SFU")?;
         socket.set_read_timeout(Some(TICK))?;
+        grow_receive_buffer(&socket);
 
         let mut outgoing = context(key)?;
         let mut incoming = context(server_key)?;
@@ -183,12 +200,13 @@ impl PlainReceiver {
 
                     let pli_allowed = route.last_pli.is_none_or(|last| now.duration_since(last) >= PLI_INTERVAL);
 
-                    if due.pli
+                    if (due.pli || route.keyframe_asked)
                         && pli_allowed
                         && let Ok(feedback) = outgoing.encrypt_rtcp(&recovery::pli(ssrc, media))
                     {
                         let _ = socket.send(&feedback);
                         route.last_pli = Some(now);
+                        route.keyframe_asked = false;
                     }
                 }
             }
@@ -213,8 +231,24 @@ impl PlainReceiver {
                 rtx,
                 recovery: video.then(Recovery::default),
                 last_pli: None,
+                keyframe_asked: false,
             });
         }
+    }
+
+    /// Quem decodifica perdeu o fio (largou quadro, o decodificador falhou): o keyframe é
+    /// pedido no próximo tique, em vez de a tela esperar o periódico do encoder.
+    pub fn request_keyframe(&self, id: &str) {
+        ask_keyframe(&self.routes, id);
+    }
+
+    /// O mesmo pedido, para quem não guarda o receptor: a thread que remonta os quadros de uma
+    /// transmissão e vê o buraco que a recuperação não viu — a perda no repasse local, a fila
+    /// cheia.
+    pub fn keyframe_asker(&self, id: String) -> impl Fn() + Send + 'static {
+        let routes = Arc::clone(&self.routes);
+
+        move || ask_keyframe(&routes, &id)
     }
 
     /// O que aconteceu com o vídeo de uma transmissão: recebidos, recuperados e perdidos.
@@ -262,6 +296,14 @@ impl PlainReceiver {
 impl Drop for PlainReceiver {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+fn ask_keyframe(routes: &Mutex<Routes>, id: &str) {
+    if let Ok(mut routes) = routes.lock()
+        && let Some(route) = routes.active.iter_mut().find(|route| route.id == id)
+    {
+        route.keyframe_asked = true;
     }
 }
 
@@ -324,6 +366,23 @@ fn pick_route(routes: &mut Routes, ssrc: u32, payload_type: u8) -> Option<usize>
     routes.active[index].ssrc = Some(ssrc);
 
     Some(index)
+}
+
+/// Amplia o buffer de chegada do socket, se o sistema deixar. Não é fatal, e o tamanho que
+/// ficou vai para o log: o Linux apara o pedido no `net.core.rmem_max` sem dizer nada.
+pub fn grow_receive_buffer(socket: &UdpSocket) {
+    let socket = socket2::SockRef::from(socket);
+
+    if let Err(error) = socket.set_recv_buffer_size(RECEIVE_BUFFER) {
+        tracing::warn!(error = %error, "recepção: o buffer de chegada ficou no padrão");
+
+        return;
+    }
+
+    match socket.recv_buffer_size() {
+        Ok(size) => tracing::info!(bytes = size, "recepção: buffer de chegada"),
+        Err(error) => tracing::warn!(error = %error, "recepção: buffer de chegada desconhecido"),
+    }
 }
 
 pub fn resolve(server: impl ToSocketAddrs) -> Result<SocketAddr> {
@@ -393,6 +452,7 @@ mod tests {
             rtx: None,
             recovery: None,
             last_pli: None,
+            keyframe_asked: false,
         }
     }
 

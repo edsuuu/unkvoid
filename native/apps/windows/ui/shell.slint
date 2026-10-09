@@ -1,6 +1,7 @@
 import { Icons, Skin } from "skin.slint";
 import { ToastRow, Ui } from "state.slint";
-import { Glyph, Muted, Title } from "widgets.slint";
+import { GhostButton, Glyph, Muted, Title } from "widgets.slint";
+import { ClipsUi } from "clips.slint";
 
 // O halo violeta do `body` do CSS. É ele que faz o vidro dos cartões aparecer: sem o halo,
 // um fundo translúcido sobre preto é só preto.
@@ -21,6 +22,8 @@ export component Halo inherits Rectangle {
 component Waiting inherits Rectangle {
     in property <string> title;
     in property <float> progress: -1;
+    // Sem servidor não há sala nem conta, mas os Clips não dependem dele.
+    in property <bool> offer-clips;
 
     VerticalLayout {
         alignment: center;
@@ -55,11 +58,22 @@ component Waiting inherits Rectangle {
             text: Ui.status;
             horizontal-alignment: center;
         }
+
+        if root.offer-clips && ClipsUi.available : HorizontalLayout {
+            alignment: center;
+            padding-top: 8px;
+
+            GhostButton {
+                text: "Abrir os Clips";
+                clicked => { ClipsUi.open = true; }
+            }
+        }
     }
 }
 
 export component OfflineScreen inherits Waiting {
     title: "Servidor sem resposta";
+    offer-clips: true;
 }
 
 export component UpdatingScreen inherits Waiting {

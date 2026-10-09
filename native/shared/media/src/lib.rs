@@ -8,7 +8,9 @@ use capture::Quality;
 
 mod audio;
 mod governor;
+mod pacer;
 mod plain;
+mod playout;
 mod receiver;
 mod recovery;
 mod unpack;
@@ -25,7 +27,8 @@ mod windows_decoder;
 pub use audio::{AudioEncoder, FRAME_MS};
 pub use governor::BitrateGovernor;
 pub use plain::{Feedback, PlainSender, Source};
-pub use receiver::{PlainReceiver, Rtx, Stream, resolve};
+pub use playout::Playout;
+pub use receiver::{PlainReceiver, Rtx, Stream, grow_receive_buffer, resolve};
 pub use recovery::Counters;
 pub use unpack::{AccessUnit, AudioUnpacker, VideoUnpacker, nals};
 
@@ -38,12 +41,12 @@ pub use windows::MediaFoundationEncoder as PlatformEncoder;
 #[cfg(target_os = "windows")]
 pub use windows_decoder::H264Decoder;
 
-/// Um quadro decodificado, pronto para desenhar: RGB de 8 bits, sem padding entre as linhas.
+/// Um quadro decodificado, pronto para desenhar: RGBA de 8 bits, sem padding entre as linhas.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedFrame {
     pub width: u32,
     pub height: u32,
-    pub rgb: Vec<u8>,
+    pub rgba: Vec<u8>,
 }
 
 /// Fora do Windows quem assiste decodifica pelo sistema dele — VideoToolbox no macOS,
@@ -57,7 +60,20 @@ impl H264Decoder {
         Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
     }
 
-    pub fn decode(&mut self, _annex_b: &[u8], _timestamp: u32) -> anyhow::Result<Vec<DecodedFrame>> {
+    pub fn decode(&mut self, _annex_b: &[u8], _timestamp: u32) -> anyhow::Result<Option<DecodedFrame>> {
+        Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
+    }
+
+    pub fn decode_into<'target>(
+        &mut self,
+        _annex_b: &[u8],
+        _timestamp: u32,
+        _target: impl FnOnce(u32, u32) -> &'target mut [u8],
+    ) -> anyhow::Result<bool> {
+        Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
+    }
+
+    pub fn skip(&mut self, _annex_b: &[u8], _timestamp: u32) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
     }
 }
@@ -90,6 +106,8 @@ pub struct EncoderConfig {
     pub height: u32,
     pub frame_rate: f64,
     pub bitrate: u32,
+    /// Pular o encoder da placa: ele já travou nesta transmissão.
+    pub software: bool,
 }
 
 impl EncoderConfig {
@@ -126,6 +144,7 @@ impl EncoderConfig {
             // 60 sobra em 30, e sobra vira bitrate gasto à toa.
             bitrate: bitrate * frame_rate / Self::FPS_MAX,
             frame_rate: f64::from(frame_rate),
+            software: false,
         }
     }
 

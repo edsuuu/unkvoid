@@ -1,8 +1,9 @@
 # A borda amarela no Windows 10
 
-Quem transmite num **Windows 10** vê uma borda amarela em volta da tela ou da janela capturada.
-No Windows 11 ela não aparece. Este arquivo diz por quê, o que dá para fazer e o que custa —
-levantado em 20/09/2026, **nada disto está implementado**.
+Quem transmite num **Windows 10** via uma borda amarela em volta da tela ou da janela capturada,
+na transmissão e nos clipes. No Windows 11 ela não aparece. Este arquivo diz por quê e o que foi
+feito: levantado em 20/09/2026, **implementado em 01/10/2026** para monitor inteiro (fases 1 e
+2 abaixo). Falta a prova numa máquina com Windows 10 de verdade.
 
 ## Por que ela aparece
 
@@ -36,26 +37,37 @@ E não pede dependência nova: a `windows-capture` 2.0.1, que o app já compila,
 | Custo | O que quer dizer |
 |---|---|
 | **Só monitor inteiro** | Desktop Duplication não captura janela. Compartilhar **uma janela** no Windows 10 continua no Windows Graphics Capture, **com a borda** |
-| **O cursor não vem na imagem** | A API entrega o ponteiro à parte (posição no `frame_info`, forma no `GetFramePointerShape`). Sem desenhá-lo na GPU por cima do quadro, quem assiste um jogo com cursor de hardware não vê o mouse. São três formatos de ponteiro (monocromático, colorido, colorido com máscara), e o colorido tem transparência: é um desenho, não uma cópia |
-| **O acesso cai** | Troca de resolução, tela cheia exclusiva, UAC e bloqueio de tela devolvem `DXGI_ERROR_ACCESS_LOST`. O app precisa recriar a duplicação sozinho (`recreate`), sem derrubar a transmissão |
-| **Duas placas de vídeo** | Em notebook híbrido o device do Direct3D tem de estar na placa dona da saída; a ponte entre devices que o encoder já monta (`media/src/windows.rs`) tem de continuar valendo |
+| **O cursor não vem na imagem** | A API entrega o ponteiro à parte. Ele é desenhado pelo GDI do próprio Windows (`DrawIconEx`) numa cópia do quadro que continua na GPU (textura `GDI_COMPATIBLE`): sai o mesmo desenho da tela, inclusive o cursor de texto que inverte o fundo, sem decifrar os três formatos de ponteiro. Jogo que esconde o cursor do Windows e desenha o próprio continua igual: o Windows diz que não há cursor, e nada é desenhado |
+| **O acesso cai** | Troca de resolução, tela cheia exclusiva, UAC e bloqueio de tela devolvem `DXGI_ERROR_ACCESS_LOST`. A duplicação é reaberta sozinha, de 200 em 200 ms, sem derrubar a transmissão; volta com outro device do Direct3D, e as duas pontes de encoder (`media/src/windows.rs` e `clips/src/encoder.rs`) se refazem quando o device da captura muda |
+| **Duas placas de vídeo** | Em notebook híbrido a duplicação pode recusar o monitor da outra placa. Aí a captura volta ao Windows Graphics Capture, **com a borda** — mas transmite |
 | **Laço próprio** | O Windows Graphics Capture chama o app a cada quadro; aqui é o app que pede (`acquire_next_frame` com prazo), numa thread dele, e quadro novo só existe quando a tela muda. O teto de fps e o "nada de trabalho por quadro na thread da captura" continuam valendo |
-| **Validação** | A máquina do dono é Windows 11 (build 26200): dá para forçar o caminho por variável de ambiente e provar a lógica, mas o resultado só vale numa máquina com Windows 10 de verdade |
+| **Validação** | A máquina do dono é Windows 11 (build 26200): `UNKVOID_DUPLICATION=on` força o caminho e prova a lógica, mas o resultado só vale numa máquina com Windows 10 de verdade |
 
-## O plano, em fases
+## O que foi feito
 
-Cada fase para para revisão antes da seguinte.
+O módulo é `shared/capture/src/windows_duplication.rs`, e vale onde `Duplication::needed()` diz
+que a borda não sai (ou com `UNKVOID_DUPLICATION=on`):
 
-1. **Monitor inteiro sem borda.** Quando o sistema não desliga a borda
-   (`is_border_settings_supported()` falso) e a origem é um monitor, a captura vai pelo Desktop
-   Duplication; janela, e todo o Windows 11, continuam como estão. Recriação automática no
-   `ACCESS_LOST`. Uma variável de ambiente (`UNKVOID_CAPTURE=duplication|wgc`) força um caminho
-   ou o outro — é o botão de calibração, e é como o caminho novo se testa no Windows 11.
-2. **O cursor desenhado na GPU**, respeitando a opção de mostrar ou não o cursor que a captura
-   já tem. Até esta fase sair, a fase 1 transmite **sem cursor** no Windows 10.
-3. **Prova em hardware**: uma máquina com Windows 10, com jogo em janela sem borda e em tela
-   cheia exclusiva, troca de resolução no meio, notebook com duas placas se houver. O resultado
-   entra no [ESTADO.md](ESTADO.md).
+1. **Monitor inteiro sem borda**, na transmissão (`capture/src/windows.rs`), nos clipes
+   (`clips/src/capture.rs`) e na prévia do seletor de tela — pelo Graphics Capture ela piscava
+   no monitor cada vez que o seletor abria. Janela, e todo o Windows 11, continuam como estavam.
+   O teto de fps conta a partir do quadro devido, e não do último entregue: num monitor de
+   240 Hz a média fica no fps pedido.
+2. **O cursor**, pelo GDI, respeitando a opção de mostrar o cursor que a transmissão já tem. Os
+   clipes gravam sempre com ele, como no Graphics Capture.
+
+Provado em 01/10/2026 no Windows 11 com o caminho forçado: 61 quadros em 1 s pedindo 60
+(`the_primary_monitor_is_duplicated_with_the_cursor`, ignorado por padrão, salva o primeiro
+quadro em BMP), a seta desenhada na cópia (`the_cursor_is_painted_on_the_copy_of_the_frame`),
+o replay gravando pelo caminho certo (`the_replay_records_through_the_desktop_duplication`) e
+uma transmissão de verdade para o SFU de produção, assistida do outro lado a 30 fps sem pacote
+perdido.
+
+## O que falta
+
+**Prova em hardware**: uma máquina com Windows 10, com jogo em janela sem borda e em tela cheia
+exclusiva, troca de resolução no meio, notebook com duas placas se houver. O resultado entra no
+[ESTADO.md](ESTADO.md).
 
 ## O que fica de fora
 

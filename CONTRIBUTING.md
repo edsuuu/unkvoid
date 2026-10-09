@@ -20,24 +20,28 @@ vez. Mudança que quebre uma dessas três coisas não entra, por melhor que seja
 
 | Pasta | O quê | Pilha |
 |---|---|---|
-| `native/` | o app: captura, encoder, interface | Rust, Tauri 2, React 19 em TypeScript estrito |
+| `native/` | o app: núcleo, captura, encoder, interface | Rust; Slint (Windows), GTK4 (Linux), SwiftUI (macOS) |
 | `sfu/` | o relé de mídia | Node 22, mediasoup, pnpm |
 | `web/` | site, contas, servidores, chat, auditoria | Laravel 13, Livewire 4, Flux, Pest |
 
+O app Tauri + React de antes (`native/apps/desktop`) fica como referência de comportamento e não
+é mais publicado.
+
 Mudança que toca uma peça só fica dentro da pasta dela. Mudança que atravessa a rede (rota,
-evento, token, comando do Tauri) **começa pelo contrato**: primeiro o `docs/CONTRATO.md`, depois
-o código das peças.
+evento, token, ação do SFU, ABI do macOS) **começa pelo contrato**: primeiro o `docs/CONTRATO.md`,
+depois o código das peças.
 
 ## Ambiente
 
-- **Rust** (rustup, toolchain padrão) e **cmake** (o Opus compila com ele).
-- **Node 22+**, `npm` para o app e `pnpm` para o SFU.
+- **Rust** (rustup, toolchain padrão) e **cmake** (o Opus compila com ele; sem ele o clippy morre
+  no `opusic-sys` com uma mensagem que não diz isso).
+- **Node 22+** e `pnpm`, para o SFU (e o `npm` do app Tauri de antes).
 - **PHP 8.4** e **Composer** para o Laravel.
 - **Docker** para MySQL, MinIO e e-mail de teste: `infra/docker-compose.yml` é o da VPS; local,
   bastam um MySQL em `127.0.0.1:3306` (`root`/`root`) e um MinIO em `127.0.0.1:9000`, que é o
   que o `web/.env.example` espera.
-- **Linux:** `libwebkit2gtk-4.1-dev libgtk-3-dev build-essential`, `gstreamer1.0-tools` e os
-  plugins good/bad/ugly.
+- **Linux:** `libgtk-4-dev libdbus-1-dev build-essential`, `gstreamer1.0-tools` com os plugins
+  good/bad/ugly, e o `pactl`. Ver [docs/BUILD-LINUX.md](docs/BUILD-LINUX.md).
 - **Windows:** Visual Studio Build Tools com "Desenvolvimento para desktop com C++". Não compila
   de dentro do WSL: veja [docs/BUILD-WINDOWS.md](docs/BUILD-WINDOWS.md).
 - **macOS:** Xcode Command Line Tools; veja [docs/BUILD-MACOS.md](docs/BUILD-MACOS.md).
@@ -53,12 +57,14 @@ cd web && composer dev                 # :8000
 cd sfu && pnpm install && pnpm run build
 cd sfu && SFU_SECRET=<o do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node dist/server.js
 
-# App apontando para o Laravel local (a URL do SFU vem do GET /api/config)
-cd native/apps/desktop && npm ci
-cd native/apps/desktop && VITE_SERVER=http://127.0.0.1:8000 npm run dev:app
+# O app apontando para o Laravel local (a URL do SFU vem do GET /api/config)
+cd native && UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid-windows   # no Windows
+cd native && UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid-linux     # no Linux
+cd native/apps/macos && ./run.sh                                                  # no Mac
 
-# Só a interface, num navegador comum, com a ponte do Tauri fingida
-cd native/apps/desktop && VITE_SERVER=http://localhost:1420 npm run dev
+# Sem interface: entrar numa sala e transmitir ou contar o que chega
+cd native && cargo run -p core-app --example room -- ws://127.0.0.1:3000/sfu sala-de-teste share
+cd native && cargo run -p core-app --example room -- ws://127.0.0.1:3000/sfu sala-de-teste watch
 ```
 
 Duas máquinas na mesma rede, WSL2 e o resto dos detalhes: fim do
@@ -66,22 +72,23 @@ Duas máquinas na mesma rede, WSL2 e o resto dos detalhes: fim do
 
 ## Antes de abrir o PR
 
-Rode o que corresponde à peça em que você mexeu. PR só entra verde: o merge na `main` faz o
-deploy do site e do SFU sozinho e publica o `.deb` do Linux.
+Rode o que corresponde à peça em que você mexeu. PR só entra verde.
 
 ```bash
 cd web && composer check          # phpstan max + pint + rector + pest em SQLite (rode 2x: o rector tem de ficar estável)
 
-cd sfu && pnpm run check          # eslint + check.mjs (precisa de um servidor no ar com o mesmo SFU_SECRET)
+cd sfu && pnpm run check && pnpm run typecheck && pnpm run build
 
-cd native/apps/desktop && npm run check && npm run build   # checks estáticos + tsc + eslint + Vitest
-cd native && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+cd native && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # no Linux
+cd native && cargo clippy --workspace --exclude unkvoid-linux --all-targets -- -D warnings      # no Windows (o GTK não compila lá)
+cd native/apps/macos && ./run.sh test                                                            # no Mac, contra a pilha local
+
+cd native/apps/desktop && npm run check && npm run build   # só se mexeu no app Tauri de antes
 ```
 
 Comportamento novo vem com teste: Pest (Feature, nome em frase, e o negativo de autorização é
-obrigatório) no `web/`, cenário no `check.mjs` do `sfu/`, Vitest em `tests/unit` e teste
-unitário em Rust no `native/`. Prefira acrescentar no arquivo de teste do assunto a criar um
-arquivo novo por função.
+obrigatório) no `web/` e teste em Rust no `native/`. Prefira acrescentar no arquivo de teste do
+assunto a criar um arquivo novo por função.
 
 O que só dá para provar em hardware (placa de vídeo, Wayland, um Mac) e você não tem à mão:
 escreva, e registre em `docs/ESTADO.md` na seção "Escrito, mas nunca rodou em hardware". É
@@ -93,15 +100,17 @@ melhor um item honesto ali do que um "funciona" que ninguém viu.
   caminho de rota, texto de interface e comentário. `native/apps/desktop/tests/static/check-language.py`
   varre o repositório e falha.
 - **Comentário explica o porquê**, nunca o quê, e só onde o nome não dá conta. Na interface do
-  app (`native/apps/desktop/ui`) não há comentário nenhum: o nome explica, e o `check-ui.py` cobra.
+  app Tauri (`native/apps/desktop/ui`) não há comentário nenhum, e o `check-ui.py` cobra.
 - **Nada de abreviar variável**: `$exception`, não `$e`.
 - **PHP:** `declare(strict_types=1)`, classes `final`, early return, rota → FormRequest →
   controller → Resource, um controller por recurso, autorização no modelo, escrita em
   transação com log `[ERRO]`.
-- **TypeScript:** estrito, uma classe por arquivo em `ui/core`, um componente por arquivo, regra
-  de negócio nunca em componente.
 - **Rust:** clippy sem aviso, `cfg(target_os)` correto nos três sistemas, nada de trabalho por
-  quadro na thread da captura.
+  quadro na thread da captura. **Não rode `cargo fmt`**: não há `rustfmt.toml` e o código usa
+  linhas longas; o formatador reescreve dezenas de linhas alheias.
+- **Regra de negócio não mora em pasta de sistema** (`native/apps/*`): se o Windows vai precisar
+  igual, sobe para o `native/shared/core`.
+- **TypeScript** (o SFU e o app Tauri): estrito, uma classe por arquivo.
 - **Atalho deliberado** ganha comentário `ponytail:` dizendo o teto e o caminho de saída.
 - O mínimo que resolve. Dependência nova só quando algumas linhas não dão conta.
 
@@ -111,7 +120,7 @@ Abra uma issue (ou pergunte no PR) **antes** de escrever quando a mudança for:
 
 - **migration** — o esquema do banco é decisão do dono do projeto;
 - **regra de negócio** — quem pode o quê, limites, o que acontece ao expulsar, e parecidos;
-- **contrato** — formato de rota, evento, token ou comando do Tauri que as outras peças leem.
+- **contrato** — formato de rota, evento, token ou ação do SFU que as outras peças leem.
 
 ## Fluxo
 
@@ -128,21 +137,18 @@ apagada. Vale para todo mundo, inclusive para quem mantém o projeto.
 
 ## Armadilhas já pagas
 
-- **`npm run check` antes de qualquer commit no app.** Interface quebrada vira tela preta sem
-  pista: a janela do Tauri não tem console. `npm run dev` roda o mesmo código no navegador, com
-  console; o `harness.html` abre um build pronto numa máquina que não compila o Rust.
-- **`use_sfu` só depois de declarar vídeo E áudio.** Ao contrário, o Rust manda RTP de um SSRC
-  que o servidor ainda não conhece e ele descarta calado: a transmissão "funciona" e ninguém vê
-  nada. O `tests/unit/broadcast.test.ts` guarda essa ordem.
-- **`hidden` do Tailwind é classe, não atributo.** Alternar o atributo num elemento que tem a
-  classe não faz nada.
-- **`build.rs` tem `cargo:rerun-if-changed=../dist`.** Sem isso o cargo não recompila quando só
-  o frontend muda, e o app sai com a interface antiga. Não remova.
+- **O remetente só aponta para o SFU depois de declarar todas as origens.** Ao contrário, o
+  RTP sai de um SSRC que o servidor ainda não conhece e é descartado calado: a transmissão
+  "funciona" e ninguém vê nada (o `Room::open` do núcleo guarda essa ordem).
+- **Antes de publicar app nativo, entre numa sala contra a produção.** A pilha local é `ws://`;
+  a 0.1.0-beta saiu sem TLS e não abriu sala nenhuma ([docs/AUTO-UPDATE.md](docs/AUTO-UPDATE.md)).
 - **O crate `capture` tem um módulo chamado `windows`.** Dentro dele, `windows::Win32::…` acha o
   módulo local em vez da crate da Microsoft. Precisa de `::windows::`.
 - **Ponteiro COM não é `Send`.** O encoder atravessa uma vez para a thread da captura, e há um
   `unsafe impl Send` com a justificativa escrita: os objetos do D3D11 (com proteção multithread
   ligada) e o MFT assíncrono são livres de apartamento.
+- **`HRESULT` positivo é sucesso para o windows-rs.** O `WAIT_TIMEOUT` (0x102) do keyed mutex
+  passava como `Ok`; quando o código de retorno importa, leia o `HRESULT` cru.
 - **Porta UDP fechada não dá erro.** A transmissão "funciona" e ninguém vê nada:
   [docs/UDP.md](docs/UDP.md).
 

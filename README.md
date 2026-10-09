@@ -4,61 +4,56 @@ Compartilhar a tela com quem você mandar o código, **sem perder fps no jogo** 
 tem conta, servidores com canais de texto e voz, câmera e chat, no molde do Discord.
 
 Você abre o app, escreve seu nome e clica em **Criar uma sala**. Sai um código de 12
-caracteres. Manda o código para quem quiser; quem cola o código entra e vê a tela de quem
-estiver transmitindo. O código **é** a sala: não existe em banco nenhum e some quando o
-último sai.
+caracteres; quem cola o código entra e vê a tela de quem estiver transmitindo. O código **é** a
+sala: não existe em banco nenhum e some quando o último sai.
 
 ## Por que um app, e não o navegador
 
-No navegador o encoder de vídeo é da CPU. Transmitindo 1080p60 enquanto se joga, a CPU
-disputa com o jogo e a transmissão cai para 1 fps ou trava — que é o problema que este
-projeto existe para resolver. Aqui o caminho é outro:
+No navegador o encoder de vídeo roda na CPU: transmitindo 1080p60 enquanto se joga, a CPU
+disputa com o jogo e a transmissão cai para 1 fps. Aqui o caminho é outro:
 
 ```
 captura → textura na GPU → encoder da placa de vídeo → 1 quadro → SFU → N espectadores
 ```
 
-O quadro nunca passa pela CPU antes de ser codificado, é codificado **uma vez**, e sobe
-**uma vez** para o servidor, que replica. O upload de quem transmite não cresce com a
-plateia. O encoder roda em tempo real e sem B-frames, que comprimem melhor mas exigem
-reordenar quadros — latência que uma chamada não paga.
-
-De quebra: sem barra do Chrome por cima, e o áudio do sistema entra junto.
+O quadro não passa pela CPU antes de ser codificado, é codificado **uma vez** e sobe **uma
+vez** para o servidor, que replica. O upload de quem transmite não cresce com a plateia.
 
 ## As três peças
 
 | Pasta | O quê | Onde roda |
 |---|---|---|
-| `native/` | o app: captura, encoder, interface (Rust + Tauri + React em TypeScript) | na máquina de quem usa |
+| `native/` | o app: núcleo em Rust (captura, encoder, mídia, regras) e uma interface nativa por sistema — Slint no Windows, GTK4 no Linux, SwiftUI no macOS | na máquina de quem usa |
 | `sfu/` | o relé de mídia (Node 22 + mediasoup) | na VPS |
 | `web/` | site, contas, servidores, canais, chat, auditoria (Laravel 13 + Livewire 4 + Flux) | na VPS |
 
-**Sala por código (sem conta):** o app fala só com o SFU, sem banco e sem login. **Servidores
-(com conta):** o Laravel decide quem pode o quê e assina um token de 60 s; o SFU só confere a
-assinatura; o app só esconde botão. Os dois modos são produto: mexer num não degrada o outro.
+O app Tauri + React (`native/apps/desktop`) é o de antes dos nativos: continua no repositório
+como referência de comportamento, mas não é mais publicado.
 
-Como as peças conversam, os fluxos e o que roda onde: [docs/ARQUITETURA.md](docs/ARQUITETURA.md).
-Tudo o que atravessa a rede: [docs/CONTRATO.md](docs/CONTRATO.md).
+**Sala por código (sem conta):** o app fala só com o SFU. **Servidores (com conta):** o Laravel
+decide quem pode o quê e assina um token de 60 s; o SFU só confere a assinatura; o app só esconde
+botão. Os dois modos são produto: mexer num não degrada o outro.
 
-## Estado por sistema
+Como as peças conversam: [docs/ARQUITETURA.md](docs/ARQUITETURA.md). Tudo o que atravessa a
+rede: [docs/CONTRATO.md](docs/CONTRATO.md).
 
-| | Captura de tela | Áudio do sistema | Encoder | Assistir |
-|---|---|---|---|---|
-| Windows | Graphics Capture | WASAPI loopback, por processo | Media Foundation (NVENC/QuickSync/VCE); sem placa, software em 720p30 | WebRTC da webview |
-| macOS | ScreenCaptureKit | sim | VideoToolbox | WebRTC da webview |
-| Linux | GStreamer: `ximagesrc` (X11) ou `pipewiresrc` pelo portal (Wayland) | monitor do PulseAudio/PipeWire | `nvh264enc`/`vah264enc`/`vaapih264enc`; sem placa, `x264enc` | receptor nativo: RTP puro → GStreamer → MJPEG |
+## Por sistema
 
-No Linux, Debian, Ubuntu, Mint e Parrot compilam o WebKitGTK **sem WebRTC**, e nenhum pacote
-muda isso. Por isso lá o app transmite e assiste por um caminho nativo em Rust.
-`unkvoid-desktop --check` diz o que o motor da janela desta máquina sabe fazer, e
-`unkvoid-desktop --check-capture` prova a captura e o encoder em três segundos, sem abrir
-janela. O que está provado em hardware e o que só compila: [docs/ESTADO.md](docs/ESTADO.md).
+| | Captura | Encoder | Assistir |
+|---|---|---|---|
+| Windows | Graphics Capture (Desktop Duplication no monitor do Windows 10, sem a borda amarela) | Media Foundation na placa (NVENC, QuickSync, AMF); sem placa, CPU em 720p30 | Media Foundation na placa (DXVA), com reserva na CPU |
+| Linux | GStreamer: `ximagesrc` (X11) ou `pipewiresrc` pelo portal (Wayland) | `nvh264enc`, `vah264enc`, `vaapih264enc`; sem placa, `x264enc` em 720p30 | GStreamer, um processo por transmissão |
+| macOS | ScreenCaptureKit | VideoToolbox | VideoToolbox |
+
+Nos três a mídia é RTP puro cifrado (SRTP) direto com o SFU, com reenvio de pacote perdido,
+pedido de quadro-chave, buffer de chegada e o caminho refeito sozinho quando a rede troca de
+endereço. O que já rodou em hardware e o que falta: [docs/ESTADO.md](docs/ESTADO.md).
 
 ## Instalar
 
-- **Windows e macOS:** o instalador está em <https://unkvoid.com>. O app se atualiza sozinho.
-- **Linux (Debian, Ubuntu e derivados):** pelo repositório APT, e a versão nova chega com o
-  `apt upgrade`:
+- **Windows:** o instalador está em <https://unkvoid.com>, e o app se atualiza sozinho.
+- **Linux (Debian, Ubuntu e derivados):** pelo repositório APT; a versão nova chega com o
+  `apt upgrade`.
 
 ```bash
 curl -fsSL https://unkvoid.com/apt/unkvoid.gpg | sudo tee /usr/share/keyrings/unkvoid.gpg > /dev/null
@@ -66,49 +61,27 @@ echo "deb [signed-by=/usr/share/keyrings/unkvoid.gpg] https://unkvoid.com/apt ./
 sudo apt update && sudo apt install unkvoid
 ```
 
+- **macOS:** ainda sem versão publicada.
+
 ## Desenvolver
 
-Rodar as três peças local, o que verificar antes de um PR e as regras de código estão no
+Rodar as três peças, o que verificar antes de um PR e as regras de código:
 [CONTRIBUTING.md](CONTRIBUTING.md). O caminho curto:
 
 ```bash
 cd web && composer setup && composer dev                 # Laravel em :8000
 cd sfu && pnpm install && pnpm run build && SFU_SECRET=<o do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node dist/server.js
-cd native/apps/desktop && npm ci && VITE_SERVER=http://127.0.0.1:8000 npm run dev:app
+cd native && UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid-windows   # ou unkvoid-linux
+cd native/apps/macos && ./run.sh                                                  # no Mac
 ```
 
-Gerar instalador **não cross-compila**: cada um só sai no seu próprio sistema.
-[Windows](docs/BUILD-WINDOWS.md) · [macOS](docs/BUILD-MACOS.md) · [Linux](docs/BUILD-LINUX.md) ·
-[assinar e publicar uma versão](docs/AUTO-UPDATE.md).
+Instalador não se cross-compila: cada um sai no seu sistema.
+[Windows](docs/BUILD-WINDOWS.md) · [Linux](docs/BUILD-LINUX.md) · [macOS](docs/BUILD-MACOS.md) ·
+[assinar e publicar](docs/AUTO-UPDATE.md).
 
 ## Documentação
 
-O índice está em [docs/README.md](docs/README.md). Os que mais se abre:
-
-| Arquivo | O que tem |
-|---|---|
-| [docs/ARQUITETURA.md](docs/ARQUITETURA.md) | o mapa: cada peça, como conversam, os fluxos, onde roda |
-| [docs/CONTRATO.md](docs/CONTRATO.md) | o contrato entre as três peças: API, token, SFU, comandos do Tauri |
-| [docs/ESTADO.md](docs/ESTADO.md) | o que falta, o que nunca rodou em hardware e as perguntas abertas |
-| [docs/DECISOES.md](docs/DECISOES.md) | o que foi decidido e por quê |
-| [docs/SEGURANCA.md](docs/SEGURANCA.md) | o que é cifrado, o que está protegido e o que não está |
-
-## Code signing policy
-
-Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by
-[SignPath Foundation](https://signpath.org).
-
-- **Committers and reviewers:** [edsuuu](https://github.com/edsuuu)
-- **Approvers:** [edsuuu](https://github.com/edsuuu)
-- Os instaladores do Windows e do macOS saem de build automatizado deste repositório
-  ([`.github/workflows/release.yml`](.github/workflows/release.yml), em runner do GitHub), e toda
-  versão passa por aprovação manual antes de ser assinada.
-- **Privacy policy:** <https://unkvoid.com/privacidade>. O app fala com `unkvoid.com` para
-  procurar atualização, para enviar relatório de erro e para o que a pessoa faz nele (salas,
-  chat, voz); o que é guardado está na política.
-
-A inscrição na SignPath Foundation está em análise. Até a aprovação, os instaladores levam só
-a assinatura do atualizador (minisign), e o Windows avisa que o editor é desconhecido.
+O índice é o [docs/README.md](docs/README.md): um arquivo por pergunta.
 
 ## Contribuir
 

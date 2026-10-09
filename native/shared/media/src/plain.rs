@@ -17,6 +17,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
@@ -29,6 +30,7 @@ use rtc::shared::marshal::Marshal;
 use rtc::srtp::context::Context as SrtpContext;
 use rtc::srtp::protection_profile::ProtectionProfile;
 
+use crate::pacer::Pacer;
 use crate::{audio::CHANNELS, audio::SAMPLE_RATE, EncodedFrame, FRAME_MS};
 
 /// Tipos de payload. 96+ é a faixa dinâmica, e o servidor devolve o que for declarado.
@@ -147,6 +149,14 @@ const SALT_LEN: usize = 14;
 /// 1080p60 cobre perto de meio segundo, e o pedido chega numa ida e volta (~140 ms).
 const HISTORY: usize = 1024;
 
+/// Silêncio do servidor, com pacote saindo, que prova que o caminho morreu. O mediasoup manda
+/// um relatório de recepção a cada 0,5–1,5 s para quem transmite: cinco segundos são vários
+/// seguidos que não chegaram, e não um atraso.
+const SERVER_SILENCE: Duration = Duration::from_secs(5);
+
+/// "Está mandando agora": o último pacote saiu há menos que isto.
+const SENDING: Duration = Duration::from_secs(1);
+
 pub struct PlainSender {
     socket: UdpSocket,
     server: SocketAddr,
@@ -175,6 +185,17 @@ pub struct PlainSender {
     /// Os últimos pacotes de vídeo já cifrados, com o número de sequência, para reenviar
     /// o que o servidor disser que não chegou. O `bool` diz se ele já foi pedido de volta.
     history: VecDeque<(u16, Bytes, bool)>,
+
+    /// Por onde o vídeo sai, no ritmo. O resto sai direto pelo `socket`.
+    pacer: Pacer,
+
+    /// O que o servidor devolveu e o vídeo ainda não veio buscar. Todo envio esvazia o socket
+    /// antes — inclusive o do microfone, que é quem prova o caminho vivo quando só ele sobe.
+    pending: Feedback,
+
+    /// O último RTCP que abriu com a chave do servidor, e o último pacote que saiu.
+    heard_at: Option<Instant>,
+    sent_at: Option<Instant>,
 }
 
 /// O que o servidor devolveu desde a última leitura.
@@ -247,6 +268,9 @@ impl PlainSender {
 
         grow_send_buffer(&socket);
 
+        let pacer = Pacer::start(socket.try_clone().context("could not share the SFU socket with the pacer")?)
+            .context("could not start the pacer thread")?;
+
         let srtp = SrtpContext::new(
             &key[..KEY_LEN],
             &key[KEY_LEN..],
@@ -277,7 +301,25 @@ impl PlainSender {
             dropped: 0,
             sent_bytes: 0,
             history: VecDeque::with_capacity(HISTORY),
+            pacer,
+            pending: Feedback::default(),
+            heard_at: None,
+            sent_at: None,
         })
+    }
+
+    /// O servidor parou de responder com pacote saindo: o caminho morreu, e só um socket novo,
+    /// num transporte novo, volta a chegar lá — o `comedia` do mediasoup prendeu o transporte
+    /// ao endereço de antes (o provedor reconectou, o roteador reiniciou) e descarta o que vem
+    /// de outro. Sem RTCP nenhum desde o começo não há o que comparar: quem decide aí é o
+    /// `producerDead` do servidor.
+    pub fn lost_the_server(&self, now: Instant) -> bool {
+        lost(self.heard_at, self.sent_at, now)
+    }
+
+    /// A taxa do vídeo agora, que o governador decide: é por ela que o ritmo da saída anda.
+    pub fn follow_bitrate(&self, video_bitrate: u64) {
+        self.pacer.follow(video_bitrate);
     }
 
     pub fn server(&self) -> SocketAddr {
@@ -335,6 +377,11 @@ impl PlainSender {
     ///
     /// Devolve quantos pacotes o quadro virou: é o denominador da perda.
     pub fn send_frame(&mut self, source: Source, frame: EncodedFrame, frame_rate: f64) -> Result<usize> {
+        // Antes de marcar a saída: o relatório que chegou durante uma tela parada ainda está
+        // no socket, e sem lê-lo o vigia veria pacote saindo e servidor calado há minutos.
+        self.drain();
+        self.sent_at = Some(Instant::now());
+
         let base = self.ssrc_base;
         let stream = self.streams.entry(source).or_insert_with(|| source.stream(base));
 
@@ -354,15 +401,7 @@ impl PlainSender {
         stream.last_video_ns = Some(frame.timestamp_ns);
         stream.packetizer.skip_samples(advance);
 
-        let sent = Self::send(
-            &self.socket,
-            &mut self.srtp,
-            stream,
-            Bytes::from(frame.data),
-            0,
-            (&mut self.dropped, &mut self.sent_bytes),
-        )?;
-
+        let sent = Self::protect(&mut self.srtp, stream, Bytes::from(frame.data), 0)?;
         let packets = sent.len();
 
         stream.packets += packets as u32;
@@ -372,6 +411,7 @@ impl PlainSender {
                 self.history.pop_front();
             }
 
+            self.pacer.push(packet.clone());
             self.history.push_back((sequence, packet, false));
         }
 
@@ -421,8 +461,8 @@ impl PlainSender {
         let _ = self.socket.send(&protected);
     }
 
-    /// Lê o que o servidor devolveu: reenvia na hora os pacotes de vídeo que ele diz não
-    /// ter recebido, e diz quantos foram e se ele pediu um quadro-chave.
+    /// Lê o que o servidor devolveu: reenvia os pacotes de vídeo que ele diz não ter recebido —
+    /// pelo ritmo, na frente do vídeo novo —, e diz quantos foram e se ele pediu um quadro-chave.
     ///
     /// O caminho até o servidor é a internet aberta, do Brasil aos EUA, e 1% de perda ali
     /// congelava quem assiste por segundos: o servidor pedia o pacote de volta (o `nack`
@@ -434,10 +474,14 @@ impl PlainSender {
     /// Não bloqueia: o socket é não-bloqueante e quem chama é a thread da captura, que
     /// não pode esperar por nada. Lê o que já chegou e volta.
     pub fn read_feedback(&mut self) -> Feedback {
-        let mut feedback = Feedback::default();
+        self.drain();
 
+        std::mem::take(&mut self.pending)
+    }
+
+    fn drain(&mut self) {
         let Some(incoming) = self.incoming.as_mut() else {
-            return feedback;
+            return;
         };
 
         let mut buffer = [0_u8; 1500];
@@ -447,7 +491,8 @@ impl PlainSender {
                 continue;
             };
 
-            feedback.keyframe |= wants_keyframe(&plain);
+            self.heard_at = Some(Instant::now());
+            self.pending.keyframe |= wants_keyframe(&plain);
 
             // ponytail: busca linear no histórico a cada pacote perdido, até 1024 passos.
             // Índice por número de sequência se isto aparecer no custo por quadro.
@@ -458,60 +503,54 @@ impl PlainSender {
                     continue;
                 };
 
-                feedback.lost += u32::from(!std::mem::replace(asked, true));
-
-                if let Ok(written) = self.socket.send(packet) {
-                    self.sent_bytes += written as u64;
-                }
+                self.pending.lost += u32::from(!std::mem::replace(asked, true));
+                self.pacer.push_repair(packet.clone());
             }
         }
-
-        feedback
     }
 
-    /// Pacotes largados porque o buffer de saída estava cheio.
+    /// Pacotes largados porque o buffer de saída, ou a fila do ritmo, estava cheio.
     pub fn dropped(&self) -> u64 {
-        self.dropped
+        self.dropped + self.pacer.dropped()
     }
 
     /// Bytes protegidos que o socket aceitou, vídeo e áudio somados.
     pub fn sent_bytes(&self) -> u64 {
-        self.sent_bytes
+        self.sent_bytes + self.pacer.sent_bytes()
     }
 
     /// O Opus chega em blocos fixos de 20 ms, então o relógio anda sempre o mesmo tanto.
     pub fn send_audio(&mut self, source: Source, opus: &[u8]) -> Result<()> {
+        self.drain();
+        self.sent_at = Some(Instant::now());
+
         let samples = SAMPLE_RATE / 1000 * FRAME_MS;
         let base = self.ssrc_base;
         let stream = self.streams.entry(source).or_insert_with(|| source.stream(base));
 
-        let sent = Self::send(
-            &self.socket,
-            &mut self.srtp,
-            stream,
-            Bytes::copy_from_slice(opus),
-            samples,
-            (&mut self.dropped, &mut self.sent_bytes),
-        )?;
+        let sent = Self::protect(&mut self.srtp, stream, Bytes::copy_from_slice(opus), samples)?;
 
         stream.packets += sent.len() as u32;
+
+        for (_, packet) in &sent {
+            match self.socket.send(packet) {
+                Ok(written) => self.sent_bytes += written as u64,
+                // Só chega aqui com o buffer do socket cheio, e depois do `SO_SNDBUF`
+                // ampliado isso é uplink saturado de verdade. Largar o pacote é o preço
+                // certo para som ao vivo: dormir aqui segurava a thread que o produz.
+                Err(error) if error.kind() == ErrorKind::WouldBlock => self.dropped += 1,
+                Err(error) => return Err(error).context("could not send RTP to the SFU"),
+            }
+        }
 
         self.report(source);
 
         Ok(())
     }
 
-    /// Devolve cada pacote que saiu, já cifrado e com o número de sequência — inclusive o
-    /// que o buffer cheio largou, que é justamente o que o servidor vai pedir de volta.
-    fn send(
-        socket: &UdpSocket,
-        srtp: &mut SrtpContext,
-        stream: &mut Stream,
-        payload: Bytes,
-        samples: u32,
-        counters: (&mut u64, &mut u64),
-    ) -> Result<Vec<(u16, Bytes)>> {
-        let (dropped, sent_bytes) = counters;
+    /// Empacota e cifra: devolve cada pacote com o número de sequência, pronto para sair e
+    /// para o histórico de reenvio.
+    fn protect(srtp: &mut SrtpContext, stream: &mut Stream, payload: Bytes, samples: u32) -> Result<Vec<(u16, Bytes)>> {
         let packetizer = stream.packetizer.as_mut();
         let timestamp = &mut stream.last_timestamp;
         let payload_bytes = &mut stream.bytes;
@@ -533,17 +572,6 @@ impl PlainSender {
             let protected = srtp
                 .encrypt_rtp(&plain)
                 .map_err(|error| anyhow!("could not protect RTP: {error}"))?;
-
-            match socket.send(&protected) {
-                Ok(written) => *sent_bytes += written as u64,
-                // Só chega aqui com o buffer do socket cheio, e depois do `SO_SNDBUF`
-                // ampliado isso é uplink saturado de verdade. Largar o pacote é o preço
-                // certo para vídeo ao vivo: dormir aqui segurava a thread da captura,
-                // que é justamente quem produz o próximo quadro, e segurava junto o
-                // mutex do destino.
-                Err(error) if error.kind() == ErrorKind::WouldBlock => *dropped += 1,
-                Err(error) => return Err(error).context("could not send RTP to the SFU"),
-            }
 
             sent.push((packet.header.sequence_number, protected.freeze()));
         }
@@ -625,6 +653,13 @@ fn ntp_now() -> u64 {
         .unwrap_or_default();
 
     ((now.as_secs() + EPOCH) << 32) | u64::from((f64::from(now.subsec_nanos()) / 1e9 * 4_294_967_296.0) as u32)
+}
+
+fn lost(heard_at: Option<Instant>, sent_at: Option<Instant>, now: Instant) -> bool {
+    match (heard_at, sent_at) {
+        (Some(heard), Some(sent)) => now.duration_since(sent) < SENDING && now.duration_since(heard) >= SERVER_SILENCE,
+        _ => false,
+    }
 }
 
 /// Os números de sequência que um NACK genérico diz terem faltado no vídeo.
@@ -734,8 +769,10 @@ mod tests {
             )
             .expect("could not send the frame");
 
+        // O relatório do remetente sai direto e o vídeo sai no ritmo: o primeiro a chegar
+        // pode ser o relatório.
         let mut buffer = [0u8; 2048];
-        let size = server_socket.recv(&mut buffer).expect("the frame did not arrive");
+        let size = media_packet(&server_socket, &mut buffer);
         let original = buffer[..size].to_vec();
         let sequence = u16::from_be_bytes([original[2], original[3]]);
 
@@ -782,6 +819,48 @@ mod tests {
 
         assert_eq!(sender.read_feedback(), Feedback::default(), "o mesmo pacote não é perda nova");
         assert!(server_socket.recv(&mut buffer).is_ok(), "o pedido repetido também é atendido");
+    }
+
+    /// Só é caminho morto com pacote saindo agora e o servidor calado há cinco segundos. Tela
+    /// parada não manda nada, e o silêncio do servidor aí não diz nada; e sem relatório nenhum
+    /// desde o começo quem decide é o servidor.
+    #[test]
+    fn the_server_is_lost_only_when_it_stays_silent_while_packets_go_out() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+
+        assert!(lost(Some(start), Some(at(6)), at(6)), "mandando e sem ouvir nada há 6 s");
+        assert!(!lost(Some(at(2)), Some(at(6)), at(6)), "o servidor respondeu há 4 s");
+        assert!(!lost(Some(start), Some(at(4)), at(6)), "nada saiu no último segundo");
+        assert!(!lost(None, Some(at(6)), at(6)), "o servidor nunca respondeu");
+    }
+
+    /// Um relatório que chegou durante uma tela parada é lido antes do próximo quadro sair.
+    #[test]
+    fn a_report_waiting_in_the_socket_counts_before_the_next_frame() {
+        let (server_socket, address) = listener();
+        let server_key = PlainSender::generate_key();
+        let mut sender = PlainSender::connect(address, &PlainSender::generate_key(), Some(&server_key), BASE)
+            .expect("could not connect");
+        let mut server_srtp = SrtpContext::new(
+            &server_key[..KEY_LEN],
+            &server_key[KEY_LEN..],
+            ProtectionProfile::Aes128CmHmacSha1_80,
+            None,
+            None,
+        )
+        .expect("could not start the server SRTP");
+        let report = server_srtp.encrypt_rtcp(&[0x80, 201, 0x00, 0x01, 0, 0, 0, 1]).expect("could not protect the report");
+        let port = sender.socket.local_addr().expect("sender without an address").port();
+
+        server_socket.send_to(&report, ("127.0.0.1", port)).expect("could not send the report");
+        std::thread::sleep(Duration::from_millis(50));
+        sender
+            .send_audio(Source::Mic, &[0x7F; 40])
+            .expect("could not send audio");
+
+        assert!(sender.heard_at.is_some(), "o relatório na fila não foi lido");
+        assert!(!sender.lost_the_server(Instant::now()));
     }
 
     /// Um PLI atrás de um relatório de recepção, que é como ele chega de verdade. Se o
@@ -986,12 +1065,15 @@ mod tests {
             ));
         }
 
+        // O vídeo sai no ritmo e o som sai na hora: a ordem de chegada não é a de envio.
+        seen.sort_unstable_by_key(|(_, ssrc)| *ssrc);
+
         assert_eq!(
             seen,
             [
                 (PAYLOAD_VIDEO, Source::Screen.ssrc(BASE)),
-                (PAYLOAD_VIDEO, Source::Camera.ssrc(BASE)),
                 (PAYLOAD_AUDIO, Source::ScreenAudio.ssrc(BASE)),
+                (PAYLOAD_VIDEO, Source::Camera.ssrc(BASE)),
                 (PAYLOAD_AUDIO, Source::Mic.ssrc(BASE)),
             ]
         );

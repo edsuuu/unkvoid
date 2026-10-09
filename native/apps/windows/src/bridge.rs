@@ -8,6 +8,7 @@
 //! sala?) é chamada ao `core_app`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -20,6 +21,7 @@ use core_app::models::{
 };
 use core_app::realtime::{self, Realtime, Reading};
 use core_app::reconnect::Backoff;
+use core_app::resume::{self, Resume, VoiceSeat};
 use core_app::room::Room;
 use core_app::{App, Failure, Screen};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel, Weak};
@@ -44,6 +46,10 @@ const FOLLOW: &str = r#"{"event":"live.follow"}"#;
 
 const DEFAULT_SERVER: &str = "https://unkvoid.com";
 
+/// Quanto se espera a sala se despedir do servidor antes de entregar o app ao instalador. Sem
+/// a despedida, quem assiste fica vendo a tela parada até o servidor desistir de esperar.
+const LEAVING: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// ponytail: a câmera do Windows ainda não existe — o `capture` não abre webcam aqui, e o
 /// `Room` só aceita câmera no macOS. Teto: quem está no Windows vê a câmera dos outros mas
 /// não liga a dele. A saída é a captura por Media Foundation empurrando `room.show`.
@@ -54,6 +60,8 @@ fn room_failure(what: &str) -> &'static str {
     match what {
         "watch" => "Não deu para assistir a uma das transmissões.",
         "mic" => "Não deu para abrir o microfone.",
+        "shareClosed" => "A janela que você compartilhava foi fechada, e a transmissão parou.",
+        "serverMuted" => "Um moderador silenciou o seu microfone.",
         _ => "Não deu para compartilhar a tela.",
     }
 }
@@ -74,6 +82,11 @@ pub struct Bridge {
     voice: Arc<Mutex<Voice>>,
     /// O canal de voz em que se está: o chat da voz lê e escreve nele.
     voice_channel: Arc<Mutex<Option<String>>>,
+    /// A sala aberta de verdade, pelo código ou pelo id do canal: é o que diz se entrar é
+    /// voltar a ela ou trocar de sala.
+    entered: Arc<Mutex<Option<String>>>,
+    /// A entrada que ainda espera o servidor.
+    entering: Arc<Mutex<Entering>>,
     /// Os contadores da última volta da linha de números.
     counted: Arc<Mutex<std::collections::HashMap<String, media::Counters>>>,
     /// Desde quando se está na sala. O relógio da barra conta a partir daqui.
@@ -106,13 +119,20 @@ pub struct Bridge {
     /// Quem está online no servidor aberto.
     online: Arc<Mutex<HashSet<i64>>>,
     toasts: Toasts,
+    /// A versão nova já baixada e conferida, com o número dela: o que o botão verde instala.
+    installer: Arc<Mutex<Option<(PathBuf, String)>>>,
+    /// Onde se estava antes da atualização, esperando a abertura terminar para voltar lá.
+    resumed: Arc<Mutex<Option<Resume>>>,
+    /// A tela que volta ao ar assim que a sala retomada abrir.
+    resumed_share: Arc<Mutex<Option<capture::CaptureConfig>>>,
+    /// O servidor do canal de voz em que se está: é ele que a tela abre ao voltar.
+    voice_server: Arc<Mutex<Option<i64>>>,
 }
 
 impl Bridge {
     pub fn new(window: Weak<AppWindow>) -> anyhow::Result<Rc<Self>> {
         let storage = Storage::open()?;
-        let server = std::env::var("UNKVOID_SERVER").unwrap_or_else(|_| DEFAULT_SERVER.to_owned());
-        let (core, api) = (Arc::new(App::new(storage)), Arc::new(Api::new(&server)?));
+        let (core, api) = (Arc::new(App::new(storage)), Arc::new(Api::new(&server())?));
 
         core.keep_session(&api, {
             let window = window.clone();
@@ -132,6 +152,8 @@ impl Bridge {
             stage: Arc::default(),
             voice: Arc::default(),
             voice_channel: Arc::default(),
+            entered: Arc::default(),
+            entering: Arc::default(),
             counted: Arc::default(),
             since: Arc::default(),
             servers: Arc::default(),
@@ -149,6 +171,10 @@ impl Bridge {
             followed: Arc::default(),
             online: Arc::default(),
             toasts: Arc::default(),
+            installer: Arc::default(),
+            resumed: Arc::default(),
+            resumed_share: Arc::default(),
+            voice_server: Arc::default(),
         }))
     }
 
@@ -180,11 +206,30 @@ impl Bridge {
 
         every(std::time::Duration::from_secs(1), {
             let (window, watch, room, counted) = (self.window.clone(), self.watch.clone(), self.room.clone(), self.counted.clone());
+            let (runtime, away_for) = (self.runtime.handle().clone(), Arc::new(std::sync::atomic::AtomicU32::new(0)));
 
             move || {
                 let (Some(app), Some(room)) = (window.upgrade(), lock(&room).clone()) else {
                     return;
                 };
+
+                // Dois segundos fora antes de pausar: um alt-tab rápido não pode custar um
+                // quadro-chave na volta.
+                let away = app.window().is_minimized() || !app.window().is_visible();
+                let seconds = if away {
+                    away_for.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+                } else {
+                    away_for.store(0, std::sync::atomic::Ordering::Relaxed);
+
+                    0
+                };
+
+                runtime.spawn({
+                    let room = room.clone();
+
+                    async move { room.set_away(seconds >= 2).await }
+                });
+
                 let drawn = match lock(&watch).as_ref() {
                     Some(watch) => watch.drawn(),
                     None => return,
@@ -217,13 +262,13 @@ impl Bridge {
         ui.on_create_room({
             let bridge = self.clone();
 
-            move |name, code| bridge.enter(bridge.core.create_room(&name, &code), None)
+            move |name, code| bridge.enter(bridge.core.create_room(&bridge.room_name(&name), &code), None)
         });
 
         ui.on_join_room({
             let bridge = self.clone();
 
-            move |name, code| bridge.enter(bridge.core.join_room(&name, &code), None)
+            move |name, code| bridge.enter(bridge.core.join_room(&bridge.room_name(&name), &code), None)
         });
 
         ui.on_sign_in({
@@ -232,16 +277,16 @@ impl Bridge {
             move |email, password, register| bridge.sign_in(&email, &password, register)
         });
 
-        // ponytail: entrar pelo Google é o navegador do sistema e a volta por
-        // `unkvoid://login?token=&state=`, que hoje só existe no app do Tauri. Teto: o
-        // botão explica em vez de abrir. A saída é esse fluxo subir para o `shared/core`,
-        // onde o macOS vai precisar dele igual.
         ui.on_google_sign_in({
-            let window = self.window.clone();
+            let bridge = self.clone();
 
-            move || {
-                complain(&window, "Entrar com o Google ainda não funciona aqui. Use e-mail e senha.")
-            }
+            move || bridge.google_sign_in()
+        });
+
+        ui.on_rename({
+            let bridge = self.clone();
+
+            move |name| bridge.rename(&name)
         });
 
         ui.on_sign_out({
@@ -381,7 +426,7 @@ impl Bridge {
         ui.on_open_recent_room({
             let bridge = self.clone();
 
-            move |code| bridge.enter(bridge.core.join_room("", &code), None)
+            move |code| bridge.enter(bridge.core.join_room(&bridge.room_name(""), &code), None)
         });
 
         ui.on_leave_room({
@@ -462,9 +507,9 @@ impl Bridge {
         });
 
         ui.on_back_to_room({
-            let window = self.window.clone();
+            let bridge = self.clone();
 
-            move || paint(&window, |app| app.global::<Ui>().set_screen("room".into()))
+            move || bridge.back_to_room()
         });
 
         ui.on_toggle_voice_chat({
@@ -538,12 +583,21 @@ impl Bridge {
             let bridge = self.clone();
 
             move |producer| {
-                let Some((audio, heard)) = lock(&bridge.stage).toggle_heard(&producer) else {
+                let (toggled, volume) = {
+                    let mut stage = lock(&bridge.stage);
+
+                    (stage.toggle_heard(&producer), stage.volume(&producer))
+                };
+                let Some((audio, heard)) = toggled else {
                     return;
                 };
 
                 if let Some(room) = lock(&bridge.room).clone() {
                     room.mute_watched(&audio, !heard);
+                }
+
+                if let Some(watch) = lock(&bridge.watch).as_ref() {
+                    watch.speaker().set_volume(&audio, f32::from(volume) / 100.0);
                 }
 
                 paint_stage(&bridge.window, &bridge.stage);
@@ -563,8 +617,15 @@ impl Bridge {
             let bridge = self.clone();
 
             move |producer| {
-                lock(&bridge.stage).toggle_full(&producer);
+                let focused = {
+                    let mut stage = lock(&bridge.stage);
+
+                    stage.toggle_full(&producer);
+                    stage.full_producer()
+                };
+
                 paint_stage(&bridge.window, &bridge.stage);
+                bridge.with_room(move |room| async move { room.set_focus(focused).await });
             }
         });
 
@@ -572,11 +633,21 @@ impl Bridge {
             let bridge = self.clone();
 
             move |producer, level| {
-                let audio = lock(&bridge.stage).tile(&producer).and_then(|tile| tile.audio.clone());
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let volume = level.round().clamp(0.0, 100.0) as u8;
+                let Some((audio, heard)) = lock(&bridge.stage).set_volume(&producer, volume) else {
+                    return;
+                };
 
-                if let (Some(audio), Some(watch)) = (audio, lock(&bridge.watch).as_ref()) {
-                    watch.speaker().set_volume(&audio, level);
+                if let (Some(heard), Some(room)) = (heard, lock(&bridge.room).clone()) {
+                    room.mute_watched(&audio, !heard);
                 }
+
+                if let Some(watch) = lock(&bridge.watch).as_ref() {
+                    watch.speaker().set_volume(&audio, f32::from(volume) / 100.0);
+                }
+
+                paint_stage(&bridge.window, &bridge.stage);
             }
         });
 
@@ -621,13 +692,43 @@ impl Bridge {
 
             move |index| bridge.choose(false, index)
         });
+
+        ui.on_install_update({
+            let bridge = self.clone();
+
+            move || bridge.install_update()
+        });
+
+        ui.on_resume_session({
+            let bridge = self.clone();
+
+            move || bridge.resume_session()
+        });
     }
 
-    /// A abertura: o servidor responde? Onde fica o SFU? O token guardado ainda vale?
+    /// A abertura: o servidor responde? Onde fica o SFU? O token guardado ainda vale? Aberto,
+    /// volta para onde se estava se foi a atualização que fechou o app, e passa a procurar a
+    /// próxima versão.
     pub fn start(self: &Rc<Self>) {
         let (core, api, window) = (self.core.clone(), self.api.clone(), self.window.clone());
         let (sfu, live) = (self.sfu.clone(), self.live.clone());
         let landing = self.landing();
+        let installer = self.installer.clone();
+        let returning = {
+            let resume = resume::take(&self.core);
+            let returning = resume.is_some();
+
+            *lock(&self.resumed) = resume;
+
+            returning
+        };
+
+        #[cfg(target_os = "windows")]
+        self.spawn({
+            let api = self.api.clone();
+
+            async move { report_errors(&api).await }
+        });
 
         self.spawn(async move {
             let mut backoff = Backoff::default();
@@ -681,8 +782,17 @@ impl Bridge {
 
             landed(&core, &api, &window, &landing, user).await;
 
-            if let Some(account) = account {
-                go_live(&api, &sfu, &live, &window, account).await;
+            // O tempo real abre com conta ou sem: sem conta ele só ouve o canal das versões.
+            go_live(&api, &sfu, &live, &window, account).await;
+
+            if returning {
+                paint(&window, |app| app.global::<Ui>().invoke_resume_session());
+            }
+
+            // Anunciada pelo servidor e ainda não instalada (a abertura não conseguiu baixar):
+            // o botão verde volta sem ninguém perguntar ao site.
+            if core_app::update::announced(&core).is_some() {
+                prepare_update(&api, &window, &installer).await;
             }
         });
     }
@@ -713,16 +823,81 @@ impl Bridge {
                         Some(user) => Some(user),
                         None => api.me().await.ok(),
                     };
-                    let account = user.as_ref().map(|user| user.id);
 
-                    landed(&core, &api, &window, &landing, user).await;
-
-                    if let Some(account) = account {
-                        go_live(&api, &sfu, &live, &window, account).await;
-                    }
+                    arrive(&core, &api, &window, &landing, &sfu, &live, user).await;
                 }
                 Err(failure) => refuse_login(&window, &failure),
             }
+        });
+    }
+
+    /// Entrar com o Google: o navegador abre na conta do Google, e o site devolve o token a uma
+    /// porta local deste app — o `core_app::google`, o mesmo caminho do Mac. A pessoa tem até
+    /// cinco minutos para escolher a conta; o e-mail e senha seguem livres enquanto isso.
+    fn google_sign_in(self: &Rc<Self>) {
+        let (core, api, window) = (self.core.clone(), self.api.clone(), self.window.clone());
+        let (sfu, live) = (self.sfu.clone(), self.live.clone());
+        let landing = self.landing();
+
+        self.spawn(async move {
+            let login = match core_app::google::GoogleLogin::start(&server()).await {
+                Ok(login) => login,
+                Err(failure) => {
+                    tracing::warn!(%failure, "google: a porta do retorno não abriu");
+                    complain(&window, "Não deu para abrir o login do Google. Tente de novo.");
+
+                    return;
+                }
+            };
+
+            open_in_browser(&login.url);
+
+            let Ok((token, refresh)) = login.wait().await else {
+                complain(&window, "O login com o Google não voltou do navegador. Tente de novo.");
+
+                return;
+            };
+
+            // A aba tenta se fechar sozinha, mas o navegador pode recusar: o app vem para a
+            // frente de qualquer jeito, e a pessoa não fica olhando para o navegador.
+            #[cfg(target_os = "windows")]
+            let _ = slint::invoke_from_event_loop(crate::clips::show_window);
+
+            core.set_token(Some(&token));
+            api.adopt(&token, refresh.as_deref());
+
+            let user = api.me().await.ok();
+
+            arrive(&core, &api, &window, &landing, &sfu, &live, user).await;
+        });
+    }
+
+    /// Troca o apelido da conta. O erro de validação do Laravel vai para baixo do campo; o
+    /// resto, para a mesma linha.
+    fn rename(self: &Rc<Self>, name: &str) {
+        let name = name.trim().to_owned();
+        let (api, window) = (self.api.clone(), self.window.clone());
+
+        paint(&window, |app| app.global::<Ui>().set_nickname_busy(true));
+
+        self.spawn(async move {
+            let renamed = api.rename(&name).await;
+
+            paint(&window, move |app| {
+                let ui = app.global::<Ui>();
+
+                ui.set_nickname_busy(false);
+
+                match renamed {
+                    Ok(user) => {
+                        ui.set_nickname_error(SharedString::new());
+                        ui.set_nickname_pending(!user.nickname_confirmed);
+                        ui.set_user_initial(initial(&user.name));
+                        ui.set_user_name(user.name.into());
+                    }
+                    Err(failure) => ui.set_nickname_error(said(&failure).into()),
+                }
+            });
         });
     }
 
@@ -739,6 +914,11 @@ impl Bridge {
         lock(&self.followed).clear();
         lock(&self.online).clear();
 
+        // Sem conta o tempo real continua, só para o aviso de versão nova.
+        let (api, sfu, live, window) = (self.api.clone(), self.sfu.clone(), self.live.clone(), self.window.clone());
+
+        self.spawn(async move { go_live(&api, &sfu, &live, &window, None).await });
+
         let window = self.window.clone();
         let landing = self.core.home();
 
@@ -748,6 +928,7 @@ impl Bridge {
             let ui = app.global::<Ui>();
 
             ui.set_signed_in(false);
+            ui.set_nickname_pending(false);
             ui.set_user_name(SharedString::new());
             ui.set_user_initial(SharedString::new());
             ui.set_servers(ModelRc::default());
@@ -976,6 +1157,8 @@ impl Bridge {
 
         match event {
             "live.follow" => return self.follow(),
+            // Vale sem conta: é o canal público, e o `me` abaixo não importa para ele.
+            "ReleasePublished" => return self.release_announced(data),
             "room.chime" => {
                 if let Ok(chime) = serde_json::from_value::<Chime>(data["chime"].clone()) {
                     self.chime(chime);
@@ -998,6 +1181,24 @@ impl Bridge {
         let talking = lock(&self.talking).as_ref().map(|person| person.id);
 
         self.act(realtime::read(event, channel, data, me, talking));
+    }
+
+    /// O servidor avisou pelo tempo real que saiu versão nova: fica anotada na configuração
+    /// (sai de lá quando estiver instalada) e desce calada até o botão verde aparecer.
+    fn release_announced(self: &Rc<Self>, data: &serde_json::Value) {
+        let Some(version) = core_app::update::newer_in(data) else {
+            return;
+        };
+
+        if lock(&self.installer).as_ref().is_some_and(|(_, ready)| *ready == version) {
+            return;
+        }
+
+        core_app::update::announce(&self.core, &version);
+
+        let (api, window, ready) = (self.api.clone(), self.window.clone(), self.installer.clone());
+
+        self.spawn(async move { prepare_update(&api, &window, &ready).await });
     }
 
     fn act(self: &Rc<Self>, reading: Reading) {
@@ -1367,6 +1568,18 @@ impl Bridge {
         });
     }
 
+    /// O nome de quem entra numa sala por código. Com conta é sempre o apelido da conta: o
+    /// que se digitou antes do login, ou o guardado da última sala, não vale — e as "Últimas
+    /// salas" da Home, que não têm campo, entravam sem nome nenhum.
+    fn room_name(&self, typed: &str) -> String {
+        let Some(app) = self.window.upgrade() else {
+            return typed.to_owned();
+        };
+        let ui = app.global::<Ui>();
+
+        if ui.get_signed_in() { ui.get_user_name().into() } else { typed.to_owned() }
+    }
+
     fn enter(self: &Rc<Self>, opened: Result<String, EntryRefusal>, voice: Option<String>) {
         self.connect(opened, voice, None);
     }
@@ -1375,9 +1588,15 @@ impl Bridge {
     /// fez antes dele. Quem está dentro aparece embaixo do nome do canal, e a tela continua
     /// sendo a do servidor.
     fn join_voice(self: &Rc<Self>, channel: &Channel) {
-        *lock(&self.voice_channel) = Some(channel.id.clone());
+        self.join_voice_channel(&channel.id, &channel.name);
+    }
+
+    /// O canal é sempre do servidor aberto: é na árvore dele que se clica.
+    fn join_voice_channel(self: &Rc<Self>, id: &str, name: &str) {
+        *lock(&self.voice_channel) = Some(id.to_owned());
+        *lock(&self.voice_server) = *lock(&self.opened);
         self.follow();
-        self.connect(Ok(channel.id.clone()), Some(channel.id.clone()), Some(channel.name.clone()));
+        self.connect(Ok(id.to_owned()), Some(id.to_owned()), Some(name.to_owned()));
     }
 
     /// Abre ou fecha o chat da voz. Abrir relê o canal e zera as não lidas; aberto, o tempo
@@ -1425,13 +1644,35 @@ impl Bridge {
         });
     }
 
+    /// Sai da voz ou da sala por código, o que estiver aberto. É o que fechar a janela faz: ela
+    /// só se esconde (os Clips seguem na bandeja), e a chamada não pode ficar aberta sem ela.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub fn hang_up(self: &Rc<Self>) {
+        if lock(&self.voice_channel).is_some() {
+            self.leave_voice();
+        } else if lock(&self.room).is_some() {
+            self.leave_room();
+        }
+    }
+
     /// Sai da voz e continua no servidor. É o fone cortado da barra de baixo.
     fn leave_voice(self: &Rc<Self>) {
         let held = self.close_room();
 
+        self.forget_voice();
+        self.chime(Chime::Left);
+
+        self.spawn(async move {
+            if let Some(room) = held {
+                room.leave().await;
+            }
+        });
+    }
+
+    /// O canal de voz sai da barra de baixo e do tempo real.
+    fn forget_voice(self: &Rc<Self>) {
         *lock(&self.voice_channel) = None;
         self.follow();
-        self.chime(Chime::Left);
 
         paint(&self.window, |app| {
             let ui = app.global::<Ui>();
@@ -1444,12 +1685,43 @@ impl Bridge {
             ui.set_voice_chat_unread(0);
             ui.set_voice_messages(ModelRc::default());
         });
+    }
 
-        self.spawn(async move {
-            if let Some(room) = held {
-                room.leave().await;
+    /// De volta à sala que ficou no ar: a por código volta a tomar a janela, e o canal de voz
+    /// abre o palco dele no hub.
+    fn back_to_room(self: &Rc<Self>) {
+        let in_voice = lock(&self.voice).inside;
+
+        paint(&self.window, move |app| {
+            let ui = app.global::<Ui>();
+
+            if in_voice {
+                ui.set_screen("hub".into());
+                ui.set_stage_open(true);
+            } else {
+                ui.set_screen("room".into());
             }
         });
+    }
+
+    /// Uma sala por vez, como o núcleo faz na ABI do Mac: entrar em outra sai desta antes.
+    /// Sem isto a de antes seguia viva no SFU, ao lado da nova, e a pessoa aparecia duas
+    /// vezes. Devolve a sala para quem entra esperar a despedida dela.
+    fn leave_for_another(self: &Rc<Self>, into_voice: bool) -> Option<Arc<Room>> {
+        lock(&self.entered).as_ref()?;
+
+        let was_voice = lock(&self.voice).inside;
+        let held = self.close_room();
+
+        if was_voice && !into_voice {
+            self.forget_voice();
+        }
+
+        if !was_voice {
+            paint(&self.window, |app| app.global::<Ui>().set_room_code(SharedString::new()));
+        }
+
+        held
     }
 
     /// Fecha deste lado o que a sala abriu — o microfone, o que se assiste, o palco — e
@@ -1457,8 +1729,14 @@ impl Bridge {
     fn close_room(self: &Rc<Self>) -> Option<Arc<Room>> {
         let held = lock(&self.room).take();
 
-        drop(lock(&self.microphone).take());
-        drop(lock(&self.watch).take());
+        *lock(&self.entered) = None;
+        lock(&self.entering).cancel();
+
+        // Soltar o que se assiste junta as threads das telas e do som, e uma tela 4K pode estar no
+        // meio de um quadro: na thread da janela, com o cadeado na mão, isso a congelava ao sair.
+        let (microphone, watch) = (lock(&self.microphone).take(), lock(&self.watch).take());
+
+        std::thread::spawn(move || drop((microphone, watch)));
         lock(&self.stage).clear();
         lock(&self.voice).leave();
         *lock(&self.since) = None;
@@ -1475,6 +1753,92 @@ impl Bridge {
         });
 
         held
+    }
+
+    /// Onde se está agora, do jeito que a versão nova precisa para voltar: a sala por código
+    /// ou o canal de voz, e a tela no ar. Fora de sala não há para onde voltar.
+    fn resume_point(self: &Rc<Self>) -> Option<Resume> {
+        let share = lock(&self.room).as_ref()?.sharing_recipe().as_ref().map(core_app::sharing::choice_of);
+        let channel = lock(&self.voice_channel).clone();
+
+        Some(match channel {
+            Some(channel) => Resume {
+                room: channel,
+                name: String::new(),
+                voice: Some(VoiceSeat {
+                    name: self.window.upgrade().map(|app| app.global::<Ui>().get_voice_name().to_string()).unwrap_or_default(),
+                    server: *lock(&self.voice_server),
+                }),
+                share,
+                saved_at: 0,
+            },
+            None => {
+                let state = self.core.state();
+
+                Resume { room: state.room?, name: state.name, voice: None, share, saved_at: 0 }
+            }
+        })
+    }
+
+    /// O botão verde da barra: guarda onde se está, se despede da sala e entrega o app ao
+    /// instalador, que o fecha e abre a versão nova — e ela volta para cá. Recusado o aviso do
+    /// administrador, a volta é na hora, nesta mesma versão.
+    fn install_update(self: &Rc<Self>) {
+        let Some((installer, version)) = lock(&self.installer).clone() else {
+            return;
+        };
+
+        if let Some(point) = self.resume_point() {
+            resume::save(&self.core, &point);
+        }
+
+        let held = self.close_room();
+        let (core, window, resumed, toasts) = (self.core.clone(), self.window.clone(), self.resumed.clone(), self.toasts.clone());
+
+        show(&window, Screen::Updating, format!("Instalando a versão {version}…"));
+
+        self.spawn(async move {
+            if let Some(room) = held
+                && tokio::time::timeout(LEAVING, room.leave()).await.is_err()
+            {
+                tracing::warn!("atualização: a sala não se despediu a tempo");
+            }
+
+            clips_saved().await;
+
+            // O botão verde é clicado com a janela na frente: a versão nova volta com ela.
+            if install(&installer, false) {
+                return;
+            }
+
+            *lock(&resumed) = resume::take(&core);
+            show(&window, core.home(), String::new());
+            notify(&window, &toasts, "A atualização não foi instalada. Ela fica pronta no botão verde.", true);
+            paint(&window, |app| app.global::<Ui>().invoke_resume_session());
+        });
+    }
+
+    /// Volta para onde se estava antes da atualização. Quem assistia volta assistindo sem
+    /// nada guardado: entrar na sala já abre as telas de quem está transmitindo.
+    fn resume_session(self: &Rc<Self>) {
+        let Some(point) = lock(&self.resumed).take() else {
+            return;
+        };
+
+        *lock(&self.resumed_share) = point.share.as_ref().map(core_app::sharing::capture_config);
+
+        let Some(seat) = point.voice else {
+            let opened = self.core.join_room(&point.name, &point.room);
+
+            return self.enter(opened, None);
+        };
+        let index = seat.server.and_then(|server| lock(&self.servers).iter().position(|known| known.id == server));
+
+        if let Some(index) = index.and_then(|index| i32::try_from(index).ok()) {
+            self.open_server(index);
+        }
+
+        self.join_voice_channel(&point.room, &seat.name);
     }
 
     fn connect(
@@ -1500,9 +1864,26 @@ impl Bridge {
             return;
         };
 
+        // A casinha leva à Home com a sala no ar, e o código digitado de novo — ou a sala das
+        // recentes — é o caminho de volta, e não uma segunda sessão.
+        if lock(&self.entered).as_deref() == Some(room.as_str()) {
+            return self.back_to_room();
+        }
+
+        let previous = self.leave_for_another(staying.is_some());
+
+        // O `entered` só vale quando a entrada termina: dois pedidos seguidos — o duplo clique
+        // num código das recentes — abriam duas sessões, e o SFU derrubava a primeira com
+        // "entrou por outro lugar", com a outra viva por baixo da tela.
+        if !lock(&self.entering).begin(&room) {
+            return;
+        }
+
+        let entering = self.entering.clone();
         let window = self.window.clone();
         let identity = self.identity(&room, voice);
         let in_voice = staying.is_some();
+        let entered = self.entered.clone();
         let (held, watch, stage, voice, started) = (
             self.room.clone(),
             self.watch.clone(),
@@ -1512,18 +1893,35 @@ impl Bridge {
         );
         let microphone = self.microphone.clone();
         let (microphone_device, speaker_device) = lock(&self.chosen).clone();
+        // Tirada já: se esta entrada falhar, a próxima que a pessoa fizer à mão não pode sair
+        // transmitindo sozinha.
+        let resumed_share = lock(&self.resumed_share).take();
 
         // Da escolha do canal até o microfone abrir, o botão não pinta mudo.
         lock(&voice).opening = in_voice;
         paint(&window, |app| app.global::<Ui>().set_entry_busy(true));
 
         self.spawn(async move {
+            if let Some(previous) = previous {
+                previous.leave().await;
+            }
+
             let (updates, heard) = std::sync::mpsc::channel();
-            let entered = Room::enter(&url, &room, identity, updates).await;
+            let attempt = Room::enter(&url, &room, identity, updates).await;
 
             paint(&window, |app| app.global::<Ui>().set_entry_busy(false));
 
-            let (opened, media) = match entered {
+            // Outra sala foi pedida, ou a pessoa saiu, enquanto esta esperava o servidor: quem
+            // manda na tela agora é a outra, e esta se despede.
+            if !lock(&entering).finish(&room) {
+                if let Ok((opened, _)) = attempt {
+                    opened.leave().await;
+                }
+
+                return;
+            }
+
+            let (opened, media) = match attempt {
                 Ok(entered) => entered,
                 Err(failure) => {
                     lock(&voice).opening = false;
@@ -1538,7 +1936,10 @@ impl Bridge {
             };
 
             *lock(&held) = Some(opened.clone());
-            *lock(&started) = Some(std::time::Instant::now());
+            *lock(&entered) = Some(room.clone());
+            // Desde a primeira pessoa, como a duração de uma chamada: quem entra depois vê o
+            // tempo de quem já estava.
+            *lock(&started) = Some(opened.started().unwrap_or_else(std::time::Instant::now));
 
             {
                 let mut voice = lock(&voice);
@@ -1590,6 +1991,14 @@ impl Bridge {
                         draw_fresh(&window, &cell);
                     });
                 }
+            }, {
+                let room = Arc::downgrade(&opened);
+
+                move |producer: &str| {
+                    if let Some(room) = room.upgrade() {
+                        room.request_keyframe(producer);
+                    }
+                }
             }));
 
             listen(heard, window.clone(), stage.clone(), voice.clone());
@@ -1623,11 +2032,18 @@ impl Bridge {
 
             // Entrar na voz abre o microfone, como no Mac e no React: quem entra já é ouvido.
             if in_voice {
-                open_microphone(opened, microphone, voice.clone(), window.clone(), microphone_device).await;
+                open_microphone(opened.clone(), microphone, voice.clone(), window.clone(), microphone_device).await;
             }
 
             lock(&voice).opening = false;
             paint_voice(&window, &voice);
+
+            if let Some(recipe) = resumed_share
+                && let Err(failure) = opened.share(recipe).await
+            {
+                tracing::warn!(%failure, "retomada: a tela não voltou ao ar");
+                complain(&window, room_failure("share"));
+            }
         });
     }
 
@@ -1668,11 +2084,16 @@ impl Bridge {
 
                 serde_json::Value::Null
             });
-            let displays = sources_of(&listed["displays"], |display| Source {
+            let mut displays = sources_of(&listed["displays"], |display| Source {
                 value: format!("display:{}", display["id"]),
-                label: format!("Tela {}", display["id"]),
+                label: String::new(),
                 detail: format!("{}×{}", display["width"], display["height"]),
             });
+
+            // O id é o número que o Windows deu ao monitor, não a posição: o rótulo é a posição.
+            for (index, display) in displays.iter_mut().enumerate() {
+                display.label = format!("Tela {}", index + 1);
+            }
             let windows = sources_of(&listed["windows"], |shown| Source {
                 value: format!("window:{}", shown["id"]),
                 label: shown["title"].as_str().unwrap_or_default().to_owned(),
@@ -1939,15 +2360,51 @@ impl Bridge {
             return;
         };
 
-        let mut held = lock(&self.chosen);
+        tracing::info!(microphone, label = %device.label, "aparelho escolhido");
 
-        if microphone {
-            held.0 = Some(device.id);
-        } else {
-            held.1 = Some(device.id);
+        {
+            let mut held = lock(&self.chosen);
+
+            if microphone {
+                held.0 = Some(device.id.clone());
+            } else {
+                held.1 = Some(device.id.clone());
+            }
         }
 
-        tracing::info!(microphone, label = %device.label, "aparelho escolhido");
+        // O que está aberto passa para o aparelho escolhido na hora, e não só na próxima entrada.
+        if !microphone {
+            if let Some(watch) = lock(&self.watch).as_ref() {
+                watch.speaker().use_device(Some(device.id));
+            }
+
+            return;
+        }
+
+        let (cell, window) = (self.microphone.clone(), self.window.clone());
+
+        if lock(&cell).is_none() {
+            return;
+        }
+
+        let Some(room) = lock(&self.room).clone() else {
+            return;
+        };
+
+        self.spawn(async move {
+            drop(lock(&cell).take());
+
+            let speaking = room.clone();
+            let started = tokio::task::block_in_place(|| Microphone::start(Some(device.id), move |samples| speaking.speak(samples)));
+
+            match started {
+                Ok(opened) => *lock(&cell) = Some(opened),
+                Err(failure) => {
+                    tracing::warn!(failure = %format!("{failure:#}"), "o microfone escolhido não abriu");
+                    complain(&window, room_failure("mic"));
+                }
+            }
+        });
     }
 
     fn listed(&self, microphone: bool) -> Arc<Mutex<Vec<Device>>> {
@@ -2037,7 +2494,7 @@ async fn go_live(
     sfu: &Arc<Mutex<Option<String>>>,
     live: &Arc<Mutex<Option<Arc<Realtime>>>>,
     window: &Weak<AppWindow>,
-    account: i64,
+    account: Option<i64>,
 ) {
     let Some(url) = lock(sfu).clone() else {
         return;
@@ -2057,7 +2514,9 @@ async fn go_live(
         }
     };
 
-    if let Err(failure) = realtime.subscribe(&format!("user.{account}")).await {
+    if let Some(account) = account
+        && let Err(failure) = realtime.subscribe(&format!("user.{account}")).await
+    {
         tracing::warn!(%failure, "tempo real: o canal da conta não abriu");
     }
 
@@ -2290,6 +2749,7 @@ async fn landed(core: &Arc<App>, api: &Arc<Api>, window: &Weak<AppWindow>, landi
     let landing = core.home();
     let name = user.as_ref().map(|user| user.name.clone()).unwrap_or_default();
     let signed_in = user.is_some();
+    let pending = user.as_ref().is_some_and(|user| !user.nickname_confirmed);
 
     // Quem sou eu decide se um pedido de amizade chegou ou saiu — e isso é lido em toda
     // lista de amigos daqui para a frente.
@@ -2303,6 +2763,7 @@ async fn landed(core: &Arc<App>, api: &Arc<Api>, window: &Weak<AppWindow>, landi
         let ui = app.global::<Ui>();
 
         ui.set_signed_in(signed_in);
+        ui.set_nickname_pending(pending);
         ui.set_user_initial(initial(&name));
         ui.set_user_name(name.into());
         ui.set_login_error(SharedString::new());
@@ -2670,13 +3131,12 @@ fn listen(heard: std::sync::mpsc::Receiver<String>, window: Weak<AppWindow>, sta
                     paint_stage(&window, &stage);
                 }
                 "room.level" => {
-                    #[allow(clippy::cast_possible_truncation)]
-                    let level = data["level"].as_f64().unwrap_or(0.0) as f32;
+                    let percent = data["percent"].as_u64().map_or(0, |percent| u8::try_from(percent).unwrap_or(u8::MAX));
                     let changed = {
                         let mut voice = lock(&voice);
                         let before = voice.speaking_myself();
 
-                        voice.level = level;
+                        voice.hear_myself(percent, std::time::Instant::now());
                         before != voice.speaking_myself()
                     };
 
@@ -2764,7 +3224,7 @@ fn draw_fresh(window: &Weak<AppWindow>, watch: &Arc<Mutex<Option<Watch>>>) {
             .find_map(|index| tiles.row_data(index).filter(|row| row.producer == producer).map(|row| (index, row)));
 
         if let Some((index, mut row)) = found {
-            row.frame = Image::from_rgb8(buffer);
+            row.frame = Image::from_rgba8(buffer);
             row.has_frame = true;
             tiles.set_row_data(index, row);
         }
@@ -2824,6 +3284,7 @@ fn paint_stage(window: &Weak<AppWindow>, stage: &Arc<Mutex<Stage>>) {
                     paused: placed.tile.paused,
                     audio: placed.tile.audio.is_some(),
                     heard: placed.heard,
+                    volume: i32::from(placed.volume),
                     watchers: i32::try_from(placed.watchers.len()).unwrap_or(i32::MAX),
                     watcher_names: placed.watchers.join(", ").into(),
                     stats: before
@@ -2902,6 +3363,34 @@ fn initial(name: &str) -> SharedString {
     name.chars().next().map(|letter| letter.to_uppercase().to_string()).unwrap_or_default().into()
 }
 
+/// O que deu erro no log vai ao site de meio em meio minuto, enquanto o app estiver aberto: o
+/// problema de quem usa chega a quem conserta sem ninguém pedir arquivo. O pedaço só sai do
+/// pendente quando o site confirma, então um envio que falhou vai de novo na volta seguinte.
+#[cfg(target_os = "windows")]
+async fn report_errors(api: &Api) {
+    let folder = crate::clips::shell::local_folder();
+
+    loop {
+        if let Some(pending) = crate::logbook::unreported(&folder)
+            && api.report_error(env!("CARGO_PKG_VERSION"), std::env::consts::OS, &pending.log).await
+        {
+            pending.sent();
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    }
+}
+
+/// Instalado pela Microsoft Store, quem atualiza é a Store: o app não procura versão no site,
+/// nem baixa o instalador do site por cima do pacote.
+fn updated_by_the_store() -> bool {
+    #[cfg(target_os = "windows")]
+    return crate::clips::shell::packaged();
+
+    #[cfg(not(target_os = "windows"))]
+    false
+}
+
 /// Há versão nova? Baixa com a barra na tela, confere a assinatura e entrega ao instalador,
 /// que troca o app e o abre de novo — como fazia o atualizador do Tauri. `true` quando o app
 /// está de saída. Falhou em qualquer ponto, abre na versão que tem: atualizar nunca impede de
@@ -2910,6 +3399,10 @@ fn initial(name: &str) -> SharedString {
 /// ponytail: só na abertura; o React procura também de seis em seis horas. Vale trazer
 /// quando alguém passar dias com o app aberto sem sala.
 async fn updating(api: &Api, window: &Weak<AppWindow>) -> bool {
+    if updated_by_the_store() {
+        return false;
+    }
+
     show(window, Screen::Updating, "Procurando atualizações…".to_owned());
 
     let Some(release) = api.newer_release(core_app::update::PLATFORM).await else {
@@ -2946,20 +3439,68 @@ async fn updating(api: &Api, window: &Weak<AppWindow>) -> bool {
 
     show(window, Screen::Updating, format!("Instalando a versão {}…", release.version));
 
-    install(&installer)
+    clips_saved().await;
+
+    // Na abertura, escondida quando veio do logon: a versão nova volta do mesmo jeito.
+    install(&installer, std::env::args().any(|argument| argument == "--background"))
+}
+
+/// Um replay sendo gravado no disco morreria no meio junto com o app, e o MP4 ficaria
+/// quebrado: a troca de versão espera ele terminar.
+async fn clips_saved() {
+    #[cfg(target_os = "windows")]
+    while crate::clips::saving() {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+/// Baixa calada a versão nova e, conferida a assinatura, mostra o botão verde na barra: quem
+/// escolhe a hora de reiniciar é a pessoa, como no Discord — ninguém cai da sala porque saiu
+/// uma versão. Quem chama é o aviso do servidor pelo tempo real, e não um relógio: o app só
+/// pergunta ao site quando há o que perguntar.
+async fn prepare_update(api: &Api, window: &Weak<AppWindow>, ready: &Arc<Mutex<Option<(PathBuf, String)>>>) {
+    if updated_by_the_store() {
+        return;
+    }
+
+    let Some(release) = api.newer_release(core_app::update::PLATFORM).await else {
+        return;
+    };
+    let Some(installer) = core_app::update::fetch(api, &release, |_, _| {}).await else {
+        return;
+    };
+    let version = release.version.clone();
+
+    tracing::info!(version, "atualização: pronta para instalar");
+    *lock(ready) = Some((installer, version.clone()));
+
+    paint(window, move |app| {
+        let ui = app.global::<Ui>();
+
+        ui.set_update_version(version.into());
+        ui.set_update_ready(true);
+    });
 }
 
 /// Abre o instalador e sai, como o atualizador do Tauri: `/P` sem perguntas, `/UPDATE` é
-/// troca e não instalação nova, `/R` reabre o app no fim. O Windows pede o administrador
-/// antes — o app mora em Arquivos de Programas —, e recusar o aviso só deixa esta versão.
+/// troca e não instalação nova, `/R` reabre o app no fim. Numa conta de administrador o app já
+/// roda elevado (os Clips precisam), e o instalador herda o nível sem UAC; numa conta comum o
+/// Windows pede a senha do administrador, e recusar só deixa esta versão. Com o app escondido
+/// na bandeja (`hidden`), a troca é toda silenciosa (`/S`, nem a barra de progresso aparece,
+/// que podia subir por cima de um jogo) e ele volta do mesmo jeito (`/BACKGROUND`).
 #[cfg(target_os = "windows")]
-fn install(installer: &std::path::Path) -> bool {
+fn install(installer: &std::path::Path, hidden: bool) -> bool {
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     use windows::core::{HSTRING, PCWSTR, w};
 
     let file = HSTRING::from(installer.as_os_str());
-    let opened = unsafe { ShellExecuteW(None, w!("open"), &file, w!("/P /UPDATE /R"), PCWSTR::null(), SW_SHOWNORMAL) };
+    let parameters = if hidden {
+        w!("/S /UPDATE /R /BACKGROUND")
+    } else {
+        w!("/P /UPDATE /R")
+    };
+    let opened = unsafe { ShellExecuteW(None, w!("open"), &file, parameters, PCWSTR::null(), SW_SHOWNORMAL) };
 
     // Acima de 32 é sucesso: é assim que o ShellExecute responde desde sempre.
     if opened.0 as isize <= 32 {
@@ -2972,7 +3513,7 @@ fn install(installer: &std::path::Path) -> bool {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn install(_installer: &std::path::Path) -> bool {
+fn install(_installer: &std::path::Path, _hidden: bool) -> bool {
     false
 }
 
@@ -3052,6 +3593,153 @@ fn refused(refusal: EntryRefusal) -> &'static str {
     }
 }
 
+/// O site que o app usa: o de produção, ou o de `UNKVOID_SERVER` para a pilha local.
+fn server() -> String {
+    std::env::var("UNKVOID_SERVER").unwrap_or_else(|_| DEFAULT_SERVER.to_owned())
+}
+
+/// Com a conta aberta: a tela do hub e o tempo real da conta no lugar do sem conta, que só
+/// ouvia o canal das versões.
+async fn arrive(
+    core: &Arc<App>,
+    api: &Arc<Api>,
+    window: &Weak<AppWindow>,
+    landing: &Landing,
+    sfu: &Arc<Mutex<Option<String>>>,
+    live: &Arc<Mutex<Option<Arc<Realtime>>>>,
+    user: Option<User>,
+) {
+    let account = user.as_ref().map(|user| user.id);
+
+    landed(core, api, window, landing, user).await;
+
+    if account.is_some() {
+        if let Some(guest) = lock(live).take() {
+            guest.close();
+        }
+
+        go_live(api, sfu, live, window, account).await;
+    }
+}
+
+/// Abre um endereço no navegador da pessoa sem o administrador do app. Quem abre é o Explorer
+/// da área de trabalho, que roda sem elevação, a pedido do app pela automação do shell
+/// (`IShellDispatch2::ShellExecute`). Abrir direto daria um navegador elevado, que briga com o
+/// perfil do navegador já aberto; e chamar o `explorer.exe` com o endereço, com o app elevado,
+/// abria o gerenciador de arquivos no lugar do navegador.
+#[cfg(target_os = "windows")]
+fn open_in_browser(url: &str) {
+    let url = url.to_owned();
+    let spawned = std::thread::Builder::new().name("navegador".into()).spawn(move || {
+        if let Err(failure) = open_through_desktop(&url) {
+            tracing::warn!(%failure, "navegador: a área de trabalho não abriu o endereço, abrindo direto");
+            open_directly(&url);
+        }
+    });
+
+    if let Err(failure) = spawned {
+        tracing::warn!(%failure, "navegador: a thread não subiu");
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn open_in_browser(_url: &str) {}
+
+/// O COM desta thread em volta do pedido ao shell da área de trabalho.
+#[cfg(target_os = "windows")]
+fn open_through_desktop(url: &str) -> windows::core::Result<()> {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+
+    // SAFETY: COM de apartamento único nesta thread, só dela, e desfeito antes de ela acabar.
+    unsafe {
+        let started = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let opened = desktop_shell_execute(url);
+
+        if started.is_ok() {
+            CoUninitialize();
+        }
+
+        opened
+    }
+}
+
+/// O caminho do shell da área de trabalho: a janela do desktop, o navegador de pastas dela, a
+/// vista e, por fim, o objeto de automação do Explorer, que executa como o próprio Explorer.
+#[cfg(target_os = "windows")]
+fn desktop_shell_execute(url: &str) -> windows::core::Result<()> {
+    use windows::Win32::System::Com::{CLSCTX_LOCAL_SERVER, CoCreateInstance, IDispatch, IServiceProvider};
+    use windows::Win32::System::Variant::{VARIANT, VT_I4};
+    use windows::Win32::UI::Shell::{
+        IShellBrowser, IShellDispatch2, IShellFolderViewDual, IShellView, IShellWindows, SID_STopLevelBrowser,
+        SVGIO_BACKGROUND, SWC_DESKTOP, SWFO_NEEDDISPATCH, ShellWindows,
+    };
+    use windows::core::{BSTR, Interface};
+
+    // SAFETY: chamadas COM com o COM já aberto nesta thread; o `VARIANT` do desktop é o
+    // `CSIDL_DESKTOP` (zero) marcado como inteiro, com o resto zerado pelo `default`.
+    unsafe {
+        let windows: IShellWindows = CoCreateInstance(&ShellWindows, None, CLSCTX_LOCAL_SERVER)?;
+        let mut desktop = VARIANT::default();
+
+        (*desktop.Anonymous.Anonymous).vt = VT_I4;
+
+        let mut window = 0;
+        let found = windows.FindWindowSW(&desktop, &VARIANT::default(), SWC_DESKTOP, &mut window, SWFO_NEEDDISPATCH)?;
+        let browser: IShellBrowser = found.cast::<IServiceProvider>()?.QueryService(&SID_STopLevelBrowser)?;
+        let view: IShellView = browser.QueryActiveShellView()?;
+        let background: IDispatch = view.GetItemObject(SVGIO_BACKGROUND)?;
+        let shell: IShellDispatch2 = background.cast::<IShellFolderViewDual>()?.Application()?.cast()?;
+
+        shell.ShellExecute(&BSTR::from(url), &VARIANT::default(), &VARIANT::default(), &VARIANT::default(), &VARIANT::default())
+    }
+}
+
+/// O último recurso: o navegador sai com o nível do app, mas o login não fica sem navegador.
+#[cfg(target_os = "windows")]
+fn open_directly(url: &str) {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::{HSTRING, PCWSTR, w};
+
+    // SAFETY: as duas cadeias vivem até o fim da chamada, que não guarda nenhuma delas.
+    unsafe {
+        ShellExecuteW(None, w!("open"), &HSTRING::from(url), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+    }
+}
+
+/// A sala que está a caminho do servidor. Só a última pedida vale: a de antes, quando chega,
+/// se despede sozinha.
+#[derive(Debug, Default)]
+struct Entering(Option<String>);
+
+impl Entering {
+    /// Falso quando esta sala já está a caminho: o segundo pedido não abre outra sessão.
+    fn begin(&mut self, room: &str) -> bool {
+        if self.0.as_deref() == Some(room) {
+            return false;
+        }
+
+        self.0 = Some(room.to_owned());
+
+        true
+    }
+
+    /// Verdadeiro quando a entrada que chegou ainda é a pedida.
+    fn finish(&mut self, room: &str) -> bool {
+        let wanted = self.0.as_deref() == Some(room);
+
+        if wanted {
+            self.0 = None;
+        }
+
+        wanted
+    }
+
+    fn cancel(&mut self) {
+        self.0 = None;
+    }
+}
+
 fn device_name() -> String {
     std::env::var("COMPUTERNAME").map(|host| format!("windows-{host}")).unwrap_or("windows".into())
 }
@@ -3084,6 +3772,24 @@ mod tests {
     }
 
     #[test]
+    fn a_second_request_for_the_room_on_its_way_opens_no_second_session() {
+        let mut entering = Entering::default();
+
+        assert!(entering.begin("mg6gag7qik00"));
+        assert!(!entering.begin("mg6gag7qik00"), "o duplo clique não abre outra sessão");
+        assert!(entering.finish("mg6gag7qik00"));
+        assert!(entering.begin("mg6gag7qik00"), "depois de chegar, pedir de novo volta a valer");
+
+        assert!(entering.begin("a593mzl95t6p"));
+        assert!(!entering.finish("mg6gag7qik00"), "a sala trocada no caminho se despede ao chegar");
+        assert!(entering.finish("a593mzl95t6p"));
+
+        assert!(entering.begin("m4nj0b8eo7qk"));
+        entering.cancel();
+        assert!(!entering.finish("m4nj0b8eo7qk"), "quem saiu antes de a sala chegar não entra nela");
+    }
+
+    #[test]
     fn every_refusal_has_a_sentence_the_person_can_act_on() {
         for refusal in [EntryRefusal::NameIsEmpty, EntryRefusal::CodeIsInvalid] {
             assert!(!refused(refusal).is_empty());
@@ -3095,6 +3801,15 @@ mod tests {
         // Cortar por byte partiria o "Ã" ao meio, e o avatar mostraria lixo.
         assert_eq!(initial("Ângela"), "Â");
         assert_eq!(initial(""), "");
+    }
+
+    /// Abre uma aba de verdade, pelo Explorer da área de trabalho: é o caminho do login com o
+    /// Google. `cargo test -p unkvoid-windows -- --ignored desktop_opens`.
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "windows")]
+    fn the_desktop_opens_a_page_in_the_browser() {
+        open_through_desktop("https://unkvoid.com").expect("o Explorer da área de trabalho abriu o endereço");
     }
 
     #[test]

@@ -64,18 +64,21 @@ export component DividerOr inherits HorizontalLayout {
 export component PrimaryButton inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
+    // A barra dos Clips usa o botão no tamanho do `GhostButton` vizinho.
+    in property <length> font-size: 14.5px;
     callback clicked();
 
     height: 41px;
+    min-width: label.preferred-width + 28px;
     border-radius: 12px;
     background: @linear-gradient(180deg, Skin.brand 0%, Skin.brand-dark 100%);
     opacity: root.enabled ? (touch.pressed ? 0.9 : 1.0) : 0.45;
 
-    Text {
+    label := Text {
         text: root.text;
         color: Skin.ink-strong;
         font-family: Skin.sans;
-        font-size: 14.5px;
+        font-size: root.font-size;
         font-weight: 600;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -94,16 +97,17 @@ export component GhostButton inherits Rectangle {
     in property <length> font-size: 12.5px;
     callback clicked();
 
-    // 8 de respiro em cima e embaixo, como o `.btn-ghost` do CSS.
+    // 8 de respiro em cima e embaixo, como o `.btn-ghost` do CSS. A largura segue o texto:
+    // "Configurações" não cabe nos 72.
     height: 32px;
-    min-width: 72px;
+    min-width: max(72px, label.preferred-width + 28px);
     border-radius: 10px;
     border-width: 1px;
     border-color: touch.has-hover ? #8a7cf580 : Skin.line-strong;
     background: #ffffff0d;
     opacity: root.enabled ? 1.0 : 0.45;
 
-    Text {
+    label := Text {
         text: root.text;
         color: touch.has-hover ? Skin.ink-strong : Skin.ink-icon;
         font-family: Skin.sans;

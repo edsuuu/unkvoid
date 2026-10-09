@@ -25,7 +25,7 @@ SFU  --webhook---------> Laravel       avisa quem entrou e saiu
 | `src/app.ts` | monta o Express e o WebSocketServer no mesmo servidor HTTP; o heartbeat e o teto de conexões por IP |
 | `src/server.ts` | sobe os workers e faz o `listen` |
 | `src/Config/` | tudo que vem do ambiente, os codecs e as portas |
-| `src/Routers/` | `HttpRouter` (as 4 rotas HTTP) e `WebSocketRouter` (as 16 ações do WebSocket) |
+| `src/Routers/` | `HttpRouter` (as 5 rotas HTTP) e `WebSocketRouter` (as 19 ações do WebSocket) |
 | `src/Http/Controller/` | um por recurso, mais `HealthController` e `RoomController` para o HTTP |
 | `src/Http/Request/` | valida a entrada de cada ação, no molde do FormRequest do Laravel |
 | `src/Services/` | o coração: `Room`, `Peer`, `RoomRegistry`, `Kernel`, `Signature`, `Webhook` |
@@ -54,6 +54,7 @@ SFU  --webhook---------> Laravel       avisa quem entrou e saiu
 | `GET /presence` | o Laravel | sim |
 | `POST /rooms/:room/kick` | o Laravel | sim |
 | `POST /rooms/:room/mute` | o Laravel | sim |
+| `POST /broadcast` | o Laravel, para o tempo real | sim |
 
 A assinatura é HMAC sobre o **corpo cru**. Por isso o `express.json` guarda os bytes
 originais em `rawBody`: reserializar o objeto troca espaços e ordem de chaves, e a conta não
@@ -61,12 +62,14 @@ bate mais.
 
 ### WebSocket — `src/Routers/WebSocketRouter.ts`
 
-Tudo o mais é WebSocket em `/sfu`, e **não** passa pelo Express. São 16 ações: `join`,
-`leave`, `ping`, `removePeer`, `createTransport`, `connectTransport`, `produce`,
-`producePlain`, `pauseProducer`, `resumeProducer`, `closeProducer`, `consume`,
-`consumePlain`, `pauseConsumer`, `resumeConsumer`, `closeConsumer`.
+Tudo o mais é WebSocket em `/sfu`, e **não** passa pelo Express. São 19 ações: `join`,
+`leave`, `ping`, `removePeer`, `identify`, `subscribe`, `unsubscribe`, `createTransport`,
+`connectTransport`, `produce`, `producePlain`, `pauseProducer`, `resumeProducer`,
+`closeProducer`, `consume`, `consumePlain`, `pauseConsumer`, `resumeConsumer`, `closeConsumer`.
 
-Só `join` e `ping` são abertas; as outras exigem sessão.
+Abertas sem estar numa sala: `join`, `ping` e as três do tempo real (`identify`, `subscribe`,
+`unsubscribe`). As outras exigem sessão. O app nativo usa as de RTP puro (`producePlain`,
+`consumePlain`); `createTransport`, `produce` e `consume` são do WebRTC do app Tauri de antes.
 
 ## Rodar local
 
@@ -89,10 +92,11 @@ Duas máquinas na mesma rede: `SFU_HOST=0.0.0.0 SFU_ANNOUNCED_ADDRESS=<o IP>`.
 
 ## CORS
 
-Em produção quem põe o cabeçalho é o nginx (`location = /health`), então o SFU nunca
-precisou disso. Rodando local **não há nginx no caminho**: o app está em
-`http://localhost:1420` e fala direto com a porta 3000, e sem o cabeçalho a webview
-recusa a resposta e o app mostra "Servidor sem resposta".
+Só importa para a interface React rodando no navegador (`npm run dev` em
+`native/apps/desktop`): os apps nativos não são navegador. Em produção quem põe o cabeçalho é o
+nginx (`location = /health`). Local **não há nginx no caminho**: a interface está em
+`http://localhost:1420` e fala direto com a porta 3000, e sem o cabeçalho o navegador recusa a
+resposta.
 
 ```bash
 CORS_URL=http://localhost:1420,https://unkvoid.com
@@ -112,8 +116,8 @@ quem chama as rotas assinadas é o Laravel, de servidor para servidor.
 | `SFU_PATH` | o caminho do WebSocket | `/sfu` |
 | `SFU_ANNOUNCED_ADDRESS` | o IP que o SFU anuncia para o RTP | — |
 | `SFU_MEDIA_PORT` | a porta base da mídia | `40000` |
-| `SFU_PLAIN_PORT`, `SFU_PLAIN_PORTS` | as portas de RTP puro | `41000`, 8 por worker |
-| `SFU_WORKERS` | quantos workers do mediasoup | os núcleos da máquina |
+| `SFU_PLAIN_PORT`, `SFU_PLAIN_PORTS` | as portas de RTP puro | `41000`, 8 por worker (64 na VPS) |
+| `SFU_WORKERS` | quantos workers do mediasoup | os núcleos da máquina (na VPS, 3: núcleos menos um) |
 | `SFU_HEARTBEAT_MS` | de quanto em quanto pergunta se o socket vive | `15000` |
 | `SFU_CONNECTIONS_PER_MINUTE` | teto de conexões novas por IP | — |
 | `SFU_APP_VERSION` | o que o `/health` devolve | — |
@@ -124,23 +128,29 @@ quem chama as rotas assinadas é o Laravel, de servidor para servidor.
 pnpm run check        # eslint
 pnpm run typecheck    # tsc --noEmit
 pnpm run build        # tsc
+SFU_SECRET=<o do servidor> node --test check-realtime.mjs   # o tempo real contra um SFU no ar
 ```
 
 ## Publicar
 
-Um push na `main` que toque em `sfu/` dispara o `.github/workflows/deploy-sfu.yml`: ele dá
-`git reset --hard origin/main` no clone da VPS, compila e chama o `install.sh` ali mesmo —
-sem cópia, porque o pm2 roda desse mesmo diretório (`cwd: __dirname` no ecosystem).
-
-À mão, do notebook:
+O pm2 roda o SFU do clone da VPS, `/var/www/projects/unkvoid/sfu` (`cwd: __dirname` no
+ecosystem). O `deploy-sfu.yml` está pausado (só disparo à mão), então o deploy é ali mesmo:
 
 ```bash
-./deploy.sh vps
+ssh vps
+cd /var/www/projects/unkvoid && git fetch && git merge --ff-only origin/<branch>
+cd sfu && pnpm install --frozen-lockfile --prod=false && pnpm run build   # sem `| tail`: o tsc emite o JS mesmo com erro
+pm2 restart sfu
 ```
 
-O `install.sh` **reinicia na hora**, sem esperar a sala esvaziar: quem está em chamada leva
-alguns segundos de tela preta até o app reconectar sozinho (`SfuClient.scheduleReconnect`,
-com backoff e jitter) e retomar a sessão pelo `resumeKey`.
+Mudou alguma variável do `ecosystem.config.cjs` (ex.: `SFU_WORKERS`)? `pm2 restart` mantém o
+ambiente antigo: é `pm2 delete sfu && pm2 start ecosystem.config.cjs --only sfu && pm2 save`.
+O `SFU_ANNOUNCED_ADDRESS` vem de um `.env` fora do repositório (o `sfu/.env` do clone ou o
+`/var/www/projects/sfu/.env`); sem ele a mídia anuncia `127.0.0.1` e toda chamada fica preta.
+
+Reiniciar derruba quem está em chamada por alguns segundos: o SFU novo não tem as sessões
+antigas, então o app reconecta sozinho, com espera sorteada, entra de novo e republica o que
+transmitia.
 
 ## Duas coisas que não são óbvias
 
@@ -151,7 +161,8 @@ puro não voltam. É um vazamento que acaba batendo no `max_memory_restart` do p
 a chamada de todo mundo.
 
 **Cair não é sair.** Quem perde a sinalização entra numa carência de 30 s com a mídia viva, e
-pode reconectar sem cair da chamada. Só depois disso a sala é avisada.
+pode reconectar sem cair da chamada. A sala vê `peerConnectionLost` na hora e o `peerLeft` só
+quando a carência acaba.
 
 ## Onde está escrito o resto
 

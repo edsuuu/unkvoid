@@ -30,11 +30,222 @@ const RATE_WINDOW: Duration = Duration::from_secs(1);
 /// O encoder de vídeo e quem decide a taxa dele, atrás do mesmo cadeado: a decisão é
 /// aplicada na thread da captura, a única que toca no encoder, no cadeado que o quadro já
 /// tomaria de qualquer jeito.
+/// O menor espaço entre dois quadros-chave pedidos por quem assiste. Cada pessoa que perde um
+/// pacote pede um, e com várias assistindo os pedidos se somam ao GOP: medido em 27/09 na tela
+/// de alguém com PC e upload fracos, saía um quadro-chave por segundo. É o quadro mais caro do
+/// encoder, e num upload fraco cada um entope a saída por centenas de ms — os quadros de trás
+/// esperam, e para quem assiste a transmissão trava. Pedido dentro do intervalo não se perde:
+/// sai quando o intervalo acaba.
+const KEYFRAME_SPACING: Duration = Duration::from_secs(2);
+
+/// Quanto a captura pode ficar sem quadro antes de ser refeita. Tela parada também não manda
+/// quadro (o Windows só entrega quando algo muda), então a espera dobra a cada vez que a
+/// captura refeita volta a calar, até `MOST_WAIT`: numa tela parada isso vira um quadro-chave
+/// de tempos em tempos, e numa captura travada a imagem volta em segundos.
+const CAPTURE_WAIT: Duration = Duration::from_secs(3);
+
+/// Captura chegando e encoder sem devolver nada por isto é encoder travado. Medido em 02/10 na
+/// tela do mank: 4 s a 60 fps e depois 25 s sem um pacote, com a tela no ar e a rede limpa — e
+/// o quadro que o encoder não devolvia só ia para o log em nível de depuração, que não é gravado.
+const ENCODER_WAIT: Duration = Duration::from_secs(2);
+
+/// As esperas dobram a cada refeita que não resolve, e param aqui.
+const MOST_WAIT: Duration = Duration::from_secs(60);
+
+/// Quadros seguidos que provam que a etapa refeita está viva: a espera volta ao começo.
+const ALIVE_FRAMES: u64 = 120;
+
+/// Os contadores de uma transmissão, de onde o vigia tira se alguma etapa parou.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Counts {
+    pub captured: u64,
+    pub encoded: u64,
+    pub sent: u64,
+}
+
+/// A etapa que parou de produzir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stall {
+    /// A captura calou: tela parada ou captura travada. Refazer custa um quadro-chave.
+    Capture,
+    /// A captura chega e o encoder não devolve nada.
+    Encoder,
+    /// O encoder devolve e nada sai para a rede: refazer não ajuda, só vai para o log.
+    Transport,
+}
+
+/// O vigia de uma transmissão: de segundo em segundo recebe os contadores e diz que etapa
+/// parou. Lógica pura, com o relógio passado por quem chama.
+#[derive(Debug)]
+pub struct StallWatch {
+    last: Counts,
+    captured_at: Instant,
+    encoded_at: Instant,
+    sent_at: Instant,
+    capture_wait: Duration,
+    encoder_wait: Duration,
+    captured_since_restart: u64,
+    encoded_since_restart: u64,
+    transport_told: bool,
+    /// Paradas do encoder seguidas, sem os `ALIVE_FRAMES` que provam que ele voltou.
+    encoder_stalls: u32,
+}
+
+impl StallWatch {
+    pub fn new(now: Instant) -> Self {
+        Self {
+            last: Counts::default(),
+            captured_at: now,
+            encoded_at: now,
+            sent_at: now,
+            capture_wait: CAPTURE_WAIT,
+            encoder_wait: ENCODER_WAIT,
+            captured_since_restart: 0,
+            encoded_since_restart: 0,
+            transport_told: false,
+            encoder_stalls: 0,
+        }
+    }
+
+    /// O encoder parou duas vezes seguidas sem provar que voltou. Refazer na placa não resolve —
+    /// a memória de vídeo tomada pelo jogo, as sessões do NVENC tomadas pelo OBS —, e a saída é
+    /// o processador.
+    pub fn encoder_keeps_failing(&self) -> bool {
+        self.encoder_stalls >= 2
+    }
+
+    pub fn tick(&mut self, counts: Counts, now: Instant) -> Option<Stall> {
+        if counts.captured > self.last.captured {
+            self.captured_since_restart += counts.captured - self.last.captured;
+            self.captured_at = now;
+
+            if self.captured_since_restart >= ALIVE_FRAMES {
+                self.capture_wait = CAPTURE_WAIT;
+            }
+        }
+
+        if counts.encoded > self.last.encoded {
+            self.encoded_since_restart += counts.encoded - self.last.encoded;
+            self.encoded_at = now;
+
+            if self.encoded_since_restart >= ALIVE_FRAMES {
+                self.encoder_wait = ENCODER_WAIT;
+                self.encoder_stalls = 0;
+            }
+        }
+
+        if counts.sent > self.last.sent {
+            self.sent_at = now;
+            self.transport_told = false;
+        }
+
+        self.last = counts;
+
+        let fresh = |at: Instant| now.duration_since(at) < Duration::from_secs(1);
+
+        if fresh(self.captured_at) && now.duration_since(self.encoded_at) >= self.encoder_wait {
+            self.encoder_wait = (self.encoder_wait * 2).min(MOST_WAIT);
+            self.encoder_stalls += 1;
+
+            return Some(Stall::Encoder);
+        }
+
+        if fresh(self.encoded_at) && now.duration_since(self.sent_at) >= ENCODER_WAIT && !self.transport_told {
+            self.transport_told = true;
+
+            return Some(Stall::Transport);
+        }
+
+        if now.duration_since(self.captured_at) >= self.capture_wait {
+            self.capture_wait = (self.capture_wait * 2).min(MOST_WAIT);
+
+            return Some(Stall::Capture);
+        }
+
+        None
+    }
+
+    /// A transmissão foi refeita: os contadores do `Broadcast` novo começam do zero.
+    pub fn restarted(&mut self, now: Instant) {
+        self.last = Counts::default();
+        self.captured_at = now;
+        self.encoded_at = now;
+        self.sent_at = now;
+        self.captured_since_restart = 0;
+        self.encoded_since_restart = 0;
+    }
+}
+
+/// Até onde o espaço entre quadros-chave pedidos cresce quando os pedidos não param: é alguém
+/// com perda constante pedindo um atrás do outro, e cada um é o quadro mais caro do encoder para
+/// todo mundo — num upload fraco, entope a saída de quem transmite. Passar do GOP (4 s) não
+/// mudaria nada: o periódico sai de qualquer jeito.
+const MOST_KEYFRAME_SPACING: Duration = Duration::from_secs(4);
+
+/// Sem pedido nenhum por isto, o espaço volta ao `KEYFRAME_SPACING`.
+const KEYFRAME_QUIET: Duration = Duration::from_secs(15);
+
+/// Os pedidos de quadro-chave de quem assiste, atendidos com espaço entre um e outro.
+struct KeyframeGate {
+    asked: bool,
+    last: Option<Instant>,
+    /// Um pedido chegou dentro do espaço e teve de esperar por ele.
+    waited: bool,
+    spacing: Duration,
+    asked_at: Option<Instant>,
+}
+
+impl Default for KeyframeGate {
+    fn default() -> Self {
+        Self { asked: false, last: None, waited: false, spacing: KEYFRAME_SPACING, asked_at: None }
+    }
+}
+
+impl KeyframeGate {
+    /// Anota o pedido, se veio um, e diz se é hora de atender o que está esperando.
+    fn due(&mut self, asked: bool, now: Instant) -> bool {
+        if asked {
+            self.asked_at = Some(now);
+        } else if self.asked_at.is_some_and(|at| now.duration_since(at) >= KEYFRAME_QUIET) {
+            self.spacing = KEYFRAME_SPACING;
+        }
+
+        self.asked |= asked;
+
+        if !self.asked {
+            return false;
+        }
+
+        if self.last.is_some_and(|last| now.duration_since(last) < self.spacing) {
+            self.waited = true;
+
+            return false;
+        }
+
+        // Pedido que esperou o espaço inteiro: eles não estão parando, e o espaço dobra.
+        if std::mem::take(&mut self.waited) {
+            self.spacing = (self.spacing * 2).min(MOST_KEYFRAME_SPACING);
+        }
+
+        self.served(now);
+
+        true
+    }
+
+    /// Saiu um quadro-chave, pedido ou do GOP: quem esperava por um já tem.
+    fn served(&mut self, now: Instant) {
+        self.asked = false;
+        self.waited = false;
+        self.last = Some(now);
+    }
+}
+
 struct VideoEncoding {
     encoder: PlatformEncoder,
     governor: BitrateGovernor,
     window_started: Instant,
     nacked: u64,
+    keyframes: KeyframeGate,
     dropped_before: u64,
 }
 
@@ -196,6 +407,30 @@ pub fn capture_config(choice: &serde_json::Value) -> CaptureConfig {
     }
 }
 
+/// O caminho de volta do `capture_config`: a receita no ar escrita como o seletor a manda. É
+/// o que se guarda para a transmissão voltar sozinha depois de uma atualização.
+pub fn choice_of(config: &CaptureConfig) -> serde_json::Value {
+    let source = match config.source {
+        CaptureSource::Display(id) => format!("display:{id}"),
+        CaptureSource::Window(id) => format!("window:{id}"),
+        _ => String::new(),
+    };
+    let quality = match config.quality {
+        capture::Quality::Hd720 => "720",
+        capture::Quality::Hd1080 => "1080",
+        capture::Quality::Qhd1440 => "1440",
+        capture::Quality::Uhd2160 => "2160",
+    };
+
+    serde_json::json!({
+        "source": source,
+        "quality": quality,
+        "fps": config.frame_rate,
+        "audio": config.capture_audio,
+        "muteCalls": config.mute_listed_apps,
+    })
+}
+
 #[derive(Default)]
 pub struct ActiveSession(pub tokio::sync::Mutex<Session>);
 
@@ -274,6 +509,21 @@ impl Session {
         Ok(())
     }
 
+    /// O servidor parou de responder com algo subindo — ver `PlainSender::lost_the_server`.
+    pub fn lost_the_server(&self) -> bool {
+        target(&self.sender)
+            .as_ref()
+            .is_some_and(|sender| sender.lost_the_server(Instant::now()))
+    }
+
+    /// O mesmo `start`, para chamar sem o cadeado da sessão na mão: captura e encoder levam até
+    /// segundos para abrir.
+    pub fn launcher(&self) -> impl FnOnce(CaptureConfig, Option<Source>, Option<Source>) -> anyhow::Result<Broadcast> + use<> {
+        let sender = Arc::clone(&self.sender);
+
+        move |config, video, audio| Broadcast::start(sender, config, video, audio, false)
+    }
+
     /// Liga uma das três origens. `video`/`audio` dizem com que SSRC cada evento sobe.
     pub fn start(
         &self,
@@ -281,7 +531,7 @@ impl Session {
         video: Option<Source>,
         audio: Option<Source>,
     ) -> anyhow::Result<Broadcast> {
-        Broadcast::start(Arc::clone(&self.sender), config, video, audio)
+        Broadcast::start(Arc::clone(&self.sender), config, video, audio, false)
     }
 
     /// Solta o remetente quando a última origem para: a próxima sessão no servidor pode
@@ -305,6 +555,115 @@ impl Session {
         }
 
         self.release_if_idle();
+    }
+}
+
+/// A escada de uma transmissão: a qualidade escolhida, e abaixo dela 720p e 720p30 — só os
+/// degraus que de fato descem.
+fn rungs(chosen: (capture::Quality, u32)) -> Vec<(capture::Quality, u32)> {
+    let mut rungs = vec![chosen];
+
+    for rung in [(capture::Quality::Hd720, chosen.1), (capture::Quality::Hd720, chosen.1.min(30))] {
+        if rungs.last() != Some(&rung) {
+            rungs.push(rung);
+        }
+    }
+
+    rungs
+}
+
+/// De quanto em quanto a última imagem se repete com a captura calada: um por segundo, como o
+/// WebRTC numa tela parada.
+#[cfg(target_os = "windows")]
+const STILL_EVERY: Duration = Duration::from_secs(1);
+
+/// A thread que repete a última imagem — ou uma preta, antes da primeira — enquanto a captura
+/// não entrega quadro: tela parada, janela minimizada. Sem quadro nenhum o servidor derrubava a
+/// transmissão em 30 s (`producerDead`), e quem assistia não tinha como separar a tela parada da
+/// travada. É também quem atende, na hora, o quadro-chave pedido por quem entra numa tela parada:
+/// antes ele esperava o vigia refazer a captura, até um minuto depois.
+#[cfg(target_os = "windows")]
+struct StillFrames {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(target_os = "windows")]
+impl StillFrames {
+    /// `last_frame` é o carimbo e a hora do último quadro de verdade, que a captura atualiza.
+    fn start(
+        encoding: Arc<Mutex<VideoEncoding>>,
+        sfu: Target,
+        (video, frame_rate): (Source, f64),
+        (last_frame, muted): (Arc<Mutex<(u64, Instant)>>, Arc<AtomicBool>),
+    ) -> Option<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::Builder::new()
+            .name("unkvoid-tela-parada".into())
+            .spawn({
+                let stop = Arc::clone(&stop);
+
+                move || {
+                    let mut still_at = Instant::now();
+
+                    while !stop.load(Ordering::Relaxed) {
+                        std::thread::sleep(STILL_EVERY / 4);
+
+                        let (real_ns, real_at) = *last_frame.lock().unwrap_or_else(PoisonError::into_inner);
+                        let now = Instant::now();
+
+                        if muted.load(Ordering::Relaxed) || now.duration_since(real_at) < STILL_EVERY {
+                            continue;
+                        }
+
+                        let feedback = target(&sfu).as_mut().map(PlainSender::read_feedback).unwrap_or_default();
+                        let Ok(mut encoding) = encoding.lock() else {
+                            continue;
+                        };
+                        let asked = encoding.keyframes.due(feedback.keyframe, now);
+
+                        encoding.nacked += u64::from(feedback.lost);
+
+                        if !asked && now.duration_since(still_at) < STILL_EVERY {
+                            continue;
+                        }
+
+                        if asked {
+                            encoding.encoder.request_keyframe();
+                        }
+
+                        still_at = now;
+
+                        let encoded = encoding.encoder.encode_again(real_ns + now.duration_since(real_at).as_nanos() as u64);
+
+                        if let Ok(frame) = &encoded
+                            && frame.keyframe
+                        {
+                            encoding.keyframes.served(now);
+                        }
+
+                        drop(encoding);
+
+                        if let (Ok(frame), Some(sender)) = (encoded, target(&sfu).as_mut()) {
+                            let _ = sender.send_frame(video, frame, frame_rate);
+                        }
+                    }
+                }
+            })
+            .ok()?;
+
+        Some(Self { stop, thread: Some(thread) })
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for StillFrames {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -350,6 +709,19 @@ pub struct Broadcast {
     config: CaptureConfig,
     video: Option<Source>,
     audio_source: Option<Source>,
+    /// O encoder da placa já falhou nesta transmissão: os refazeres seguintes vão pelo do
+    /// processador.
+    software: bool,
+    /// Quem repete a última imagem quando a captura cala — ver `StillFrames`.
+    #[cfg(target_os = "windows")]
+    still: Option<StillFrames>,
+
+    /// O encoder e o governador, para o vigia perguntar se a perda pede um degrau.
+    encoding: Arc<Mutex<VideoEncoding>>,
+    /// A qualidade e o fps que a pessoa escolheu, e quantos degraus abaixo deles a perda
+    /// empurrou a transmissão (`step_down`).
+    chosen: (capture::Quality, u32),
+    steps: usize,
 }
 
 impl Broadcast {
@@ -359,12 +731,12 @@ impl Broadcast {
         config: CaptureConfig,
         video: Option<Source>,
         audio_source: Option<Source>,
+        software: bool,
     ) -> anyhow::Result<Self> {
-        let encoder_config = EncoderConfig::new(
-            config.quality,
-            config.frame_rate,
-            PlatformCapturer::source_size(config.source)?,
-        );
+        let encoder_config = EncoderConfig {
+            software,
+            ..EncoderConfig::new(config.quality, config.frame_rate, PlatformCapturer::source_size(config.source)?)
+        };
 
         let frame_rate = encoder_config.frame_rate;
 
@@ -391,25 +763,38 @@ impl Broadcast {
         let loss_permille = Arc::new(AtomicU64::new(0));
         let video_packets = AtomicU64::new(0);
 
-        let encoding = Mutex::new(VideoEncoding {
+        let encoding = Arc::new(Mutex::new(VideoEncoding {
             governor: BitrateGovernor::from_env(encoder.bitrate()),
             encoder,
             window_started: Instant::now(),
             nacked: 0,
+            keyframes: KeyframeGate::default(),
             dropped_before: dropped_so_far,
-        });
+        }));
+        let last_frame = Arc::new(Mutex::new((0_u64, Instant::now())));
+        let video_encoding = Arc::clone(&encoding);
+        let (recipe_quality, recipe_frame_rate) = (config.quality, config.frame_rate);
 
         tracing::info!("broadcast: abrindo o encoder de áudio");
 
-        let audio = Mutex::new(AudioEncoder::new(if audio_source == Some(Source::Mic) {
-            48_000
+        let audio = Mutex::new(if audio_source == Some(Source::Mic) {
+            AudioEncoder::for_voice(48_000)
         } else {
-            96_000
-        })?);
+            AudioEncoder::new(96_000)
+        }?);
         let capture_target = Arc::clone(&sfu);
         let recipe = config.clone();
         let muted = Arc::new(AtomicBool::new(false));
         let muted_callback = Arc::clone(&muted);
+        #[cfg(target_os = "windows")]
+        let still = video.and_then(|video| {
+            StillFrames::start(
+                Arc::clone(&encoding),
+                Arc::clone(&sfu),
+                (video, frame_rate),
+                (Arc::clone(&last_frame), Arc::clone(&muted)),
+            )
+        });
         let level = Arc::new(LevelMeter::default());
         let level_callback = Arc::clone(&level);
         let captured = Arc::new(AtomicU64::new(0));
@@ -436,6 +821,7 @@ impl Broadcast {
         let keyframes_callback = Arc::clone(&keyframes);
         let target_bitrate_callback = Arc::clone(&target_bitrate);
         let loss_permille_callback = Arc::clone(&loss_permille);
+        let last_frame_callback = Arc::clone(&last_frame);
 
         tracing::info!(
             source = ?config.source,
@@ -538,8 +924,11 @@ impl Broadcast {
                     };
 
                     if feedback.keyframe {
-                        encoding.encoder.request_keyframe();
                         keyframes_callback.fetch_add(1, Ordering::Relaxed);
+                    }
+
+                    if encoding.keyframes.due(feedback.keyframe, started) {
+                        encoding.encoder.request_keyframe();
                     }
 
                     encoding.nacked += u64::from(feedback.lost);
@@ -561,6 +950,12 @@ impl Broadcast {
                     match encoding.encoder.encode(surface, frame.timestamp_ns) {
                         Ok(encoded) => {
                             encoded_callback.fetch_add(1, Ordering::Relaxed);
+                            *last_frame_callback.lock().unwrap_or_else(PoisonError::into_inner) = (frame.timestamp_ns, started);
+
+                            if encoded.keyframe {
+                                encoding.keyframes.served(started);
+                            }
+
                             encoded
                         }
                         // `NeedsMoreInput` é a fila do encoder de hardware enchendo, não
@@ -568,9 +963,12 @@ impl Broadcast {
                         // começo de toda transmissão, que é justamente quando o encoder
                         // de placa está enchendo a fila dele.
                         Err(media::EncoderError::NeedsMoreInput) => return,
+                        // Uma linha, na primeira vez: em nível de depuração ela não era gravada,
+                        // e o encoder travado sumia do log de quem transmitiu.
                         Err(error) => {
-                            encode_errors_callback.fetch_add(1, Ordering::Relaxed);
-                            tracing::debug!(error = %error, "encoder: quadro sem saída");
+                            if encode_errors_callback.fetch_add(1, Ordering::Relaxed) == 0 {
+                                tracing::warn!(error = %error, "encoder: quadro sem saída (os próximos só contam)");
+                            }
 
                             return;
                         }
@@ -578,6 +976,8 @@ impl Broadcast {
                 };
 
                 if let Some(sender) = target(&capture_target).as_mut() {
+                    sender.follow_bitrate(target_bitrate_callback.load(Ordering::Relaxed));
+
                     match sender.send_frame(video_source, encoded, frame_rate) {
                         Ok(packets) => {
                             sent_callback.fetch_add(1, Ordering::Relaxed);
@@ -624,6 +1024,12 @@ impl Broadcast {
             config: recipe,
             video,
             audio_source,
+            software,
+            #[cfg(target_os = "windows")]
+            still,
+            encoding: video_encoding,
+            chosen: (recipe_quality, recipe_frame_rate),
+            steps: 0,
         })
     }
 
@@ -654,9 +1060,9 @@ impl Broadcast {
             wanted.source = source;
         }
 
-        self.capturer.stop()?;
+        self.stop()?;
 
-        match Self::start(Arc::clone(&self.sfu), wanted, self.video, self.audio_source) {
+        match Self::start(Arc::clone(&self.sfu), wanted, self.video, self.audio_source, self.software) {
             Ok(fresh) => {
                 *self = fresh;
 
@@ -670,6 +1076,7 @@ impl Broadcast {
                     previous,
                     self.video,
                     self.audio_source,
+                    self.software,
                 )?;
 
                 Err(error)
@@ -689,6 +1096,91 @@ impl Broadcast {
 
     pub fn frames(&self) -> u64 {
         self.capturer.frames_captured()
+    }
+
+    pub fn counts(&self) -> Counts {
+        Counts {
+            captured: self.captured.load(Ordering::Relaxed),
+            encoded: self.encoded.load(Ordering::Relaxed),
+            sent: self.sent.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.muted.load(Ordering::Relaxed)
+    }
+
+    /// Refaz captura e encoder com a mesma receita, no mesmo producer: é o que o vigia faz
+    /// quando uma etapa para de produzir.
+    pub fn refresh(&mut self) -> anyhow::Result<()> {
+        self.restart(self.config.quality, self.config.frame_rate, None)
+    }
+
+    /// A perda continua com a taxa no piso desta qualidade: o caminho não leva nem a menor taxa,
+    /// e só um degrau de resolução resolve — o que o WebRTC faz no navegador.
+    /// Falso no último degrau: abaixo dele não há o que fazer.
+    pub fn starved(&self) -> bool {
+        rungs(self.chosen).len() > self.steps + 1 && self.encoding.lock().is_ok_and(|encoding| encoding.governor.starved())
+    }
+
+    /// Um minuto limpo no teto de uma qualidade abaixo da escolhida: o degrau de cima cabe.
+    pub fn roomy(&self) -> bool {
+        self.steps > 0 && self.encoding.lock().is_ok_and(|encoding| encoding.governor.roomy())
+    }
+
+    /// Um degrau abaixo: 720p, depois 720p30. Já no último, nada.
+    pub fn step_down(&mut self) -> anyhow::Result<()> {
+        self.step_to(self.steps + 1)
+    }
+
+    /// Um degrau acima, até a qualidade que a pessoa escolheu.
+    pub fn step_up(&mut self) -> anyhow::Result<()> {
+        self.step_to(self.steps.saturating_sub(1))
+    }
+
+    fn step_to(&mut self, steps: usize) -> anyhow::Result<()> {
+        let chosen = self.chosen;
+        let Some(&(quality, frame_rate)) = rungs(chosen).get(steps).filter(|_| steps != self.steps) else {
+            return Ok(());
+        };
+
+        tracing::warn!(?quality, frame_rate, "transmissão: a rede pediu outro degrau de qualidade");
+        self.restart(quality, frame_rate, None)?;
+        self.chosen = chosen;
+        self.steps = steps;
+
+        Ok(())
+    }
+
+    /// A mesma receita no encoder do processador, em até 720p30: pior, mas no ar.
+    pub fn fall_back_to_cpu(&mut self) -> anyhow::Result<()> {
+        self.software = true;
+
+        self.refresh()
+    }
+
+    pub fn on_hardware(&self) -> bool {
+        self.encoder == "gpu"
+    }
+
+    /// Os números da transmissão no log, de tempos em tempos: é por eles que se vê, no log de
+    /// quem transmitiu, em que etapa a imagem parou.
+    pub fn log_numbers(&self) {
+        let counts = self.counts();
+
+        tracing::info!(
+            captured = counts.captured,
+            encoded = counts.encoded,
+            sent = counts.sent,
+            encode_errors = self.encode_errors.load(Ordering::Relaxed),
+            send_errors = self.send_errors.load(Ordering::Relaxed),
+            send_dropped = self.send_dropped.load(Ordering::Relaxed),
+            keyframes_asked = self.keyframes.load(Ordering::Relaxed),
+            target_bitrate = self.target_bitrate.load(Ordering::Relaxed),
+            loss_permille = self.loss_permille.load(Ordering::Relaxed),
+            capture_error = ?self.capturer.error(),
+            "transmissão: números"
+        );
     }
 
     pub fn stats(&self) -> serde_json::Value {
@@ -713,6 +1205,11 @@ impl Broadcast {
     }
 
     pub fn stop(&mut self) -> anyhow::Result<()> {
+        // Antes da captura: imagem repetida por um encoder que está fechando misturaria o fim de
+        // uma transmissão com o começo da seguinte, no mesmo SSRC.
+        #[cfg(target_os = "windows")]
+        drop(self.still.take());
+
         self.capturer.stop()?;
 
         Ok(())
@@ -937,7 +1434,7 @@ impl Session {
         Ok(AudioFeed {
             sender: Arc::clone(&self.sender),
             source,
-            encoder: Mutex::new(AudioEncoder::new(48_000)?),
+            encoder: Mutex::new(if source == Source::Mic { AudioEncoder::for_voice(48_000) } else { AudioEncoder::new(48_000) }?),
             muted: AtomicBool::new(false),
             level: LevelMeter::default(),
             gate: Mutex::default(),
@@ -988,6 +1485,185 @@ pub fn start_native(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Um segundo de vigia: os contadores andaram `captured`, `encoded` e `sent` quadros.
+    fn second(watch: &mut StallWatch, counts: &mut Counts, start: Instant, at: u64, (captured, encoded, sent): (u64, u64, u64)) -> Option<Stall> {
+        counts.captured += captured;
+        counts.encoded += encoded;
+        counts.sent += sent;
+
+        watch.tick(*counts, start + Duration::from_secs(at))
+    }
+
+    #[test]
+    fn a_flowing_broadcast_is_left_alone() {
+        let (start, mut counts) = (Instant::now(), Counts::default());
+        let mut watch = StallWatch::new(start);
+
+        for at in 1..=30 {
+            assert_eq!(second(&mut watch, &mut counts, start, at, (60, 60, 60)), None, "no segundo {at}");
+        }
+    }
+
+    #[test]
+    fn an_encoder_that_stops_returning_frames_is_restarted() {
+        let (start, mut counts) = (Instant::now(), Counts::default());
+        let mut watch = StallWatch::new(start);
+
+        for at in 1..=4 {
+            second(&mut watch, &mut counts, start, at, (60, 60, 60));
+        }
+
+        assert_eq!(second(&mut watch, &mut counts, start, 5, (60, 0, 0)), None);
+        assert_eq!(second(&mut watch, &mut counts, start, 6, (60, 0, 0)), Some(Stall::Encoder));
+    }
+
+    /// Duas paradas seguidas do encoder sem ele provar que voltou levam ao do processador; um
+    /// encoder que volta e trava muito depois começa a conta de novo.
+    #[test]
+    fn an_encoder_that_stops_twice_in_a_row_keeps_failing() {
+        let (start, mut counts) = (Instant::now(), Counts::default());
+        let mut watch = StallWatch::new(start);
+
+        second(&mut watch, &mut counts, start, 1, (60, 60, 60));
+
+        assert_eq!(second(&mut watch, &mut counts, start, 3, (60, 0, 0)), Some(Stall::Encoder));
+        assert!(!watch.encoder_keeps_failing(), "uma parada é refazer na placa");
+
+        watch.restarted(start + Duration::from_secs(3));
+        counts = Counts::default();
+
+        let stalled = (4..=10).find(|&at| second(&mut watch, &mut counts, start, at, (60, 0, 0)) == Some(Stall::Encoder));
+
+        assert!(stalled.is_some() && watch.encoder_keeps_failing(), "a segunda seguida vai para o processador");
+
+        watch.restarted(start + Duration::from_secs(20));
+        counts = Counts::default();
+        second(&mut watch, &mut counts, start, 21, (120, 120, 120));
+
+        assert!(!watch.encoder_keeps_failing(), "voltou: a conta recomeça");
+    }
+
+    #[test]
+    fn the_ladder_only_has_rungs_that_go_down() {
+        use capture::Quality::{Hd720, Hd1080};
+
+        assert_eq!(rungs((Hd1080, 60)), [(Hd1080, 60), (Hd720, 60), (Hd720, 30)]);
+        assert_eq!(rungs((Hd1080, 30)), [(Hd1080, 30), (Hd720, 30)]);
+        assert_eq!(rungs((Hd720, 60)), [(Hd720, 60), (Hd720, 30)]);
+        assert_eq!(rungs((Hd720, 30)), [(Hd720, 30)], "já no fundo, nenhum degrau");
+    }
+
+    #[test]
+    fn a_still_screen_is_refreshed_ever_less_often() {
+        let (start, mut counts) = (Instant::now(), Counts::default());
+        let mut watch = StallWatch::new(start);
+        let mut refreshed = Vec::new();
+
+        second(&mut watch, &mut counts, start, 1, (60, 60, 60));
+
+        for at in 2..=40 {
+            if second(&mut watch, &mut counts, start, at, (0, 0, 0)) == Some(Stall::Capture) {
+                refreshed.push(at);
+                watch.restarted(start + Duration::from_secs(at));
+                counts = Counts::default();
+            }
+        }
+
+        assert_eq!(refreshed, [4, 10, 22], "a espera dobra: 3 s, 6 s, 12 s");
+    }
+
+    #[test]
+    fn a_capture_that_comes_back_waits_the_short_time_again() {
+        let (start, mut counts) = (Instant::now(), Counts::default());
+        let mut watch = StallWatch::new(start);
+
+        second(&mut watch, &mut counts, start, 1, (60, 60, 60));
+
+        assert_eq!(second(&mut watch, &mut counts, start, 4, (0, 0, 0)), Some(Stall::Capture));
+
+        watch.restarted(start + Duration::from_secs(4));
+        counts = Counts::default();
+
+        for at in 5..=8 {
+            second(&mut watch, &mut counts, start, at, (60, 60, 60));
+        }
+
+        assert_eq!(second(&mut watch, &mut counts, start, 11, (0, 0, 0)), Some(Stall::Capture), "voltou aos 3 s");
+    }
+
+    #[test]
+    fn frames_that_never_reach_the_network_are_told_once() {
+        let (start, mut counts) = (Instant::now(), Counts::default());
+        let mut watch = StallWatch::new(start);
+
+        second(&mut watch, &mut counts, start, 1, (60, 60, 60));
+
+        let told: Vec<_> = (2..=8).filter_map(|at| second(&mut watch, &mut counts, start, at, (60, 60, 0))).collect();
+
+        assert_eq!(told, [Stall::Transport]);
+    }
+
+    #[test]
+    fn keyframe_requests_are_spaced_and_none_is_lost() {
+        let mut gate = KeyframeGate::default();
+        let start = Instant::now();
+
+        assert!(!gate.due(false, start), "sem pedido, nada sai");
+        assert!(gate.due(true, start), "o primeiro pedido sai na hora");
+        assert!(!gate.due(true, start + Duration::from_millis(300)), "outro logo depois espera");
+        assert!(!gate.due(false, start + Duration::from_secs(1)), "e continua esperando");
+        assert!(gate.due(false, start + KEYFRAME_SPACING), "mas sai quando o intervalo acaba");
+        assert!(!gate.due(false, start + KEYFRAME_SPACING * 3), "e não sai de novo sem pedido");
+
+        let later = start + KEYFRAME_SPACING * 4;
+
+        gate.served(later);
+
+        assert!(!gate.due(true, later + Duration::from_millis(500)), "o do GOP que acabou de sair já atende");
+    }
+
+    /// Pedidos que não param espaçam até o GOP; quinze segundos quietos voltam aos 2 s.
+    #[test]
+    fn keyframe_requests_that_keep_coming_space_out_up_to_the_gop() {
+        let mut gate = KeyframeGate::default();
+        let start = Instant::now();
+        let at = |millis: u64| start + Duration::from_millis(millis);
+
+        assert!(gate.due(true, at(0)));
+        assert!(!gate.due(true, at(500)));
+        assert!(gate.due(false, at(2_000)), "o que esperou sai no espaço de 2 s");
+        assert!(!gate.due(true, at(2_500)));
+        assert!(!gate.due(false, at(5_000)), "pedidos seguidos: o espaço passou a 4 s");
+        assert!(gate.due(false, at(6_000)));
+        assert!(!gate.due(false, at(30_000)), "sem pedido nada sai");
+        assert!(gate.due(true, at(30_000)), "depois de quinze segundos quietos sai na hora");
+        assert!(!gate.due(true, at(30_500)));
+        assert!(gate.due(false, at(32_000)), "e o espaço voltou a 2 s");
+    }
+
+    #[test]
+    fn a_recipe_written_as_a_choice_reads_back_the_same() {
+        for (source, quality) in [
+            (CaptureSource::Window(0x0004_0A2C), capture::Quality::Hd720),
+            (CaptureSource::Display(2), capture::Quality::Qhd1440),
+            (CaptureSource::PrimaryDisplay, capture::Quality::Uhd2160),
+        ] {
+            let sent = CaptureConfig {
+                quality,
+                source,
+                frame_rate: 30,
+                capture_audio: false,
+                mute_listed_apps: false,
+                ..CaptureConfig::default()
+            };
+            let back = capture_config(&choice_of(&sent));
+
+            assert_eq!(format!("{:?}", back.source), format!("{:?}", sent.source));
+            assert_eq!(format!("{:?}", back.quality), format!("{:?}", sent.quality));
+            assert_eq!((back.frame_rate, back.capture_audio, back.mute_listed_apps), (30, false, false));
+        }
+    }
 
     #[test]
     fn the_voice_gate_opens_on_speech_and_holds_through_the_pause_between_words() {

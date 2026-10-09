@@ -1,7 +1,7 @@
 # O servidor
 
 **Para levantar uma máquina do zero, em ordem de execução, o roteiro é
-[infra/INSTALAR-VPS.md](INSTALAR-VPS.md).** Aquele arquivo tem o comando de cada
+[INSTALAR-VPS.md](INSTALAR-VPS.md).** Aquele arquivo tem o comando de cada
 passo; este tem o porquê — as medições da máquina que existe, o que cada número
 resolveu, e o que desligar.
 
@@ -17,9 +17,9 @@ o que não deu para verificar está marcado.
 
 | Assunto | Onde |
 |---|---|
-| Instalar do zero, na ordem, com comando copiável | [infra/INSTALAR-VPS.md](INSTALAR-VPS.md) |
-| Teto de espectadores por banda, e a região | [infra/INSTALAR-VPS.md](INSTALAR-VPS.md), seções 1.2 a 1.4 |
-| Migrar o e-mail sem derrubar a caixa | [infra/INSTALAR-VPS.md](INSTALAR-VPS.md), seção 11 |
+| Instalar do zero, na ordem, com comando copiável | [INSTALAR-VPS.md](INSTALAR-VPS.md) |
+| Teto de espectadores por banda, e a região | [INSTALAR-VPS.md](INSTALAR-VPS.md), seções 1.2 a 1.4 |
+| Migrar o e-mail sem derrubar a caixa | [INSTALAR-VPS.md](INSTALAR-VPS.md), seção 11 |
 | Quais portas abrir, e por que a faixa é larga | [UDP.md](UDP.md) e o roteiro, seção 2 |
 | O caminho da imagem e os buffers de socket | [REDE.md](REDE.md) |
 | Publicar uma versão no repositório APT | aqui embaixo, seção 2 |
@@ -76,9 +76,10 @@ Expire-Date: 0
 %commit
 EOF
 
-# A pública vai para o repositório, é ela que cada máquina importa uma vez.
-gpg --export repo@unkvoid.com > /var/www/apt/unkvoid.gpg
 ```
+
+A pública (`unkvoid.gpg`, a que cada máquina importa uma vez) o `apt-publish.sh` exporta e sobe
+para o bucket a cada publicação.
 
 Sem senha (`%no-protection`) porque o `apt-publish.sh` assina sem terminal, a
 cada build. Quem tiver essa chave publica pacote como se fosse você, então ela
@@ -93,20 +94,11 @@ gpg --export-secret-keys --armor repo@unkvoid.com > unkvoid-apt-secreta.asc
 
 ### Publicar uma versão
 
-Do Mac:
-
-```bash
-make build-vps
-```
-
-Ele sincroniza o código por rsync — o repositório é privado, e clonar de lá
-exigiria uma credencial do GitHub guardada numa máquina exposta —, compila o
-`.deb` e chama o `apt-publish.sh`, que refaz o `Packages`, o `Release` e assina
-o `InRelease`.
-
-O build divide a máquina com o SFU, então roda com um núcleo de folga e em
-prioridade baixa. Alguns minutos a mais, e nenhuma transmissão engasgando no
-meio.
+O `.deb` do app nativo é compilado fora daqui (`native/apps/linux/build-deb.sh`, num Debian 12
+em contêiner), copiado para a VPS e entregue ao `apt-publish.sh`, que o põe no bucket `apt` do
+MinIO, refaz o `Packages` e o `Release` e assina o `InRelease`. O passo a passo está no
+[AUTO-UPDATE.md](AUTO-UPDATE.md#linux). O `make build-vps` gera o `.deb` do Tauri de antes: não
+use.
 
 ### Do lado de quem instala
 

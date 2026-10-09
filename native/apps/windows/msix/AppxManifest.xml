@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  O pacote da Microsoft Store. A identidade é a que o Partner Center deu ao produto
+  9NGPGTV3NPLW; o build-msix.ps1 troca {VERSION} pela versão do Cargo.toml com o quarto
+  número em 0, que é da Store.
+
+  Roda sem administrador: a Store não aprova pacote que se eleva. Os atalhos dos Clips e o
+  falar-apertando não alcançam jogos elevados (anti-cheat) nesta instalação; o .exe do site
+  continua elevado.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap11="http://schemas.microsoft.com/appx/manifest/uap/windows10/11"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap11 desktop rescap">
+
+  <Identity Name="Unkvoid.Unkvoid" Publisher="CN=3877BA03-3BE9-4979-BA7B-6978B65D16C3" Version="{VERSION}" ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Unkvoid</DisplayName>
+    <PublisherDisplayName>Unkvoid</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+    <!-- O unkvoid.exe importa o VCRUNTIME140.dll; a Store instala este pacote junto. -->
+    <PackageDependency Name="Microsoft.VCLibs.140.00.UWPDesktop" MinVersion="14.0.33519.0" Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="pt-BR" />
+  </Resources>
+
+  <Applications>
+    <Application Id="Unkvoid" Executable="unkvoid.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Unkvoid"
+        Description="Compartilhe a tela sem perder fps no jogo, com salas por código, servidores, voz, câmera e os Clips."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <!-- O "abrir com o Windows" do pacote: o app liga e desliga pela StartupTask (shell.rs). -->
+        <desktop:Extension Category="windows.startupTask" Executable="unkvoid.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="UnkvoidStartup" Enabled="false" DisplayName="Unkvoid" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <Capability Name="internetClient" />
+    <!-- Capturar o monitor ou a janela escolhida sem o seletor do sistema, e sem a borda amarela. -->
+    <uap11:Capability Name="graphicsCaptureProgrammatic" />
+    <uap11:Capability Name="graphicsCaptureWithoutBorder" />
+    <rescap:Capability Name="runFullTrust" />
+    <DeviceCapability Name="microphone" />
+    <DeviceCapability Name="webcam" />
+  </Capabilities>
+</Package>

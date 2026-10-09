@@ -84,6 +84,7 @@ export class ConsumerController {
             peerId: owner.peer.id,
             name: owner.peer.name,
             source: String(owner.producer.appData.source),
+            receiving: owner.producer.appData.receiving === true,
         };
     }
 

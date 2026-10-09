@@ -170,16 +170,17 @@ Em **Serviços de Rede → Firewall**. O campo de portas aceita intervalo
 |---|---|---|
 | TCP | 22 | ssh |
 | TCP | 80, 443 | nginx: site, API, `/sfu`, `/app`, `/apt/`, `s3.unkvoid.com` |
-| TCP **e** UDP | 40000-40006 | WebRTC de quem assiste — uma porta por worker, e são 7 workers |
-| UDP | 41000-42000 | RTP puro de quem transmite pelo app, e de quem assiste no Linux |
+| TCP **e** UDP | 40000-40006 | o WebRTC do app Tauri de antes — uma porta por worker, e são 7 workers nesta máquina |
+| UDP | 41000-42000 | RTP puro: o app nativo, transmitindo e assistindo |
 | TCP | 25 | receber e-mail |
 | TCP | 465, 587 | enviar e-mail autenticado |
 | TCP | 993 | IMAP, para ler a caixa |
 
 **40000-40006 e não 40000-40003**: com `SFU_WORKERS=7` o WebRtcServer ocupa uma
 porta por worker a partir de `SFU_MEDIA_PORT` (40000), ou seja 40000 a 40006. TCP
-na mesma faixa é o caminho reserva de quem está numa rede que bloqueia UDP —
-fechado, o ICE tenta, não conecta, e a pessoa olha para uma sala sem imagem.
+na mesma faixa é o caminho reserva de quem está numa rede que bloqueia UDP. O
+`ecosystem.config.cjs` versionado traz `SFU_WORKERS: '3'`, o da VPS de 4 núcleos de hoje: nesta
+máquina de 8, suba para 7 (veja a seção do SFU).
 
 **41000-42000 e não 41000-41447**: a conta do [UDP.md](UDP.md) é
 `SFU_PLAIN_PORT + (SFU_WORKERS × SFU_PLAIN_PORTS) - 1`, que com 7 workers e 64
@@ -255,8 +256,8 @@ sudo rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf   # a Contabo religa a senh
 sudo systemctl restart ssh
 ```
 
-O alias no `~/.ssh/config` do notebook, que é o que `make build-vps` e
-`sfu/deploy.sh` esperam:
+O alias no `~/.ssh/config` do notebook, que é o que o `scp` do `.deb` e o `sfu/deploy.sh`
+esperam:
 
 ```
 Host vps
@@ -397,10 +398,9 @@ sudo apt install -y build-essential curl wget file pkg-config git python3 rsync 
 
 **Não instale `libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`,
 `libxdo-dev`, `cmake` nem o Rust.** Eram da época em que o `.deb` compilava no
-host; hoje o `build-vps.sh` compila dentro de um Debian 12 (`Dockerfile.linux`),
-porque um binário fica preso à glibc de quem o gerou. No host o build só precisa
-de `node` e `python3`, para as conferências. O `swaks` é para os testes de e-mail
-da seção 11.
+host; hoje o `.deb` do app nativo compila fora daqui, num Debian 12 em contêiner
+(`native/apps/linux/build-deb.sh`), e a VPS só recebe o arquivo e roda o `apt-publish.sh`
+(precisa do `mc` e da chave GPG). O `swaks` é para os testes de e-mail da seção 11.
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
@@ -556,8 +556,8 @@ sudo ln -sf /etc/nginx/sites-available/00-default-deny /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-**A mídia não passa pelo nginx.** Ela vai direto por UDP em 40000-40006 e
-41000-41447. O nginx só carrega sinalização (`/sfu`, `/app`) e arquivo.
+**A mídia não passa pelo nginx.** Ela vai direto por UDP na faixa do RTP puro (e na do WebRTC
+de antes). O nginx só carrega sinalização (`/sfu`, `/app`) e arquivo.
 
 ---
 
@@ -634,8 +634,9 @@ cd /var/www/projects/unkvoid/sfu && ./deploy.sh vps
 Antes do primeiro deploy, o `.env` do SFU já precisa existir na VPS (seção 9) — o
 SFU **não sobe** sem `SFU_SECRET`, e é melhor fora do ar que aberto.
 
-São **7 workers** e não 8: o oitavo núcleo fica inteiro para o nginx, o php-fpm, o
-MySQL, o MinIO e o e-mail. Um worker do mediasoup é um processo de uma thread só
+São **7 workers** e não 8 (`SFU_WORKERS` no `ecosystem.config.cjs`, que vem com 3, o da VPS de 4
+núcleos de hoje — a regra é `nproc` menos um): o oitavo núcleo fica inteiro para o nginx, o
+php-fpm, o MySQL, o MinIO e o e-mail. Um worker do mediasoup é um processo de uma thread só
 que satura um núcleo e para; a sala é fixada num worker e a voz é presa a um
 núcleo, então 7 workers são 7 canais de voz pesados em paralelo. Deixar 8 faria a
 oitava sala disputar núcleo com o que responde o site.
@@ -698,8 +699,9 @@ E os valores de produção que não são segredo mas são por máquina:
 `UNKVOID_APT_URL=https://unkvoid.com/apt`.
 
 **Nos secrets do GitHub não muda nada.** O deploy roda no runner que mora na
-própria VPS, então não há chave de ssh nem IP em segredo nenhum: só
-`TAURI_SIGNING_PRIVATE_KEY`, sua senha, e `RELEASE_SECRET`.
+própria VPS, então não há chave de ssh nem IP em segredo nenhum. Os secrets que existem
+(`TAURI_SIGNING_PRIVATE_KEY`, sua senha, e `RELEASE_SECRET`) são do `release.yml` do Tauri de
+antes, que não se usa mais.
 
 ---
 

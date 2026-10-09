@@ -107,8 +107,9 @@ Duas regras que valem para qualquer tela nova:
 
 | Falta | Por quê |
 |---|---|
-| instalar a atualização sozinho | o app **avisa** que há versão nova (`/downloads/latest.json`) e abre o instalador; baixar, conferir a assinatura e trocar o `.app` sem a pessoa fazer nada depende de o `release.yml` publicar o app nativo (`darwin-aarch64`), que hoje publica o do Tauri |
-| assinatura com Developer ID e notarização — **decidido não pagar por ora**: o `.dmg` sai assinado ad-hoc pelo `dmg.sh` e a pessoa libera na primeira abertura | o `bundle.sh` assina ad-hoc; `--sign` resolve a assinatura, e a notarização é um passo do `release.yml` |
+| uma versão publicada | o `dmg.sh` já gera o `.dmg` assinado ad-hoc; falta registrar `darwin-aarch64` pelo `publish-release.sh` (o `release.yml` compila o Tauri) |
+| instalar a atualização sozinho | o app **avisa** que há versão nova (`/downloads/latest.json`) e abre o instalador; baixar, conferir a assinatura e trocar o `.app` depende de haver versão publicada |
+| assinatura com Developer ID e notarização — **decidido não pagar por ora**: a pessoa libera o `.dmg` na primeira abertura | `--sign` no `bundle.sh` resolve a assinatura; a notarização ainda não tem passo |
 
 ## O que é do macOS, e não do núcleo
 

@@ -1,3 +1,4 @@
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -19,11 +20,12 @@ use ::windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect,
 };
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowPlacement, GetWindowThreadProcessId, IsIconic, WINDOWPLACEMENT,
+    GetWindowPlacement, GetWindowThreadProcessId, IsIconic, IsWindow, WINDOWPLACEMENT,
     WPF_RESTORETOMAXIMIZED,
 };
 
 use crate::windows_audio::{AudioScope, SystemAudio};
+use crate::windows_duplication::{self, Duplication};
 use crate::{
     CaptureConfig, CaptureError, CaptureEvent, CaptureSource, Display, GpuSurface, VideoFrame,
     Window,
@@ -41,6 +43,40 @@ fn id_from_hwnd(hwnd: *mut std::ffi::c_void) -> u64 {
 
 fn hwnd_from_id(id: u64) -> *mut std::ffi::c_void {
     id as usize as *mut std::ffi::c_void
+}
+
+/// O id de um monitor é o número que o Windows deu a ele (`\\.\DISPLAY2` é 2), e não a posição
+/// na lista: desligar a TV ou o segundo monitor, ou voltar da suspensão, reordena a lista, e a
+/// posição passava a transmitir **outro** monitor, com o que estivesse nele. Somado a
+/// `DISPLAY_IDS` para nunca bater com um id antigo, de posição, guardado antes desta versão: esse
+/// falha em vez de adivinhar.
+const DISPLAY_IDS: u32 = 1_000;
+
+fn display_id(monitor: &Monitor) -> Option<u32> {
+    monitor.index().ok().and_then(|number| u32::try_from(number).ok()).map(|number| DISPLAY_IDS + number)
+}
+
+/// O monitor de um id, ou nenhum: o que sumiu não vira outro.
+fn monitor_by_id(id: u32) -> Result<Monitor, CaptureError> {
+    Monitor::enumerate()
+        .map_err(|error| CaptureError::Platform(error.to_string()))?
+        .into_iter()
+        .find(|monitor| display_id(monitor) == Some(id))
+        .ok_or(CaptureError::NoDisplay)
+}
+
+pub fn window_alive(source: CaptureSource) -> bool {
+    match source {
+        CaptureSource::Window(id) => unsafe { IsWindow(Some(HWND(hwnd_from_id(id)))) }.as_bool(),
+        _ => true,
+    }
+}
+
+pub fn window_minimized(source: CaptureSource) -> bool {
+    match source {
+        CaptureSource::Window(id) => unsafe { IsIconic(HWND(hwnd_from_id(id))) }.as_bool(),
+        _ => false,
+    }
 }
 
 /// O tamanho da janela para o encoder.
@@ -176,9 +212,16 @@ where
     )
 }
 
+/// O que está capturando: o Graphics Capture, ou o Desktop Duplication no monitor do Windows
+/// que não tira a borda amarela.
+enum Running {
+    Graphics(windows_capture::capture::CaptureControl<Sink, CaptureFailure>),
+    Duplication(Duplication),
+}
+
 /// Capture via Windows Graphics Capture. Requires Windows 10 1903 or newer.
 pub struct WindowsCapturer {
-    control: Option<windows_capture::capture::CaptureControl<Sink, CaptureFailure>>,
+    control: Option<Running>,
     frames: Arc<AtomicU64>,
 
     /// O som não vem junto com a imagem aqui: o Graphics Capture só entrega quadros, e
@@ -260,12 +303,21 @@ impl GraphicsCaptureApiHandler for Sink {
     ) -> Result<(), Self::Error> {
         self.frames.fetch_add(1, Ordering::Relaxed);
 
+        // A hora em que o quadro foi composto, e não a em que este callback rodou: o atraso de
+        // agendamento — o jogo segurando a CPU — virava variação no relógio do RTP, e quem
+        // assiste aumentava a espera do jitter buffer por um tranco que a rede nem teve.
+        let timestamp_ns = frame
+            .timestamp()
+            .ok()
+            .and_then(|composed| u64::try_from(composed.Duration).ok())
+            .map_or_else(|| self.started_at.elapsed().as_nanos() as u64, |hundreds| hundreds * 100);
+
         // A textura é da rotação interna da captura: vale enquanto este callback roda,
         // e o encoder copia dela antes de devolver. Clonar aqui só soma uma referência.
         (self.on_event)(CaptureEvent::Video(VideoFrame {
             width: frame.width(),
             height: frame.height(),
-            timestamp_ns: self.started_at.elapsed().as_nanos() as u64,
+            timestamp_ns,
             surface: Some(GpuSurface {
                 texture: frame.as_raw_texture().clone(),
                 device: frame.device().clone(),
@@ -294,14 +346,8 @@ impl WindowsCapturer {
             crate::CaptureSource::Window(id) => capture_preview(
                 CaptureWindow::from_raw_hwnd(hwnd_from_id(id)),
             ),
-            crate::CaptureSource::Display(id) => capture_preview(
-                Monitor::enumerate()
-                    .map_err(|error| CaptureError::Platform(error.to_string()))?
-                    .into_iter()
-                    .nth(id as usize)
-                    .ok_or(CaptureError::NoDisplay)?,
-            ),
-            crate::CaptureSource::PrimaryDisplay => capture_preview(
+            crate::CaptureSource::Display(id) => monitor_preview(monitor_by_id(id)?),
+            crate::CaptureSource::PrimaryDisplay => monitor_preview(
                 Monitor::enumerate()
                     .map_err(|error| CaptureError::Platform(error.to_string()))?
                     .into_iter()
@@ -313,6 +359,55 @@ impl WindowsCapturer {
             ),
         }
     }
+}
+
+/// A prévia do monitor: pelo Desktop Duplication onde a borda amarela não sai, para ela não
+/// piscar no monitor cada vez que o seletor abre.
+fn monitor_preview(monitor: Monitor) -> Result<Vec<u8>, CaptureError> {
+    if !Duplication::needed() {
+        return capture_preview(monitor);
+    }
+
+    let path = std::env::temp_dir().join(format!("unkvoid-preview-{}.jpg", std::process::id()));
+
+    if let Err(failure) = windows_duplication::preview(monitor, &path) {
+        tracing::info!(%failure, "prévia: o Desktop Duplication recusou, vai pelo Graphics Capture");
+
+        return capture_preview(monitor);
+    }
+
+    let bytes = std::fs::read(&path).map_err(|error| CaptureError::Platform(error.to_string()))?;
+    let _ = std::fs::remove_file(path);
+
+    Ok(bytes)
+}
+
+/// O monitor pelo Desktop Duplication, com o mesmo relógio e o mesmo evento do Graphics
+/// Capture: para o encoder, é só uma textura de outro device.
+fn start_duplication(
+    monitor: Monitor,
+    config: &CaptureConfig,
+    sink: EventSink,
+    frames: Arc<AtomicU64>,
+) -> Result<Duplication, String> {
+    let started_at = std::time::Instant::now();
+
+    Duplication::start(monitor, config.frame_rate, config.show_cursor, move |frame| {
+        frames.fetch_add(1, Ordering::Relaxed);
+
+        sink(CaptureEvent::Video(VideoFrame {
+            width: frame.width,
+            height: frame.height,
+            timestamp_ns: started_at.elapsed().as_nanos() as u64,
+            surface: Some(GpuSurface {
+                texture: frame.texture.clone(),
+                device: frame.device.clone(),
+                context: frame.context.clone(),
+            }),
+        }));
+
+        ControlFlow::Continue(())
+    })
 }
 
 fn capture_preview<T>(target: T) -> Result<Vec<u8>, CaptureError>
@@ -355,8 +450,8 @@ impl WindowsCapturer {
 
                 Ok(window_size(shown, restored_placement(HWND(hwnd_from_id(id)))))
             }
-            CaptureSource::Display(index) => {
-                let monitor = Monitor::from_index(index as usize + 1).map_err(|_| CaptureError::NoDisplay)?;
+            CaptureSource::Display(id) => {
+                let monitor = monitor_by_id(id)?;
 
                 Ok((monitor.width().map_err(platform)?, monitor.height().map_err(platform)?))
             }
@@ -375,11 +470,12 @@ impl WindowsCapturer {
 
         Ok(monitors
             .into_iter()
-            .enumerate()
-            .map(|(index, monitor)| Display {
-                id: index as u32,
-                width: monitor.width().unwrap_or(0),
-                height: monitor.height().unwrap_or(0),
+            .filter_map(|monitor| {
+                Some(Display {
+                    id: display_id(&monitor)?,
+                    width: monitor.width().unwrap_or(0),
+                    height: monitor.height().unwrap_or(0),
+                })
             })
             .collect())
     }
@@ -428,17 +524,30 @@ impl WindowsCapturer {
                     return Err(CaptureError::NoDisplay);
                 }
 
-                start_capture(window_target, config, sink.clone(), frames.clone())?
+                Running::Graphics(start_capture(window_target, config, sink.clone(), frames.clone())?)
             }
             source => {
                 let monitor = match source {
-                    // `displays()` numera a partir de zero; `from_index` conta de um.
-                    CaptureSource::Display(index) => Monitor::from_index(index as usize + 1),
-                    _ => Monitor::primary(),
-                }
-                .map_err(|_| CaptureError::NoDisplay)?;
+                    CaptureSource::Display(id) => monitor_by_id(id)?,
+                    _ => Monitor::primary().map_err(|_| CaptureError::NoDisplay)?,
+                };
 
-                start_capture(monitor, config, sink.clone(), frames.clone())?
+                // A borda amarela aparecia para quem assistia. Sem a duplicação (outra placa
+                // de vídeo num notebook híbrido, por exemplo), a tela vai com ela, mas vai.
+                let duplicated = Duplication::needed()
+                    .then(|| start_duplication(monitor, config, sink.clone(), frames.clone()))
+                    .and_then(|started| {
+                        started
+                            .inspect_err(|failure| {
+                                tracing::warn!(%failure, "captura: o Desktop Duplication não abriu, a tela vai com a borda");
+                            })
+                            .ok()
+                    });
+
+                match duplicated {
+                    Some(duplication) => Running::Duplication(duplication),
+                    None => Running::Graphics(start_capture(monitor, config, sink.clone(), frames.clone())?),
+                }
             }
         };
 
@@ -506,10 +615,12 @@ impl WindowsCapturer {
             audio.stop();
         }
 
-        if let Some(control) = self.control.take() {
-            control
-                .stop()
-                .map_err(|error| CaptureError::Platform(error.to_string()))?;
+        match self.control.take() {
+            Some(Running::Graphics(control)) => {
+                control.stop().map_err(|error| CaptureError::Platform(error.to_string()))?;
+            }
+            Some(Running::Duplication(mut duplication)) => duplication.stop(),
+            None => {}
         }
 
         Ok(())
@@ -518,7 +629,20 @@ impl WindowsCapturer {
 
 #[cfg(test)]
 mod tests {
-    use super::{Restored, window_size};
+    use super::{DISPLAY_IDS, Monitor, Restored, display_id, monitor_by_id, window_size};
+
+    /// Cada monitor da máquina volta pelo id dele, e um id antigo, de posição, não acha nenhum.
+    #[test]
+    fn a_monitor_comes_back_by_its_own_id_and_an_old_position_finds_none() {
+        for monitor in Monitor::enumerate().expect("os monitores listaram") {
+            let id = display_id(&monitor).expect("o monitor tem número");
+
+            assert!(id > DISPLAY_IDS);
+            assert_eq!(monitor_by_id(id).expect("voltou").as_raw_hmonitor(), monitor.as_raw_hmonitor());
+        }
+
+        assert!(monitor_by_id(0).is_err(), "o id de posição achou um monitor");
+    }
 
     #[test]
     fn a_minimized_window_is_sized_by_where_it_comes_back_to() {

@@ -1,0 +1,153 @@
+import { Icons, Skin } from "skin.slint";
+import { Ui } from "state.slint";
+import { Glyph } from "widgets.slint";
+
+// A moldura da janela, desenhada pelo app como a do Discord: a do Windows não aceita botão
+// ao lado do minimizar, e é ali que a atualização pronta aparece.
+
+// Um dos botões da direita: 46 por 32, a medida dos botões do próprio Windows. Fechar
+// acende no vermelho do sistema, e não no da marca.
+component CaptionButton inherits Rectangle {
+    in property <string> commands;
+    in property <bool> closing;
+    callback clicked();
+
+    width: 46px;
+    background: touch.has-hover ? (root.closing ? #c42b1c : Skin.row) : transparent;
+
+    Glyph {
+        commands: root.commands;
+        size: 16px;
+        tint: touch.has-hover ? Skin.ink-strong : Skin.ink-icon;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component TitleBar inherits Rectangle {
+    // Arrastar e o clique duplo moram embaixo de tudo: os botões, declarados depois, ficam
+    // por cima e recebem o clique deles.
+    TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                Ui.drag-window();
+            }
+        }
+    }
+
+    // Os botões da direita ficam colados, como os do Windows: vão entre eles é lugar onde o
+    // mouse não acende nada.
+    HorizontalLayout {
+        HorizontalLayout {
+            padding-left: 12px;
+            spacing: 8px;
+
+            VerticalLayout {
+                alignment: center;
+
+                Image {
+                    source: @image-url("../../desktop/src-tauri/icons/128x128.png");
+                    width: 14px;
+                    height: 14px;
+                }
+            }
+
+            Text {
+                text: "Unkvoid";
+                color: Skin.ink-dim;
+                font-family: Skin.sans;
+                font-size: 12px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle { horizontal-stretch: 1; }
+
+        if Ui.update-ready : Rectangle {
+            width: 40px;
+            background: update.has-hover ? #34d3991f : transparent;
+
+            Glyph {
+                commands: Icons.download;
+                size: 18px;
+                tint: Skin.online;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+
+            update := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { Ui.install-update(); }
+            }
+
+            // O aviso fica embaixo do botão, encostado na direita: em cima dele é a borda da
+            // tela.
+            if update.has-hover : Rectangle {
+                y: parent.height + 6px;
+                x: parent.width - self.width;
+                width: said.preferred-width + 20px;
+                height: 30px;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #34d39959;
+                background: #100d1afa;
+
+                said := Text {
+                    text: "Versão " + Ui.update-version + " pronta: reinicie para instalar. A sala volta sozinha.";
+                    color: Skin.ink-body;
+                    font-family: Skin.sans;
+                    font-size: 11.5px;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+
+        CaptionButton {
+            commands: Icons.minimize;
+            clicked => { Ui.minimize-window(); }
+        }
+
+        CaptionButton {
+            commands: Ui.maximized ? Icons.restore : Icons.maximize;
+            clicked => { Ui.toggle-maximize(); }
+        }
+
+        CaptionButton {
+            commands: Icons.close;
+            closing: true;
+            clicked => { Ui.close-window(); }
+        }
+    }
+}
+
+// Uma das bordas que se puxam. Invisível: é só a área, o cursor e o pedido ao Windows.
+component Edge inherits TouchArea {
+    in property <string> side;
+
+    pointer-event(event) => {
+        if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+            Ui.resize-window(root.side);
+        }
+    }
+}
+
+// As bordas de redimensionar, por cima de tudo. Maximizada, a janela não tem borda.
+export component ResizeEdges inherits Rectangle {
+    property <length> thick: 5px;
+    property <length> corner: 10px;
+
+    Edge { side: "n"; mouse-cursor: ns-resize; x: root.corner; y: 0; width: root.width - 2 * root.corner; height: root.thick; }
+    Edge { side: "s"; mouse-cursor: ns-resize; x: root.corner; y: root.height - root.thick; width: root.width - 2 * root.corner; height: root.thick; }
+    Edge { side: "w"; mouse-cursor: ew-resize; x: 0; y: root.corner; width: root.thick; height: root.height - 2 * root.corner; }
+    Edge { side: "e"; mouse-cursor: ew-resize; x: root.width - root.thick; y: root.corner; width: root.thick; height: root.height - 2 * root.corner; }
+    Edge { side: "nw"; mouse-cursor: nwse-resize; x: 0; y: 0; width: root.corner; height: root.corner; }
+    Edge { side: "se"; mouse-cursor: nwse-resize; x: root.width - root.corner; y: root.height - root.corner; width: root.corner; height: root.corner; }
+    Edge { side: "ne"; mouse-cursor: nesw-resize; x: root.width - root.corner; y: 0; width: root.corner; height: root.corner; }
+    Edge { side: "sw"; mouse-cursor: nesw-resize; x: 0; y: root.height - root.corner; width: root.corner; height: root.corner; }
+}

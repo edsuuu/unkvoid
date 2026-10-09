@@ -26,8 +26,8 @@ decide; `apps/macos`, `apps/windows` e `apps/linux` desenham. Sem isso, três in
 viram três produtos que divergem no primeiro ajuste.
 
 **ABI C escrita à mão, e não `uniffi`:** são seis funções que mudam devagar. Um header que
-se lê de cima a baixo custa menos que mais um gerador no caminho do build. O Linux não passa
-por ela — GTK é Rust e usa o `core` direto.
+se lê de cima a baixo custa menos que mais um gerador no caminho do build. O Linux e o Windows não passam
+por ela — são Rust e usam o `core` direto.
 
 ## Em que linguagem o SFU deve ser escrito
 
@@ -161,7 +161,8 @@ As regras (`media::BitrateGovernor`), e o porquê de cada número:
 | `UNKVOID_ABR=off` | o mundo físico precisa de um botão de calibração |
 
 O que mudaria a decisão: um pacer no remetente. Com ele o REMB passa a medir a rede, e não a
-rajada, e vale trocar.
+rajada, e vale trocar. **O pacer entrou na 0.1.12** (o vídeo sai a 2,5× a taxa); a troca da perda
+por uma estimativa de banda ainda não foi feita nem decidida.
 
 ## Na retomada da sessão vale o `can` do token novo
 
@@ -195,9 +196,9 @@ Descartado: aumentar a carência (o app levou minutos para notar, carência nenh
 manter a sessão viva enquanto chega mídia (muda o que "presente na sala" quer dizer, e o app
 continuaria sem sinalização, clicando no vazio).
 
-ponytail: quem não tem WebRTC no motor da janela (Linux) entra sem `resume`, e para ele a queda
-de sinalização continua sendo entrada nova, com a mídia refeita. A saída é o `resume` deixar de
-depender do `recvTransport`.
+No app Tauri de antes, quem não tinha WebRTC no motor da janela (Linux) entrava sem `resume`;
+nos apps nativos a retomada vale nos três sistemas, e o caminho de chegada é refeito na volta,
+porque o endereço da pessoa pode ter mudado.
 
 ## Microfone aberto ao entrar, e nenhuma bind engole tecla no Windows
 
@@ -223,3 +224,35 @@ de até 2560 px, WebP ou JPEG em degraus de qualidade até caber) — o que tamb
 foto. GIF maior que 2 MB é recusado, porque reexportar mata a animação. Vai sob `SEND_MESSAGES`:
 um bit novo de permissão só para anexo é regra de negócio que ninguém pediu. Mensagem direta
 ainda não leva imagem: não há pivô para ela, e criar é migration.
+
+## Os Clips: o replay instantâneo dentro do app do Windows
+
+**Decidido pelo dono em 26 e 27/09/2026.** O UnkvoidClips, que era um app separado, virou a aba
+Clips do app nativo do Windows: um app e um repositório só. O motor mora em `shared/clips`, com
+o que é do Windows atrás de `cfg`; a interface, em `apps/windows/src/clips` e `ui/clips.slint`.
+
+- **O app inteiro roda com o nível mais alto da conta** (`highestAvailable`, no build de
+  release): numa conta de administrador, elevado; numa conta comum, sem elevação, e o app abre
+  igual (só os atalhos dos Clips não alcançam jogos elevados). Jogos com
+  anti-cheat, como o Arena Breakout, rodam elevados, e o Windows esconde de um app comum o
+  teclado e a janela deles: o Alt+Z não chegava e o painel não subia. O preço: abrir pelo
+  atalho pede o UAC (no logon a tarefa agendada abre sem aviso), e o Windows bloqueia arrastar
+  arquivo do Explorer para o app (o nativo ainda não tem isso). O ganho: a atualização fica
+  silenciosa, e o falar-apertando passa a enxergar as teclas com esses jogos na frente.
+- **Exceção à regra de nenhuma bind engolir tecla.** Os dois atalhos dos Clips (abrir o painel,
+  Alt+Z de fábrica, e salvar o replay) vão pelo `RegisterHotKey`, de propósito: o jogo não pode
+  receber o Alt+Z junto com o painel abrindo. Só ficam registrados para quem já ligou o replay
+  alguma vez; quem nunca usou os Clips não perde tecla nenhuma, e o Alt+Z segue do jogo e da
+  NVIDIA. Os atalhos de voz seguem pela consulta de 20 ms.
+- **Os Clips não dependem do servidor.** Ligam no `main()`, antes do núcleo: sem internet, sem
+  conta ou com o servidor fora do ar, o replay grava e a galeria abre. A aba fica acima de todas
+  as telas, inclusive "Sem conexão" e "Atualizando".
+- **Fechar a janela esconde na bandeja**, e o replay segue; a chamada não (fechar sai da sala
+  ou da voz, como antes). Sair é pela bandeja ou pelas Configurações. "Iniciar com o
+  Windows" vem ligado: uma tarefa agendada no logon, com o nível mais alto, que abre só na
+  bandeja.
+- **Um atualizador só**, o do núcleo. O feed `unkvoid.com/clips` fica parado na última versão
+  do UnkvoidClips, e o instalador daqui remove o app antigo.
+- **O encoder dos Clips é separado do da transmissão**, por enquanto: juntar os dois mexe no
+  caminho da transmissão, e isso é outra decisão. Transmitir e gravar ao mesmo tempo abre duas
+  capturas e duas sessões do NVENC.

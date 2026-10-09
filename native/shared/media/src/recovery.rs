@@ -13,20 +13,29 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-/// Quanto se espera a retransmissão antes de pedir de novo. Uma ida e volta de internet
-/// doméstica; em rede local a primeira volta muito antes.
-const RETRY: Duration = Duration::from_millis(40);
+/// Os prazos seguem a ida e volta medida — do primeiro pedido até o reenvio chegar —, como
+/// o WebRTC do navegador faz. Fixos em 40 ms e 250 ms, com o servidor a 134 ms (medido em
+/// 30/09) e subindo quando a rede aperta, os três pedidos saíam antes da primeira resposta,
+/// o reenvio chegava depois do buraco largado, e cada largada virava um pedido de
+/// quadro-chave: o quadro mais caro, que apertava a rede de novo. A imagem de quem assistia
+/// parava justamente quando o pacote já vinha a caminho.
+///
+/// Antes da primeira medida vale o piso: numa rede local o reenvio volta antes disso.
+const RETRY_FLOOR: Duration = Duration::from_millis(40);
+const RETRY_CEILING: Duration = Duration::from_millis(500);
 
-/// Quantas vezes se pede o mesmo pacote.
+/// Quantas vezes se pede o mesmo pacote: uma a cada ida e volta, e um pouco mais.
 const MOST_ASKS: u8 = 3;
 
-/// Quanto um buraco pode segurar o fluxo antes de ser largado. Passou disso, esperar mais
-/// custa mais que um keyframe.
-const GIVE_UP: Duration = Duration::from_millis(250);
+/// Quanto um buraco pode segurar o fluxo antes de ser largado: o tempo dos pedidos todos e
+/// de a resposta do último voltar. Nunca menos que o prazo antigo, e nunca mais que um
+/// segundo — passado disso, o quadro-chave chega antes do reenvio.
+const GIVE_UP_FLOOR: Duration = Duration::from_millis(250);
+const GIVE_UP_CEILING: Duration = Duration::from_secs(1);
 
-/// O máximo de pacotes segurados atrás de um buraco. Um quadro 1080p passa de cem pacotes;
-/// mil é mais de meio segundo de tela a 20 Mb/s.
-const MOST_HELD: usize = 1_024;
+/// O máximo de pacotes segurados atrás de um buraco. Um quadro 1080p passa de cem pacotes,
+/// e o prazo de um segundo a 20 Mb/s são uns dois mil.
+const MOST_HELD: usize = 4_096;
 
 /// Um salto maior que isto não é perda, é outro fluxo — o producer recomeçou.
 const JUMP: u64 = 3_000;
@@ -54,6 +63,7 @@ pub struct Due {
 struct Ask {
     since: Instant,
     asked: u8,
+    first: Option<Instant>,
     last: Option<Instant>,
 }
 
@@ -64,6 +74,8 @@ pub struct Recovery {
     held: BTreeMap<u64, Vec<u8>>,
     missing: BTreeMap<u64, Ask>,
     counters: Counters,
+    /// A ida e volta até o servidor, suavizada como o TCP faz (7/8 do que era e 1/8 da nova).
+    round_trip: Option<Duration>,
 }
 
 impl Recovery {
@@ -92,14 +104,20 @@ impl Recovery {
             return vec![packet];
         }
 
-        if self.missing.remove(&sequence).is_some() {
+        if let Some(ask) = self.missing.remove(&sequence) {
             self.counters.recovered += 1;
+
+            // Do primeiro pedido, e não do último: com o prazo curto do começo três pedidos
+            // saem antes de a primeira resposta voltar, e contar do último mediria quase zero.
+            if let Some(first) = ask.first {
+                self.measure(now.saturating_duration_since(first));
+            }
         }
 
         if sequence > next {
             for gap in next..sequence {
                 if !self.held.contains_key(&gap) {
-                    self.missing.entry(gap).or_insert(Ask { since: now, asked: 0, last: None });
+                    self.missing.entry(gap).or_insert(Ask { since: now, asked: 0, first: None, last: None });
                 }
             }
 
@@ -119,10 +137,11 @@ impl Recovery {
     /// O que o relógio pede: reenvios a pedir, e o buraco a largar quando passou do prazo.
     pub fn due(&mut self, now: Instant) -> Due {
         let mut due = Due::default();
+        let (retry, give_up) = (self.retry(), self.give_up());
         let stale = self
             .missing
             .first_key_value()
-            .is_some_and(|(_, ask)| now.saturating_duration_since(ask.since) >= GIVE_UP);
+            .is_some_and(|(_, ask)| now.saturating_duration_since(ask.since) >= give_up);
 
         if (stale || self.held.len() > MOST_HELD)
             && let (Some(next), Some(&first_held)) = (self.next, self.held.keys().next())
@@ -135,10 +154,11 @@ impl Recovery {
         }
 
         for (&sequence, ask) in &mut self.missing {
-            let waited = ask.last.is_none_or(|last| now.saturating_duration_since(last) >= RETRY);
+            let waited = ask.last.is_none_or(|last| now.saturating_duration_since(last) >= retry);
 
             if ask.asked < MOST_ASKS && waited {
                 ask.asked += 1;
+                ask.first.get_or_insert(now);
                 ask.last = Some(now);
                 #[allow(clippy::cast_possible_truncation)]
                 due.nack.push(sequence as u16);
@@ -150,6 +170,26 @@ impl Recovery {
 
     pub fn counters(&self) -> Counters {
         self.counters
+    }
+
+    fn measure(&mut self, sample: Duration) {
+        self.round_trip = Some(match self.round_trip {
+            Some(smoothed) => (smoothed * 7 + sample) / 8,
+            None => sample,
+        });
+    }
+
+    /// Uma ida e volta e um quarto: pedir de novo antes disso só repete o pedido que ainda
+    /// está sendo atendido.
+    fn retry(&self) -> Duration {
+        self.round_trip
+            .map_or(RETRY_FLOOR, |round_trip| (round_trip + round_trip / 4).clamp(RETRY_FLOOR, RETRY_CEILING))
+    }
+
+    fn give_up(&self) -> Duration {
+        let round_trip = self.round_trip.unwrap_or_default();
+
+        (self.retry() * u32::from(MOST_ASKS) + round_trip).clamp(GIVE_UP_FLOOR, GIVE_UP_CEILING)
     }
 
     fn release_ready(&mut self, released: &mut Vec<Vec<u8>>) {
@@ -354,6 +394,49 @@ mod tests {
         assert_eq!(recovery.counters().lost, 1);
         assert_eq!(sequences(&recovery.arrive(5, packet(5), now)), [5], "depois de largar, o fluxo segue");
         assert!(recovery.arrive(2, packet(2), now).is_empty(), "o largado que chega tarde não volta");
+    }
+
+    /// Com o servidor a 150 ms, o reenvio volta depois dos 250 ms antigos quando o primeiro
+    /// pedido se perde. Largar ali era pedir quadro-chave por um pacote que já vinha.
+    #[test]
+    fn the_deadlines_follow_the_measured_round_trip() {
+        let (mut recovery, now) = (Recovery::default(), Instant::now());
+        let at = |milliseconds| now + Duration::from_millis(milliseconds);
+
+        recovery.arrive(1, packet(1), now);
+        recovery.arrive(3, packet(3), now);
+        recovery.due(now);
+        recovery.arrive(2, packet(2), at(150));
+
+        assert_eq!(recovery.retry(), Duration::from_micros(187_500));
+
+        recovery.arrive(5, packet(5), at(200));
+
+        assert_eq!(recovery.due(at(200)).nack, [4]);
+        assert!(recovery.due(at(300)).nack.is_empty(), "pediu de novo antes de uma ida e volta");
+        assert_eq!(recovery.due(at(390)).nack, [4]);
+
+        let waiting = recovery.due(at(500));
+
+        assert!(!waiting.pli, "largou o buraco antes de o reenvio poder voltar");
+        assert_eq!(sequences(&recovery.arrive(4, packet(4), at(540))), [4, 5]);
+        assert_eq!(recovery.counters().lost, 0);
+    }
+
+    #[test]
+    fn a_hole_is_still_given_up_within_a_second() {
+        let (mut recovery, now) = (Recovery::default(), Instant::now());
+
+        recovery.measure(Duration::from_millis(900));
+
+        assert_eq!(recovery.give_up(), GIVE_UP_CEILING, "uma rede ruim não segura a imagem para sempre");
+        assert_eq!(recovery.retry(), RETRY_CEILING);
+
+        recovery.arrive(1, packet(1), now);
+        recovery.arrive(3, packet(3), now);
+
+        assert!(!recovery.due(now + Duration::from_millis(999)).pli);
+        assert!(recovery.due(now + GIVE_UP_CEILING).pli);
     }
 
     #[test]

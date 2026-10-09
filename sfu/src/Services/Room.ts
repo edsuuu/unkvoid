@@ -35,6 +35,12 @@ export class Room {
 
     public onEvicted: ((room: Room) => void) | null = null;
 
+    /**
+     * Quando a primeira pessoa entrou: a sala nasce com ela e some com a última. É daqui que
+     * o relógio da barra conta, igual para todo mundo, como a duração de uma chamada.
+     */
+    public readonly createdAt = Date.now();
+
     private readonly evictions = new Map<string, NodeJS.Timeout>();
 
     public constructor(
@@ -358,8 +364,16 @@ export class Room {
             (transport) => Boolean(transport.appData.receive) === receive,
         );
 
-        if (existing) {
+        if (existing?.appData.key === srtpParameters.keyBase64) {
             return existing;
+        }
+
+        // Chave nova é o app refazendo o caminho: o `comedia` prendeu o transporte ao primeiro
+        // endereço, e se o roteador da pessoa trocou de endereço tudo o que vem dele é
+        // descartado. Fechar leva junto o que estava nele.
+        if (existing) {
+            existing.close();
+            peer.plainTransports.delete(existing.id);
         }
 
         const transport = await this.router
@@ -373,7 +387,7 @@ export class Room {
                 comedia: true,
                 enableSrtp: true,
                 srtpCryptoSuite: srtpParameters.cryptoSuite,
-                appData: { receive },
+                appData: { receive, key: srtpParameters.keyBase64 },
             })
             .catch((failure) => {
                 throw /no more available ports/i.test(String(failure))

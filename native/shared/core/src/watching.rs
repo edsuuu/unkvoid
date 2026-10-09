@@ -10,7 +10,7 @@ use std::net::UdpSocket;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use media::{AudioUnpacker, Counters, PlainReceiver, Rtx, Stream, VideoUnpacker};
@@ -26,6 +26,13 @@ const PATIENCE: Duration = Duration::from_millis(200);
 /// O maior datagrama que o `PlainReceiver` repassa.
 const DATAGRAM: usize = 1_500;
 
+/// De quanto em quanto tempo a imagem parada pede outro quadro-chave: o pedido pode se perder,
+/// ou cair no espaço que quem transmite deixa entre dois.
+const ASK_AGAIN: Duration = Duration::from_secs(1);
+
+/// Parada mais curta que isto não vai para o log: o quadro-chave pedido chega em ~meio segundo.
+pub const WORTH_TELLING: Duration = Duration::from_secs(1);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaKind {
     /// `timestamp` no relógio de 90 kHz do RTP.
@@ -40,6 +47,10 @@ pub struct Media {
     pub producer_id: String,
     pub kind: MediaKind,
     pub data: Vec<u8>,
+    /// Quando ele ficou pronto aqui, saído da rede. É a chegada que o jitter buffer de quem
+    /// assiste mede: carimbada depois, na fila da interface, a CPU ocupada pelo jogo virava
+    /// atraso de rede, e a espera subia a meio segundo por um tranco que a rede nem teve.
+    pub arrived: Instant,
 }
 
 /// O que o `consumePlain` respondeu sobre uma transmissão.
@@ -105,6 +116,13 @@ impl Watching {
             .get_or_insert_with(media::PlainSender::generate_key)
     }
 
+    /// Fecha tudo e sorteia outra chave: é ela que faz o servidor abrir um transporte de
+    /// chegada novo no lugar do que o `comedia` prendeu a um endereço que não vale mais.
+    pub fn renew(&mut self) {
+        self.stop(None);
+        self.key = None;
+    }
+
     pub fn is_watching(&self, producer_id: &str) -> bool {
         self.active.contains_key(producer_id)
     }
@@ -143,6 +161,7 @@ impl Watching {
             );
         }
 
+        let receiver = self.receiver.as_ref().ok_or_else(|| anyhow!("sem receptor"))?;
         let socket =
             UdpSocket::bind("127.0.0.1:0").context("sem porta local para a transmissão")?;
         let to = socket.local_addr()?;
@@ -150,24 +169,22 @@ impl Watching {
         let stop = Arc::new(AtomicBool::new(false));
 
         socket.set_read_timeout(Some(PATIENCE))?;
+        media::grow_receive_buffer(&socket);
         pump(
             socket,
             producer_id.clone(),
             video,
             Arc::clone(&stop),
-            self.out.clone(),
+            (self.out.clone(), receiver.keyframe_asker(producer_id.clone())),
         )?;
-
-        if let Some(receiver) = self.receiver.as_ref() {
-            receiver.route(Stream {
-                id: producer_id.clone(),
-                payload_type,
-                to,
-                ssrc,
-                video,
-                rtx,
-            });
-        }
+        receiver.route(Stream {
+            id: producer_id.clone(),
+            payload_type,
+            to,
+            ssrc,
+            video,
+            rtx,
+        });
 
         if always_muted || (self.deafened && !video) {
             self.set_muted(&producer_id, true);
@@ -235,6 +252,13 @@ impl Watching {
     pub fn counters(&self, producer_id: &str) -> Option<Counters> {
         self.receiver.as_ref()?.counters(producer_id)
     }
+
+    /// Quem decodifica perdeu o fio: o keyframe é pedido agora ao servidor.
+    pub fn request_keyframe(&self, producer_id: &str) {
+        if let Some(receiver) = &self.receiver {
+            receiver.request_keyframe(producer_id);
+        }
+    }
 }
 
 impl Drop for Watching {
@@ -244,61 +268,238 @@ impl Drop for Watching {
 }
 
 /// A thread de um producer: lê o RTP que o receptor repassou e põe na fila o que remontou.
-///
-/// ponytail: fila cheia descarta o que chegou. Para o vídeo isso é imagem parada até o
-/// próximo keyframe; a saída é a interface esvaziar mais rápido, não uma fila maior.
-fn pump(
+fn pump<Ask: Fn() + Send + 'static>(
     socket: UdpSocket,
     producer_id: String,
     video: bool,
     stop: Arc<AtomicBool>,
-    out: SyncSender<Media>,
+    (out, ask): (SyncSender<Media>, Ask),
 ) -> Result<()> {
-    let mut audio = if video {
+    let audio = if video {
         None
     } else {
         Some(AudioUnpacker::new()?)
     };
-    let mut frames = VideoUnpacker::default();
 
     std::thread::Builder::new()
         .name(format!("watch-{producer_id}"))
-        .spawn(move || {
-            let mut datagram = [0_u8; DATAGRAM];
-
-            while !stop.load(Ordering::Relaxed) {
-                let Ok(size) = socket.recv(&mut datagram) else {
-                    continue;
-                };
-
-                let packet = &datagram[..size];
-
-                let media = match audio.as_mut() {
-                    Some(audio) => audio.push(packet).map(|samples| Media {
-                        producer_id: producer_id.clone(),
-                        kind: MediaKind::Audio,
-                        data: samples
-                            .iter()
-                            .flat_map(|sample| sample.to_le_bytes())
-                            .collect(),
-                    }),
-                    None => frames.push(packet).map(|unit| Media {
-                        producer_id: producer_id.clone(),
-                        kind: MediaKind::Video {
-                            keyframe: unit.keyframe,
-                            timestamp: unit.timestamp,
-                        },
-                        data: unit.data,
-                    }),
-                };
-
-                if let Some(TrySendError::Disconnected(_)) =
-                    media.and_then(|media| out.try_send(media).err())
-                {
-                    return;
-                }
-            }
+        .spawn(move || match audio {
+            Some(audio) => pump_audio(&socket, &producer_id, &stop, &out, audio),
+            None => pump_video(&socket, &producer_id, &stop, &out, &ask),
         })?;
 
     Ok(())
+}
+
+fn pump_audio(socket: &UdpSocket, producer_id: &str, stop: &AtomicBool, out: &SyncSender<Media>, mut audio: AudioUnpacker) {
+    let mut datagram = [0_u8; DATAGRAM];
+
+    while !stop.load(Ordering::Relaxed) {
+        let Some(samples) = socket.recv(&mut datagram).ok().and_then(|size| audio.push(&datagram[..size])) else {
+            continue;
+        };
+
+        let media = Media {
+            producer_id: producer_id.to_owned(),
+            kind: MediaKind::Audio,
+            data: samples.iter().flat_map(|sample| sample.to_le_bytes()).collect(),
+            arrived: Instant::now(),
+        };
+
+        if let Err(TrySendError::Disconnected(_)) = out.try_send(media) {
+            return;
+        }
+    }
+}
+
+/// O vídeo, com o que a recuperação do receptor não vê: o pacote perdido no repasse local e o
+/// quadro que ficou de fora da fila cheia também deixam a imagem esperando um quadro-chave, e é
+/// daqui que ele é pedido — de novo a cada `ASK_AGAIN` enquanto não vem. Antes ninguém pedia, e
+/// a tela ficava parada até o quadro-chave periódico, 4 s depois.
+fn pump_video(socket: &UdpSocket, producer_id: &str, stop: &AtomicBool, out: &SyncSender<Media>, ask: &impl Fn()) {
+    let mut frames = VideoUnpacker::default();
+    let mut stalled = Stalled::default();
+    // A fila da interface encheu e um quadro ficou de fora: o P seguinte desenharia lixo.
+    let mut broken = false;
+    let mut datagram = [0_u8; DATAGRAM];
+
+    while !stop.load(Ordering::Relaxed) {
+        let unit = socket.recv(&mut datagram).ok().and_then(|size| frames.push(&datagram[..size]));
+        let now = Instant::now();
+
+        if let Some(unit) = unit
+            && (!broken || unit.keyframe)
+        {
+            let media = Media {
+                producer_id: producer_id.to_owned(),
+                kind: MediaKind::Video { keyframe: unit.keyframe, timestamp: unit.timestamp },
+                data: unit.data,
+                arrived: now,
+            };
+
+            match out.try_send(media) {
+                Ok(()) => {
+                    broken = false;
+
+                    if let Some(lasted) = stalled.flowing(now)
+                        && lasted >= WORTH_TELLING
+                    {
+                        tracing::error!(producer = producer_id, seconds = lasted.as_secs_f32(), "assistir: a imagem ficou parada esperando um quadro-chave");
+                    }
+                }
+                Err(TrySendError::Full(_)) => broken = true,
+                Err(TrySendError::Disconnected(_)) => return,
+            }
+        }
+
+        if (broken || frames.waiting_keyframe()) && stalled.waiting(now) {
+            ask();
+        }
+    }
+}
+
+/// Quanto a tela que o servidor diz estar recebendo pode ficar sem chegar aqui antes de o
+/// caminho de chegada ser dado como morto. Acima do GOP de 4 s: o consumer recém-aberto espera
+/// um quadro-chave antes do primeiro pacote.
+const RECEIVE_SILENCE: Duration = Duration::from_secs(5);
+
+/// O menor espaço entre dois refazer do caminho de chegada. Dobra a cada um que não resolveu
+/// dentro de `MOST_REWATCH_SPACING`, e volta ao começo depois disso.
+const REWATCH_SPACING: Duration = Duration::from_secs(10);
+const MOST_REWATCH_SPACING: Duration = Duration::from_secs(60);
+
+/// O vigia do caminho de chegada. De segundo em segundo recebe, de cada tela assistida (e não
+/// pausada), quantos pacotes chegaram até agora e se o servidor diz estar recebendo dela, e
+/// diz quando refazer o caminho: o servidor recebe e nada chega aqui há `RECEIVE_SILENCE`.
+/// Lógica pura, com o relógio passado por quem chama.
+#[derive(Debug)]
+pub struct ArrivalWatch {
+    seen: HashMap<String, (u64, Instant)>,
+    rewatched_at: Option<Instant>,
+    spacing: Duration,
+}
+
+impl Default for ArrivalWatch {
+    fn default() -> Self {
+        Self { seen: HashMap::new(), rewatched_at: None, spacing: REWATCH_SPACING }
+    }
+}
+
+impl ArrivalWatch {
+    pub fn tick(&mut self, screens: &[(String, u64, bool)], now: Instant) -> bool {
+        self.seen.retain(|producer, _| screens.iter().any(|(id, ..)| id == producer));
+
+        let mut dead = false;
+
+        for (producer, packets, receiving) in screens {
+            let seen = self.seen.entry(producer.clone()).or_insert((*packets, now));
+
+            if *packets != seen.0 || !receiving {
+                *seen = (*packets, now);
+
+                continue;
+            }
+
+            dead |= now.duration_since(seen.1) >= RECEIVE_SILENCE;
+        }
+
+        if !dead {
+            return false;
+        }
+
+        if let Some(at) = self.rewatched_at {
+            let since = now.duration_since(at);
+
+            if since < self.spacing {
+                return false;
+            }
+
+            self.spacing = if since < MOST_REWATCH_SPACING { (self.spacing * 2).min(MOST_REWATCH_SPACING) } else { REWATCH_SPACING };
+        }
+
+        self.rewatched_at = Some(now);
+        self.seen.clear();
+
+        true
+    }
+}
+
+/// A imagem de uma transmissão parada à espera de um quadro-chave: desde quando, e quando o
+/// último foi pedido.
+#[derive(Debug, Default)]
+pub struct Stalled {
+    since: Option<Instant>,
+    asked: Option<Instant>,
+    /// Já saiu imagem alguma vez: a espera da primeira não é parada.
+    flowed: bool,
+}
+
+impl Stalled {
+    /// Ainda esperando: diz se é hora de pedir (de novo).
+    pub fn waiting(&mut self, now: Instant) -> bool {
+        self.since.get_or_insert(now);
+
+        let due = self.asked.is_none_or(|asked| now.duration_since(asked) >= ASK_AGAIN);
+
+        if due {
+            self.asked = Some(now);
+        }
+
+        due
+    }
+
+    /// Saiu imagem: quanto durou a parada, se houve uma depois da primeira imagem.
+    pub fn flowing(&mut self, now: Instant) -> Option<Duration> {
+        self.asked = None;
+
+        let since = self.since.take();
+
+        std::mem::replace(&mut self.flowed, true)
+            .then_some(since)
+            .flatten()
+            .map(|since| now.duration_since(since))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// O pedido sai na hora, repete a cada segundo enquanto a imagem não volta, e a parada só
+    /// conta depois da primeira imagem.
+    #[test]
+    fn a_stalled_picture_asks_again_and_tells_how_long_it_stood() {
+        let start = Instant::now();
+        let at = |millis: u64| start + Duration::from_millis(millis);
+        let mut stalled = Stalled::default();
+
+        assert!(stalled.waiting(at(0)), "a espera do primeiro quadro pede");
+        assert_eq!(stalled.flowing(at(300)), None, "a primeira imagem não é parada");
+
+        assert!(stalled.waiting(at(1_000)));
+        assert!(!stalled.waiting(at(1_500)), "meio segundo depois ainda não");
+        assert!(stalled.waiting(at(2_000)), "um segundo depois pede de novo");
+        assert_eq!(stalled.flowing(at(3_000)), Some(Duration::from_secs(2)));
+        assert!(stalled.waiting(at(3_100)), "a próxima parada pede na hora");
+    }
+
+    /// Só é caminho morto com o servidor recebendo e nada chegando aqui por 5 s; a tela parada
+    /// de quem transmite não conta, e o segundo refazer espera o espaço dele.
+    #[test]
+    fn the_arrival_path_is_rebuilt_only_when_the_server_receives_and_nothing_comes() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let screen = |packets: u64, receiving: bool| [("tela".to_owned(), packets, receiving)];
+        let mut arrival = ArrivalWatch::default();
+
+        assert!(!arrival.tick(&screen(10, true), at(0)));
+        assert!(!arrival.tick(&screen(10, false), at(6)), "quem transmite parou: nada a refazer");
+        assert!(!arrival.tick(&screen(10, true), at(7)));
+        assert!(!arrival.tick(&screen(10, true), at(10)), "quatro segundos ainda é espera de quadro-chave");
+        assert!(arrival.tick(&screen(10, true), at(11)), "cinco segundos recebendo lá e nada aqui");
+
+        assert!(!arrival.tick(&screen(0, true), at(12)));
+        assert!(!arrival.tick(&screen(0, true), at(17)), "dentro dos 10 s do refazer anterior");
+        assert!(arrival.tick(&screen(0, true), at(21)));
+    }
 }

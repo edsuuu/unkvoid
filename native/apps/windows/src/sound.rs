@@ -33,8 +33,12 @@ const PER_MILLISECOND: usize = SAMPLE_RATE as usize * CHANNELS / 1_000;
 const CUSHION: usize = 40 * PER_MILLISECOND;
 
 /// O máximo que se deixa acumular. Relógio de placa nunca bate com o de quem manda, e sem
-/// teto o atraso só cresce: passou disto, o mais velho vai fora até sobrar a folga.
+/// teto o atraso só cresce: passou disto, o mais velho vai saindo até sobrar a folga.
 const LONGEST: usize = 200 * PER_MILLISECOND;
+
+/// Quanto sai por bloco que chega enquanto o acumulado volta à folga. Cortar tudo de uma vez
+/// comia 160 ms — uma palavra inteira; 5 ms por bloco somem no meio da fala e levam ~0,6 s.
+const TRIM_STEP: usize = 5 * PER_MILLISECOND;
 
 /// De quanto em quanto tempo as threads olham o WASAPI. O buffer tem 50 ms: dez de
 /// intervalo deixam folga para a thread atrasar sem a placa ficar sem som.
@@ -50,6 +54,8 @@ struct Lane {
     /// Já juntou a folga desde a última vez que secou.
     primed: bool,
     volume: f32,
+    /// Passou do teto e ainda está voltando à folga.
+    trimming: bool,
 }
 
 type Mix = Arc<Mutex<HashMap<String, Lane>>>;
@@ -58,27 +64,33 @@ pub struct Speaker {
     mix: Mix,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    /// A saída escolhida, lida a cada abertura, e o pedido de reabrir nela.
+    device: Arc<Mutex<Option<String>>>,
+    switch: Arc<AtomicBool>,
 }
 
 impl Speaker {
     /// Abre a saída escolhida, ou a padrão do sistema. Não falha: sem saída, a sala segue
-    /// sem som e o motivo vai para o log.
+    /// sem som, o motivo vai para o log, e ela é tentada de novo de segundo em segundo.
     pub fn start(device: Option<String>) -> Self {
         let (mix, stop) = (Mix::default(), Arc::new(AtomicBool::new(false)));
+        let (device, switch) = (Arc::new(Mutex::new(device)), Arc::new(AtomicBool::new(false)));
         let thread = std::thread::Builder::new()
             .name("unkvoid-som".into())
             .spawn({
-                let (mix, stop) = (mix.clone(), stop.clone());
+                let (mix, stop, device, switch) = (mix.clone(), stop.clone(), device.clone(), switch.clone());
 
-                move || {
-                    if let Err(failure) = platform::render(device.as_deref(), &mix, &stop) {
-                        tracing::warn!(%failure, "som: a saída de áudio não abriu");
-                    }
-                }
+                move || platform::render(&device, &switch, &mix, &stop)
             })
             .ok();
 
-        Self { mix, stop, thread }
+        Self { mix, stop, thread, device, switch }
+    }
+
+    /// Passa a tocar em outra saída, sem perder o que esperava para tocar.
+    pub fn use_device(&self, device: Option<String>) {
+        *lock(&self.device) = device;
+        self.switch.store(true, Ordering::Relaxed);
     }
 
     /// Um bloco de PCM de um producer, estéreo intercalado.
@@ -90,11 +102,13 @@ impl Speaker {
         });
 
         lane.samples.extend(samples);
+        lane.trimming |= lane.samples.len() > LONGEST;
 
-        if lane.samples.len() > LONGEST {
-            let late = lane.samples.len() - CUSHION;
+        if lane.trimming {
+            let late = lane.samples.len().saturating_sub(CUSHION).min(TRIM_STEP);
 
             lane.samples.drain(..late);
+            lane.trimming = lane.samples.len() > CUSHION;
         }
     }
 
@@ -120,6 +134,7 @@ pub fn chime(device: Option<String>, samples: Vec<f32>) {
                 samples: samples.into(),
                 primed: true,
                 volume: 1.0,
+                trimming: false,
             },
         );
 
@@ -220,14 +235,16 @@ mod platform {
     use std::sync::mpsc::SyncSender;
     use std::sync::{Arc, Mutex};
 
-    use anyhow::{Context, Result};
+    use std::time::Duration;
+
+    use anyhow::{Context, Result, anyhow};
     use windows::Win32::Media::Audio::{
         AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
         AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, EDataFlow, IAudioCaptureClient, IAudioClient,
         IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX,
         eCapture, eConsole, eRender,
     };
-    use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
+    use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize};
     use windows::core::PCWSTR;
 
     use super::{BUFFER, CHANNELS, Lane, SAMPLE_RATE, TICK, lock, mix_into};
@@ -252,20 +269,57 @@ mod platform {
         }
     }
 
-    pub fn render(device: Option<&str>, mix: &Arc<Mutex<HashMap<String, Lane>>>, stop: &AtomicBool) -> Result<()> {
-        let _apartment = Apartment::enter();
+    /// Quanto esperar antes de reabrir o aparelho que caiu.
+    const REOPEN_AFTER: Duration = Duration::from_secs(1);
 
+    /// De quanto em quanto tique se confere se o padrão do Windows mudou: um segundo.
+    const DEFAULT_CHECK_TICKS: u32 = 100;
+
+    /// Toca até mandarem parar. O fone que desconecta, o Bluetooth que reconecta e o padrão do
+    /// Windows que muda derrubam o cliente do WASAPI: a saída é reaberta em vez de a sala ficar
+    /// muda até sair e entrar de novo. Sem aparelho nenhum, tenta de segundo em segundo.
+    pub fn render(chosen: &Mutex<Option<String>>, switch: &AtomicBool, mix: &Arc<Mutex<HashMap<String, Lane>>>, stop: &AtomicBool) {
+        let _apartment = Apartment::enter();
+        let mut failing = false;
+
+        clips_engine::recorder::join_multimedia_task("Audio");
+
+        while !stop.load(Ordering::Relaxed) {
+            let device = lock(chosen).clone();
+            let device = device.as_deref();
+            let played = unsafe { open(device, eRender) }.and_then(|(client, id)| {
+                if std::mem::replace(&mut failing, false) {
+                    tracing::info!("som: a saída voltou");
+                }
+
+                let played = unsafe { play(&client, id.as_deref(), (device, switch), mix, stop) };
+                let _ = unsafe { client.Stop() };
+
+                played
+            });
+
+            if let Err(failure) = played {
+                if !std::mem::replace(&mut failing, true) {
+                    tracing::warn!(failure = %format!("{failure:#}"), "som: a saída caiu, reabrindo");
+                }
+
+                std::thread::sleep(REOPEN_AFTER);
+            }
+        }
+    }
+
+    unsafe fn play(client: &IAudioClient, id: Option<&str>, (device, switch): (Option<&str>, &AtomicBool), mix: &Arc<Mutex<HashMap<String, Lane>>>, stop: &AtomicBool) -> Result<()> {
         unsafe {
-            let client = open(device, eRender)?;
             let frames = client.GetBufferSize().context("o Windows não disse o tamanho do buffer")?;
             let render: IAudioRenderClient = client.GetService().context("sem cliente de saída")?;
             let mut block = Vec::new();
+            let mut ticks = 0_u32;
 
             client.Start().context("a saída não começou")?;
             tracing::info!(device = device.unwrap_or("padrão"), "som: tocando");
 
             while !stop.load(Ordering::Relaxed) {
-                let free = frames.saturating_sub(client.GetCurrentPadding().unwrap_or(frames));
+                let free = frames.saturating_sub(client.GetCurrentPadding().context("o aparelho sumiu")?);
 
                 if free > 0 {
                     block.resize(free as usize * CHANNELS, 0.0);
@@ -277,15 +331,26 @@ mod platform {
                     render.ReleaseBuffer(free, 0).context("a placa não aceitou o buffer")?;
                 }
 
+                ticks += 1;
+
+                if device.is_none() && ticks.is_multiple_of(DEFAULT_CHECK_TICKS) && default_id(eRender).as_deref() != id {
+                    return Err(anyhow!("o aparelho padrão do Windows mudou"));
+                }
+
+                if switch.swap(false, Ordering::Relaxed) {
+                    return Err(anyhow!("a pessoa escolheu outra saída"));
+                }
+
                 std::thread::sleep(TICK);
             }
-
-            let _ = client.Stop();
         }
 
         Ok(())
     }
 
+    /// Grava até mandarem parar, reabrindo o microfone que caiu (ver `render`). Só a primeira
+    /// abertura responde em `opened`: microfone que não abriu é erro que a pessoa precisa ver;
+    /// o que cai depois volta sozinho, e enquanto isso a sala só não ouve.
     pub fn capture(
         device: Option<&str>,
         mut sink: impl FnMut(&[f32]),
@@ -293,43 +358,60 @@ mod platform {
         opened: &SyncSender<std::result::Result<(), String>>,
     ) {
         let _apartment = Apartment::enter();
+        let mut first = true;
+        let mut failing = false;
 
-        let started = unsafe {
-            open(device, eCapture).and_then(|client| {
-                let capture: IAudioCaptureClient = client.GetService().context("sem cliente de captura")?;
-
-                client.Start().context("o microfone não começou")?;
-
-                Ok((client, capture))
-            })
-        };
-
-        let (client, capture) = match started {
-            Ok(started) => {
-                let _ = opened.send(Ok(()));
-
-                started
-            }
-            Err(failure) => {
-                let _ = opened.send(Err(format!("{failure:#}")));
-
-                return;
-            }
-        };
-
-        tracing::info!(device = device.unwrap_or("padrão"), "microfone: aberto");
-
-        let mut block = Vec::new();
+        clips_engine::recorder::join_multimedia_task("Audio");
 
         while !stop.load(Ordering::Relaxed) {
-            unsafe {
-                while capture.GetNextPacketSize().unwrap_or(0) > 0 {
+            let recorded = match unsafe { open(device, eCapture) } {
+                Ok((client, id)) => {
+                    if std::mem::replace(&mut first, false) {
+                        let _ = opened.send(Ok(()));
+                    } else if std::mem::replace(&mut failing, false) {
+                        tracing::info!("microfone: voltou");
+                    }
+
+                    let recorded = unsafe { record(&client, id.as_deref(), device, &mut sink, stop) };
+                    let _ = unsafe { client.Stop() };
+
+                    recorded
+                }
+                Err(failure) if first => {
+                    let _ = opened.send(Err(format!("{failure:#}")));
+
+                    return;
+                }
+                Err(failure) => Err(failure),
+            };
+
+            if let Err(failure) = recorded {
+                if !std::mem::replace(&mut failing, true) {
+                    tracing::warn!(failure = %format!("{failure:#}"), "microfone: caiu, reabrindo");
+                }
+
+                std::thread::sleep(REOPEN_AFTER);
+            }
+        }
+    }
+
+    unsafe fn record(client: &IAudioClient, id: Option<&str>, device: Option<&str>, sink: &mut impl FnMut(&[f32]), stop: &AtomicBool) -> Result<()> {
+        unsafe {
+            let capture: IAudioCaptureClient = client.GetService().context("sem cliente de captura")?;
+            let mut block = Vec::new();
+            let mut ticks = 0_u32;
+
+            client.Start().context("o microfone não começou")?;
+            tracing::info!(device = device.unwrap_or("padrão"), "microfone: aberto");
+
+            while !stop.load(Ordering::Relaxed) {
+                while capture.GetNextPacketSize().context("o microfone sumiu")? > 0 {
                     let mut data = std::ptr::null_mut();
                     let (mut frames, mut flags) = (0_u32, 0_u32);
 
-                    if capture.GetBuffer(&mut data, &mut frames, &mut flags, None, None).is_err() {
-                        break;
-                    }
+                    capture
+                        .GetBuffer(&mut data, &mut frames, &mut flags, None, None)
+                        .context("o microfone não deu o buffer")?;
 
                     let length = frames as usize * CHANNELS;
 
@@ -345,15 +427,42 @@ mod platform {
 
                     sink(&block);
                 }
-            }
 
-            std::thread::sleep(TICK);
+                ticks += 1;
+
+                if device.is_none() && ticks.is_multiple_of(DEFAULT_CHECK_TICKS) && default_id(eCapture).as_deref() != id {
+                    return Err(anyhow!("o microfone padrão do Windows mudou"));
+                }
+
+                std::thread::sleep(TICK);
+            }
         }
 
-        let _ = unsafe { client.Stop() };
+        Ok(())
     }
 
-    unsafe fn open(device: Option<&str>, flow: EDataFlow) -> Result<IAudioClient> {
+    /// O id do aparelho padrão de um sentido agora.
+    fn default_id(flow: EDataFlow) -> Option<String> {
+        unsafe {
+            let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
+
+            endpoint_id(&enumerator.GetDefaultAudioEndpoint(flow, eConsole).ok()?)
+        }
+    }
+
+    unsafe fn endpoint_id(endpoint: &IMMDevice) -> Option<String> {
+        unsafe {
+            let id = endpoint.GetId().ok()?;
+            let text = id.to_string().ok();
+
+            CoTaskMemFree(Some(id.0.cast_const().cast()));
+
+            text
+        }
+    }
+
+    /// O cliente aberto e o id do aparelho, para saber depois se o padrão mudou.
+    unsafe fn open(device: Option<&str>, flow: EDataFlow) -> Result<(IAudioClient, Option<String>)> {
         unsafe {
             let enumerator: IMMDeviceEnumerator =
                 CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).context("o áudio do Windows não abriu")?;
@@ -390,7 +499,7 @@ mod platform {
                 )
                 .context("o aparelho recusou 48 kHz estéreo")?;
 
-            Ok(client)
+            Ok((client, endpoint_id(&endpoint)))
         }
     }
 }
@@ -402,12 +511,10 @@ mod platform {
     use std::sync::mpsc::SyncSender;
     use std::sync::{Arc, Mutex};
 
-    use anyhow::{Result, anyhow};
-
     use super::Lane;
 
-    pub fn render(_: Option<&str>, _: &Arc<Mutex<HashMap<String, Lane>>>, _: &AtomicBool) -> Result<()> {
-        Err(anyhow!("sem WASAPI fora do Windows"))
+    pub fn render(_: &Mutex<Option<String>>, _: &AtomicBool, _: &Arc<Mutex<HashMap<String, Lane>>>, _: &AtomicBool) {
+        tracing::warn!("som: sem WASAPI fora do Windows");
     }
 
     pub fn capture(
@@ -429,6 +536,7 @@ mod tests {
             samples: std::iter::repeat_n(0.25, samples).collect(),
             primed,
             volume: 1.0,
+            trimming: false,
         }
     }
 
@@ -455,7 +563,7 @@ mod tests {
 
         assert!(out.iter().all(|&sample| (sample - 0.5).abs() < 1e-6), "{out:?}");
 
-        let loud = Lane { samples: std::iter::repeat_n(0.9, CUSHION).collect(), primed: true, volume: 1.0 };
+        let loud = Lane { samples: std::iter::repeat_n(0.9, CUSHION).collect(), primed: true, volume: 1.0, trimming: false };
         let mut mix = HashMap::from([("ada".to_owned(), loud), ("bia".to_owned(), lane(CUSHION, true))]);
 
         mix_into(&mut mix, &mut out);
@@ -483,11 +591,24 @@ mod tests {
         assert!(out.iter().all(|&sample| (sample - 0.125).abs() < 1e-6), "{out:?}");
     }
 
+    /// Passado o teto, o acumulado volta à folga aos poucos — um passo por bloco —, e não de uma vez.
     #[test]
     fn a_backlog_longer_than_the_ceiling_is_cut_back_to_the_cushion() {
-        let speaker = Speaker { mix: Mix::default(), stop: Arc::new(AtomicBool::new(true)), thread: None };
+        let speaker = Speaker {
+            mix: Mix::default(),
+            stop: Arc::new(AtomicBool::new(true)),
+            thread: None,
+            device: Arc::default(),
+            switch: Arc::default(),
+        };
 
         speaker.play("ada", &vec![0.1; LONGEST + 10]);
+
+        assert_eq!(lock(&speaker.mix)["ada"].samples.len(), LONGEST + 10 - TRIM_STEP, "só um passo por vez");
+
+        while lock(&speaker.mix)["ada"].trimming {
+            speaker.play("ada", &[]);
+        }
 
         assert_eq!(lock(&speaker.mix)["ada"].samples.len(), CUSHION);
     }

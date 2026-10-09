@@ -16,6 +16,7 @@ use rtc::rtp::packet::Packet;
 use rtc::rtp::packetizer::Depacketizer;
 use rtc::shared::marshal::Unmarshal;
 
+use crate::FRAME_MS;
 use crate::audio::SAMPLE_RATE;
 
 const NAL_IDR: u8 = 5;
@@ -70,6 +71,9 @@ impl VideoUnpacker {
         let damaged = std::mem::take(&mut self.damaged);
         let keyframe = is_keyframe(&data);
 
+        // O quadro furado não sai, e o seguinte depende dele.
+        self.waiting_keyframe |= damaged;
+
         if damaged || data.is_empty() || (self.waiting_keyframe && !keyframe) {
             return None;
         }
@@ -108,9 +112,21 @@ fn is_keyframe(annex_b: &[u8]) -> bool {
     nals(annex_b).iter().any(|nal| nal.first().is_some_and(|header| matches!(header & 0x1F, NAL_IDR | NAL_SPS)))
 }
 
+/// Um bloco de 20 ms em estéreo, o que cada pacote do app carrega.
+const OPUS_BLOCK: usize = (SAMPLE_RATE / 1000 * FRAME_MS) as usize * 2;
+
+/// Até quantos blocos perdidos seguidos o Opus inventa. Mais que isso é quem manda que parou
+/// (o fluxo pausou, a pessoa saiu), e som inventado por mais de 100 ms soa pior que silêncio.
+const MOST_CONCEALED: u16 = 5;
+
 /// Opus de um pacote RTP para PCM `f32` estéreo intercalado a 48 kHz.
+///
+/// Pacote que não chegou vira som estimado pelo próprio Opus, com o que veio antes, em vez de
+/// um buraco: o buraco esvaziava a fila de quem toca, e cada volta dela é um estalo. É o que o
+/// WebRTC do navegador faz no som de quem fala.
 pub struct AudioUnpacker {
     decoder: Decoder,
+    last: Option<u16>,
 }
 
 impl AudioUnpacker {
@@ -118,15 +134,42 @@ impl AudioUnpacker {
         let decoder =
             Decoder::new(SAMPLE_RATE, Channels::Stereo).map_err(|error| anyhow!("o decodificador Opus não abriu: {error}"))?;
 
-        Ok(Self { decoder })
+        Ok(Self { decoder, last: None })
     }
 
     pub fn push(&mut self, packet: &[u8]) -> Option<Vec<f32>> {
         let packet = Packet::unmarshal(&mut Bytes::copy_from_slice(packet)).ok()?;
-        let mut samples = vec![0.0; LONGEST_OPUS_BLOCK];
-        let frames = self.decoder.decode_float(&packet.payload, &mut samples, false).ok()?;
+        let sequence = packet.header.sequence_number;
+        let missing = self.last.map_or(0, |last| sequence.wrapping_sub(last).wrapping_sub(1));
 
-        samples.truncate(frames * 2);
+        // Atrasado ou repetido: o lugar dele já tocou, estimado.
+        if missing >= u16::MAX / 2 {
+            return None;
+        }
+
+        self.last = Some(sequence);
+
+        let mut samples = Vec::new();
+
+        if missing <= MOST_CONCEALED {
+            for gap in 1..=missing {
+                let mut block = vec![0.0; OPUS_BLOCK];
+                // O último buraco pode vir de verdade dentro deste pacote (o FEC do Opus, quando
+                // quem manda o liga); sem ele o decodificador estima, como nos outros.
+                let carried: &[u8] = if gap == missing { &packet.payload } else { &[] };
+
+                if let Ok(frames) = self.decoder.decode_float(carried, &mut block, gap == missing) {
+                    block.truncate(frames * 2);
+                    samples.extend(block);
+                }
+            }
+        }
+
+        let mut block = vec![0.0; LONGEST_OPUS_BLOCK];
+        let frames = self.decoder.decode_float(&packet.payload, &mut block, false).ok()?;
+
+        block.truncate(frames * 2);
+        samples.extend(block);
 
         Some(samples)
     }
@@ -230,5 +273,64 @@ mod tests {
         let samples = AudioUnpacker::new().expect("decoder").push(&packet.marshal().expect("marshal")).expect("pcm");
 
         assert_eq!(samples.len(), 1920, "20 ms em estéreo");
+    }
+
+    /// A voz sai com FEC, e o bloco que se perdeu volta refeito pelo pacote seguinte em vez de
+    /// virar silêncio.
+    #[test]
+    fn a_lost_voice_packet_comes_back_from_the_next_one() {
+        let tone: Vec<f32> = (0..1920 * 4).map(|index| (index as f32 * 0.03).sin() * 0.5).collect();
+        let block = capture::AudioChunk { sample_rate: 48_000, channels: 2, samples: tone };
+        let packets = |mut encoder: crate::AudioEncoder| -> Vec<Vec<u8>> {
+            encoder
+                .push(&block)
+                .expect("push")
+                .into_iter()
+                .enumerate()
+                .map(|(index, opus)| {
+                    let header = Header { version: 2, payload_type: 111, sequence_number: index as u16, ..Header::default() };
+
+                    Packet { header, payload: Bytes::from(opus) }.marshal().expect("marshal").to_vec()
+                })
+                .collect()
+        };
+        let energy = |samples: &[f32]| samples.iter().map(|sample| sample * sample).sum::<f32>();
+        let refilled = |packets: &[Vec<u8>]| {
+            let mut unpacker = AudioUnpacker::new().expect("decoder");
+
+            unpacker.push(&packets[0]).expect("pcm");
+            unpacker.push(&packets[1]).expect("pcm");
+
+            let pcm = unpacker.push(&packets[3]).expect("pcm");
+
+            energy(&pcm[..1920])
+        };
+        let voice = refilled(&packets(crate::AudioEncoder::for_voice(48_000).expect("encoder")));
+
+        assert!(voice > 1.0, "o bloco perdido voltou mudo: energia {voice}");
+    }
+
+    /// O bloco que não chegou sai estimado junto com o seguinte, e o atrasado não toca de novo.
+    #[test]
+    fn a_lost_opus_packet_is_filled_and_a_late_one_is_dropped() {
+        let mut encoder = crate::AudioEncoder::new(48_000).expect("encoder");
+        let mut unpacker = AudioUnpacker::new().expect("decoder");
+        let tone: Vec<f32> = (0..1920 * 3).map(|index| (index as f32 * 0.05).sin() * 0.5).collect();
+        let block = capture::AudioChunk { sample_rate: 48_000, channels: 2, samples: tone };
+        let packets: Vec<Vec<u8>> = encoder
+            .push(&block)
+            .expect("push")
+            .into_iter()
+            .enumerate()
+            .map(|(index, opus)| {
+                let header = Header { version: 2, payload_type: 111, sequence_number: 65_535_u16.wrapping_add(index as u16), ..Header::default() };
+
+                Packet { header, payload: Bytes::from(opus) }.marshal().expect("marshal").to_vec()
+            })
+            .collect();
+
+        assert_eq!(unpacker.push(&packets[0]).expect("pcm").len(), 1920);
+        assert_eq!(unpacker.push(&packets[2]).expect("pcm").len(), 1920 * 2, "o perdido e o que chegou");
+        assert!(unpacker.push(&packets[1]).is_none(), "o atrasado já tocou estimado");
     }
 }

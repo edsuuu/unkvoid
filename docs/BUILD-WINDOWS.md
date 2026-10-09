@@ -1,116 +1,69 @@
 # Build e instalação no Windows
 
-> **A release de verdade sai do `release.yml`**, num runner do GitHub (ver
-> [AUTO-UPDATE.md](AUTO-UPDATE.md#de-onde-sai-a-release)). O que está aqui é o build **local**:
-> para testar um instalador antes de soltar a tag, e como saída de emergência.
+O app do Windows é o nativo (`native/apps/windows`, Slint). Tudo aqui roda **no Windows**: o
+Opus e o NSIS não se geram de dentro do WSL.
 
-Saem dois instaladores da mesma compilação: o `.exe` do NSIS, que é o que a pessoa
-baixa do site, e o `.msi` do WiX, que é o que se instala por política de rede. Os
-dois precisam rodar no Windows — nenhum dos dois se gera em Linux.
+## Preparar a máquina
 
-O código é editado no WSL. O script de build sincroniza uma cópia para
-`C:\Users\edsu\unkvoid-build` e compila lá, para o Tauri usar os binários nativos
-e o cache do cargo do próprio Windows.
+- Visual Studio Build Tools 2022 com "Desenvolvimento para desktop com C++" (MSVC e Windows
+  SDK). O `cmake` dele fica fora do PATH; o `build-installer.ps1` o acha sozinho, e para o
+  `cargo` à mão é `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`.
+- Rust (rustup, alvo `x86_64-pc-windows-msvc`).
+- O NSIS em `%LOCALAPPDATA%\tauri\NSIS\makensis.exe` (o que o Tauri baixa na primeira build
+  dele).
 
-## O caminho normal
-
-```powershell
-powershell -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-26.04\var\www\projects\unkvoid\native\apps\desktop\build-windows.ps1
-```
-
-Ele põe o CMake do Visual Studio Build Tools no PATH, sincroniza o código, roda
-`npm ci` se faltar, assina com `%USERPROFILE%\.tauri\unkvoid.key`, empacota o
-`.msi` e o `.exe`, confere que cada um saiu com o `.sig` ao lado e copia tudo
-para `C:\Users\edsu\Desktop\apps`.
-
-Sem a chave ele para antes de compilar. É de propósito: um build sem `.sig` gera
-instaladores que funcionam e não atualizam ninguém, e a publicação depois parece
-certa.
-
-Para publicar no site, de volta no WSL: `make publish-windows`. O resto está em
-[AUTO-UPDATE.md](AUTO-UPDATE.md).
-
-## À mão, quando só se quer olhar o build
+## Compilar e testar
 
 ```powershell
-cd C:\Users\edsu\unkvoid-build\native\apps\desktop
-npm ci
-npx tauri build --bundles nsis,msi
+cd native
+cargo clippy --workspace --exclude unkvoid-linux --all-targets -- -D warnings
+cargo test --workspace --exclude unkvoid-linux
 ```
 
-Sai sem assinatura, então serve para testar a instalação e não para publicar.
+O `unkvoid-linux` (GTK4) não compila no Windows; por isso o `--exclude`. Para não roubar CPU de
+quem está usando a máquina: `cmd /c "start /low /b /wait cargo ..."`.
 
-Para abrir o instalador NSIS recém-gerado:
+## O instalador do site
 
 ```powershell
-$installer = Get-ChildItem ..\..\target\release\bundle\nsis\*-setup.exe |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
-Start-Process $installer.FullName
+powershell -ExecutionPolicy Bypass -File native\apps\windows\build-installer.ps1
 ```
 
-Para abrir o MSI:
+Compila em release e empacota o `native/apps/windows/installer.nsi`:
+`native/target/release/bundle/windows/Unkvoid_<versão>_x64-setup.exe`. A versão é a do
+`native/Cargo.toml`. Sai **sem** o `.sig`: assinar e publicar é no WSL, onde mora a chave
+([AUTO-UPDATE.md](AUTO-UPDATE.md#windows)).
+
+O instalador põe o app em `Arquivos de Programas`, no mesmo lugar e com o mesmo
+`unkvoid-desktop.exe` do Tauri de antes — é assim que quem tinha o Tauri migra. Por instalar para
+a máquina toda, ele pede o aviso de administrador.
+
+> O `release.yml` e o `native/apps/desktop/build-windows.ps1` ainda compilam o **Tauri**. Não
+> solte tag nem rode nenhum dos dois para publicar: o Tauri voltaria por cima do nativo.
+
+## O pacote da Microsoft Store (MSIX)
 
 ```powershell
-$msi = Get-ChildItem ..\..\target\release\bundle\msi\*.msi |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
-Start-Process msiexec.exe -ArgumentList "/i `"$($msi.FullName)`""
+powershell -ExecutionPolicy Bypass -File native\apps\windows\build-msix.ps1
 ```
 
-Os dois instalam para a máquina toda, em `Arquivos de Programas`, e por isso
-abrem o aviso de administrador do Windows. É o mesmo aviso que aparece quando o
-app se atualiza sozinho — instalar por usuário tiraria a pergunta e trocaria o
-app sem avisar.
+Sai `native/target/release/bundle/windows/Unkvoid_<versão>.0_x64.msix`, sem assinatura: é esse
+arquivo que sobe no Partner Center (produto `9NGPGTV3NPLW`), e a Store assina depois de aprovar.
+A identidade do pacote (`Unkvoid.Unkvoid`, `CN=3877BA03-…`) está em
+`native/apps/windows/msix/AppxManifest.xml`; o quarto número da versão é da Store, sempre 0, e
+cada envio precisa de versão maior que a anterior.
 
-## Compartilhamento de tela
+O mesmo `unkvoid.exe` muda de jeito quando roda como pacote (`shell::packaged()`): não procura
+versão no site (quem atualiza é a Store), abre no logon pela `StartupTask` do manifesto e **não
+se eleva** — a Store não aprova pacote que pede administrador. Nessa instalação os atalhos dos
+Clips e o falar-apertando não alcançam jogos que rodam elevados (anti-cheat).
 
-O cliente fecha os producers de vídeo e áudio no SFU antes de parar a captura.
-Isso libera a porta UDP imediatamente e atualiza a tela dos espectadores sem
-aguardar a desconexão da sala. Falhas durante o início também encerram a captura
-parcial, permitindo uma nova tentativa sem o erro `a stream is already in progress`.
+## Quando algo dá errado
 
-Se o preview do Windows aparecer preto, confirme que o aplicativo tem permissão
-para captura de tela e que o driver gráfico está atualizado. O preview usa
-Windows Graphics Capture e precisa de um monitor ou janela válido.
-
-## Nesta máquina: o código no WSL, o Rust no Windows
-
-O repositório de verdade mora no WSL (`/var/www/projects/unkvoid`). O Rust e o
-instalador do Windows rodam do lado de lá, numa cópia só do `native/` em
-`C:\Users\edsu\unkvoid-build`: o `node_modules` do WSL traz o `@tauri-apps/cli` de
-Linux, e rodar `npx tauri build` de lá pelo Windows não funciona. A cópia é
-descartável; para atualizar:
-
-```bash
-rsync -a --delete --exclude node_modules --exclude target --exclude dist \
-    /var/www/projects/unkvoid/native/ /mnt/c/Users/edsu/unkvoid-build/native/
-```
-
-Montado na máquina: Visual Studio Build Tools 2022 (carga C++, MSVC 14.44, Windows
-SDK 10.0.26100), Rust e Node dos dois lados, e o alvo `x86_64-pc-windows-msvc` no WSL.
-
-Para compilar o Rust do Windows sem gerar instalador, o `C:\Users\edsu\cargo-win.cmd`
-aceita os mesmos argumentos do cargo:
-
-```powershell
-C:\Users\edsu\cargo-win.cmd clippy --workspace --all-targets -- -D warnings
-C:\Users\edsu\cargo-win.cmd test --workspace
-```
-
-Do WSL é o mesmo script chamado por fora, e o `cd /mnt/c` é do bash do WSL (no
-PowerShell ele vira `C:\mnt\c` e falha):
-
-```bash
-cd /mnt/c && cmd.exe /c "C:\Users\edsu\cargo-win.cmd check --workspace --all-targets"
-```
-
-O script faz três coisas que não são opcionais: mapeia o repositório do WSL para `Y:`
-(o `cmd.exe` não aceita caminho UNC como diretório atual), põe no PATH o CMake que veio
-no Build Tools (o `opusic-sys` precisa dele) e aponta `CARGO_TARGET_DIR` para
-`C:\Users\edsu\unkvoid-target` (compilar pelo `Y:` falha no lock do compilador
-incremental).
-
-Do lado do WSL dá para conferir só o `capture`, que é Rust puro:
-`cd native && cargo check --target x86_64-pc-windows-msvc -p capture`. O `media` não
-dá: o `opusic-sys` compila C e precisa do MSVC.
+- **Prévia ou transmissão preta:** confira a permissão de captura e o driver de vídeo. No
+  Windows 10 o monitor vai pelo Desktop Duplication (sem a borda amarela, ver
+  [BORDA-AMARELA.md](BORDA-AMARELA.md)); `UNKVOID_DUPLICATION=on` força esse caminho no 11.
+- **Sem encoder na placa:** o app cai sozinho para o de software em 720p30;
+  `UNKVOID_ENCODER=cpu` força esse caminho para comparar.
+- **O que aconteceu:** o log do dia em `%LOCALAPPDATA%\com.unkvoid.desktop\unkvoid-AAAA-MM-DD.log`.
+  As linhas com `ERROR` também chegam ao site, na tabela `error_reports`.

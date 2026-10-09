@@ -12,7 +12,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -21,7 +21,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::client::SfuClient;
 use crate::models::{JoinResponse, Peer, ProducerInfo, RoomIdentity};
 use crate::protocol::{Event, action, local};
-use crate::reconnect::Backoff;
+use crate::reconnect::{Backoff, MAX_ATTEMPTS};
 
 /// Quem se apresenta ao SFU, **de novo a cada entrada**. É função, e não valor, porque o
 /// token de voz vale 60 s: guardar o primeiro faria toda reconexão levar um token vencido.
@@ -180,6 +180,8 @@ struct State {
     can: Vec<String>,
     /// A última entrada foi retomada (mídia intacta) ou nova (tudo caiu do lado de lá).
     resumed: bool,
+    /// Quando a sala começou, no relógio desta máquina.
+    started: Option<Instant>,
 }
 
 /// Uma sala aberta: o socket, a lista de quem está e o que esta sessão pode fazer.
@@ -245,6 +247,7 @@ impl Session {
         state.resume_key = joined.resume_key.clone();
         state.can = joined.can.clone();
         state.resumed = joined.resumed;
+        state.started = started_from(joined.elapsed_ms, Instant::now());
         state.roster.reset(&joined);
 
         Ok(joined)
@@ -342,9 +345,12 @@ impl Session {
     /// carência já expirou lá, entra de novo — que é pior, mas é voltar.
     async fn reconnect(&self) -> Option<UnboundedReceiver<Event>> {
         let mut backoff = Backoff::default();
+        let mut refused = 0;
 
-        while let Some(wait) = backoff.next_delay() {
-            tokio::time::sleep(wait).await;
+        // A rede fora do ar não conta: o app tenta enquanto estiver aberto. O que faz desistir é
+        // a sala recusar a volta.
+        while refused < MAX_ATTEMPTS {
+            tokio::time::sleep(backoff.next_patient_delay()).await;
 
             if self.left.load(Ordering::Relaxed) {
                 return None;
@@ -368,6 +374,7 @@ impl Session {
             match self.request_join(false).await {
                 Ok(_) => return Some(incoming),
                 Err(failure) => {
+                    refused += 1;
                     tracing::warn!(%failure, attempt = backoff.attempt, "a sala recusou a volta");
                 }
             }
@@ -392,6 +399,11 @@ impl Session {
 
     pub fn resume_key(&self) -> Option<String> {
         self.state().resume_key.clone()
+    }
+
+    /// Quando a sala começou, desde a primeira pessoa: é daí que o relógio da barra conta.
+    pub fn started(&self) -> Option<Instant> {
+        self.state().started
     }
 
     /// A última entrada foi retomada? Entrada nova (`false`) perdeu os producers do lado de
@@ -428,9 +440,36 @@ impl Session {
     }
 }
 
+/// O começo da sala no relógio desta máquina, a partir de há quanto tempo o servidor diz que
+/// ela existe. Um número maior que o tempo desde que esta máquina ligou não vira hora nenhuma.
+fn started_from(elapsed_ms: Option<u64>, now: Instant) -> Option<Instant> {
+    now.checked_sub(Duration::from_millis(elapsed_ms?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_room_clock_starts_when_the_first_person_joined() {
+        let now = Instant::now();
+
+        assert_eq!(
+            started_from(Some(90_000), now),
+            now.checked_sub(Duration::from_secs(90)),
+            "quem entra depois vê o tempo de quem já estava"
+        );
+        assert_eq!(started_from(Some(0), now), Some(now), "quem abre a sala começa do zero");
+        assert_eq!(started_from(None, now), None, "o SFU antigo não diz, e vale a própria entrada");
+    }
+
+    #[test]
+    fn the_elapsed_time_comes_in_the_join_answer() {
+        let joined: JoinResponse = serde_json::from_str(r#"{"peerId":"mine","elapsedMs":4500}"#).expect("join");
+
+        assert_eq!(joined.elapsed_ms, Some(4_500));
+        assert_eq!(serde_json::from_str::<JoinResponse>(r#"{"peerId":"mine"}"#).expect("join").elapsed_ms, None);
+    }
 
     fn roster_with(names: &[&str]) -> Roster {
         Roster {

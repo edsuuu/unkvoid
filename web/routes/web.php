@@ -16,7 +16,6 @@ Route::get('/health', fn (): array => ['ok' => true])->name('health');
 Route::view('/', 'home.index')->name('home');
 Route::view('/privacidade', 'legal.privacy')->name('privacy');
 Route::view('/termos', 'legal.terms')->name('terms');
-Route::view('/code-signing-policy', 'legal.code-signing')->name('code-signing');
 
 Route::prefix('downloads')->name('downloads.')->group(function (): void {
     Route::get('/latest.json', [DownloadController::class, 'manifest'])->name('manifest');

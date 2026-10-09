@@ -87,17 +87,25 @@ export class ProducerController {
 
         let receiving = false;
 
+        // O mediasoup zera a nota ~1,5 s depois do último pacote. É assim que quem assiste
+        // separa a tela parada de quem transmite (nada chega aqui) do caminho até ele que morreu
+        // (chega aqui e não lá).
         producer.on('score', (scores) => {
-            if (receiving || !scores.some((entry) => entry.score > 0)) {
+            const now = scores.some((entry) => entry.score > 0);
+
+            if (now === receiving) {
                 return;
             }
 
-            receiving = true;
-            if (idleTimer) {
+            receiving = now;
+            producer.appData.receiving = now;
+            room.broadcast('producerReceiving', { producerId: producer.id, receiving });
+
+            if (receiving && idleTimer) {
                 clearTimeout(idleTimer);
                 idleTimer = undefined;
+                peer.send('producerActive', { producerId: producer.id });
             }
-            peer.send('producerActive', { producerId: producer.id });
         });
 
         room.broadcast(

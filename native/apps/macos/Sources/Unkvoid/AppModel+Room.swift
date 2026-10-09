@@ -57,6 +57,10 @@ extension AppModel {
         stageOpen = true
         enteredRoomAt = Date()
 
+        if noticePreferences.sounds {
+            Sounds.joined()
+        }
+
         await openedRoom()
         await voiceChat.open(opened)
         await openMicrophone()
@@ -65,6 +69,10 @@ extension AppModel {
     func leaveVoice() async {
         guard voiceChannel != nil else {
             return
+        }
+
+        if noticePreferences.sounds {
+            Sounds.left()
         }
 
         closeRoom()
@@ -126,18 +134,14 @@ extension AppModel {
 
         switch event["event"] as? String {
         case "room.peers":
-            let before = Set(peers.map(\.id))
-
             peers = decode(data["peers"]) ?? peers
-
-            if noticePreferences.sounds, !before.isEmpty {
-                let now = Set(peers.map(\.id))
-
-                if !now.subtracting(before).isEmpty {
-                    Sounds.joined()
-                } else if !before.subtracting(now).isEmpty {
-                    Sounds.left()
-                }
+        case "room.chime":
+            if noticePreferences.sounds, let chime = data["chime"] as? String {
+                Sounds.play(chime)
+            }
+        case "room.notice":
+            if let text = data["text"] as? String {
+                notice = text
             }
         case "room.tiles":
             tiles = decode(data["tiles"]) ?? tiles
@@ -211,6 +215,8 @@ extension AppModel {
         switch what {
         case "watch": "Não deu para assistir a uma das transmissões."
         case "mic": "Não deu para abrir o microfone."
+        case "shareClosed": "A janela que você compartilhava foi fechada, e a transmissão parou."
+        case "serverMuted": "Um moderador silenciou o seu microfone."
         default: "Não deu para compartilhar a tela."
         }
     }

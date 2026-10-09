@@ -10,8 +10,9 @@ O que está protegido, o que não está, e por quê. Escrito para ser escolha e 
 | Chat e mensagens diretas | TLS até o Laravel; WSS no SFU | **texto puro** no MySQL | **não** |
 | Imagens (foto, ícone, chat) | TLS | bucket privado no MinIO; toda URL é assinada e vence em 2 h | **não** |
 | Sinalização do SFU | WSS | nada é guardado | — |
-| Tela, câmera e voz pelo app (RTP puro) | SRTP: AES-128 com HMAC-SHA1, chave sorteada por transmissão | nada é guardado | **não** |
-| Assistir, e mic/câmera no Windows e macOS (WebRTC) | DTLS-SRTP | nada é guardado | **não** |
+| Tela, câmera, voz e o que se assiste, pelo app (RTP puro) | SRTP: AES-128 com HMAC-SHA1, chave sorteada por transmissão | nada é guardado | **não** |
+| O WebRTC do app Tauri de antes | DTLS-SRTP | nada é guardado | **não** |
+| Token da conta no app | — | cifrado em AES-256-GCM no disco, com a chave no chaveiro do sistema | — |
 | Instaladores | TLS + assinatura minisign conferida pelo app; APT assinado com GPG | bucket privado, URL de 1 h | — |
 
 Em uma frase: **tudo viaja cifrado, nada é cifrado de ponta a ponta.** Quem intercepta a rede
@@ -63,8 +64,8 @@ por dentro; a privada não fica na VPS. O Linux confia na GPG do repositório AP
 
 **O repositório é público e o runner mora na VPS.** Os fluxos de deploy e o build do Linux
 rodam num runner do GitHub Actions instalado na própria VPS. O que impede um fork de executar
-código lá é que **nenhum fluxo dispara em `pull_request`**: só em push na `main`, em tag e em
-disparo manual, e ainda conferem `github.actor`. Acrescentar um gatilho de PR a qualquer fluxo
+código lá é que **nenhum fluxo dispara em `pull_request`**: hoje só em disparo manual (os
+gatilhos de push e de tag estão pausados), e ainda conferem `github.actor`. Acrescentar um gatilho de PR a qualquer fluxo
 que use `runs-on: self-hosted` entrega a VPS a quem abrir um PR.
 
 **Tentativa tem teto.** Login, cadastro, convite, mensagem, amizade e envio de foto têm
@@ -92,14 +93,15 @@ legítima, e criptografia nenhuma impede isso.
 
 ## O que não está protegido
 
-1. **O token do app mora em texto puro.** O token do Sanctum fica no `localStorage` da webview
-   (`unkvoid:token`). Qualquer programa rodando como o usuário lê o arquivo. O caminho de saída
-   é guardar no cofre do sistema (DPAPI no Windows, Keychain no macOS, libsecret no Linux) por
-   um comando do Rust.
-2. **O retorno do login com Google pode ser interceptado na própria máquina.** O token volta
-   por `unkvoid://login?token=&state=`; o `state` sorteado impede uma página qualquer de logar
-   a pessoa em conta alheia, mas outro programa que registre o mesmo esquema recebe o endereço.
-   O caminho de saída é PKCE, com o segredo nascendo dentro do app.
+1. **O token do app Tauri de antes mora em texto puro**, no `localStorage` da webview
+   (`unkvoid:token`). Os apps nativos guardam o token cifrado, com a chave no chaveiro do sistema
+   (Keychain, Credential Manager, Secret Service): o arquivo copiado sozinho não abre conta
+   nenhuma.
+2. **O token do login com Google passa pela barra de endereço do navegador.** Ele volta ao app
+   pela URL `http://127.0.0.1:<porta>/?token=&state=`; o `state` sorteado impede uma página
+   qualquer de logar a pessoa em conta alheia, mas o token fica no histórico do navegador. O
+   caminho de saída é PKCE, com o segredo nascendo dentro do app e o token trocado por fora do
+   navegador.
 3. **Quem foi expulso ainda ouve até reconectar, se o cliente for modificado.** O SFU não
    derruba a inscrição de quem já estava ouvindo — a autorização é perguntada ao Laravel no
    `subscribe`, e não de novo a cada evento; o app oficial sai dos canais no `MemberRemoved`. Fechar isso é fazer os eventos não levarem conteúdo — muda o contrato, e é

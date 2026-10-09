@@ -28,7 +28,7 @@ final class MeController
      */
     public function update(UpdateMeRequest $request, #[CurrentUser] User $user): UserResource
     {
-        $user->confirmNickname($request->string('name')->toString());
+        $user->changeNickname($request->string('name')->toString());
 
         return new UserResource($user);
     }

@@ -92,6 +92,12 @@ regras que o cliente precisa saber para não contar errado:
   volta);
 - quem está na carência de reconexão não conta como plateia.
 
+A resposta do `join` traz `elapsedMs`: há quanto tempo a sala existe, desde a primeira pessoa
+— a sala nasce com ela e some com a última. O relógio da barra da sala conta daí, igual para
+todo mundo. É duração, e não hora, porque o relógio de cada máquina erra (o de um PC estava
+18 s à frente do da VPS em 30/09/2026); quem recebe subtrai do próprio relógio. Sem o campo
+(SFU antigo), o relógio conta da própria entrada.
+
 Cada pessoa em `peers` (resposta do `join`) vem como
 `{ peerId, userId, name, reconnecting, producers: [{ producerId, kind, source, paused }] }`.
 Na entrada nova, quem está na carência de reconexão fica de fora da lista. Na **retomada**
@@ -185,7 +191,7 @@ sobre `ts\nMÉTODO\ncaminho\ncorpo`, janela de 300 s — como o `kick` de hoje):
 | `POST /rooms/:code/mute` | `{ "userId": "user:12", "muted": true }` — pausa/retoma o producer `mic` daquela conta | `{ muted: n }` |
 | `GET /presence` | corpo vazio | `{ rooms: { "<room>": [ { sub, name, sources: ["mic","screen"], muted, deafened } ] } }` |
 
-`consumePlain` devolve também `ssrc` do consumer: o receptor nativo do Linux separa os
+`consumePlain` devolve também `ssrc` do consumer: o receptor nativo (`PlainReceiver`) separa os
 producers de uma mesma porta por SSRC, sem adivinhar pelo primeiro pacote.
 
 E devolve `rtx: { ssrc, payloadType } | null` — o fluxo de retransmissão do consumer
@@ -196,6 +202,23 @@ número original nos dois primeiros bytes do payload, e o quadro sai inteiro. Qu
 espera passa de 250 ms o buraco é largado e vai um PLI (PT 206, FMT 1) pedindo keyframe.
 Os dois RTCP saem cifrados (SRTCP) pelo mesmo socket e com a mesma chave do `consumePlain`.
 Sem `rtx`, o receptor ainda reordena e pede keyframe; só não recebe o reenvio.
+
+**O servidor diz se a tela está chegando nele.** A sala inteira (o dono também, por causa
+do "ver o que a sala vê") recebe
+`producerReceiving { producerId, receiving }` quando o RTP de um producer começa ou para de
+chegar ao SFU — o mediasoup zera a nota ~1,5 s depois do último pacote —, e o `consumePlain`
+devolve o estado do momento em `receiving`. É assim que o app de quem assiste separa a tela
+parada de quem transmite (`receiving: false`, nada a fazer) do caminho até ele que morreu
+(`receiving: true` e nada chegando há 5 s: refaz o transporte de chegada).
+
+**Chave nova troca o transporte.** O `producePlain` e o `consumePlain` reaproveitam o
+transporte de RTP puro da pessoa (um de subida, um de chegada) enquanto a `keyBase64` for a
+mesma; com outra chave, o SFU fecha o antigo — e com ele os producers ou consumers que
+estavam nele, com o `producerClosed` de sempre para a sala — e abre um novo. É assim que o
+app refaz o caminho: o `comedia` prende o transporte ao primeiro endereço de onde veio
+pacote, e quando o roteador da pessoa troca de endereço (o provedor reconectou, o roteador
+reiniciou) tudo o que vem do endereço novo é descartado. O app troca a chave de chegada a
+cada retomada do `join` e a de subida quando passa 5 s mandando sem nenhum RTCP de volta.
 
 Webhook do SFU para o Laravel, **fora do caminho do `join`**, fire-and-forget, para conta
 (`user:`) e visitante da sala por código (`guest:<installId>`, `room` com o código de 3 a
@@ -233,6 +256,13 @@ Tudo devolve `Resource`. Erro de permissão é 403 com `{ "message": "…" }`; v
 { "sfu": "ws://127.0.0.1:3000/sfu" }
 ```
 
+`POST /api/errors` (público, 30 por minuto) recebe `{ version, platform, log }` — `platform` é
+`windows`, `macos` ou `linux`, e `log` tem até 20 mil caracteres — e responde 2xx. O site agrupa
+pela versão, pelo sistema e pela primeira linha de pânico ou `ERROR` do log. Os apps nativos do
+Windows e do Linux mandam (`core_app::logbook`), de meio em meio minuto, o pedaço do log do dia
+que ganhou um `ERROR` desde o último envio, sem o nome do usuário da máquina; o app em Tauri
+mandava na abertura.
+
 Conta:
 
 | rota | corpo | resposta |
@@ -242,7 +272,7 @@ Conta:
 | `POST /api/auth/refresh` (público) | `{ refresh_token }` | o par novo, no mesmo formato; o token de renovação usado morre na hora. Vencido, usado ou de outra coisa: 401 `"Sua sessão terminou. Entre de novo."` |
 | `POST /api/auth/logout` | `{ refresh_token? }` | 204; derruba o token de acesso da requisição e, se vier, o de renovação da mesma conta |
 | `GET /api/me` | — | `{ id, name, email, avatar_url, avatar_uploaded, admin, nickname_confirmed }` |
-| `PATCH /api/me` | `{ name }` (3 a 32 caracteres, `[A-Za-z0-9._]`, único; pode repetir o atual) | o mesmo `user`, agora com `nickname_confirmed: true`. Só enquanto `nickname_confirmed` for `false`: depois é 403 |
+| `PATCH /api/me` | `{ name }` (3 a 32 caracteres, `[A-Za-z0-9._]`, único; pode repetir o atual) | o mesmo `user`, agora com `nickname_confirmed: true`. Troca a qualquer hora; a primeira troca também confirma o automático |
 | `POST /api/me/avatar` | `multipart`, campo `avatar` (jpeg/png/webp, ≤ 2 MB) | o mesmo `user`, com a foto nova; guarda no bucket privado e apaga a foto anterior |
 | `DELETE /api/me/avatar` | — | o mesmo `user` (200, não 204): tirar a foto enviada faz voltar a valer a do Google, e o app precisa do link novo |
 
@@ -469,6 +499,12 @@ O `subscribe` devolve a presença do canal, e o SFU emite `presence.joining { id
 `presence.leaving { id }` para os outros inscritos na primeira e na última conexão de cada
 pessoa naquele canal.
 
+**O canal `releases` é público.** Qualquer socket o assina, sem `identify` e sem o Laravel
+autorizar, e ele não tem presença: o `subscribe` devolve só `{ channel }`, e ninguém entra nem
+sai da lista. Só recebe o que o Laravel publica. É por ele que a versão nova chega a todo app
+aberto, inclusive a quem entrou sem conta: o app abre o socket do tempo real mesmo sem conta,
+só para ele.
+
 O que o Laravel publica sai por `POST /broadcast` assinado, um pedido por canal. Falha do
 SFU não desfaz nada: a escrita já está no banco, a resposta HTTP sai normal e o erro fica no
 log do canal `sfu`. Como nada é reentregue depois de uma queda, ao reconectar o app busca de
@@ -479,6 +515,7 @@ mais recentes do canal e da conversa abertos, emendando com o que já estava na 
 |---|---|---|
 | `channel.{ulid}` | `VIEW_CHANNEL` | texto: `MessageSent { message }`, `MessageUpdated { message }`, `MessageDeleted { id, channel_id }` · voz: `VoiceStateUpdated { channel_id, user_id, name, event: joined\|left }` (no canal da própria voz, para canal oculto não vazar quem está nele; o app assina o canal de cada voz que enxerga) · `VoiceMuteUpdated { channel_id, user_id, name, muted, deafened }` (publicado pelo **SFU**, não pelo Laravel: é o `voiceState` de quem está na voz) |
 | `server.{id}` | membro | `ServerUpdated { server_id }` (qualquer mudança de estrutura: o app refaz o `GET`) |
+| `releases` | qualquer socket, sem `identify` | `ReleasePublished { version, platform }` (a cada `POST /api/releases`: o app compara com a própria versão e plataforma, anota a versão na configuração e baixa calado até mostrar o botão verde) |
 | `user.{id}` | o próprio | `FriendshipUpdated { friendship, removed }` (`FriendResource`, nos canais dos **dois** lados) · `MemberRemoved { server_id, reason: kicked\|banned }` · `DirectMessageCreated { message, recipient }`, `DirectMessageUpdated { message, recipient }`, `DirectMessageDeleted { id }` (nos canais dos **dois** lados da conversa; `message` é o `DirectMessageResource` sem o `mine`) |
 
 O nome do canal perdeu os prefixos `private-` e `presence-` do Pusher: é `channel.`, `server.`
@@ -505,12 +542,15 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 ## App — o que aparece
 
 - Entrada: a tela de código continua; ao lado, "Entrar" (e-mail/senha ou Google pelo
-  `/oauth2/app?state=`, de volta pelo `unkvoid://`) e "Criar conta". Token do Sanctum em `localStorage`
-  (`unkvoid:token`). Com token válido (`GET /api/me`), abre o modo servidor. Criar conta pelo
-  app é só e-mail e senha.
+  `/oauth2/app?state=&port=`, de volta por uma porta em `127.0.0.1`; o app Tauri de antes voltava
+  pelo `unkvoid://`) e "Criar conta". O token do Sanctum fica cifrado no disco, com a chave no
+  chaveiro do sistema (`shared/storage`; no Tauri de antes, `localStorage` `unkvoid:token`). Com
+  token válido (`GET /api/me`), abre o modo servidor. Criar conta pelo app é só e-mail e senha.
 - Com `nickname_confirmed: false`, um modal que não fecha pede o apelido (já preenchido com o
   automático) a cada abertura do app, até o `PATCH /api/me` dar certo. Dá para sair da conta
   por ele.
+- Com a conta aberta, "Minha conta" nas configurações troca o apelido pelo mesmo
+  `PATCH /api/me`, com o erro de validação embaixo do campo.
 - Nos formulários de entrar e criar conta, o campo recusado fica com a borda vermelha e a
   mensagem embaixo dele; o que não é de campo (credencial errada, 429) fica na linha geral.
 - Logado e sem servidor aberto, o centro mostra **Criar sala** e **Últimas salas**. Criar
@@ -527,17 +567,19 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 - Modo servidor: trilho de servidores | canais (texto e voz, quem está em cada voz) |
   centro (chat ou palco) | membros com cargos. Barra de voz embaixo: mutar, ensurdecer,
   câmera, **compartilhar tela (só aqui)**, sair.
-- Windows/macOS: mic e câmera pelo `getUserMedia` + `sendTransport.produce`. Linux:
-  pelo Rust (`pulsesrc`/`v4l2src` → RTP puro), como a tela.
+- Microfone e câmera sobem pelo núcleo em RTP puro (`producePlain`), como a tela, nos três apps
+  nativos. (O app Tauri de antes usava `getUserMedia` + `sendTransport.produce` no Windows e no
+  macOS.)
 - Áudio de `screenAudio` chega **mudo**. `mic` toca direto. `camera` vira cartão pequeno.
 - Chat: até 3 imagens por mensagem, por botão, colando ou arrastando; o app reduz cada uma para
   caber em 2 MB antes de enviar. Quem está numa voz tem o chat daquele canal ao lado do palco.
-- Cada pessoa da voz tem volume e mudo locais (guardados por conta), e as configurações têm
-  "Saída de áudio" onde o motor da janela tem `setSinkId` (WebView2). No Linux a voz dos outros
-  toca pelo Rust, então esses dois controles não aparecem lá.
-- Variáveis de ambiente do app, para calibrar e diagnosticar: `UNKVOID_ENCODER=cpu` (pula o
-  encoder da placa), `UNKVOID_ABR=off` (taxa fixa, sem acompanhar a perda),
-  `UNKVOID_CAPTURE=x11|portal` (força a captura do Linux).
+- Cada pessoa da voz tem volume e mudo locais (guardados por conta). A saída de áudio e o
+  microfone se escolhem na setinha ao lado de cada botão da barra, e a troca vale na hora. No
+  Linux o volume por pessoa ainda não existe.
+- Variáveis de ambiente do app, para calibrar e diagnosticar: `UNKVOID_SERVER` (outro Laravel),
+  `UNKVOID_ENCODER=cpu` (pula o encoder da placa), `UNKVOID_DECODER=cpu` (assiste sem o DXVA, no
+  Windows), `UNKVOID_ABR=off` (taxa fixa, sem acompanhar a perda), `UNKVOID_CAPTURE=x11|portal`
+  (força a captura do Linux).
 
 ## App — a ABI do núcleo (interfaces nativas)
 
@@ -556,6 +598,7 @@ mídia em outras threads **enquanto** uma ação está em voo.
 | `unkvoid_app(h, ação, json)` | as decisões do app. **Bloqueia** no que fala com o servidor |
 | `unkvoid_next_event(h)` | o próximo aviso, ou nulo. Não bloqueia |
 | `unkvoid_next_media(h, *tamanho)` | o próximo quadro ou bloco de som do que se assiste; espera até 100 ms e devolve nulo. Para **uma** thread só da interface |
+| `unkvoid_chime(nome, *tamanho)` | o toque de um `room.chime` (`joined`, `left`, `streamStarted`, `streamStopped`) ou o de mensagem (`message`) em PCM `f32` estéreo a 48 kHz, para a interface tocar pelo mesmo caminho das vozes; nulo para nome desconhecido; liberar com `unkvoid_bytes_free` |
 | `unkvoid_speak(h, *amostras, n)` | o microfone que a interface capturou: PCM `f32` estéreo intercalado a 48 kHz |
 | `unkvoid_show(h, IOSurfaceRef, ns)` | macOS: um quadro da câmera, no buffer de GPU, **já retido** — quem solta é o núcleo |
 | `unkvoid_string_free(texto)`, `unkvoid_bytes_free(bloco, tamanho)` | devolvem o que o núcleo alocou — uma vez só |
@@ -644,7 +687,8 @@ status ficam no log.
 
 ## App — comandos do Tauri
 
-A interface chama com `invoke`, com os argumentos em camelCase (`serverKey`, `producerId`); o
+**Só o app Tauri de antes** (`native/apps/desktop`), que não é mais publicado; os apps nativos não
+passam por aqui. A interface chama com `invoke`, com os argumentos em camelCase (`serverKey`, `producerId`); o
 Tauri converte para o snake_case do Rust. Mudou um comando, mude aqui e em `ui/core`.
 
 | Comando | Argumentos | Devolve | Para quê |
@@ -689,7 +733,7 @@ cd web && composer dev            # serve em :8000, fila, logs, vite
 cd sfu && pnpm run build && SFU_SECRET=<o mesmo do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node dist/server.js
 
 # 3. App apontando para o Laravel local (o SFU vem do GET /api/config)
-cd native/apps/desktop && VITE_SERVER=http://127.0.0.1:8000 npm run dev:app
+cd native && UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid-windows   # ou unkvoid-linux; no Mac, native/apps/macos/run.sh
 ```
 
 Duas máquinas na mesma rede: troque `127.0.0.1` pelo IP da máquina que roda os
@@ -698,6 +742,5 @@ servidores em `APP_URL` e `SFU_PUBLIC_URL` (`web/.env`), suba o SFU com
 `php artisan serve --host=0.0.0.0`. No WSL2 a rede só enxerga o UDP do SFU com
 `networkingMode=mirrored` no `.wslconfig`.
 
-Windows: o instalador sai de `C:\Users\edsu\unkvoid-build` como descrito em
-[BUILD-WINDOWS.md](BUILD-WINDOWS.md); para apontar para o Laravel local sem rebuildar, grave
-`localStorage.server = 'http://<IP>:8000'` no console do app.
+O app instalado aponta para outro Laravel com `UNKVOID_SERVER=http://<IP>:8000` no ambiente de
+quem o abre.

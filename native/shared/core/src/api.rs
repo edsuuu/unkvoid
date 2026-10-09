@@ -323,6 +323,16 @@ impl Api {
         self.get("/api/me").await
     }
 
+    /// Troca o apelido. Quem valida é o Laravel: repetido ou com espaço volta como
+    /// `Invalid` sobre o `name`, já em português.
+    pub async fn rename(&self, name: &str) -> Result<User, HttpError> {
+        self.send(
+            self.http.patch(self.url("/api/me")).json(&serde_json::json!({ "name": name })),
+            "/api/me",
+        )
+        .await
+    }
+
     pub async fn servers(&self) -> Result<Vec<ServerSummary>, HttpError> {
         self.get("/api/servers").await
     }
@@ -480,6 +490,21 @@ impl Api {
         self.send::<Value>(self.http.delete(self.url(&path)), &path)
             .await
             .map(|_| ())
+    }
+
+    /// Manda ao site o pedaço do log em que houve erro (`POST /api/errors`), para o problema de
+    /// quem usa chegar a quem conserta sem ninguém pedir arquivo. Sem token: o relatório não é
+    /// de conta nenhuma. `true` quando o site guardou.
+    pub async fn report_error(&self, version: &str, platform: &str, log: &str) -> bool {
+        let body = serde_json::json!({ "version": version, "platform": platform, "log": log });
+
+        self.http
+            .post(self.url("/api/errors"))
+            .header("accept", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .is_ok_and(|response| response.status().is_success())
     }
 
     /// A versão publicada mais nova do que esta, com o instalador desta plataforma

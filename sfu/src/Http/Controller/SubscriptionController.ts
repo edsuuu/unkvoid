@@ -1,7 +1,7 @@
 import type { Payload } from '../../Routers/WebSocketRouter.js';
 import { Authorizer } from '../../Services/Authorizer.js';
 import type { Broadcaster } from '../../Services/Broadcaster.js';
-import type { Subscriptions } from '../../Services/Subscriptions.js';
+import { Subscriptions } from '../../Services/Subscriptions.js';
 import type { IdentifyRequest } from '../Request/IdentifyRequest.js';
 import type { SubscribeRequest } from '../Request/SubscribeRequest.js';
 
@@ -20,8 +20,20 @@ export class SubscriptionController {
     }
 
     public async subscribe(request: SubscribeRequest): Promise<Payload> {
-        const { userId, name } = request.identity();
         const channel = request.channel();
+
+        // O canal público não tem dono nem presença: quem ouve é o socket, com conta ou sem.
+        if (Subscriptions.isPublic(channel)) {
+            this.subscriptions.add(channel, {
+                socket: request.session.socket,
+                userId: '',
+                name: '',
+            });
+
+            return { channel };
+        }
+
+        const { userId, name } = request.identity();
 
         const authorized = await Authorizer.allows(userId, channel);
         const subscriber = { socket: request.session.socket, userId, name: authorized ?? name };
@@ -45,8 +57,15 @@ export class SubscriptionController {
     }
 
     public unsubscribe(request: SubscribeRequest): Payload {
-        const { userId } = request.identity();
         const channel = request.channel();
+
+        if (Subscriptions.isPublic(channel)) {
+            this.subscriptions.remove(channel, request.session.socket);
+
+            return { ok: true };
+        }
+
+        const { userId } = request.identity();
 
         this.subscriptions.remove(channel, request.session.socket);
 
