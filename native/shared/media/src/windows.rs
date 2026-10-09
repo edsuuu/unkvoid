@@ -819,6 +819,12 @@ impl MediaFoundationEncoder {
 
     /// Pega uma saída do MFT, se houver. Devolve se pegou.
     unsafe fn collect_output(&mut self) -> Result<bool, EncoderError> {
+        unsafe { self.take_output(false) }
+    }
+
+    /// `changed` diz que o tipo da saída acabou de ser trocado nesta mesma busca: troca de novo
+    /// em seguida é defeito do MFT, e aí a saída espera o próximo evento.
+    unsafe fn take_output(&mut self, changed: bool) -> Result<bool, EncoderError> {
         unsafe {
             let mut output = [MFT_OUTPUT_DATA_BUFFER::default()];
             let mut status = 0_u32;
@@ -864,13 +870,17 @@ impl MediaFoundationEncoder {
                 // Tratado como erro, o encoder da placa parava ali e a transmissão caía para o
                 // do processador.
                 Err(error) if error.code() == MF_E_TRANSFORM_STREAM_CHANGE => {
-                    let changed = self.transform.GetOutputAvailableType(0, 0).map_err(encode_error)?;
+                    let available = self.transform.GetOutputAvailableType(0, 0).map_err(encode_error)?;
 
-                    self.transform.SetOutputType(0, Some(&changed), 0).map_err(encode_error)?;
+                    self.transform.SetOutputType(0, Some(&available), 0).map_err(encode_error)?;
                     self.spare_output = None;
                     tracing::info!("encoder: o MFT trocou o tipo da saída, e o novo foi aceito");
 
-                    return Ok(false);
+                    // O `METransformHaveOutput` desta saída já foi gasto, e o MFT assíncrono não
+                    // manda outro: esperando o próximo evento, cada um pegaria a saída anterior e
+                    // a imagem ficaria um quadro atrás para sempre — o último de uma tela parada
+                    // só sairia com o seguinte. A mesma saída é pedida de novo, agora.
+                    return if changed { Ok(false) } else { self.take_output(true) };
                 }
                 Err(error) => return Err(encode_error(error)),
             }

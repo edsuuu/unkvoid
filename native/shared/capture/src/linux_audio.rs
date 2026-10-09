@@ -43,6 +43,8 @@ impl SharedSink {
     /// ponytail: a saída padrão é a do momento; trocar de fone no meio da transmissão
     /// deixa o combine preso à antiga até o próximo `start`.
     pub fn open(mute_listed_apps: bool) -> Result<Self, String> {
+        clear_leftovers();
+
         let default = pactl(&["get-default-sink"])?.trim().to_string();
 
         if default.is_empty() {
@@ -109,6 +111,47 @@ impl Drop for SharedSink {
 
         let _ = pactl(&["unload-module", &self.module.to_string()]);
     }
+}
+
+/// O que um app que morreu com a tela no ar (o `kill -9`, a queda) deixou de pé: o
+/// `unkvoid_share` com o jogo dentro. Sem limpar, o `load-module` seguinte esbarrava no nome e o
+/// som da tela não subia mais, e o jogo seguia preso no sink órfão. Cada stream volta à saída em
+/// que o órfão desaguava antes de o módulo cair, pelo mesmo motivo do `Drop`.
+fn clear_leftovers() {
+    let Ok(modules) = pactl(&["list", "modules", "short"]) else {
+        return;
+    };
+
+    for (module, slave) in leftovers(&modules) {
+        tracing::warn!(module, "captura: o sink de uma transmissão que morreu ainda estava de pé, e saiu");
+
+        if let (Ok(sinks), Ok(inputs)) = (pactl(&["list", "sinks", "short"]), pactl(&["list", "sink-inputs", "short"]))
+            && let Some(orphan) = index_of_sink(&sinks, SINK)
+        {
+            for input in inputs_on(&inputs, orphan) {
+                let _ = pactl(&["move-sink-input", &input.to_string(), &slave]);
+            }
+        }
+
+        let _ = pactl(&["unload-module", &module.to_string()]);
+    }
+}
+
+/// Os `module-combine-sink` com o nosso sink, na listagem curta dos módulos (`índice\tnome\t
+/// argumentos`), e a saída em que cada um desaguava.
+fn leftovers(short: &str) -> Vec<(u32, String)> {
+    short
+        .lines()
+        .filter_map(|line| {
+            let mut columns = line.split('\t');
+            let index = columns.next()?.trim().parse().ok()?;
+            let arguments = (columns.next()? == "module-combine-sink").then(|| columns.next())??;
+            let mine = arguments.split_whitespace().any(|argument| argument == format!("sink_name={SINK}"));
+            let slave = arguments.split_whitespace().find_map(|argument| argument.strip_prefix("slaves="))?;
+
+            mine.then(|| (index, slave.split(',').next().unwrap_or(slave).to_string()))
+        })
+        .collect()
 }
 
 /// O índice de um sink pelo nome, na listagem curta do `pactl` (`índice\tnome\t...`).
@@ -280,6 +323,15 @@ Sink Input #15
     }
 
     #[test]
+    fn a_leftover_sink_is_found_with_the_output_it_fed() {
+        let modules = "7\tmodule-native-protocol-unix\t\t\n\
+                       23\tmodule-combine-sink\tsink_name=unkvoid_share slaves=alsa_output.pci adjust_time=0 sink_properties=device.description=Unkvoid\t\n\
+                       24\tmodule-combine-sink\tsink_name=outro slaves=fake\t\n";
+
+        assert_eq!(leftovers(modules), vec![(23, "alsa_output.pci".to_string())]);
+    }
+
+    #[test]
     fn without_the_flag_the_call_goes_up_but_never_ourselves() {
         let parent_of = |pid: u32| (pid == 300).then_some(999);
 
@@ -311,7 +363,7 @@ mod daemon {
             std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
             Command::new("sh")
                 .arg("-c")
-                .arg(format!("{} --raw /dev/zero </dev/null >/dev/null 2>&1 &", path.display()))
+                .arg(format!("{} --volume=0 --raw /dev/zero </dev/null >/dev/null 2>&1 &", path.display()))
                 .status()
                 .unwrap();
         }
@@ -359,7 +411,9 @@ mod daemon {
         std::fs::create_dir_all(&scratch).unwrap();
         std::fs::write(&game, &paplay).unwrap();
         std::fs::set_permissions(&game, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        Command::new("sh").arg("-c").arg(format!("{} --raw /dev/urandom </dev/null >/dev/null 2>&1 &", game.display())).status().unwrap();
+        // Volume zero: o que derruba o PulseAudio é a taxa e o descarregamento, não o som, e um
+        // chiado em volume cheio na saída de quem roda o teste não prova nada.
+        Command::new("sh").arg("-c").arg(format!("{} --volume=0 --raw /dev/urandom </dev/null >/dev/null 2>&1 &", game.display())).status().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(500));
 
         for round in 1..=6 {
@@ -383,5 +437,71 @@ mod daemon {
         assert!(sinks.lines().any(|line| line.starts_with(&format!("{game_sink}\t{default}\t"))), "o jogo não voltou à saída padrão");
 
         let _ = Command::new("pkill").args(["-f", "unkvoid-audio-stop"]).status();
+    }
+
+    /// O sink em que o jogo toca agora, pelo nome.
+    fn sink_of(binary: &str) -> Option<String> {
+        let listing = pactl(&["list", "sink-inputs"]).ok()?;
+        let sinks = pactl(&["list", "sinks", "short"]).ok()?;
+        let index = listing
+            .split("Sink Input #")
+            .find(|block| block.contains(&format!("application.process.binary = \"{binary}\"")))?
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("Sink: "))?
+            .trim()
+            .to_string();
+
+        sinks.lines().find_map(|line| {
+            let mut columns = line.split('\t');
+
+            (columns.next()? == index).then(|| columns.next().map(str::to_string))?
+        })
+    }
+
+    /// O app morreu com a tela no ar (o `kill -9`): o `unkvoid_share` ficou carregado com o jogo
+    /// dentro, e a transmissão seguinte não conseguia subir o sink (o nome já existia). O `open`
+    /// seguinte limpa o órfão, e no fim o jogo volta à saída padrão (conferência do Tux no #53).
+    #[test]
+    #[ignore]
+    fn a_sink_left_by_a_dead_app_is_cleared_by_the_next_share() {
+        let default = pactl(&["get-default-sink"]).expect("pulseaudio no ar").trim().to_string();
+        let which = Command::new("which").arg("paplay").output().unwrap().stdout;
+        let paplay = std::fs::read(String::from_utf8(which).unwrap().trim()).unwrap();
+        let scratch = std::env::temp_dir().join("unkvoid-audio-orphan");
+        let game = scratch.join("jogo-orfao");
+        let wait = || std::thread::sleep(std::time::Duration::from_millis(500));
+
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(&game, &paplay).unwrap();
+        std::fs::set_permissions(&game, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        Command::new("sh").arg("-c").arg(format!("{} --volume=0 --raw /dev/zero </dev/null >/dev/null 2>&1 &", game.display())).status().unwrap();
+        wait();
+
+        // A queda: nada do `Drop` roda, só o processo do `pactl subscribe` morre junto.
+        let mut crashed = std::mem::ManuallyDrop::new(SharedSink::open(false).expect("o sink sobe"));
+
+        let _ = crashed.subscribe.kill();
+        let _ = crashed.subscribe.wait();
+        wait();
+
+        assert_eq!(sink_of("jogo-orfao").as_deref(), Some(SINK), "o jogo entrou no sink da transmissão");
+
+        let sink = SharedSink::open(false).expect("a transmissão seguinte sobe o sink");
+
+        wait();
+
+        let ours = pactl(&["list", "sinks", "short"]).unwrap().lines().filter(|line| line.split('\t').nth(1).is_some_and(|name| name.starts_with(SINK))).count();
+
+        assert_eq!(ours, 1, "o sink órfão continuou de pé ao lado do novo");
+        assert_eq!(sink_of("jogo-orfao").as_deref(), Some(SINK), "o jogo sobe na transmissão nova");
+
+        drop(sink);
+        wait();
+
+        assert!(leftovers(&pactl(&["list", "modules", "short"]).unwrap()).is_empty(), "sobrou módulo");
+        assert_eq!(sink_of("jogo-orfao"), Some(default), "o jogo não voltou à saída padrão");
+        assert!(pactl(&["info"]).is_ok(), "o servidor de som caiu");
+
+        let _ = Command::new("pkill").args(["-f", "unkvoid-audio-orphan"]).status();
     }
 }
