@@ -502,6 +502,10 @@ final class AppModel: ObservableObject {
         nameError = ""
         codeError = ""
 
+        // O núcleo sai da voz ao entrar numa sala por código; aqui se solta o que era dela —
+        // chat, tocadores, microfone —, senão a voz segue viva no desenho e no som.
+        await leaveVoice()
+
         let answer = await ask(command, ["name": name, "code": code])
 
         busy = nil

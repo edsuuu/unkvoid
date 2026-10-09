@@ -47,6 +47,27 @@ struct HubTests {
 
     private static var kept: AppModel?
 
+    /// Entrar numa sala por código estando numa voz solta a voz antes: o núcleo já saía dela,
+    /// mas o desenho, o chat da voz e o microfone ficavam vivos deste lado.
+    @Test
+    func enteringARoomByCodeLeavesTheVoiceFirst() async {
+        #expect(EndToEndTests.isolated)
+
+        let model = AppModel(url: "ws://127.0.0.1:1/sfu")
+
+        model.voiceChannel = Channel(id: "v1", name: "Reunião", type: "voice", topic: nil, position: 0, permissions: 0, user_limit: nil, overwrites: [])
+        model.stageOpen = true
+        model.voiceChatOpen = true
+        model.name = "Ada"
+        model.code = "abcdefghijkl"
+
+        await model.joinRoom()
+
+        #expect(model.voiceChannel == nil)
+        #expect(!model.stageOpen)
+        #expect(!model.voiceChatOpen)
+    }
+
     /// `channel.<ulid>` é a sala de um canal no SFU; o movido precisa do id do canal para pedir
     /// o token do destino.
     @Test

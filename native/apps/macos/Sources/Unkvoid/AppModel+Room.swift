@@ -156,7 +156,15 @@ extension AppModel {
                 self.focusedTile = nil
             }
         case "room.mine":
+            let wasOnCamera = mine.camera
+
             mine = decode(data) ?? mine
+
+            // O núcleo soltou a câmera (uma queda, um `resend`): a luz verde não pode ficar acesa
+            // sem nada subindo, e a captura parada é o que deixa religar depois.
+            if wasOnCamera, !mine.camera {
+                media?.camera.stop()
+            }
         case "room.level":
             micLevel = (data["level"] as? NSNumber)?.floatValue ?? 0
             micPercent = data["percent"] as? Int ?? 0

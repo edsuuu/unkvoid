@@ -146,3 +146,25 @@ cartão existir fica guardado do último keyframe em diante (`MediaRouter`).
 
 **Não toque no `inputNode` à toa.** Só encostar nele já pede o aparelho ao sistema, e numa
 saída de sala isso custava 45 s. `Sound.mute()` só mexe nele se o microfone foi aberto.
+
+## O que só o aparelho prova (auditoria de 09/10/2026)
+
+Cada passo abaixo cobre uma correção que não tem como virar teste automático neste Mac:
+
+1. **Troca de saída no meio da voz (P0-5).** Duas contas na mesma voz, a outra falando. Conecte
+   um AirPods (ou troque a saída na setinha do fone) com a voz aberta, e depois abra o
+   microfone. Esperado: a voz da outra pessoa continua sem ninguém precisar entrar de novo. O
+   `Sound` ouve o `AVAudioEngineConfigurationChange`, religa o motor e volta a tocar cada pessoa.
+2. **Câmera depois de uma queda (P1-7).** Câmera ligada; derrube a rede por mais de 5 s
+   (desligar o Wi-Fi) e volte. Esperado: a luz verde apaga quando o núcleo solta a câmera, e
+   "Ligar a câmera" funciona de novo sem sair da sala. (O núcleo religar a câmera sozinho, como
+   faz com a tela, é do Stratus.)
+3. **Atraso que não cresce (P1-8).** Na voz com alguém mutado por uns minutos, ou com a rede aos
+   trancos. Esperado: a boca não descola da voz; a fila de cada pessoa tem teto de 200 ms e
+   volta à folga de 40 ms aparando 5 ms por bloco.
+4. **Sala por código estando na voz (P1-9).** Na voz → Início → uma das "Últimas salas".
+   Esperado: a voz some da coluna, o chat da voz fecha, o microfone da voz não fica capturando.
+5. **Imagem travada no Windows (P1-10).** Alguém transmitindo do Windows; force o decodificador a
+   falhar (pausar e retomar a tela, ou perder pacotes). Esperado: a imagem volta em menos de um
+   segundo. O `VideoSink` chama `requestKeyframe {producerId}` no núcleo — a ação em si está
+   pendente no `ffi.rs` (Stratus): `"requestKeyframe" => handle.in_room(|room, _| { room.request_keyframe(&field("producerId")); json!({ "ok": true }) })`. Até ela entrar, a chamada falha em silêncio e a imagem espera o quadro-chave periódico.

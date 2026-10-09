@@ -20,8 +20,13 @@ final class Sound: @unchecked Sendable {
     private static let loudness: Float = 0.02
     private static let tail = 0.35
     private var players: [String: AVAudioPlayerNode] = [:]
+    /// Quanto cada tocador ainda tem na fila, e se está aparando o atraso.
+    private var lanes: [String: SoundLane] = [:]
     /// Escolhido antes de o primeiro bloco de som chegar: o tocador nasce já nesse volume.
     private var volumes: [String: Float] = [:]
+    /// A saída escolhida, para apontar de novo quando o motor religa.
+    private var speaker: AudioDeviceID?
+    private var configurationWatcher: NSObjectProtocol?
     private var converter: AVAudioConverter?
     /// Só quem abriu o microfone mexe no `inputNode`: tocar nele já pede o aparelho ao
     /// sistema, e fazer isso à toa numa saída de sala custa segundos.
@@ -34,9 +39,30 @@ final class Sound: @unchecked Sendable {
     /// O que o núcleo quer receber: `Float` intercalado.
     private static let wire = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 2, interleaved: true)!
 
+    init() {
+        // O motor de saída para sozinho quando o aparelho muda de taxa ou de canais — os AirPods
+        // ao abrir o microfone, uma troca de saída no meio da chamada. Os tocadores que já
+        // existiam seguiriam empilhando blocos num motor parado: silêncio até alguém novo.
+        configurationWatcher = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: output, queue: nil) { [weak self] _ in
+            self?.restartOutput()
+        }
+    }
+
+    deinit {
+        configurationWatcher.map(NotificationCenter.default.removeObserver)
+    }
+
     /// Um bloco de som de uma transmissão. Chamado da thread da mídia.
     func play(_ samples: Data, from producer: String) {
-        guard let (buffer, peak) = Self.buffer(from: samples) else {
+        let frames = samples.count / MemoryLayout<Float>.size / 2
+
+        gate.lock()
+
+        let skipped = lanes[producer, default: SoundLane()].skip(for: frames)
+
+        gate.unlock()
+
+        guard let (buffer, peak) = Self.buffer(from: samples, skipping: skipped) else {
             return
         }
 
@@ -52,7 +78,52 @@ final class Sound: @unchecked Sendable {
             return
         }
 
-        player.scheduleBuffer(buffer)
+        let queued = Int(buffer.frameLength)
+
+        lanes[producer]?.queued += queued
+        player.scheduleBuffer(buffer, completionCallbackType: .dataConsumed) { [weak self] _ in
+            guard let self else {
+                return
+            }
+
+            self.gate.lock()
+            self.lanes[producer]?.queued -= queued
+            self.gate.unlock()
+        }
+
+        // Motor parado (troca de aparelho) ou tocador que nunca voltou: ninguém ouviria.
+        if !output.isRunning {
+            try? output.start()
+        }
+
+        if !player.isPlaying {
+            player.play()
+        }
+    }
+
+    /// Depois de o aparelho de saída mudar: o motor religa, cada tocador volta a tocar e a
+    /// saída escolhida é apontada de novo. As filas zeram — o que estava nelas já se perdeu.
+    private func restartOutput() {
+        gate.lock()
+
+        defer { gate.unlock() }
+
+        guard !players.isEmpty else {
+            return
+        }
+
+        Self.point(output.outputNode.audioUnit, to: speaker)
+
+        do {
+            try output.start()
+        } catch {
+            return
+        }
+
+        for (key, player) in players {
+            lanes[key] = SoundLane()
+            player.play()
+        }
     }
 
     /// O volume de uma transmissão, de 0 a 1, só deste lado.
@@ -75,6 +146,7 @@ final class Sound: @unchecked Sendable {
             player.stop()
             output.detach(player)
             players[key] = nil
+            lanes[key] = nil
         }
 
         if players.isEmpty {
@@ -96,9 +168,11 @@ final class Sound: @unchecked Sendable {
     }
 
     /// O PCM intercalado do núcleo vira o planar que o `AVAudioEngine` toca; o pico do canal
-    /// esquerdo vem junto, para saber quem está falando sem varrer o bloco de novo.
-    private static func buffer(from samples: Data) -> (AVAudioPCMBuffer, Float)? {
-        let frames = samples.count / MemoryLayout<Float>.size / 2
+    /// esquerdo vem junto, para saber quem está falando sem varrer o bloco de novo. Os
+    /// primeiros `skipping` quadros ficam de fora: é assim que a fila apara o atraso.
+    private static func buffer(from samples: Data, skipping: Int = 0) -> (AVAudioPCMBuffer, Float)? {
+        let total = samples.count / MemoryLayout<Float>.size / 2
+        let frames = total - skipping
 
         guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: stereo, frameCapacity: AVAudioFrameCount(frames)), let channels = buffer.floatChannelData else {
             return nil
@@ -112,9 +186,11 @@ final class Sound: @unchecked Sendable {
             let interleaved = raw.bindMemory(to: Float.self)
 
             for frame in 0 ..< frames {
-                channels[0][frame] = interleaved[frame * 2]
-                channels[1][frame] = interleaved[frame * 2 + 1]
-                peak = max(peak, abs(interleaved[frame * 2]))
+                let source = (frame + skipping) * 2
+
+                channels[0][frame] = interleaved[source]
+                channels[1][frame] = interleaved[source + 1]
+                peak = max(peak, abs(interleaved[source]))
             }
         }
 
@@ -129,6 +205,7 @@ final class Sound: @unchecked Sendable {
 
         defer { gate.unlock() }
 
+        self.speaker = speaker
         Self.point(output.outputNode.audioUnit, to: speaker)
     }
 
@@ -268,5 +345,34 @@ final class Sound: @unchecked Sendable {
         }
 
         AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &device, UInt32(MemoryLayout<AudioDeviceID>.size))
+    }
+}
+
+/// A fila de som de uma pessoa, em quadros (um quadro = os dois canais). A mesma regra do
+/// `sound.rs` do Windows: passou do teto, o mais velho vai saindo aos poucos até sobrar a
+/// folga — cortar tudo de uma vez comeria uma palavra inteira. Relógio de placa nunca bate
+/// com o de quem manda, e sem teto o atraso só cresce; o microfone mutado manda silêncio, então
+/// a fila nunca esvaziaria sozinha.
+struct SoundLane {
+    var queued = 0
+    var trimming = false
+
+    static let perMillisecond = 48
+    /// Quanto se quer na fila em regime: o que uma rede aos trancos precisa.
+    static let cushion = 40 * perMillisecond
+    static let longest = 200 * perMillisecond
+    static let trimStep = 5 * perMillisecond
+
+    /// Quantos quadros do bloco que chegou devem ficar de fora.
+    mutating func skip(for incoming: Int) -> Int {
+        if queued > Self.longest {
+            trimming = true
+        }
+
+        if trimming, queued <= Self.cushion {
+            trimming = false
+        }
+
+        return trimming ? min(Self.trimStep, incoming) : 0
     }
 }

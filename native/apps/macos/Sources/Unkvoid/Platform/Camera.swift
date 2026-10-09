@@ -32,6 +32,12 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
             throw Failure.notAllowed
         }
 
+        // Religar depois de uma queda: a sessão de antes ainda roda, e uma segunda entrada
+        // nela é recusada ("Não deu para ligar a câmera" até sair da sala).
+        if session.isRunning || !session.inputs.isEmpty {
+            stop()
+        }
+
         guard let device = AVCaptureDevice.default(for: .video), let input = try? AVCaptureDeviceInput(device: device) else {
             throw Failure.noCamera
         }
@@ -63,6 +69,10 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
 
         frames.sync { self.seen = seen }
         session.startRunning()
+    }
+
+    var isRunning: Bool {
+        session.isRunning
     }
 
     func stop() {
