@@ -16,14 +16,112 @@ pub struct Device {
 #[cfg(target_os = "windows")]
 pub use win::{microphones, speakers};
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+pub use linux::{microphones, speakers, use_microphone};
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub fn microphones() -> Vec<Device> {
     Vec::new()
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub fn speakers() -> Vec<Device> {
     Vec::new()
+}
+
+/// No Linux a lista vem do `pactl`, que fala com o PulseAudio e com o `pipewire-pulse` do
+/// mesmo jeito. O `id` é o nome que o PulseAudio aceita de volta: `--device=` no `pacat`
+/// da saída, e o padrão do sistema no caso do microfone (`sound.rs`).
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::process::Command;
+
+    use super::Device;
+
+    /// O monitor de uma saída também é uma "source" para o PulseAudio, e oferecê-lo como
+    /// microfone faria a pessoa transmitir o próprio alto-falante de volta.
+    pub fn microphones() -> Vec<Device> {
+        listed("sources", "get-default-source").into_iter().filter(|device| !device.id.ends_with(".monitor")).collect()
+    }
+
+    pub fn speakers() -> Vec<Device> {
+        listed("sinks", "get-default-sink")
+    }
+
+    /// O `pulsesrc` do `shared/capture` lê sempre `@DEFAULT_SOURCE@`: escolher o microfone é
+    /// trocar o padrão do sistema.
+    ///
+    /// ponytail: o padrão é de todo app que grava, não só deste. A saída é `device=` no
+    /// pipeline do microfone do `shared/capture`, que aí passaria a receber o nome escolhido.
+    pub fn use_microphone(name: &str) -> bool {
+        pactl(&["set-default-source", name]).is_some()
+    }
+
+    fn listed(kind: &str, default: &str) -> Vec<Device> {
+        let standard = pactl(&[default]).map(|name| name.trim().to_owned());
+
+        pactl(&["list", kind]).as_deref().map(|output| pairs(output, standard.as_deref())).unwrap_or_default()
+    }
+
+    /// O `pactl list` sai em blocos; o que interessa é o par `Name`/`Description` de cada um.
+    /// A descrição é o que a pessoa reconhece ("Webcam C920"), e o nome é o que o PulseAudio
+    /// aceita de volta.
+    fn pairs(output: &str, standard: Option<&str>) -> Vec<Device> {
+        let mut devices = Vec::new();
+        let mut name: Option<String> = None;
+
+        for line in output.lines() {
+            let line = line.trim();
+
+            if let Some(found) = line.strip_prefix("Name: ") {
+                name = Some(found.to_owned());
+            } else if let Some(description) = line.strip_prefix("Description: ")
+                && let Some(id) = name.take()
+            {
+                devices.push(Device { default: Some(id.as_str()) == standard, id, label: description.to_owned() });
+            }
+        }
+
+        devices
+    }
+
+    /// Sem PulseAudio não há lista, e a interface mostra que não há. Não é falha: é uma
+    /// máquina onde a escolha não existe.
+    fn pactl(arguments: &[&str]) -> Option<String> {
+        let output = Command::new("pactl").args(arguments).output().ok()?;
+
+        if !output.status.success() {
+            tracing::warn!(?arguments, "o pactl recusou");
+
+            return None;
+        }
+
+        String::from_utf8(output.stdout).ok()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_list_reads_the_pairs_marks_the_default_and_hides_the_monitor() {
+            let devices = pairs(
+                "Source #1\n\tState: SUSPENDED\n\tName: alsa_output.pci-0000.analog-stereo.monitor\n\t\
+                 Description: Monitor of Alto-falantes\n\nSource #2\n\tName: alsa_input.usb-C920\n\t\
+                 Description: Webcam C920 Analógico Estéreo\n",
+                Some("alsa_input.usb-C920"),
+            );
+
+            assert_eq!(devices.len(), 2);
+            assert_eq!(devices[1].label, "Webcam C920 Analógico Estéreo");
+            assert!(devices[1].default && !devices[0].default);
+
+            let microphones: Vec<&Device> = devices.iter().filter(|device| !device.id.ends_with(".monitor")).collect();
+
+            assert_eq!(microphones.len(), 1);
+            assert_eq!(microphones[0].id, "alsa_input.usb-C920");
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]

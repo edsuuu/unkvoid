@@ -65,6 +65,19 @@ perguntas que esperam o dono. O que já existe está no [README](../README.md) e
   `keepalive-time` com tela parada, o fechamento da sessão). Provado só o caminho de falha. O
   roteiro está abaixo.
 
+- **O app Slint no Linux** (09/10/2026, `apps/windows`, o mesmo crate do Windows): compila,
+  passa nos testes e abre sob `xvfb` no contêiner (`apps/windows/Dockerfile`), com a Archivo
+  embutida. O que só um Linux de verdade prova:
+  - a janela num Wayland real (o contêiner é X11 pelo Xvfb) e o OpenGL de uma placa (lá é o
+    `llvmpipe` do Mesa);
+  - o som: o `pacat` tocando na saída escolhida e o `pulsesrc` lendo o microfone escolhido
+    (no contêiner não há PulseAudio de pé, e `pactl` responde vazio);
+  - o portal do Wayland abrindo o seletor antes da captura — o `capture::prepare` que o
+    `bridge.rs` precisa chamar (patch em `_relatorios/`, para o Sable aplicar);
+  - o `.deb` do `build-deb.sh` instalando e abrindo num Debian 12 e num Ubuntu 24.04 de verdade;
+  - assistir: o `media::H264Decoder` do Linux (`linux_decoder.rs`, com o Tux) ainda não existe —
+    até lá o Linux entra na voz, fala e ouve, mas não vê a tela de ninguém.
+
 <details>
 <summary>Roteiro para provar o Wayland (GNOME ou KDE)</summary>
 

@@ -23,10 +23,25 @@ serde.workspace = true
 serde_json.workspace = true
 # A chave SRTP atravessa o `producePlain` em base64, e volta assim do servidor.
 base64 = "0.22"
+# Explícito, para o mesmo binário abrir no Windows e no Linux (X11 e Wayland) sem o Qt:
+# `backend-winit` com os dois servidores de janela do Linux, o `femtovg` (OpenGL) e o
+# `software` como reserva (`SLINT_BACKEND=winit-software`) para máquina e contêiner sem GPU.
 # O `raw-window-handle` dá o HWND das janelas: o recorte do painel do Alt+Z e o player dos
 # Clips moram nele. `unstable-winit-030`: a janela sem a moldura do Windows arrasta e
 # redimensiona pelo winit.
-slint = { version = "1.18", features = ["raw-window-handle-06", "unstable-winit-030"] }
+slint = { version = "1.18", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "accessibility",
+    "backend-winit",
+    "backend-winit-x11",
+    "backend-winit-wayland",
+    "renderer-femtovg",
+    "renderer-software",
+    "system-tray",
+    "raw-window-handle-06",
+    "unstable-winit-030",
+] }
 # A prévia do seletor de tela chega em JPEG do `capture`. Já está no lock pelo próprio Slint.
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
@@ -78,6 +93,11 @@ windows = { version = "0.62", features = [
     "Security_Authorization_AppCapabilityAccess",
 ] }
 windows-core = "0.62"
+
+# O cano até o `pacat` fica com uma página só (`F_SETPIPE_SZ`): é o que mantém o atraso da voz
+# baixo. Já está no lock por meio mundo.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 [build-dependencies]
 slint-build = "1.18"

@@ -9644,6 +9644,7 @@ dependencies = [
  "clips",
  "core-app",
  "image",
+ "libc",
  "media",
  "raw-window-handle",
  "serde",
