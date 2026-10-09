@@ -294,7 +294,7 @@ impl LinuxCapturer {
         // e o VUI que o x264 escreve saía diferente do que o decodificador supõe. O keyframe
         // por segundo continua: é o que quem entra na sala espera no pior caso, se o PLI dele
         // se perder.
-        let (format, encoder) = encoder_tail(Self::video_encoder(), frame_rate, bitrate);
+        let (format, encoder) = encoder_tail(Self::video_encoder(), frame_rate * keyframe_seconds(), bitrate);
 
         let (source, remote) = match &portal {
             Some(session) => {
@@ -679,6 +679,17 @@ fn camera_source(index: u32) -> String {
     camera_stand_in().unwrap_or_else(|| format!("v4l2src device=/dev/video{index}"))
 }
 
+/// Segundos entre dois quadros-chave periódicos: um. Ferramenta de teste, só no build de
+/// depuração: `UNKVOID_KEYFRAME_SECONDS=4` dá o GOP do encoder do Windows, que é o que mede de
+/// verdade o pedido de quadro-chave de quem entra (com um GOP de 1 s, o periódico chega antes).
+fn keyframe_seconds() -> u32 {
+    if !cfg!(debug_assertions) {
+        return 1;
+    }
+
+    std::env::var("UNKVOID_KEYFRAME_SECONDS").ok().and_then(|seconds| seconds.parse().ok()).filter(|&seconds| seconds > 0).unwrap_or(1)
+}
+
 /// Ferramenta de teste, só no build de depuração: `UNKVOID_CAMERA_SOURCE` troca a webcam por
 /// qualquer origem do GStreamer (por exemplo `videotestsrc is-live=true pattern=ball`) — é como
 /// se prova a câmera de ponta a ponta numa máquina sem webcam, e num contêiner, que não tem
@@ -698,7 +709,7 @@ fn camera_stand_in() -> Option<String> {
 /// o rosto largo.
 fn camera_pipeline(index: u32) -> String {
     let (width, height) = CAMERA_SIZE;
-    let (format, encoder) = encoder_tail(LinuxCapturer::video_encoder(), 30, CAMERA_BITRATE);
+    let (format, encoder) = encoder_tail(LinuxCapturer::video_encoder(), 30 * keyframe_seconds(), CAMERA_BITRATE);
 
     format!(
         "{} ! videoconvert ! videoscale ! videorate \

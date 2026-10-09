@@ -14,7 +14,8 @@
 //! cada segundo (o script o gera), e mede como o app toca: a imagem na hora do `Playout`, o som
 //! na chegada mais a espera da tela que ele acompanha (`Speaker::hold`). Com `UNKVOID_LOSS=3` a
 //! espera da imagem cresce, e o som tem de crescer junto. O da câmera pede
-//! `UNKVOID_CAMERA_SOURCE`; o de mover de canal, o `SFU_SECRET` do SFU.
+//! `UNKVOID_CAMERA_SOURCE`; o de mover de canal, o `SFU_SECRET` do SFU; os do quadro-chave de quem
+//! entra e da perda, `UNKVOID_KEYFRAME_SECONDS=4` (o GOP do Windows, no build de depuração).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -427,6 +428,146 @@ async fn a_camera_is_watched_beside_the_screen() {
         tokio::task::block_in_place(|| wait_for(Duration::from_secs(3), || viewer_room.tiles()["tiles"].as_array()?.iter().all(|tile| tile["camera"] == false).then_some(()))).is_some(),
         "o cartão da câmera não saiu"
     );
+
+    viewer_room.leave().await;
+    sharer.leave().await;
+}
+
+/// Entra na sala e espera a primeira imagem da tela e da câmera de quem transmite: quanto cada
+/// uma levou desde antes de entrar (o clique), ou `None` se não veio em 4 s.
+async fn late_join(code: &str, name: &str) -> (String, Option<Duration>, Option<Duration>) {
+    let started = Instant::now();
+    let (room, media, _) = enter(code, name).await;
+    let viewer = Viewer::start(media);
+    let first = |camera: bool| {
+        let tiles = room.tiles();
+        let producer = tiles["tiles"].as_array()?.iter().find(|tile| tile["camera"] == camera && tile["mine"] == false)?["producerId"].as_str()?.to_owned();
+        let seen = viewer.seen.lock().expect("o visto");
+
+        seen.pictures.get(&producer)?.images.first().map(|(shown, ..)| shown.duration_since(started))
+    };
+    let (mut screen, mut camera) = (None, None);
+
+    while started.elapsed() < Duration::from_secs(4) && (screen.is_none() || camera.is_none()) {
+        screen = screen.or_else(|| first(false));
+        camera = camera.or_else(|| first(true));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    room.leave().await;
+
+    (name.to_owned(), screen, camera)
+}
+
+/// Quem entra atrasado vê a tela e a câmera em até 1 s só pelo pedido de quadro-chave, também
+/// quem entra 300 ms depois de outra pessoa. É o cenário `b` do harness do SFU (#54) com o
+/// cliente nativo de verdade, e o GOP de 4 s do encoder do Windows (`UNKVOID_KEYFRAME_SECONDS=4`):
+/// com o freio de 2 s o segundo atrasado esperava ~2 s, e com o PLI lido por quem lia primeiro a
+/// câmera esperava o GOP.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "precisa do SFU, de uma tela X, de UNKVOID_CAMERA_SOURCE e de UNKVOID_KEYFRAME_SECONDS=4 — ver o topo do arquivo"]
+async fn late_viewers_see_the_screen_and_the_camera_within_a_second() {
+    assert_eq!(std::env::var("UNKVOID_KEYFRAME_SECONDS").as_deref(), Ok("4"), "com o GOP de 1 s o quadro-chave periódico chega antes do pedido, e o teste não prova nada");
+    assert!(std::env::var_os("UNKVOID_CAMERA_SOURCE").is_some(), "sem UNKVOID_CAMERA_SOURCE não há câmera neste teste");
+
+    let code = code("atrasado");
+    let (sharer, _own, _) = enter(&code, "quem-mostra").await;
+
+    sharer.share(share_config(30)).await.expect("compartilhou");
+    sharer
+        .open_captured_camera(capture::CaptureConfig { source: capture::CaptureSource::Camera(0), capture_audio: false, ..capture::CaptureConfig::default() })
+        .await
+        .expect("a câmera abriu");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let mut joins = Vec::new();
+
+    // Um sozinho; depois dois a 300 ms um do outro; depois três juntos.
+    joins.push(late_join(&code, "a1").await);
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+    let first = tokio::spawn({
+        let code = code.clone();
+
+        async move { late_join(&code, "p1").await }
+    });
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    joins.push(late_join(&code, "p2").await);
+    joins.push(first.await.expect("p1"));
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+    let together: Vec<_> = ["g1", "g2", "g3"].map(|name| tokio::spawn({
+        let code = code.clone();
+
+        async move { late_join(&code, name).await }
+    })).into_iter().collect();
+
+    for join in together {
+        joins.push(join.await.expect("g"));
+    }
+
+    let late: Vec<String> = joins
+        .iter()
+        .flat_map(|(name, screen, camera)| [("tela", screen), ("câmera", camera)].map(|(what, took)| (name, what, *took)))
+        .filter(|(_, _, took)| took.is_none_or(|took| took > Duration::from_secs(1)))
+        .map(|(name, what, took)| format!("{name} {what}: {took:?}"))
+        .collect();
+
+    println!(
+        "primeira imagem de quem entra atrasado (tela, câmera) em ms: {:?}",
+        joins.iter().map(|(name, screen, camera)| (name.as_str(), screen.map(|took| took.as_millis()), camera.map(|took| took.as_millis()))).collect::<Vec<_>>()
+    );
+
+    assert!(late.is_empty(), "passaram de 1 s: {late:?}");
+
+    sharer.leave().await;
+}
+
+/// 5% do que chega some (o `UNKVOID_LOSS` do receptor), por 15 s, com o GOP de 4 s: a imagem não
+/// para mais de 1 s. É o cenário `c` (descida) do harness do SFU com o cliente nativo: sem o RR o
+/// mediasoup não reenviava de novo o pacote cujo reenvio se perdeu, o buraco virava PLI, e o PLI
+/// esperava o freio de 2 s — de 3,6 a 7,2 s parado em 15 s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "precisa do SFU, de uma tela X e de UNKVOID_KEYFRAME_SECONDS=4 — ver o topo do arquivo"]
+async fn five_percent_lost_on_the_way_in_never_holds_the_picture_for_a_second() {
+    assert_eq!(std::env::var("UNKVOID_KEYFRAME_SECONDS").as_deref(), Ok("4"), "com o GOP de 1 s o periódico tapa o buraco antes do pedido, e o teste não prova nada");
+
+    let code = code("perda");
+    let (sharer, _own, _) = enter(&code, "quem-mostra").await;
+
+    sharer.share(share_config(30)).await.expect("compartilhou");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // SAFETY: lido pelo receptor de quem assiste, que é o único que abre enquanto ela vale; quem
+    // transmite não assiste nada.
+    unsafe { std::env::set_var("UNKVOID_LOSS", "5") };
+
+    let (viewer_room, media, _) = enter(&code, "quem-assiste").await;
+    let viewer = Viewer::start(media);
+    let (screen, _) = tokio::task::block_in_place(|| wait_for(Duration::from_secs(5), || screen_of(&viewer_room))).expect("o cartão da tela apareceu");
+
+    assert!(tokio::task::block_in_place(|| viewer.wait_images(&screen, 1, Duration::from_secs(3))), "a primeira imagem não chegou");
+
+    // SAFETY: o mesmo; o receptor já leu.
+    unsafe { std::env::remove_var("UNKVOID_LOSS") };
+
+    let from = Instant::now();
+
+    tokio::time::sleep(Duration::from_secs(15)).await;
+
+    let to = Instant::now();
+    let (fps, pause) = {
+        let seen = viewer.seen.lock().expect("o visto");
+
+        (rate(&seen, &screen, from, to), longest_pause(&seen, &screen, from, to))
+    };
+
+    println!("5% de perda na chegada por 15 s: {fps:.1} imagens/s, maior parada {} ms; {:?}", pause.as_millis(), viewer_room.counters(&screen));
+
+    assert!(pause <= Duration::from_secs(1), "a imagem parou {} ms", pause.as_millis());
+    assert!(fps >= 24.0, "só {fps:.1} imagens por segundo");
 
     viewer_room.leave().await;
     sharer.leave().await;

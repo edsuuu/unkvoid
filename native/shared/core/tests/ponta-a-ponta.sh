@@ -1,25 +1,42 @@
 #!/usr/bin/env bash
 # Transmitir e assistir de ponta a ponta no Linux, contra o SFU de verdade, sem tela nem som de
 # verdade: um Xvfb mostra um vídeo de sincronia (clarão branco + bipe de 1 kHz a cada segundo), um
-# PulseAudio com saída nula toca o som dele, o SFU do repo sobe local, e os testes do
+# servidor de som com saída nula toca o som dele, um SFU sobe local, e os testes do
 # `native/shared/core/tests/live_room.rs` transmitem e assistem no mesmo processo. No fim, a queda
 # de rede de 10 s de cada lado, com o `iptables` cortando só um dos dois processos.
 #
-# Roda num Ubuntu 24.04 ou Debian 12 com os pacotes do docs/VERIFICAR-WINDOWS-LINUX.md, como
-# root (o `iptables` e o usuário da queda de rede pedem). Sem root, a queda de rede é pulada.
+# Roda num Ubuntu 24.04 ou Debian 12 com os pacotes do docs/VERIFICAR-WINDOWS-LINUX.md. Como root
+# faz tudo (o `iptables` e o usuário da queda de rede pedem); sem root, ou com SEM_REDE=1, a queda
+# de rede é pulada.
 #
-#   native/shared/core/tests/ponta-a-ponta.sh            # tudo
-#   SEM_REDE=1 native/shared/core/tests/ponta-a-ponta.sh # sem a queda de rede
+#   native/shared/core/tests/ponta-a-ponta.sh                      # tudo
+#   SEM_REDE=1 native/shared/core/tests/ponta-a-ponta.sh           # sem a queda de rede
+#   SFU_DIR=/outro/checkout/sfu native/shared/core/tests/ponta-a-ponta.sh   # outro SFU
 #
-# Sai com 1 se qualquer caso falhar. Os logs ficam em $PASTA (padrão /tmp/unkvoid-ponta-a-ponta).
+# Variáveis: SFU_DIR (o `sfu/` do repo), SFU_PORT (3300; não é a 3000 de quem desenvolve),
+# SFU_MEDIA_PORT (43000) e SFU_PLAIN_PORT (44000), TELA (:99), PASTA (/tmp/unkvoid-ponta-a-ponta).
+#
+# A máquina volta como estava: a saída e a entrada de som padrão voltam às de antes, os módulos de
+# som que ele carregou saem, o servidor de som que ele subiu desce, e o usuário e as regras do
+# `iptables` da queda de rede são apagados — também se ele for interrompido no meio.
+#
+# Sai com 1 se qualquer caso falhar. Os logs ficam em $PASTA.
 set -uo pipefail
 
 cd "$(dirname "$0")/../../.." || exit 1
 NATIVE="$PWD"
-SFU_DIR="$NATIVE/../sfu"
+SFU_DIR="${SFU_DIR:-$NATIVE/../sfu}"
+SFU_PORT="${SFU_PORT:-3300}"
+SFU_MEDIA_PORT="${SFU_MEDIA_PORT:-43000}"
+SFU_PLAIN_PORT="${SFU_PLAIN_PORT:-44000}"
+TELA="${TELA:-:99}"
 PASTA="${PASTA:-/tmp/unkvoid-ponta-a-ponta}"
 SEGREDO="ponta-a-ponta-segredo-de-teste-com-mais-de-32-caracteres"
-SFU_URL="ws://127.0.0.1:3000/sfu"
+SFU_URL="ws://127.0.0.1:$SFU_PORT/sfu"
+USUARIO_REDE=unkvoidrede
+# O binário da queda de rede roda como outro usuário: fica numa pasta que ele alcança, fora da
+# $PASTA (que pode estar dentro de uma pasta privada), e sai no fim.
+REDE_DIR=""
 FALHAS=0
 
 mkdir -p "$PASTA" && chmod 755 "$PASTA"
@@ -28,25 +45,72 @@ passou()  { printf 'PASSOU: %s\n' "$1"; }
 falhou()  { printf 'FALHOU: %s\n' "$1"; FALHAS=$((FALHAS + 1)); }
 
 FILHOS=()
+MODULOS=()
+SOM_NOSSO=0
+SAIDA_ANTES=""
+ENTRADA_ANTES=""
+USUARIO_NOSSO=0
+
+# A regra que marca os pacotes do usuário da queda e as que os derrubam.
+regras_da_rede() {
+    while iptables -D OUTPUT -m connmark --mark 7 -j DROP 2>/dev/null; do :; done
+    while iptables -D INPUT -m connmark --mark 7 -j DROP 2>/dev/null; do :; done
+    while iptables -D OUTPUT -m owner --uid-owner "$USUARIO_REDE" -j CONNMARK --set-mark 7 2>/dev/null; do :; done
+}
+
 encerra() {
     for pid in "${FILHOS[@]}"; do kill "$pid" 2>/dev/null; done
-    pactl unload-module module-combine-sink >/dev/null 2>&1
+
+    if [ -n "$REDE_DIR" ]; then
+        pkill -f "$REDE_DIR/room" 2>/dev/null
+        rm -rf "$REDE_DIR"
+    fi
+
+    if [ "$(id -u)" = 0 ] && command -v iptables >/dev/null; then
+        regras_da_rede
+    fi
+
+    if [ "$USUARIO_NOSSO" = 1 ]; then
+        userdel -r "$USUARIO_REDE" >/dev/null 2>&1
+    fi
+
+    # O sink do som da tela, se um teste caiu com ele de pé.
+    for modulo in $(pactl list modules short 2>/dev/null | awk '$2 == "module-combine-sink" && /sink_name=unkvoid_share/ { print $1 }'); do
+        pactl unload-module "$modulo" >/dev/null 2>&1
+    done
+
+    [ -n "$SAIDA_ANTES" ] && pactl set-default-sink "$SAIDA_ANTES" >/dev/null 2>&1
+    [ -n "$ENTRADA_ANTES" ] && pactl set-default-source "$ENTRADA_ANTES" >/dev/null 2>&1
+
+    # De trás para a frente: a fonte virtual depende do sink nulo.
+    for ((indice = ${#MODULOS[@]} - 1; indice >= 0; indice--)); do
+        pactl unload-module "${MODULOS[$indice]}" >/dev/null 2>&1
+    done
+
+    if [ "$SOM_NOSSO" = 1 ]; then
+        pulseaudio --kill >/dev/null 2>&1
+    fi
 }
 trap encerra EXIT
+trap 'exit 130' INT TERM
 
 anuncia "A tela, o som e o vídeo de sincronia"
-Xvfb :99 -screen 0 1280x720x24 >"$PASTA/xvfb.log" 2>&1 &
+Xvfb "$TELA" -screen 0 1280x720x24 >"$PASTA/xvfb.log" 2>&1 &
 FILHOS+=($!)
-export DISPLAY=:99
+export DISPLAY="$TELA"
 sleep 2
-xdpyinfo >/dev/null 2>&1 && passou "a tela :99 respondeu" || falhou "a tela :99 não subiu"
+xdpyinfo >/dev/null 2>&1 && passou "a tela $TELA respondeu" || falhou "a tela $TELA não subiu (outra tela já usa $TELA? troque com TELA=:98)"
 
-pulseaudio --start --exit-idle-time=-1 >"$PASTA/pulse.log" 2>&1
-pactl load-module module-null-sink sink_name=fake >/dev/null 2>&1
-pactl load-module module-virtual-source source_name=microfone master=fake.monitor >/dev/null 2>&1
-pactl set-default-sink fake >/dev/null 2>&1
-pactl set-default-source microfone >/dev/null 2>&1
-pactl info >/dev/null 2>&1 && passou "o servidor de som respondeu" || falhou "o PulseAudio não subiu"
+if ! pactl info >/dev/null 2>&1; then
+    pulseaudio --start --exit-idle-time=-1 >"$PASTA/pulse.log" 2>&1 && SOM_NOSSO=1
+fi
+SAIDA_ANTES="$(pactl get-default-sink 2>/dev/null)"
+ENTRADA_ANTES="$(pactl get-default-source 2>/dev/null)"
+modulo=$(pactl load-module module-null-sink sink_name=unkvoid_teste_saida 2>/dev/null) && MODULOS+=("$modulo")
+modulo=$(pactl load-module module-virtual-source source_name=unkvoid_teste_microfone master=unkvoid_teste_saida.monitor 2>/dev/null) && MODULOS+=("$modulo")
+pactl set-default-sink unkvoid_teste_saida >/dev/null 2>&1
+pactl set-default-source unkvoid_teste_microfone >/dev/null 2>&1
+[ "$(pactl get-default-sink 2>/dev/null)" = unkvoid_teste_saida ] && passou "o servidor de som respondeu (saída nula, a de antes volta no fim)" || falhou "o servidor de som não subiu"
 
 if [ ! -s "$PASTA/sync.mkv" ]; then
     ffmpeg -hide_banner -loglevel error -y \
@@ -58,22 +122,24 @@ fi
 ( while true; do
     gst-launch-1.0 -q filesrc location="$PASTA/sync.mkv" ! matroskademux name=d \
         d.video_0 ! queue ! decodebin ! videoconvert ! ximagesink force-aspect-ratio=false \
-        d.audio_0 ! queue ! decodebin ! audioconvert ! audioresample ! pulsesink device=fake
+        d.audio_0 ! queue ! decodebin ! audioconvert ! audioresample ! pulsesink device=unkvoid_teste_saida
   done ) >"$PASTA/player.log" 2>&1 &
 FILHOS+=($!)
 sleep 3
 pactl list sink-inputs short | grep -q . && passou "o vídeo de sincronia toca na tela e no som" || falhou "o player não abriu"
 
-anuncia "O SFU do repo"
+anuncia "O SFU ($SFU_DIR, porta $SFU_PORT)"
 ( cd "$SFU_DIR" && pnpm install --frozen-lockfile >"$PASTA/sfu-install.log" 2>&1 && pnpm run build >>"$PASTA/sfu-install.log" 2>&1 ) || falhou "o SFU não compilou"
-( cd "$SFU_DIR" && SFU_SECRET="$SEGREDO" SFU_WORKERS=2 SFU_CONNECTIONS_PER_MINUTE=1000 SFU_PLAIN_PORTS=32 exec node dist/server.js ) >"$PASTA/sfu.log" 2>&1 &
+( cd "$SFU_DIR" && SFU_SECRET="$SEGREDO" SFU_PORT="$SFU_PORT" SFU_MEDIA_PORT="$SFU_MEDIA_PORT" SFU_PLAIN_PORT="$SFU_PLAIN_PORT" \
+    SFU_WORKERS=2 SFU_CONNECTIONS_PER_MINUTE=1000 SFU_PLAIN_PORTS=32 exec node dist/server.js ) >"$PASTA/sfu.log" 2>&1 &
 FILHOS+=($!)
 sleep 3
-curl -sf http://127.0.0.1:3000/health >/dev/null && passou "o SFU respondeu no /health" || falhou "o SFU não subiu"
+curl -sf "http://127.0.0.1:$SFU_PORT/health" >/dev/null && passou "o SFU respondeu no /health" || falhou "o SFU não subiu (a porta $SFU_PORT está livre?)"
 
 anuncia "Transmitir e assistir (live_room.rs)"
 if UNKVOID_SFU="$SFU_URL" SFU_SECRET="$SEGREDO" UNKVOID_CAMERA_SOURCE="videotestsrc is-live=true pattern=ball" \
-    cargo test -p core-app --test live_room -- --ignored --test-threads=1 --nocapture >"$PASTA/live_room.log" 2>&1; then
+    cargo test -p core-app --test live_room -- --ignored --test-threads=1 --nocapture \
+    --skip late_viewers_see --skip five_percent_lost >"$PASTA/live_room.log" 2>&1; then
     passou "$(grep -oE '[0-9]+ passed' "$PASTA/live_room.log" | head -1 | cut -d' ' -f1) cenários de sala viva"
 else
     falhou "a sala viva: $(grep -E '\.\.\. FAILED' "$PASTA/live_room.log" | tr '\n' ' ')"
@@ -88,28 +154,40 @@ else
 fi
 grep -E 'primeira imagem' "$PASTA/live_room-perda.log"
 
+anuncia "Quadro-chave de quem entra e 5% de perda, com o GOP de 4 s do Windows"
+if UNKVOID_SFU="$SFU_URL" UNKVOID_KEYFRAME_SECONDS=4 UNKVOID_CAMERA_SOURCE="videotestsrc is-live=true pattern=ball" \
+    cargo test -p core-app --test live_room -- --ignored --test-threads=1 --nocapture late_viewers_see five_percent_lost >"$PASTA/live_room-gop.log" 2>&1; then
+    passou "quem entra vê em até 1 s, e 5% de perda não param a imagem 1 s"
+else
+    falhou "o quadro-chave ou a perda: $(grep -E '\.\.\. FAILED' "$PASTA/live_room-gop.log" | tr '\n' ' ')"
+fi
+grep -E 'primeira imagem de quem entra|5% de perda' "$PASTA/live_room-gop.log"
+
 if [ "${SEM_REDE:-0}" = 1 ] || [ "$(id -u)" != 0 ]; then
     echo "AVISO: queda de rede pulada (precisa de root e do iptables)"
 else
     anuncia "Queda de rede de 10 s"
     cargo build -q -p core-app --example room || falhou "o exemplo room não compilou"
-    install -m 755 "$NATIVE/target/debug/examples/room" "$PASTA/room"
-    id unkvoidrede >/dev/null 2>&1 || useradd -m -s /bin/bash unkvoidrede
+    REDE_DIR="$(mktemp -d /tmp/unkvoid-rede.XXXXXX)" && chmod 755 "$REDE_DIR"
+    install -m 755 "$NATIVE/target/debug/examples/room" "$REDE_DIR/room"
+    if ! id "$USUARIO_REDE" >/dev/null 2>&1; then
+        useradd -m -s /bin/bash "$USUARIO_REDE" && USUARIO_NOSSO=1
+    fi
 
     for lado in transmite assiste; do
         sala="rede${lado}$(date +%s | tail -c 5)"
-        iptables -I OUTPUT 1 -m owner --uid-owner unkvoidrede -j CONNMARK --set-mark 7
+        iptables -I OUTPUT 1 -m owner --uid-owner "$USUARIO_REDE" -j CONNMARK --set-mark 7
         if [ "$lado" = transmite ]; then
-            runuser -u unkvoidrede -- env DISPLAY=:99 "$PASTA/room" "$SFU_URL" "$sala" share 45 >"$PASTA/rede-$lado-share.log" 2>&1 &
+            runuser -u "$USUARIO_REDE" -- env DISPLAY="$TELA" "$REDE_DIR/room" "$SFU_URL" "$sala" share 45 >"$PASTA/rede-$lado-share.log" 2>&1 &
             transmite=$!
             sleep 5
-            "$PASTA/room" "$SFU_URL" "$sala" watch 38 >"$PASTA/rede-$lado-watch.log" 2>&1 &
+            "$REDE_DIR/room" "$SFU_URL" "$sala" watch 38 >"$PASTA/rede-$lado-watch.log" 2>&1 &
             assiste=$!
         else
-            DISPLAY=:99 "$PASTA/room" "$SFU_URL" "$sala" share 45 >"$PASTA/rede-$lado-share.log" 2>&1 &
+            DISPLAY="$TELA" "$REDE_DIR/room" "$SFU_URL" "$sala" share 45 >"$PASTA/rede-$lado-share.log" 2>&1 &
             transmite=$!
             sleep 5
-            runuser -u unkvoidrede -- "$PASTA/room" "$SFU_URL" "$sala" watch 38 >"$PASTA/rede-$lado-watch.log" 2>&1 &
+            runuser -u "$USUARIO_REDE" -- "$REDE_DIR/room" "$SFU_URL" "$sala" watch 38 >"$PASTA/rede-$lado-watch.log" 2>&1 &
             assiste=$!
         fi
         sleep 10
@@ -120,7 +198,7 @@ else
         iptables -D INPUT -m connmark --mark 7 -j DROP
         # Só os dois lados: um `wait` sem argumento esperaria também o Xvfb e o SFU, que não acabam.
         wait "$transmite" "$assiste"
-        iptables -D OUTPUT -m owner --uid-owner unkvoidrede -j CONNMARK --set-mark 7
+        regras_da_rede
 
         # Os segundos com imagem depois da volta: a partir de 6 s depois dela, todos têm de ter.
         voltou=$(awk '/^t=/ { gsub(/s/, "", $2); if ($2 + 0 >= 26 && $4 + 0 >= 20) bons++; if ($2 + 0 >= 26) todos++ } END { printf "%d/%d", bons, todos }' "$PASTA/rede-$lado-watch.log")
