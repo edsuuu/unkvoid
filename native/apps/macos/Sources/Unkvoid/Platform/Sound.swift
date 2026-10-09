@@ -20,8 +20,20 @@ final class Sound: @unchecked Sendable {
     private static let loudness: Float = 0.02
     private static let tail = 0.35
     private var players: [String: AVAudioPlayerNode] = [:]
+    /// Quanto cada tocador ainda tem na fila, e se está aparando o atraso. Tem cadeado próprio,
+    /// que nunca fica preso durante `stop`/`start`/`detach`: o `stop()` de um tocador espera os
+    /// callbacks dos blocos que descartou, e cada callback precisa deste cadeado — se fosse o
+    /// `gate`, quem sai da voz com alguém mandando som ficaria preso para sempre.
+    private var lanes: [String: SoundLane] = [:]
+    private let counter = NSLock()
     /// Escolhido antes de o primeiro bloco de som chegar: o tocador nasce já nesse volume.
     private var volumes: [String: Float] = [:]
+    /// A saída escolhida, para apontar de novo quando o motor religa.
+    private var speaker: AudioDeviceID?
+    private var configurationWatcher: NSObjectProtocol?
+    /// Com a saída morta (o fone escolhido sumiu), religar a cada bloco de 20 ms seguraria a
+    /// thread da mídia, que também entrega o vídeo: uma tentativa por segundo.
+    private var lastRestart = Date.distantPast
     private var converter: AVAudioConverter?
     /// Só quem abriu o microfone mexe no `inputNode`: tocar nele já pede o aparelho ao
     /// sistema, e fazer isso à toa numa saída de sala custa segundos.
@@ -34,9 +46,36 @@ final class Sound: @unchecked Sendable {
     /// O que o núcleo quer receber: `Float` intercalado.
     private static let wire = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 2, interleaved: true)!
 
+    init() {
+        // O motor de saída para sozinho quando o aparelho muda de taxa ou de canais — os AirPods
+        // ao abrir o microfone, uma troca de saída no meio da chamada. Os tocadores que já
+        // existiam seguiriam empilhando blocos num motor parado: silêncio até alguém novo.
+        configurationWatcher = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: output, queue: nil) { [weak self] _ in
+            guard let self else {
+                return
+            }
+
+            self.gate.lock()
+            self.restartOutput()
+            self.gate.unlock()
+        }
+    }
+
+    deinit {
+        configurationWatcher.map(NotificationCenter.default.removeObserver)
+    }
+
     /// Um bloco de som de uma transmissão. Chamado da thread da mídia.
     func play(_ samples: Data, from producer: String) {
-        guard let (buffer, peak) = Self.buffer(from: samples) else {
+        let frames = samples.count / MemoryLayout<Float>.size / 2
+
+        counter.lock()
+
+        let skipped = lanes[producer, default: SoundLane()].skip(for: frames)
+
+        counter.unlock()
+
+        guard let (buffer, peak) = Self.buffer(from: samples, skipping: skipped) else {
             return
         }
 
@@ -48,11 +87,59 @@ final class Sound: @unchecked Sendable {
 
         defer { gate.unlock() }
 
+        // O motor parou sem avisar (a notificação ainda não chegou): o mesmo religar.
+        if !output.isRunning, !players.isEmpty, Date().timeIntervalSince(lastRestart) >= 1 {
+            lastRestart = Date()
+            restartOutput()
+        }
+
         guard let player = player(for: producer) else {
             return
         }
 
-        player.scheduleBuffer(buffer)
+        let queued = Int(buffer.frameLength)
+
+        counter.lock()
+        lanes[producer]?.queued += queued
+        counter.unlock()
+
+        player.scheduleBuffer(buffer, completionCallbackType: .dataConsumed) { [weak self] _ in
+            guard let self else {
+                return
+            }
+
+            self.counter.lock()
+            self.lanes[producer]?.queued -= queued
+            self.counter.unlock()
+        }
+    }
+
+    /// Depois de o aparelho de saída mudar: o motor religa, a saída escolhida é apontada de novo,
+    /// e cada tocador é **parado e tocado de novo** — um tocador que ficou "tocando" num motor
+    /// parado segue com `isPlaying`, e o `play()` sozinho não consome mais nada. A fila zera
+    /// depois do `stop()`, que já esperou os callbacks: o zero fica exato. Chamar com o `gate`.
+    private func restartOutput() {
+        guard !players.isEmpty else {
+            return
+        }
+
+        Self.point(output.outputNode.audioUnit, to: speaker)
+
+        do {
+            try output.start()
+        } catch {
+            return
+        }
+
+        for (key, player) in players {
+            player.stop()
+
+            counter.lock()
+            lanes[key] = SoundLane()
+            counter.unlock()
+
+            player.play()
+        }
     }
 
     /// O volume de uma transmissão, de 0 a 1, só deste lado.
@@ -75,6 +162,10 @@ final class Sound: @unchecked Sendable {
             player.stop()
             output.detach(player)
             players[key] = nil
+
+            counter.lock()
+            lanes[key] = nil
+            counter.unlock()
         }
 
         if players.isEmpty {
@@ -96,9 +187,11 @@ final class Sound: @unchecked Sendable {
     }
 
     /// O PCM intercalado do núcleo vira o planar que o `AVAudioEngine` toca; o pico do canal
-    /// esquerdo vem junto, para saber quem está falando sem varrer o bloco de novo.
-    private static func buffer(from samples: Data) -> (AVAudioPCMBuffer, Float)? {
-        let frames = samples.count / MemoryLayout<Float>.size / 2
+    /// esquerdo vem junto, para saber quem está falando sem varrer o bloco de novo. Os
+    /// primeiros `skipping` quadros ficam de fora: é assim que a fila apara o atraso.
+    private static func buffer(from samples: Data, skipping: Int = 0) -> (AVAudioPCMBuffer, Float)? {
+        let total = samples.count / MemoryLayout<Float>.size / 2
+        let frames = total - skipping
 
         guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: stereo, frameCapacity: AVAudioFrameCount(frames)), let channels = buffer.floatChannelData else {
             return nil
@@ -112,9 +205,11 @@ final class Sound: @unchecked Sendable {
             let interleaved = raw.bindMemory(to: Float.self)
 
             for frame in 0 ..< frames {
-                channels[0][frame] = interleaved[frame * 2]
-                channels[1][frame] = interleaved[frame * 2 + 1]
-                peak = max(peak, abs(interleaved[frame * 2]))
+                let source = (frame + skipping) * 2
+
+                channels[0][frame] = interleaved[source]
+                channels[1][frame] = interleaved[source + 1]
+                peak = max(peak, abs(interleaved[source]))
             }
         }
 
@@ -129,6 +224,7 @@ final class Sound: @unchecked Sendable {
 
         defer { gate.unlock() }
 
+        self.speaker = speaker
         Self.point(output.outputNode.audioUnit, to: speaker)
     }
 
@@ -268,5 +364,35 @@ final class Sound: @unchecked Sendable {
         }
 
         AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &device, UInt32(MemoryLayout<AudioDeviceID>.size))
+    }
+}
+
+/// A fila de som de uma pessoa, em quadros (um quadro = os dois canais). O teto do `sound.rs`
+/// do Windows: passou de 200 ms, cada bloco que chega perde os seus primeiros 5 ms até a fila
+/// voltar a 40 ms — cortar tudo de uma vez comeria uma palavra inteira. Relógio de placa nunca
+/// bate com o de quem manda, e sem teto o atraso só cresce; o microfone mutado manda silêncio,
+/// então a fila nunca esvaziaria sozinha. (Não há a folga inicial do Windows: um tranco de rede
+/// ainda vira um estalo aqui, como já era.)
+struct SoundLane {
+    var queued = 0
+    var trimming = false
+
+    static let perMillisecond = 48
+    /// Até onde se apara depois de passar do teto.
+    static let target = 40 * perMillisecond
+    static let longest = 200 * perMillisecond
+    static let trimStep = 5 * perMillisecond
+
+    /// Quantos quadros do começo do bloco que chegou devem ficar de fora.
+    mutating func skip(for incoming: Int) -> Int {
+        if queued > Self.longest {
+            trimming = true
+        }
+
+        if trimming, queued <= Self.target {
+            trimming = false
+        }
+
+        return trimming ? min(Self.trimStep, incoming) : 0
     }
 }
