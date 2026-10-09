@@ -30,13 +30,11 @@ const RATE_WINDOW: Duration = Duration::from_secs(1);
 /// O encoder de vídeo e quem decide a taxa dele, atrás do mesmo cadeado: a decisão é
 /// aplicada na thread da captura, a única que toca no encoder, no cadeado que o quadro já
 /// tomaria de qualquer jeito.
-/// O menor espaço entre dois quadros-chave pedidos por quem assiste. Cada pessoa que perde um
-/// pacote pede um, e com várias assistindo os pedidos se somam ao GOP: medido em 27/09 na tela
-/// de alguém com PC e upload fracos, saía um quadro-chave por segundo. É o quadro mais caro do
-/// encoder, e num upload fraco cada um entope a saída por centenas de ms — os quadros de trás
-/// esperam, e para quem assiste a transmissão trava. Pedido dentro do intervalo não se perde:
-/// sai quando o intervalo acaba.
-const KEYFRAME_SPACING: Duration = Duration::from_secs(2);
+/// O menor espaço entre dois quadros-chave pedidos por quem assiste: o mesmo freio do SFU
+/// (`keyFrameRequestDelay`), que já junta os pedidos da sala. Com 2 s aqui, quem entrava logo
+/// depois de outra pessoa esperava o freio inteiro pela primeira imagem, e cada buraco de uma
+/// rede com perda também.
+const KEYFRAME_SPACING: Duration = Duration::from_millis(500);
 
 /// Quanto a captura pode ficar sem quadro antes de ser refeita. Tela parada também não manda
 /// quadro (o Windows só entrega quando algo muda), então a espera dobra a cada vez que a
@@ -176,57 +174,46 @@ impl StallWatch {
     }
 }
 
-/// Até onde o espaço entre quadros-chave pedidos cresce quando os pedidos não param: é alguém
-/// com perda constante pedindo um atrás do outro, e cada um é o quadro mais caro do encoder para
-/// todo mundo — num upload fraco, entope a saída de quem transmite. Passar do GOP (4 s) não
-/// mudaria nada: o periódico sai de qualquer jeito.
-const MOST_KEYFRAME_SPACING: Duration = Duration::from_secs(4);
+/// Quantos quadros-chave pedidos saem seguidos, no espaço mínimo: quem entra junto, os buracos
+/// de uma rajada de perda.
+const KEYFRAME_BURST: f64 = 4.0;
 
-/// Sem pedido nenhum por isto, o espaço volta ao `KEYFRAME_SPACING`.
-const KEYFRAME_QUIET: Duration = Duration::from_secs(15);
+/// Passada a rajada, um quadro-chave pedido a cada isto. Cada um é o quadro mais caro do
+/// encoder: medido em 27/09 na tela de alguém com PC e upload fracos, um por segundo entupia a
+/// saída por centenas de ms, os quadros de trás esperavam e a transmissão travava para todos.
+const KEYFRAME_REFILL: Duration = Duration::from_secs(2);
 
-/// Os pedidos de quadro-chave de quem assiste, atendidos com espaço entre um e outro.
+/// Os pedidos de quadro-chave de quem assiste: na hora, até `KEYFRAME_BURST` seguidos, e um a
+/// cada `KEYFRAME_REFILL` quando não param. Pedido que não pode sair agora não se perde: sai
+/// quando der.
 struct KeyframeGate {
     asked: bool,
     last: Option<Instant>,
-    /// Um pedido chegou dentro do espaço e teve de esperar por ele.
-    waited: bool,
-    spacing: Duration,
-    asked_at: Option<Instant>,
+    /// Quantos quadros-chave pedidos ainda saem sem esperar, e quando isso foi contado.
+    tokens: f64,
+    counted: Option<Instant>,
 }
 
 impl Default for KeyframeGate {
     fn default() -> Self {
-        Self { asked: false, last: None, waited: false, spacing: KEYFRAME_SPACING, asked_at: None }
+        Self { asked: false, last: None, tokens: KEYFRAME_BURST, counted: None }
     }
 }
 
 impl KeyframeGate {
     /// Anota o pedido, se veio um, e diz se é hora de atender o que está esperando.
     fn due(&mut self, asked: bool, now: Instant) -> bool {
-        if asked {
-            self.asked_at = Some(now);
-        } else if self.asked_at.is_some_and(|at| now.duration_since(at) >= KEYFRAME_QUIET) {
-            self.spacing = KEYFRAME_SPACING;
-        }
+        let refilled = self.counted.map_or(0.0, |counted| now.saturating_duration_since(counted).as_secs_f64() / KEYFRAME_REFILL.as_secs_f64());
 
+        self.tokens = (self.tokens + refilled).min(KEYFRAME_BURST);
+        self.counted = Some(now);
         self.asked |= asked;
 
-        if !self.asked {
+        if !self.asked || self.tokens < 1.0 || self.last.is_some_and(|last| now.saturating_duration_since(last) < KEYFRAME_SPACING) {
             return false;
         }
 
-        if self.last.is_some_and(|last| now.duration_since(last) < self.spacing) {
-            self.waited = true;
-
-            return false;
-        }
-
-        // Pedido que esperou o espaço inteiro: eles não estão parando, e o espaço dobra.
-        if std::mem::take(&mut self.waited) {
-            self.spacing = (self.spacing * 2).min(MOST_KEYFRAME_SPACING);
-        }
-
+        self.tokens -= 1.0;
         self.served(now);
 
         true
@@ -235,7 +222,6 @@ impl KeyframeGate {
     /// Saiu um quadro-chave, pedido ou do GOP: quem esperava por um já tem.
     fn served(&mut self, now: Instant) {
         self.asked = false;
-        self.waited = false;
         self.last = Some(now);
     }
 }
@@ -634,7 +620,7 @@ impl StillFrames {
                             continue;
                         }
 
-                        let feedback = target(&sfu).as_mut().map(PlainSender::read_feedback).unwrap_or_default();
+                        let feedback = target(&sfu).as_mut().map(|sender| sender.read_feedback(video)).unwrap_or_default();
                         let Ok(mut encoding) = encoding.lock() else {
                             continue;
                         };
@@ -935,7 +921,7 @@ impl Broadcast {
 
                 let feedback = target(&capture_target)
                     .as_mut()
-                    .map(|sender| sender.read_feedback())
+                    .map(|sender| sender.read_feedback(video_source))
                     .unwrap_or_default();
 
                 let encoded = {
@@ -996,7 +982,7 @@ impl Broadcast {
                 };
 
                 if let Some(sender) = target(&capture_target).as_mut() {
-                    sender.follow_bitrate(target_bitrate_callback.load(Ordering::Relaxed));
+                    sender.follow_bitrate(video_source, target_bitrate_callback.load(Ordering::Relaxed));
 
                     match sender.send_frame(video_source, encoded, frame_rate) {
                         Ok(packets) => {
@@ -1232,6 +1218,10 @@ impl Broadcast {
 
         self.capturer.stop()?;
 
+        if let (Some(video), Some(sender)) = (self.video, target(&self.sfu).as_mut()) {
+            sender.forget(video);
+        }
+
         Ok(())
     }
 }
@@ -1405,7 +1395,7 @@ impl VideoFeed {
 
         let asked = target(&self.sender)
             .as_mut()
-            .map(|sender| sender.read_feedback())
+            .map(|sender| sender.read_feedback(self.source))
             .unwrap_or_default();
 
         if asked.keyframe {
@@ -1641,38 +1631,52 @@ mod tests {
     fn keyframe_requests_are_spaced_and_none_is_lost() {
         let mut gate = KeyframeGate::default();
         let start = Instant::now();
-
-        assert!(!gate.due(false, start), "sem pedido, nada sai");
-        assert!(gate.due(true, start), "o primeiro pedido sai na hora");
-        assert!(!gate.due(true, start + Duration::from_millis(300)), "outro logo depois espera");
-        assert!(!gate.due(false, start + Duration::from_secs(1)), "e continua esperando");
-        assert!(gate.due(false, start + KEYFRAME_SPACING), "mas sai quando o intervalo acaba");
-        assert!(!gate.due(false, start + KEYFRAME_SPACING * 3), "e não sai de novo sem pedido");
-
-        let later = start + KEYFRAME_SPACING * 4;
-
-        gate.served(later);
-
-        assert!(!gate.due(true, later + Duration::from_millis(500)), "o do GOP que acabou de sair já atende");
-    }
-
-    /// Pedidos que não param espaçam até o GOP; quinze segundos quietos voltam aos 2 s.
-    #[test]
-    fn keyframe_requests_that_keep_coming_space_out_up_to_the_gop() {
-        let mut gate = KeyframeGate::default();
-        let start = Instant::now();
         let at = |millis: u64| start + Duration::from_millis(millis);
 
-        assert!(gate.due(true, at(0)));
-        assert!(!gate.due(true, at(500)));
-        assert!(gate.due(false, at(2_000)), "o que esperou sai no espaço de 2 s");
-        assert!(!gate.due(true, at(2_500)));
-        assert!(!gate.due(false, at(5_000)), "pedidos seguidos: o espaço passou a 4 s");
-        assert!(gate.due(false, at(6_000)));
-        assert!(!gate.due(false, at(30_000)), "sem pedido nada sai");
-        assert!(gate.due(true, at(30_000)), "depois de quinze segundos quietos sai na hora");
-        assert!(!gate.due(true, at(30_500)));
-        assert!(gate.due(false, at(32_000)), "e o espaço voltou a 2 s");
+        assert!(!gate.due(false, at(0)), "sem pedido, nada sai");
+        assert!(gate.due(true, at(0)), "o primeiro pedido sai na hora");
+        assert!(!gate.due(true, at(300)), "outro logo depois espera o freio do SFU");
+        assert!(!gate.due(false, at(400)), "e continua esperando");
+        assert!(gate.due(false, at(500)), "mas sai quando o freio acaba");
+        assert!(!gate.due(false, at(1_500)), "e não sai de novo sem pedido");
+
+        gate.served(at(2_000));
+
+        assert!(!gate.due(true, at(2_100)), "o do GOP que acabou de sair conta como o último");
+        assert!(gate.due(false, at(2_500)));
+    }
+
+    /// Quem entra logo depois de outra pessoa: o SFU junta os pedidos e repassa o segundo meio
+    /// segundo depois do primeiro. Com o freio de 2 s, este esperava 1,8 a 2,3 s pela imagem
+    /// (harness do SFU, bug 3).
+    #[test]
+    fn a_viewer_right_after_another_is_served_as_the_sfu_passes_the_request() {
+        let mut gate = KeyframeGate::default();
+        let start = Instant::now();
+
+        assert!(gate.due(true, start));
+        assert!(gate.due(true, start + Duration::from_millis(500)), "o segundo atrasado espera mais que o SFU");
+        assert!(gate.due(true, start + Duration::from_millis(1_000)), "e o terceiro também");
+    }
+
+    /// Pedidos que não param: passada a rajada, um quadro-chave a cada 2 s, que é o que um upload
+    /// fraco aguenta. Quietos, a rajada volta.
+    #[test]
+    fn keyframe_requests_that_never_stop_come_out_one_every_two_seconds() {
+        let mut gate = KeyframeGate::default();
+        let start = Instant::now();
+        let served: Vec<u64> = (0..200_u64).map(|tenth| tenth * 100).filter(|&millis| gate.due(true, start + Duration::from_millis(millis))).collect();
+        let gaps: Vec<u64> = served.windows(2).map(|pair| pair[1] - pair[0]).collect();
+
+        assert_eq!(&served[..4], [0, 500, 1_000, 1_500], "a rajada sai no freio do SFU");
+        assert!(served.len() <= 4 + 20 / 2 + 1, "{} quadros-chave em 20 s: {served:?}", served.len());
+        assert!(gaps[5..].iter().all(|&gap| gap >= 1_900), "passada a rajada, um a cada 2 s: {gaps:?}");
+
+        let quiet = start + Duration::from_secs(30);
+
+        assert!(gate.due(true, quiet), "oito segundos quietos devolvem a rajada");
+        assert!(gate.due(true, quiet + Duration::from_millis(500)));
+        assert!(gate.due(true, quiet + Duration::from_millis(1_000)));
     }
 
     #[test]

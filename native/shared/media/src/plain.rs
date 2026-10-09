@@ -192,9 +192,15 @@ pub struct PlainSender {
     /// Por onde o vídeo sai, no ritmo. O resto sai direto pelo `socket`.
     pacer: Pacer,
 
-    /// O que o servidor devolveu e o vídeo ainda não veio buscar. Todo envio esvazia o socket
-    /// antes — inclusive o do microfone, que é quem prova o caminho vivo quando só ele sobe.
-    pending: Feedback,
+    /// O que o servidor devolveu para cada origem e ela ainda não veio buscar. Todo envio
+    /// esvazia o socket antes — inclusive o do microfone, que é quem prova o caminho vivo
+    /// quando só ele sobe. Por origem porque tela e câmera dividem o remetente: com um pedido só,
+    /// quem lia primeiro levava o quadro-chave da outra, que esperava o GOP.
+    pending: HashMap<Source, Feedback>,
+
+    /// A taxa de cada vídeo que sobe. O ritmo é um só para o remetente, e anda na soma: com a
+    /// taxa de quem mandou o último quadro, a câmera derrubava o ritmo da tela e ela fazia fila.
+    rates: HashMap<Source, u64>,
 
     /// O último RTCP que abriu com a chave do servidor, e o último pacote que saiu.
     heard_at: Option<Instant>,
@@ -305,7 +311,8 @@ impl PlainSender {
             sent_bytes: 0,
             history: VecDeque::with_capacity(HISTORY),
             pacer,
-            pending: Feedback::default(),
+            pending: HashMap::new(),
+            rates: HashMap::new(),
             heard_at: None,
             sent_at: None,
         })
@@ -320,9 +327,18 @@ impl PlainSender {
         lost(self.heard_at, self.sent_at, now)
     }
 
-    /// A taxa do vídeo agora, que o governador decide: é por ela que o ritmo da saída anda.
-    pub fn follow_bitrate(&self, video_bitrate: u64) {
-        self.pacer.follow(video_bitrate);
+    /// A taxa de um vídeo agora, que o governador dele decide: o ritmo da saída anda na soma de
+    /// todos os que sobem.
+    pub fn follow_bitrate(&mut self, source: Source, video_bitrate: u64) {
+        self.rates.insert(source, video_bitrate);
+        self.pacer.follow(self.rates.values().sum());
+    }
+
+    /// Um vídeo parou de subir: a taxa dele sai da soma do ritmo.
+    pub fn forget(&mut self, source: Source) {
+        if self.rates.remove(&source).is_some() {
+            self.pacer.follow(self.rates.values().sum());
+        }
     }
 
     pub fn server(&self) -> SocketAddr {
@@ -477,11 +493,11 @@ impl PlainSender {
     /// mesmo índice e mesmo texto não reusam keystream.
     ///
     /// Não bloqueia: o socket é não-bloqueante e quem chama é a thread da captura, que
-    /// não pode esperar por nada. Lê o que já chegou e volta.
-    pub fn read_feedback(&mut self) -> Feedback {
+    /// não pode esperar por nada. Lê o que já chegou e volta. Cada origem lê o que é dela.
+    pub fn read_feedback(&mut self, source: Source) -> Feedback {
         self.drain();
 
-        std::mem::take(&mut self.pending)
+        self.pending.remove(&source).unwrap_or_default()
     }
 
     fn drain(&mut self) {
@@ -490,14 +506,20 @@ impl PlainSender {
         };
 
         let mut buffer = [0_u8; 1500];
+        let mut reference = None;
 
         while let Ok(size) = self.socket.recv(&mut buffer) {
             let Ok(plain) = incoming.decrypt_rtcp(&buffer[..size]) else {
                 continue;
             };
 
-            self.heard_at = Some(Instant::now());
-            self.pending.keyframe |= wants_keyframe(&plain);
+            let heard = Instant::now();
+
+            self.heard_at = Some(heard);
+
+            for source in keyframe_requests(&plain, self.ssrc_base) {
+                self.pending.entry(source).or_default().keyframe = true;
+            }
 
             // ponytail: busca linear no histórico a cada pacote perdido, até 1024 passos.
             // Índice por número de sequência se isto aparecer no custo por quadro.
@@ -507,10 +529,54 @@ impl PlainSender {
                 else {
                     continue;
                 };
+                let source = if ssrc == Source::Camera.ssrc(self.ssrc_base) { Source::Camera } else { Source::Screen };
 
-                self.pending.lost += u32::from(!std::mem::replace(asked, true));
+                self.pending.entry(source).or_default().lost += u32::from(!std::mem::replace(asked, true));
                 self.pacer.push_repair(packet.clone());
             }
+
+            reference = reference_time(&plain).map(|time| (time, heard)).or(reference);
+        }
+
+        if let Some((time, heard)) = reference {
+            self.answer_reference(time, heard);
+        }
+    }
+
+    /// O XR DLRR em resposta ao RRTR do servidor: é por ele que o mediasoup mede a ida e volta
+    /// da subida. Sem ele, o servidor repetia o NACK a cada 100 ms fixos, e com a ida e volta
+    /// maior que isso a perda dupla passava do prazo de quem assiste. Um item por origem que
+    /// sobe, com o SSRC dela: é por ele que o mediasoup acha o producer.
+    ///
+    /// ponytail: a espera conta de quando o socket foi lido, não de quando o pacote chegou —
+    /// até um quadro (16 a 33 ms) a mais na ida e volta medida. Teto: o carimbo do kernel
+    /// (`SO_TIMESTAMP`) no socket.
+    fn answer_reference(&mut self, reference: u32, heard: Instant) {
+        let sources: Vec<u32> = self.streams.keys().map(|source| source.ssrc(self.ssrc_base)).collect();
+        let Some(&first) = sources.first() else {
+            return;
+        };
+        // Em 1/65536 s, e nunca zero: o mediasoup ignora a resposta com espera zero.
+        let delay = ((heard.elapsed().as_secs_f64() * 65_536.0) as u32).max(1);
+        let words = 3 * sources.len() as u16;
+        let mut packet = Vec::with_capacity(12 + 12 * sources.len());
+
+        // V=2 | PT=207 (XR) | comprimento em palavras, menos uma | SSRC de quem manda.
+        packet.extend_from_slice(&[0x80, 207]);
+        packet.extend_from_slice(&(2 + words).to_be_bytes());
+        packet.extend_from_slice(&first.to_be_bytes());
+        // Bloco 5 (DLRR) e o comprimento dele em palavras.
+        packet.extend_from_slice(&[5, 0]);
+        packet.extend_from_slice(&words.to_be_bytes());
+
+        for ssrc in sources {
+            packet.extend_from_slice(&ssrc.to_be_bytes());
+            packet.extend_from_slice(&reference.to_be_bytes());
+            packet.extend_from_slice(&delay.to_be_bytes());
+        }
+
+        if let Ok(protected) = self.srtp.encrypt_rtcp(&packet) {
+            let _ = self.socket.send(&protected);
         }
     }
 
@@ -613,13 +679,14 @@ fn grow_send_buffer(socket: &UdpSocket) {
     }
 }
 
-/// Procura um pedido de quadro-chave num RTCP composto.
+/// As origens para as quais um RTCP composto pede quadro-chave.
 ///
 /// PLI e FIR são as duas formas de dizer a mesma coisa, e navegadores diferentes mandam
 /// uma ou outra — atender só uma deixaria metade das pessoas congelada. O laço anda pelo
 /// campo de comprimento de cada sub-pacote porque o pedido quase nunca vem sozinho: ele
-/// costuma vir atrás de um relatório de recepção, no mesmo datagrama.
-fn wants_keyframe(rtcp: &[u8]) -> bool {
+/// costuma vir atrás de um relatório de recepção, no mesmo datagrama. Cada pedido diz o SSRC
+/// de quem ele quer; o que não diz (o FIR antigo) vale para os dois vídeos.
+fn keyframe_requests(rtcp: &[u8], base: u32) -> Vec<Source> {
     /// Payload-specific feedback, onde mora o PLI.
     const PSFB: u8 = 206;
     /// Full Intra Request no formato antigo, sozinho num pacote só dele.
@@ -627,6 +694,8 @@ fn wants_keyframe(rtcp: &[u8]) -> bool {
     const PLI: u8 = 1;
     const FIR: u8 = 4;
 
+    let video = |ssrc: u32| [Source::Screen, Source::Camera].into_iter().find(|source| source.ssrc(base) == ssrc);
+    let mut asked = Vec::new();
     let mut rest = rtcp;
 
     while rest.len() >= 4 {
@@ -634,18 +703,66 @@ fn wants_keyframe(rtcp: &[u8]) -> bool {
         let kind = rest[1];
         let size = (usize::from(u16::from_be_bytes([rest[2], rest[3]])) + 1) * 4;
 
-        if kind == LEGACY_FIR || (kind == PSFB && (format == PLI || format == FIR)) {
-            return true;
+        if size > rest.len() {
+            break;
         }
 
-        if size == 0 || size > rest.len() {
-            return false;
+        let packet = &rest[..size];
+        let ssrc_at = |offset: usize| packet.get(offset..offset + 4).map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
+
+        if kind == LEGACY_FIR {
+            asked.extend([Source::Screen, Source::Camera]);
+        } else if kind == PSFB && format == PLI {
+            asked.extend(ssrc_at(8).and_then(video));
+        } else if kind == PSFB && format == FIR {
+            // O FIR diz o SSRC em cada entrada de 8 bytes depois do cabeçalho comum.
+            asked.extend((12..size).step_by(8).filter_map(|offset| ssrc_at(offset).and_then(video)));
         }
 
         rest = &rest[size..];
     }
 
-    false
+    asked.sort_by_key(|source| source.ssrc(base));
+    asked.dedup();
+
+    asked
+}
+
+/// O meio do relógio NTP de um RRTR (XR, bloco 4) que o servidor mandou, se veio um.
+fn reference_time(rtcp: &[u8]) -> Option<u32> {
+    const XR: u8 = 207;
+    const RRTR: u8 = 4;
+
+    let mut rest = rtcp;
+
+    while rest.len() >= 4 {
+        let size = (usize::from(u16::from_be_bytes([rest[2], rest[3]])) + 1) * 4;
+
+        if size > rest.len() {
+            break;
+        }
+
+        if rest[1] == XR {
+            let mut offset = 8;
+
+            while offset + 4 <= size {
+                let words = usize::from(u16::from_be_bytes([rest[offset + 2], rest[offset + 3]]));
+
+                if rest[offset] == RRTR && words == 2 && offset + 12 <= size {
+                    let seconds = u32::from_be_bytes([rest[offset + 4], rest[offset + 5], rest[offset + 6], rest[offset + 7]]);
+                    let fraction = u32::from_be_bytes([rest[offset + 8], rest[offset + 9], rest[offset + 10], rest[offset + 11]]);
+
+                    return Some((seconds << 16) | (fraction >> 16));
+                }
+
+                offset += 4 + words * 4;
+            }
+        }
+
+        rest = &rest[size..];
+    }
+
+    None
 }
 
 /// O relógio NTP de 64 bits do RTCP: segundos desde 1900 nos 32 bits de cima, e a fração
@@ -810,7 +927,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         assert_eq!(
-            sender.read_feedback(),
+            sender.read_feedback(Source::Screen),
             Feedback { keyframe: false, lost: 1 },
             "um NACK não é pedido de quadro-chave, e é um pacote perdido",
         );
@@ -826,7 +943,7 @@ mod tests {
             .expect("could not send the NACK again");
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        assert_eq!(sender.read_feedback(), Feedback::default(), "o mesmo pacote não é perda nova");
+        assert_eq!(sender.read_feedback(Source::Screen), Feedback::default(), "o mesmo pacote não é perda nova");
         assert!(server_socket.recv(&mut buffer).is_ok(), "o pedido repetido também é atendido");
     }
 
@@ -871,7 +988,7 @@ mod tests {
 
         server_socket.send_to(&nack, ("127.0.0.1", port)).expect("could not send the NACK");
         std::thread::sleep(Duration::from_millis(50));
-        sender.read_feedback();
+        sender.read_feedback(Source::Screen);
 
         let size = media_packet(&server_socket, &mut buffer);
 
@@ -949,10 +1066,119 @@ mod tests {
     fn a_pli_behind_a_receiver_report_is_found() {
         let mut packet = vec![0x80, 201, 0x00, 0x01, 0, 0, 0, 1];
         // PLI: versão 2, FMT 1, PT 206, comprimento 2 (12 bytes no total).
-        packet.extend_from_slice(&[0x81, 206, 0x00, 0x02, 0, 0, 0, 1, 0, 0, 0, 2]);
+        packet.extend_from_slice(&[0x81, 206, 0x00, 0x02, 0, 0, 0, 1]);
+        packet.extend_from_slice(&Source::Screen.ssrc(BASE).to_be_bytes());
 
-        assert!(wants_keyframe(&packet), "PLI depois de um RR não foi encontrado");
-        assert!(!wants_keyframe(&packet[..8]), "um RR sozinho não pede quadro-chave");
+        assert_eq!(keyframe_requests(&packet, BASE), [Source::Screen], "PLI depois de um RR não foi encontrado");
+        assert!(keyframe_requests(&packet[..8], BASE).is_empty(), "um RR sozinho não pede quadro-chave");
+    }
+
+    /// O FIR diz o SSRC em cada entrada; o antigo, sem SSRC, vale para os dois vídeos.
+    #[test]
+    fn a_fir_asks_for_the_source_in_its_entries() {
+        let mut fir = vec![0x84, 206, 0x00, 0x04, 0, 0, 0, 1, 0, 0, 0, 0];
+
+        fir.extend_from_slice(&Source::Camera.ssrc(BASE).to_be_bytes());
+        fir.extend_from_slice(&[7, 0, 0, 0]);
+
+        assert_eq!(keyframe_requests(&fir, BASE), [Source::Camera]);
+        assert_eq!(keyframe_requests(&[0x80, 192, 0x00, 0x01, 0, 0, 0, 1], BASE), [Source::Screen, Source::Camera]);
+    }
+
+    fn rtcp_to(sender: &PlainSender, server_socket: &UdpSocket, server_key: &[u8], rtcp: &[u8]) {
+        let protected = server_context(server_key).encrypt_rtcp(rtcp).expect("could not protect the RTCP");
+        let port = sender.socket.local_addr().expect("sender without an address").port();
+
+        server_socket.send_to(&protected, ("127.0.0.1", port)).expect("could not send the RTCP");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    fn keyframe(source: Source, sender: &mut PlainSender) {
+        sender.send_frame(source, EncodedFrame { data: vec![0, 0, 0, 1, 0x65, 0xAB], keyframe: true, timestamp_ns: 1 }, 30.0).expect("could not send the frame");
+    }
+
+    /// Tela e câmera dividem o remetente, e cada uma lê o que o servidor devolveu na sua thread.
+    /// Com um pedido só, a tela (60 quadros contra 30) lia primeiro e levava o PLI da câmera, e a
+    /// câmera de quem entrava esperava o GOP (auditoria P2-2; harness do SFU, bug 4).
+    #[test]
+    fn a_keyframe_request_reaches_the_source_it_names() {
+        let (server_socket, address) = listener();
+        let server_key = PlainSender::generate_key();
+        let mut sender = PlainSender::connect(address, &PlainSender::generate_key(), Some(&server_key), BASE).expect("could not connect");
+
+        keyframe(Source::Screen, &mut sender);
+        keyframe(Source::Camera, &mut sender);
+
+        let mut pli = vec![0x81, 206, 0x00, 0x02, 0, 0, 0, 1];
+
+        pli.extend_from_slice(&Source::Camera.ssrc(BASE).to_be_bytes());
+        rtcp_to(&sender, &server_socket, &server_key, &pli);
+
+        assert!(!sender.read_feedback(Source::Screen).keyframe, "a tela leu o pedido da câmera");
+        assert!(sender.read_feedback(Source::Camera).keyframe, "o pedido da câmera se perdeu");
+        assert!(!sender.read_feedback(Source::Camera).keyframe, "um pedido, um quadro-chave");
+    }
+
+    /// O mediasoup manda o RRTR (XR, bloco 4) a quem transmite e mede a ida e volta da subida pela
+    /// resposta. Sem ela repetia o NACK a cada 100 ms fixos (harness do SFU, bug 2).
+    #[test]
+    fn a_reference_time_is_answered_with_the_delay_since_it_arrived() {
+        let (server_socket, address) = listener();
+        let (key, server_key) = (PlainSender::generate_key(), PlainSender::generate_key());
+        let mut sender = PlainSender::connect(address, &key, Some(&server_key), BASE).expect("could not connect");
+
+        keyframe(Source::Screen, &mut sender);
+
+        let mut buffer = [0u8; 2048];
+
+        server_socket.set_read_timeout(Some(Duration::from_millis(100))).expect("timeout");
+        while server_socket.recv(&mut buffer).is_ok() {}
+
+        // XR do servidor (SSRC 1) com um RRTR: NTP 0x0001_2345 segundos e 0x6789_ABCD de fração.
+        let rrtr = [0x80, 207, 0x00, 0x04, 0, 0, 0, 1, 4, 0, 0x00, 0x02, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD];
+
+        rtcp_to(&sender, &server_socket, &server_key, &rrtr);
+        sender.read_feedback(Source::Screen);
+
+        let mut ours = server_context(&key);
+        let answer = loop {
+            let size = server_socket.recv(&mut buffer).expect("a resposta ao RRTR não chegou");
+
+            if let Ok(plain) = ours.decrypt_rtcp(&buffer[..size])
+                && plain[1] == 207
+            {
+                break plain.to_vec();
+            }
+        };
+        let word = |offset: usize| u32::from_be_bytes([answer[offset], answer[offset + 1], answer[offset + 2], answer[offset + 3]]);
+
+        assert_eq!((answer[8], u16::from_be_bytes([answer[10], answer[11]])), (5, 3), "um bloco DLRR com um item");
+        assert_eq!(word(12), Source::Screen.ssrc(BASE), "o item leva o SSRC da origem, que é como o mediasoup acha o producer");
+        assert_eq!(word(16), 0x2345_6789, "o LRR é o meio do relógio NTP do RRTR");
+        assert!(word(20) > 0, "espera zero o mediasoup ignora");
+    }
+
+    /// O ritmo é um só para o remetente: anda na soma da tela e da câmera, e a câmera que para
+    /// sai da conta. Com a taxa de quem mandou o último quadro, a câmera derrubava o ritmo da tela
+    /// e o quadro dela fazia fila (harness do SFU, bug 5).
+    #[test]
+    fn the_pace_follows_the_sum_of_the_videos() {
+        let (_server_socket, address) = listener();
+        let mut sender = PlainSender::connect(address, &PlainSender::generate_key(), None, BASE).expect("could not connect");
+
+        sender.follow_bitrate(Source::Screen, 6_000_000);
+        sender.follow_bitrate(Source::Camera, 800_000);
+        sender.follow_bitrate(Source::Screen, 6_000_000);
+
+        assert_eq!(sender.pacer.rate(), 6_800_000 * 5 / 2);
+
+        sender.follow_bitrate(Source::Camera, 800_000);
+
+        assert_eq!(sender.pacer.rate(), 6_800_000 * 5 / 2, "o último quadro ser da câmera não muda o ritmo");
+
+        sender.forget(Source::Camera);
+
+        assert_eq!(sender.pacer.rate(), 6_000_000 * 5 / 2);
     }
 
     use super::*;
