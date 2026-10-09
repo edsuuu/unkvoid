@@ -360,15 +360,18 @@ final class Channel extends Model
         // para a origem com token novo. A origem fica fechada para a pessoa pelo tempo do passe.
         throw_if(! $moved && Cache::has($this->moveOutKey($user)), ForbiddenException::class, 'Você acabou de ser movido para outro canal.');
 
-        // Quem já está sentado (o SFU avisou `joined` e ainda não `left`) está pedindo token
-        // para reconectar: cair da rede não passa de novo por CONNECT nem pelo limite. A
-        // presença não serve de medida — o SFU tira dela quem está na carência.
-        $seated = ChannelAccess::seated($this, $user);
+        // Quem o SFU ainda conhece na sala (com o socket de pé ou na carência de reconexão)
+        // está pedindo token para reconectar: cair da rede não passa de novo por CONNECT nem
+        // pelo limite. A medida é a presença fresca, nunca o acesso em banco: um `left` perdido
+        // (SFU reiniciado, Laravel fora do ar) deixaria a linha aberta por horas.
+        $peers = $sfu->peers($this, fresh: true);
+        $seated = array_any($peers, fn (array $peer): bool => $peer['sub'] === $user->subject());
 
         if (! $moved && ! $seated) {
             $member->authorize(PermissionEnum::Connect, $this);
 
-            throw_if(! is_null($this->user_limit) && count(array_filter($sfu->peers($this, fresh: true), fn (array $peer): bool => $peer['sub'] !== $user->subject())) >= $this->user_limit, ForbiddenException::class, 'O canal está cheio.');
+            // Quem está na carência conta: o lugar de quem caiu fica guardado até ele voltar.
+            throw_if(! is_null($this->user_limit) && count($peers) >= $this->user_limit, ForbiddenException::class, 'O canal está cheio.');
         }
 
         $can = [];
@@ -428,8 +431,10 @@ final class Channel extends Model
         Cache::put($this->moveOutKey($target), true, self::MOVE_PASS_SECONDS);
 
         // Mover de volta (A → B → A) em menos de 60 s: a marca de saída de A não pode barrar
-        // quem o moderador acabou de mandar para lá.
+        // quem o moderador acabou de mandar para lá. E tirar alguém daqui revoga o passe que
+        // ele tinha para cá: senão o app antigo, que volta à origem, voltava para B.
         Cache::forget($destination->moveOutKey($target));
+        Cache::forget($this->movePassKey($target));
 
         $sfu->move($this, $destination, $target->subject(), $actor->name);
     }
