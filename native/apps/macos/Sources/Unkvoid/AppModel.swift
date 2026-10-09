@@ -172,6 +172,11 @@ final class AppModel: ObservableObject {
     @Published var roomOpen = false
     /// Quem liga e desliga a captura da câmera: um dono só, com o estado "ligando" à vista.
     var cameraSync = CameraSync()
+    /// Como a captura é ligada. O app usa a câmera de verdade; o teste põe aqui o que quiser.
+    var cameraStarter: (@MainActor () async throws -> Void)?
+    /// As falhas que o núcleo anunciou entre o pedido de entrar e a sala abrir deste lado: são
+    /// desta sala, e aparecem assim que ela abre, em vez de se perderem.
+    var failuresWhileJoining: [String] = []
     @Published var reconnecting = false
     @Published var deafened = false
     /// Entre o clique no canal e o microfone abrir: o botão ainda não tem o que mostrar, e

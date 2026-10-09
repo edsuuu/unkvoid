@@ -9,6 +9,12 @@ extension AppModel {
         media?.start()
         roomOpen = true
 
+        if let failure = failuresWhileJoining.last {
+            complain(failure)
+        }
+
+        failuresWhileJoining = []
+
         let now = await ask("room")
 
         peers = decode(now["peers"]) ?? []
@@ -101,6 +107,7 @@ extension AppModel {
 
     func closeRoom() {
         roomOpen = false
+        failuresWhileJoining = []
         media?.stop()
 
         roomError = nil
@@ -136,8 +143,13 @@ extension AppModel {
         let name = event["event"] as? String ?? ""
 
         // Sair da sala ainda faz o núcleo anunciar `room.mine` (a câmera "ligada" enquanto ele
-        // recolhe o que subia): com a sala fechada deste lado, isso é da sala que morreu.
+        // recolhe o que subia): com a sala fechada deste lado, isso é da sala que morreu. A
+        // falha anunciada enquanto se entra é diferente: é da sala que está nascendo.
         if name.hasPrefix("room."), !roomOpen {
+            if name == "room.failed", voiceJoining || busy != nil {
+                failuresWhileJoining.append(Self.roomFailure(data["what"] as? String))
+            }
+
             return
         }
 
@@ -546,16 +558,17 @@ extension AppModel {
     }
 
     private func startCapture() async {
-        guard let core, let media else {
-            return
+        // Por qualquer saída daqui — ligou, falhou, não tinha núcleo — o "ligando" é solto;
+        // senão a câmera ficava presa nele até reabrir o app. E, enquanto ligava, ela pode ter
+        // sido desligada (ou a sala fechada): a luz verde não fica acesa fora de uma chamada.
+        defer {
+            if cameraSync.finishedStarting(wanted: mine.camera && roomOpen) == .stop {
+                media?.camera.stop()
+            }
         }
 
-        media.camera.blurBackground(voicePreferences.blurBackground)
-
         do {
-            try await media.camera.start { surface, time in
-                core.show(surface, at: time)
-            }
+            try await (cameraStarter ?? captureFromDevice)()
         } catch {
             _ = await ask("closeCamera")
 
@@ -563,11 +576,17 @@ extension AppModel {
                 ? "O Unkvoid não tem permissão para usar a câmera. Autorize nas Configurações do Sistema."
                 : "Não deu para ligar a câmera.")
         }
+    }
 
-        // Enquanto ligava, a câmera pode ter sido desligada (ou a sala fechada): a luz verde
-        // não fica acesa fora de uma chamada.
-        if cameraSync.finishedStarting(wanted: mine.camera && roomOpen) == .stop {
-            media.camera.stop()
+    private func captureFromDevice() async throws {
+        guard let core, let media else {
+            throw Camera.Failure.noCamera
+        }
+
+        media.camera.blurBackground(voicePreferences.blurBackground)
+
+        try await media.camera.start { surface, time in
+            core.show(surface, at: time)
         }
     }
 

@@ -47,6 +47,47 @@ struct HubTests {
 
     private static var kept: AppModel?
 
+    /// A câmera que não chega a ligar (sem permissão, sem aparelho) solta o "ligando": senão o
+    /// próximo pedido de ligar não faria nada até reabrir o app.
+    @Test
+    func aCameraThatFailsToStartIsNotStuckStarting() async {
+        #expect(EndToEndTests.isolated)
+
+        let model = AppModel(url: "ws://127.0.0.1:1/sfu")
+
+        model.cameraStarter = { throw Camera.Failure.notAllowed }
+        model.roomOpen = true
+        model.heard(["event": "room.mine", "data": Self.mine(camera: true)])
+
+        #expect(model.cameraSync.starting, "o aviso do núcleo é o que liga a captura")
+
+        try? await Task.sleep(for: .milliseconds(300))
+
+        #expect(!model.cameraSync.starting)
+        #expect(model.roomError?.contains("permissão") == true)
+        #expect(model.cameraSync.decide(wanted: true, running: false) == .start, "pode tentar de novo")
+    }
+
+    /// A falha anunciada enquanto se entra na sala (o microfone, por exemplo) não se perde: ela
+    /// aparece assim que a sala abre deste lado.
+    @Test
+    func aFailureWhileJoiningShowsUpWhenTheRoomOpens() async {
+        #expect(EndToEndTests.isolated)
+
+        let model = AppModel(url: "ws://127.0.0.1:1/sfu")
+
+        model.voiceJoining = true
+        model.heard(["event": "room.failed", "data": ["what": "mic"]])
+
+        #expect(model.roomError == nil, "a sala ainda não abriu")
+
+        await model.openedRoom()
+
+        #expect(model.roomError == "Não deu para abrir o microfone.")
+
+        model.closeRoom()
+    }
+
     /// Sair da voz com mic e câmera ligados: o núcleo ainda anuncia `room.mine` com a câmera
     /// ligada enquanto recolhe o que subia. Com a sala fechada deste lado, isso não religa nada —
     /// a luz verde não fica acesa fora da chamada.
@@ -110,6 +151,11 @@ struct HubTests {
         #expect(!ChatPanel.continues(message(4, from: grace, at: "2026-10-09T10:01:00Z"), after: first))
         #expect(!ChatPanel.continues(message(5, from: ada, at: "2026-10-09T10:01:00Z", replyTo: ReplyTo(id: 1, name: "Ada", body: "oi")), after: first))
         #expect(!ChatPanel.continues(message(6, from: ada, at: "2026-10-09T10:01:00Z", type: "join"), after: first))
+    }
+
+    /// O `room.mine` inteiro, como o núcleo manda: o `Mine` não aceita campo faltando.
+    private static func mine(camera: Bool) -> [String: Any] {
+        ["sharing": false, "selfView": false, "mic": false, "micMuted": false, "camera": camera, "canShare": true, "canSpeak": true, "canVideo": true]
     }
 
     private func message(_ id: Int, from person: Person, at when: String, replyTo: ReplyTo? = nil, type: String = "user") -> Message {
