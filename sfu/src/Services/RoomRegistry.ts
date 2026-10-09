@@ -193,10 +193,6 @@ export class RoomRegistry {
         this.rooms.delete(room.id);
     }
 
-    public all(): Room[] {
-        return [...this.rooms.values()];
-    }
-
     /**
      * Quem está na carência de reconexão vem junto, com `reconnecting`: é o SFU quem sabe
      * quem ainda tem lugar na sala, e o Laravel decide por isso se o token é de reconexão.

@@ -20,15 +20,16 @@ export class RoomController {
     }
 
     /**
-     * Sem sala no caminho, vale para o SFU inteiro: expulsar e banir não dependem de o
-     * Laravel saber onde a pessoa está, e saem numa chamada só.
+     * As salas vêm no corpo (os canais de voz do servidor): expulsar e banir não dependem de o
+     * Laravel saber em qual delas a pessoa está, saem numa chamada só, e nunca alcançam a voz
+     * de outro servidor — a conta tem uma sessão no SFU inteiro, e ela pode estar lá.
      */
-    public kickEverywhere(request: Request, response: Response): void {
+    public kickIn(request: Request, response: Response): void {
         const userId = this.userId(request);
         let kicked = 0;
 
-        for (const room of this.registry.all()) {
-            kicked += room.kickUser(userId);
+        for (const roomId of this.rooms(request)) {
+            kicked += this.registry.find(roomId)?.kickUser(userId) ?? 0;
         }
 
         response.json({ kicked });
@@ -42,13 +43,13 @@ export class RoomController {
         });
     }
 
-    public async muteEverywhere(request: Request, response: Response): Promise<void> {
+    public async muteIn(request: Request, response: Response): Promise<void> {
         const userId = this.userId(request);
         const muted = this.muted(request);
         let touched = 0;
 
-        for (const room of this.registry.all()) {
-            touched += await room.muteUser(userId, muted);
+        for (const roomId of this.rooms(request)) {
+            touched += (await this.registry.find(roomId)?.muteUser(userId, muted)) ?? 0;
         }
 
         response.json({ muted: touched });
@@ -56,6 +57,20 @@ export class RoomController {
 
     public presence(_request: Request, response: Response): void {
         response.json({ rooms: this.registry.presence() });
+    }
+
+    private rooms(request: Request): string[] {
+        const { rooms } = request.body as { rooms?: unknown };
+
+        if (
+            !Array.isArray(rooms) ||
+            rooms.length === 0 ||
+            !rooms.every((room) => typeof room === 'string' && ROOM_ID.test(room))
+        ) {
+            throw new ValidationException('field rooms must be a list of room ids');
+        }
+
+        return rooms as string[];
     }
 
     private muted(request: Request): boolean {

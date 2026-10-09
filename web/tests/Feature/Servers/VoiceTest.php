@@ -516,7 +516,7 @@ it('quem entra mutado pelo servidor volta a falar quando desmutam: o SFU é avis
         ->and($claims)->not->toHaveKey('muted');
 });
 
-it('banir, expulsar e mutar chegam ao SFU numa chamada só, sem sala, mesmo com a presença fora do ar', function (): void {
+it('banir, expulsar e mutar chegam ao SFU numa chamada só com as salas deste servidor, mesmo com a presença fora do ar — e nunca as de outro', function (): void {
     $owner = User::factory()->create();
     $banned = User::factory()->create();
     $kicked = User::factory()->create();
@@ -525,6 +525,12 @@ it('banir, expulsar e mutar chegam ao SFU numa chamada só, sem sala, mesmo com 
     joinServer($server, $banned);
     joinServer($server, $kicked);
     joinServer($server, $muted);
+    $other = $server->createChannel($owner, 'Outra', ChannelTypeEnum::Voice, null, null);
+    $elsewhere = Server::createFor($owner, 'Outro servidor');
+    $rooms = $server->channels()->where('type', 'voice')->pluck('id')->sort()->values()->all();
+
+    expect($rooms)->toHaveCount(2)->toContain($other->id)->not->toContain($elsewhere->channels()->where('type', 'voice')->firstOrFail()->id);
+
     Http::fake([
         '*/presence' => Http::response('upstream timeout', 504),
         '*' => Http::response(['kicked' => 0, 'muted' => 0]),
@@ -534,10 +540,12 @@ it('banir, expulsar e mutar chegam ao SFU numa chamada só, sem sala, mesmo com 
     $this->actingAs($owner, 'sanctum')->deleteJson("/api/servers/{$server->id}/members/{$kicked->id}")->assertNoContent();
     $this->actingAs($owner, 'sanctum')->patchJson("/api/servers/{$server->id}/members/{$muted->id}", ['server_mute' => true])->assertOk();
 
+    $sorted = fn ($request): array => collect($request['rooms'])->sort()->values()->all();
+
     foreach ([$banned, $kicked] as $user) {
-        Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/kick') && ! str_contains((string) $request->url(), '/rooms/') && $request['userId'] === "user:{$user->id}");
+        Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/kick') && ! str_contains((string) $request->url(), '/rooms/') && $request['userId'] === "user:{$user->id}" && $sorted($request) === $rooms);
     }
 
-    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/mute') && ! str_contains((string) $request->url(), '/rooms/') && $request['userId'] === "user:{$muted->id}" && $request['muted'] === true);
+    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/mute') && ! str_contains((string) $request->url(), '/rooms/') && $request['userId'] === "user:{$muted->id}" && $request['muted'] === true && $sorted($request) === $rooms);
     Http::assertNotSent(fn ($request): bool => str_contains((string) $request->url(), '/rooms/'));
 });

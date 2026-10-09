@@ -25,11 +25,11 @@ export class HttpRouter {
         });
 
         router.post('/kick', verifySignature, (request, response) =>
-            rooms.kickEverywhere(request, response),
+            rooms.kickIn(request, response),
         );
 
         router.post('/mute', verifySignature, (request, response, next) => {
-            rooms.muteEverywhere(request, response).catch(next);
+            rooms.muteIn(request, response).catch(next);
         });
 
         router.post('/broadcast', verifySignature, (request, response) =>

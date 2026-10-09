@@ -1010,29 +1010,72 @@ test('o kick assinado derruba a sessão da conta, e a assinatura errada não der
     assert.deepEqual(await http.json(), { kicked: 0 }, 'sala fora do ar não tem quem expulsar, e não é erro');
 });
 
-test('o kick e o mute sem sala valem para o SFU inteiro: banir não precisa saber onde a pessoa está', async () => {
+test('o kick e o mute com a lista de salas só alcançam essas salas: a moderação de um servidor não atravessa para outro', async () => {
     const banido = await abrir();
     await entrar(banido, { token: token({ room, sub: '20', name: 'Banido', can: TUDO }) });
     const mic = await banido.call('producePlain', audioPuro('mic', 0x22345694));
     assert.equal(mic.ok, true, `o mic do banido sobe antes: ${JSON.stringify(mic)}`);
 
-    const muteBody = JSON.stringify({ userId: '20', muted: true });
-    let http = await fetch(`${URL_HTTP}/mute`, { method: 'POST', body: muteBody, headers: { 'content-type': 'application/json' } });
-    assert.equal(http.status, 401, 'mute sem sala e sem assinatura é recusado');
-    http = await fetch(`${URL_HTTP}/mute`, { method: 'POST', body: muteBody, headers: signed('POST', '/mute', muteBody) });
-    assert.deepEqual(await http.json(), { muted: 1 }, 'o mute sem sala acha a pessoa onde ela estiver');
+    const semSalas = JSON.stringify({ userId: '20', muted: true });
+    let http = await fetch(`${URL_HTTP}/mute`, { method: 'POST', body: semSalas, headers: { 'content-type': 'application/json' } });
+    assert.equal(http.status, 401, 'mute sem assinatura é recusado');
+    http = await fetch(`${URL_HTTP}/mute`, { method: 'POST', body: semSalas, headers: signed('POST', '/mute', semSalas) });
+    assert.equal(http.status, 422, 'mute sem a lista de salas é erro de validação');
 
-    const kickBody = JSON.stringify({ userId: '20' });
-    http = await fetch(`${URL_HTTP}/kick`, { method: 'POST', body: kickBody, headers: { 'content-type': 'application/json' } });
-    assert.equal(http.status, 401, 'kick sem sala e sem assinatura é recusado');
-    http = await fetch(`${URL_HTTP}/kick`, { method: 'POST', body: kickBody, headers: signed('POST', '/kick', kickBody) });
-    assert.deepEqual(await http.json(), { kicked: 1 }, 'o kick sem sala derruba a sessão da conta em qualquer sala');
+    // As salas de outro servidor: a pessoa não está nelas, e nada muda para ela.
+    const foraDoEscopo = JSON.stringify({ userId: '20', muted: true, rooms: ['outro-servidor-a', 'outro-servidor-b'] });
+    http = await fetch(`${URL_HTTP}/mute`, { method: 'POST', body: foraDoEscopo, headers: signed('POST', '/mute', foraDoEscopo) });
+    assert.deepEqual(await http.json(), { muted: 0 }, 'mutar nas salas de outro servidor não acha a pessoa');
+    let reply = await banido.call('producePlain', audioPuro('mic', 0x22345695));
+    assert.equal(reply.data.paused, false, 'e ela continua sem o mudo: outro mic nasce aberto');
+
+    const noEscopo = JSON.stringify({ userId: '20', muted: true, rooms: ['outro-servidor-a', room] });
+    http = await fetch(`${URL_HTTP}/mute`, { method: 'POST', body: noEscopo, headers: signed('POST', '/mute', noEscopo) });
+    assert.deepEqual(await http.json(), { muted: 2 }, 'com a sala certa na lista, os dois mics param');
+
+    const kickFora = JSON.stringify({ userId: '20', rooms: ['outro-servidor-a'] });
+    http = await fetch(`${URL_HTTP}/kick`, { method: 'POST', body: kickFora, headers: signed('POST', '/kick', kickFora) });
+    assert.deepEqual(await http.json(), { kicked: 0 }, 'banir em outro servidor não derruba a pessoa daqui');
+    reply = await banido.call('ping', {});
+    assert.equal(reply.ok, true, 'e o socket dela segue de pé');
+
+    const kickDentro = JSON.stringify({ userId: '20', rooms: [room, 'outro-servidor-a'] });
+    http = await fetch(`${URL_HTTP}/kick`, { method: 'POST', body: kickDentro, headers: { 'content-type': 'application/json' } });
+    assert.equal(http.status, 401, 'kick sem assinatura é recusado');
+    http = await fetch(`${URL_HTTP}/kick`, { method: 'POST', body: kickDentro, headers: signed('POST', '/kick', kickDentro) });
+    assert.deepEqual(await http.json(), { kicked: 1 }, 'o kick com a sala certa derruba a sessão da conta');
 
     await espera(300);
     assert.equal(banido.closeCode, 4001, 'e a pessoa perde o socket');
 
-    http = await fetch(`${URL_HTTP}/kick`, { method: 'POST', body: kickBody, headers: signed('POST', '/kick', kickBody) });
-    assert.deepEqual(await http.json(), { kicked: 0 }, 'quem não está em sala nenhuma não é erro');
+    http = await fetch(`${URL_HTTP}/kick`, { method: 'POST', body: kickDentro, headers: signed('POST', '/kick', kickDentro) });
+    assert.deepEqual(await http.json(), { kicked: 0 }, 'quem já não está em sala nenhuma não é erro');
+});
+
+test('o mudo da retomada que falha no mediasoup não derruba o processo', async () => {
+    // Sem rede: a `Room` do `dist/` com um producer cujo `pause()` rejeita, como faz um producer
+    // ou um worker já fechado. Sem o catch, a rejeição subia solta e matava o SFU inteiro.
+    const { Room } = await import('./dist/Services/Room.js');
+    const { Peer } = await import('./dist/Services/Peer.js');
+
+    const soltas = [];
+    const guarda = razao => soltas.push(razao);
+    process.on('unhandledRejection', guarda);
+
+    const socketFalso = () => ({ readyState: 1, OPEN: 1, send() {}, close() {}, terminate() {} });
+    const sala = new Room('sala-unitaria', { router: {}, webRtcServer: {}, worker: {} }, async () => null);
+    const antes = new Peer('peer-1', 'Falante', socketFalso(), 'chave-1', 'user:1', TUDO, '127.0.0.1');
+    antes.addProducer({ id: 'mic-1', kind: 'audio', paused: false, appData: {}, async pause() { throw new Error('producer closed'); }, async resume() {} }, 'mic');
+    sala.peers.set(antes.id, antes);
+    antes.orphanedAt = Date.now();
+
+    const volta = sala.addPeer('Falante', socketFalso(), { userId: 'user:1', can: TUDO, muted: true, ip: '127.0.0.1' }, { resumeKey: 'chave-1', resume: true });
+    assert.equal(volta.resumed, true, 'é a mesma sessão');
+    assert.equal(volta.peer.serverMuted, true, 'e a marca do mudo entrou');
+
+    await espera(50);
+    process.off('unhandledRejection', guarda);
+    assert.deepEqual(soltas, [], 'a rejeição do pause foi tratada, não subiu solta');
 });
 
 test('remover alguém ao vivo pelo socket é recusado', async () => {

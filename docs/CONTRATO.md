@@ -203,7 +203,11 @@ sobre `ts\nMÉTODO\ncaminho\ncorpo`, janela de 300 s — como o `kick` de hoje):
 | `POST /rooms/:code/kick` (já existe) | `{ "userId": "user:12", "to"?: "<ulid do destino>", "by"?: "Edsu" }` — com `to`, é mover (acima); `to` fora de `[a-z0-9]{26}` ou `by` que não é string de até 64 → 422 | `{ kicked: n }` |
 | `POST /broadcast` | `{ channel, event, data }` — o tempo real do Laravel | `{ delivered: n }` (quantos sockets inscritos receberam) |
 | `POST /rooms/:code/mute` | `{ "userId": "user:12", "muted": true }` — pausa/retoma o producer `mic` daquela conta | `{ muted: n }` |
-| `POST /kick`, `POST /mute` | o mesmo corpo, **sem sala**: vale para o SFU inteiro. É o que expulsar, banir e mutar no servidor usam: o Laravel não precisa saber onde a pessoa está (a presença esconde quem está na carência e some quando o SFU demora), e sai numa chamada só | `{ kicked: n }`, `{ muted: n }` |
+| `POST /kick`, `POST /mute` | o mesmo corpo mais `rooms: ["<ulid>", …]`, as salas em que agir (obrigatória, não vazia; cada uma no formato de sala, senão 422). É o que expulsar, banir e mutar no servidor usam, com os canais de voz **daquele servidor**: o Laravel não precisa saber em qual a pessoa está (a presença esconde quem está na carência e some quando o SFU demora), sai numa chamada só, e nunca alcança a voz de outro servidor — a conta tem uma sessão no SFU inteiro, e ela pode estar lá | `{ kicked: n }`, `{ muted: n }` |
+
+**Ordem de deploy: o SFU sobe antes do web, sem exceção** (desde o PR #52, 09/10/2026). Com o web
+na frente, o `/kick` e o `/mute` com salas dão 404 no SFU antigo e banir não derruba ninguém da
+voz; a presença antiga não traz quem está na carência; e a claim `muted` do token é ignorada.
 | `GET /presence` | corpo vazio | `{ rooms: { "<room>": [ { sub, name, sources: ["mic","screen"], muted, deafened, reconnecting } ] } }` — quem está na carência de reconexão **vem junto**, com `reconnecting: true`: o lugar dele ainda é dele |
 
 `consumePlain` devolve também `ssrc` do consumer: o receptor nativo (`PlainReceiver`) separa os
@@ -372,7 +376,7 @@ Membros (`{user}` é id de usuário):
 | rota | corpo | regra |
 |---|---|---|
 | `PATCH /api/servers/{server}/members/{user}` | `{ nickname?, role_ids?, server_mute? }` | `MANAGE_ROLES` para cargos (só cargos abaixo do meu top, e só com permissões que eu tenho), `MUTE_MEMBERS` para o bool (chama `POST /rooms/:code/mute` no SFU se a pessoa estiver em voz), apelido próprio sempre. `server_deaf` existe na tabela mas ainda não tem escrita |
-| `DELETE /api/servers/{server}/members/{user}` | — | `KICK_MEMBERS` + hierarquia; derruba da voz pelo `POST /kick` sem sala do SFU (o `mute` do servidor e o banimento idem): numa chamada só, sem depender da presença |
+| `DELETE /api/servers/{server}/members/{user}` | — | `KICK_MEMBERS` + hierarquia; derruba da voz pelo `POST /kick` do SFU com os canais de voz **deste** servidor (o `mute` do servidor e o banimento idem): numa chamada só, sem depender da presença, e sem tocar a voz de outro servidor |
 | `GET /api/servers/{server}/bans` | — | `BAN_MEMBERS` |
 | `POST /api/servers/{server}/bans/{user}` | `{ reason? }` | `BAN_MEMBERS` + hierarquia; remove membro, derruba da voz |
 | `DELETE /api/servers/{server}/bans/{user}` | — | `BAN_MEMBERS` |

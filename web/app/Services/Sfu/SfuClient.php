@@ -96,19 +96,25 @@ final readonly class SfuClient
     }
 
     /**
-     * Sem sala: o SFU inteiro, numa chamada só. Expulsar e banir não dependem de a presença
+     * As salas de um servidor numa chamada só: expulsar e banir não dependem de a presença
      * dizer onde a pessoa está — ela esconde quem está na carência e some quando o SFU demora.
+     * E nunca o SFU inteiro: a sessão da conta pode estar na voz de outro servidor.
+     *
+     * @param  array<int, string>  $rooms
      */
-    public function kickEverywhere(string $subject): int
+    public function kickIn(array $rooms, string $subject): int
     {
-        $kicked = $this->post('/kick', ['userId' => $subject])['kicked'] ?? 0;
+        $kicked = $this->post('/kick', ['userId' => $subject, 'rooms' => $rooms])['kicked'] ?? 0;
 
         return is_int($kicked) ? $kicked : 0;
     }
 
-    public function muteEverywhere(string $subject, bool $muted): int
+    /**
+     * @param  array<int, string>  $rooms
+     */
+    public function muteIn(array $rooms, string $subject, bool $muted): int
     {
-        $mutedCount = $this->post('/mute', ['userId' => $subject, 'muted' => $muted])['muted'] ?? 0;
+        $mutedCount = $this->post('/mute', ['userId' => $subject, 'muted' => $muted, 'rooms' => $rooms])['muted'] ?? 0;
 
         return is_int($mutedCount) ? $mutedCount : 0;
     }

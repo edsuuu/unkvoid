@@ -485,8 +485,8 @@ final class Server extends Model implements Auditable
             }
         }, ['server_id' => $this->id, 'user_id' => $target->id]);
 
-        if (isset($changes['server_mute'])) {
-            $sfu->muteEverywhere($target->subject(), $changes['server_mute']);
+        if (isset($changes['server_mute']) && $this->voiceRoomIds() !== []) {
+            $sfu->muteIn($this->voiceRoomIds(), $target->subject(), $changes['server_mute']);
         }
 
         self::publish(new ServerUpdated($this->id));
@@ -620,10 +620,23 @@ final class Server extends Model implements Auditable
 
     /**
      * Sem perguntar à presença onde a pessoa está: ela esconde quem está na carência e some
-     * quando o SFU demora, e nos dois casos o banido continuava transmitindo.
+     * quando o SFU demora, e nos dois casos o banido continuava transmitindo. Só nas salas
+     * deste servidor: a moderação daqui não alcança a voz de outro.
      */
     private function dropFromVoice(User $user, SfuClient $sfu): void
     {
-        $sfu->kickEverywhere($user->subject());
+        if ($this->voiceRoomIds() === []) {
+            return;
+        }
+
+        $sfu->kickIn($this->voiceRoomIds(), $user->subject());
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function voiceRoomIds(): array
+    {
+        return $this->channels->where('type', ChannelTypeEnum::Voice)->map(fn (Channel $channel): string => $channel->id)->values()->all();
     }
 }

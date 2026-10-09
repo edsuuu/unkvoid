@@ -203,7 +203,14 @@ export class Room {
                 // O mudo do servidor vem no token da retomada como vinha no `can`: um `/mute`
                 // perdido se acerta na primeira oscilação.
                 if (previous.serverMuted !== (identity.muted === true)) {
-                    void this.applyServerMute(previous, identity.muted === true);
+                    // Sem o catch, um producer ou worker já fechado derrubava o processo inteiro.
+                    this.applyServerMute(previous, identity.muted === true).catch(
+                        (failure: unknown) => {
+                            console.warn(
+                                `[WARN] serverMute room=${this.id} sub=${previous.userId} peer=${previous.id}: ${String(failure)}`,
+                            );
+                        },
+                    );
                 }
             }
 
