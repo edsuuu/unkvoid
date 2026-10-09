@@ -30,5 +30,18 @@ fi
 # `--only sfu` para o pm2 não mexer em nada mais que venha a existir neste arquivo.
 pm2 startOrRestart ecosystem.config.cjs --only sfu --update-env
 pm2 save
-sleep 2
-curl -sf http://127.0.0.1:3000/health && echo
+
+# O SFU leva uns 2-3 s para subir os workers e escutar. Um `sleep 2` fixo marcou como falho,
+# em 09/10/2026, um deploy que tinha subido certo.
+for _ in $(seq 1 30); do
+    if curl -sf http://127.0.0.1:3000/health; then
+        echo
+
+        exit 0
+    fi
+
+    sleep 1
+done
+
+echo "[ERRO] o SFU não respondeu no /health em 30 s" >&2
+exit 1
