@@ -44,8 +44,9 @@ module.exports = {
                 // Um worker por core MENOS UM: a VPS tem 4 (`nproc`), e o quarto fica para o
                 // nginx, o php-fpm, o MySQL, o MinIO e o e-mail. Eram 7 de quando se achava que
                 // ela tinha 8: sete workers disputando quatro núcleos atrasam a mídia de todo
-                // mundo assim que duas salas pesam. A sala é fixada num worker. Cada um usa uma
-                // porta a partir de SFU_MEDIA_PORT: 40000-40002, liberadas no firewall.
+                // mundo assim que duas salas pesam. A sala começa num worker e só se espalha
+                // depois de SFU_PEERS_PER_ROUTER pessoas. Cada um usa uma porta a partir de
+                // SFU_MEDIA_PORT: 40000-40002, liberadas no firewall.
                 SFU_WORKERS: '3',
                 // Teto de conexões novas por IP por minuto. Uma escola inteira atrás de
                 // um NAT só precisa caber aqui.

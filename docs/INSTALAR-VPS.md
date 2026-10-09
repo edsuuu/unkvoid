@@ -637,8 +637,8 @@ SFU **não sobe** sem `SFU_SECRET`, e é melhor fora do ar que aberto.
 São **7 workers** e não 8 (`SFU_WORKERS` no `ecosystem.config.cjs`, que vem com 3, o da VPS de 4
 núcleos de hoje — a regra é `nproc` menos um): o oitavo núcleo fica inteiro para o nginx, o
 php-fpm, o MySQL, o MinIO e o e-mail. Um worker do mediasoup é um processo de uma thread só
-que satura um núcleo e para; a sala é fixada num worker e a voz é presa a um
-núcleo, então 7 workers são 7 canais de voz pesados em paralelo. Deixar 8 faria a
+que satura um núcleo e para; a sala começa num worker e só se espalha por outros quando passa
+de `SFU_PEERS_PER_ROUTER` pessoas, então 7 workers são 7 canais de voz pesados em paralelo. Deixar 8 faria a
 oitava sala disputar núcleo com o que responde o site.
 
 E `watch: false` no pm2, porque o padrão dele é vigiar o diretório: o Laravel

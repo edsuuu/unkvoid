@@ -37,8 +37,8 @@ SFU  --webhook---------> Laravel       avisa quem entrou e saiu
 
 | Arquivo | O que faz |
 |---|---|
-| `RoomRegistry.ts` | os workers do mediasoup e em qual deles cada sala mora |
-| `Room.ts` | a sala: quem está dentro, a carência de 30 s ao cair, uma sessão por conta |
+| `RoomRegistry.ts` | os workers do mediasoup, o router novo no worker mais vazio, e o worker morto que renasce |
+| `Room.ts` | a sala: quem está dentro, a carência de 30 s ao cair, uma sessão por conta, e os routers dela (um por worker que ela usa, ligados por `pipeToRouter`) |
 | `Peer.ts` | uma pessoa: seus transportes, producers e consumers |
 | `Kernel.ts` | despacha cada ação do WebSocket para o controller, como o Kernel do Laravel |
 | `Signature.ts` | confere o token HMAC do `join` e a assinatura das chamadas do Laravel |
@@ -62,10 +62,11 @@ bate mais.
 
 ### WebSocket — `src/Routers/WebSocketRouter.ts`
 
-Tudo o mais é WebSocket em `/sfu`, e **não** passa pelo Express. São 19 ações: `join`,
+Tudo o mais é WebSocket em `/sfu`, e **não** passa pelo Express. São 20 ações: `join`,
 `leave`, `ping`, `removePeer`, `identify`, `subscribe`, `unsubscribe`, `createTransport`,
 `connectTransport`, `produce`, `producePlain`, `pauseProducer`, `resumeProducer`,
-`closeProducer`, `consume`, `consumePlain`, `pauseConsumer`, `resumeConsumer`, `closeConsumer`.
+`closeProducer`, `consume`, `consumePlain`, `pauseConsumer`, `resumeConsumer`, `closeConsumer`,
+`voiceState`.
 
 Abertas sem estar numa sala: `join`, `ping` e as três do tempo real (`identify`, `subscribe`,
 `unsubscribe`). As outras exigem sessão. O app nativo usa as de RTP puro (`producePlain`,
@@ -118,6 +119,7 @@ quem chama as rotas assinadas é o Laravel, de servidor para servidor.
 | `SFU_MEDIA_PORT` | a porta base da mídia | `40000` |
 | `SFU_PLAIN_PORT`, `SFU_PLAIN_PORTS` | as portas de RTP puro | `41000`, 8 por worker (64 na VPS) |
 | `SFU_WORKERS` | quantos workers do mediasoup | os núcleos da máquina (na VPS, 3: núcleos menos um) |
+| `SFU_PEERS_PER_ROUTER` | quantas pessoas cabem num router antes de a sala abrir outro, noutro worker | `10` |
 | `SFU_HEARTBEAT_MS` | de quanto em quanto pergunta se o socket vive | `15000` |
 | `SFU_CONNECTIONS_PER_MINUTE` | teto de conexões novas por IP | — |
 | `SFU_APP_VERSION` | o que o `/health` devolve | — |
@@ -125,11 +127,13 @@ quem chama as rotas assinadas é o Laravel, de servidor para servidor.
 ## Verificar
 
 ```bash
-pnpm run check        # eslint
-pnpm run typecheck    # tsc --noEmit
 pnpm run build        # tsc
+pnpm run check        # eslint + check.mjs: o contrato contra um SFU no ar (SFU_SECRET e SFU_CHECK_URL)
 SFU_SECRET=<o do servidor> node --test check-realtime.mjs   # o tempo real contra um SFU no ar
 ```
+
+O `check.mjs` sobe SFUs próprios nas portas 3197-3199 para os cenários que precisam de outra
+configuração (webhook, heartbeat, worker morto), e nunca mexe no que já está no ar.
 
 ## Publicar
 
@@ -159,6 +163,12 @@ trocado por 4G — nunca manda FIN nem RST. Sem o ping de 15 s, o `close` não d
 fica eternamente ativa na sala, o router do mediasoup nunca é devolvido e as portas de RTP
 puro não voltam. É um vazamento que acaba batendo no `max_memory_restart` do pm2 e derrubando
 a chamada de todo mundo.
+
+**Worker morto leva só as salas dele.** O mediasoup registra `SIGINT` e `SIGTERM` para
+fechar os workers, e um listener basta para o Node não sair mais no sinal: o processo ficava
+de pé sem worker nenhum, o `/health` dizia ok e todo `join` dava 500 (`Channel closed`). Hoje o
+`server.ts` sai no sinal, o `/health` dá 503 sem worker vivo, e o worker que morre renasce
+sozinho: as salas dele fecham com 1012 e cada app reconecta num worker vivo.
 
 **Cair não é sair.** Quem perde a sinalização entra numa carência de 30 s com a mídia viva, e
 pode reconectar sem cair da chamada. A sala vê `peerConnectionLost` na hora e o `peerLeft` só

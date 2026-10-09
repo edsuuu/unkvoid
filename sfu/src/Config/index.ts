@@ -34,6 +34,8 @@ export const config = {
     plainPortBase: Number(process.env.SFU_PLAIN_PORT ?? 41000),
     plainPortsPerWorker: Number(process.env.SFU_PLAIN_PORTS ?? 8),
 
+    peersPerRouter: Number(process.env.SFU_PEERS_PER_ROUTER ?? 10),
+
     worker: {
         logLevel: 'warn' as const,
         logTags: [

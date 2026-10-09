@@ -36,6 +36,13 @@ export class SubscriptionController {
         const { userId, name } = request.identity();
 
         const authorized = await Authorizer.allows(userId, channel);
+
+        // A ida ao Laravel leva até 3 s. Se o socket caiu nesse meio-tempo, inscrevê-lo
+        // deixaria a pessoa na presença do canal até o SFU reiniciar.
+        if (request.session.socket.readyState !== request.session.socket.OPEN) {
+            return { channel, members: [] };
+        }
+
         const subscriber = { socket: request.session.socket, userId, name: authorized ?? name };
 
         if (!this.subscriptions.add(channel, subscriber)) {

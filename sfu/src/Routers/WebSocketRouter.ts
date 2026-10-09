@@ -19,6 +19,7 @@ import { Request } from '../Http/Request/Request.js';
 import type { Session } from '../Http/Request/Request.js';
 import { SubscribeRequest } from '../Http/Request/SubscribeRequest.js';
 import { TransportRequest } from '../Http/Request/TransportRequest.js';
+import { VoiceStateRequest } from '../Http/Request/VoiceStateRequest.js';
 
 export type Payload = Record<string, unknown>;
 
@@ -121,6 +122,10 @@ export class WebSocketRouter {
             [Action.CloseConsumer]: {
                 build: (data, session) => new ConsumerRequest(data, session),
                 handle: (request) => controllers.consumer.destroy(request),
+            },
+            [Action.VoiceState]: {
+                build: (data, session) => new VoiceStateRequest(data, session),
+                handle: (request) => controllers.peer.update(request),
             },
         };
     }

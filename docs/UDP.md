@@ -43,10 +43,14 @@ faixa a abrir        = SFU_PLAIN_PORT  até  SFU_PLAIN_PORT + (workers × portas
 Com os valores de hoje, 3 workers e 64 portas, o teto é 192 transportes plain simultâneos e a
 faixa mínima é 41000-41191 — dentro da regra 41000-42000 que o firewall já abre.
 
-**Mas o teto que se sente não é esse.** Uma sala inteira vive num worker só — o registro manda
-cada sala nova para o worker com menos salas, e ela fica lá. Então o limite prático é
-`SFU_PLAIN_PORTS` transportes **por sala**: 64, ou 32 pessoas na voz (cada uma manda e recebe) —
-além do teto de banda, que é o que se sente primeiro (ver [INSTALAR-VPS.md](INSTALAR-VPS.md)).
+**Mas o teto que se sente não é esse.** Uma sala começa num worker só e só se espalha quando
+passa de `SFU_PEERS_PER_ROUTER` pessoas (padrão 10): quem chega depois vai para um router noutro
+worker, e o que ele assiste de lá chega por `pipeToRouter`. As portas de uma pessoa saem do
+worker do router dela, então o limite prático é `SFU_PLAIN_PORTS` transportes **por worker**:
+64, ou 32 pessoas na voz (cada uma manda e recebe) — além do teto de banda, que é o que se sente
+primeiro (ver [INSTALAR-VPS.md](INSTALAR-VPS.md)). O pipe entre dois routers da mesma sala
+também gasta uma porta dessa faixa em cada um dos dois workers (ele escuta em `127.0.0.1`, então
+não precisa de firewall), uma por par de routers e não por transmissão.
 
 Foi por isso que o valor já foi 1, e duas pessoas nunca conseguiram compartilhar
 juntas: o segundo a clicar recebia `no more available ports`.
@@ -133,8 +137,8 @@ testar cedo demais dá um falso negativo que manda você caçar no lugar errado.
    dentro do que o firewall abre.
 3. Reinicie o SFU e refaça o teste de UDP acima.
 
-Subir `SFU_WORKERS` também aumenta o teto total, mas não o de uma sala: a sala
-continua num worker só.
+Subir `SFU_WORKERS` também aumenta o teto total, e o de uma sala grande, que se
+espalha pelos workers depois de `SFU_PEERS_PER_ROUTER` pessoas.
 
 Ver também [INSTALAR-VPS.md](INSTALAR-VPS.md) para a tabela de portas do
 firewall do painel, [SERVIDOR.md](SERVIDOR.md) para por que ele é o primeiro suspeito, e
