@@ -167,6 +167,16 @@ final class AppModel: ObservableObject {
     @Published var tileVolumes: [String: Float] = [:]
     @Published var sharePreviews: [String: NSImage] = [:]
     @Published var mine = Mine()
+    /// Há uma sala aberta deste lado (entre o `openedRoom` e o `closeRoom`). Os avisos `room.*`
+    /// que chegam depois de fechar são da sala que está morrendo, e não mexem em nada aqui.
+    @Published var roomOpen = false
+    /// Quem liga e desliga a captura da câmera: um dono só, com o estado "ligando" à vista.
+    var cameraSync = CameraSync()
+    /// Como a captura é ligada. O app usa a câmera de verdade; o teste põe aqui o que quiser.
+    var cameraStarter: (@MainActor () async throws -> Void)?
+    /// As falhas que o núcleo anunciou entre o pedido de entrar e a sala abrir deste lado: são
+    /// desta sala, e aparecem assim que ela abre, em vez de se perderem.
+    var failuresWhileJoining: [String] = []
     @Published var reconnecting = false
     @Published var deafened = false
     /// Entre o clique no canal e o microfone abrir: o botão ainda não tem o que mostrar, e
@@ -501,6 +511,10 @@ final class AppModel: ObservableObject {
         entryError = ""
         nameError = ""
         codeError = ""
+
+        // O núcleo sai da voz ao entrar numa sala por código; aqui se solta o que era dela —
+        // chat, tocadores, microfone —, senão a voz segue viva no desenho e no som.
+        await leaveVoice()
 
         let answer = await ask(command, ["name": name, "code": code])
 

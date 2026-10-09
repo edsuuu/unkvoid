@@ -254,7 +254,7 @@ it('mutar no servidor exige MUTE_MEMBERS e avisa o SFU quando a pessoa está em 
     $this->actingAs($member, 'sanctum')->patchJson("/api/servers/{$server->id}/members/{$member->id}", ['nickname' => 'eu'])->assertOk()->assertJsonPath('data.nickname', 'eu');
     $this->actingAs($owner, 'sanctum')->patchJson("/api/servers/{$server->id}/members/{$member->id}", ['server_mute' => true])->assertOk()->assertJsonPath('data.server_mute', true);
 
-    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), "/rooms/{$voice->id}/mute") && $request['muted'] === true && $request->hasHeader('X-Unkvoid-Signature'));
+    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/mute') && $request['userId'] === "user:{$member->id}" && $request['muted'] === true && $request->hasHeader('X-Unkvoid-Signature'));
 
     $this->actingAs($owner, 'sanctum')->getJson("/api/servers/{$server->id}")
         ->assertOk()
@@ -440,7 +440,7 @@ it('banir segue a hierarquia, nunca pega o dono, derruba da voz e avisa quem sai
     $this->actingAs($plain, 'sanctum')->postJson("/api/servers/{$server->id}/bans/{$newbie->id}")->assertForbidden();
     $this->actingAs($moderator, 'sanctum')->postJson("/api/servers/{$server->id}/bans/{$newbie->id}")->assertCreated();
 
-    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), "/rooms/{$voice->id}/kick") && $request['userId'] === "user:{$newbie->id}");
+    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/kick') && $request['userId'] === "user:{$newbie->id}");
     Event::assertDispatched(MemberRemoved::class, fn (MemberRemoved $event): bool => $event->userId === $newbie->id && $event->reason === 'banned' && $event->channels() === ["user.{$newbie->id}"]);
 
     $this->actingAs($plain, 'sanctum')->getJson("/api/servers/{$server->id}/bans")->assertForbidden();
@@ -532,7 +532,7 @@ it('sair do servidor derruba da voz', function (): void {
 
     $this->actingAs($member, 'sanctum')->postJson("/api/servers/{$server->id}/leave")->assertNoContent();
 
-    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), "/rooms/{$voice->id}/kick") && $request['userId'] === "user:{$member->id}");
+    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/kick') && $request['userId'] === "user:{$member->id}");
 });
 
 it('user_limit só existe em canal de voz', function (): void {

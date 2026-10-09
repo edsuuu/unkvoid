@@ -24,6 +24,14 @@ export class HttpRouter {
             rooms.mute(request, response).catch(next);
         });
 
+        router.post('/kick', verifySignature, (request, response) =>
+            rooms.kickIn(request, response),
+        );
+
+        router.post('/mute', verifySignature, (request, response, next) => {
+            rooms.muteIn(request, response).catch(next);
+        });
+
         router.post('/broadcast', verifySignature, (request, response) =>
             broadcasts.store(request, response),
         );
