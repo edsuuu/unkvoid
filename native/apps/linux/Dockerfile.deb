@@ -8,7 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # `dpkg-shlibdeps`, que escreve as dependências de biblioteca do pacote.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential curl ca-certificates pkg-config cmake dpkg-dev \
-        libgtk-4-dev libdbus-1-dev \
+        libgtk-4-dev libdbus-1-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # O toolchain fica em /usr/local, legível por qualquer usuário: o build roda com o uid de quem

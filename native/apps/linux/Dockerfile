@@ -6,13 +6,18 @@
 FROM rust:1-trixie
 
 # `libdbus-1-dev` porque o chaveiro do `shared/storage` fala Secret Service, e ele fala D-Bus.
+# As `-dev` do GStreamer porque o vídeo da captura roda dentro do processo (`gstreamer-rs`).
 # O GStreamer e o `pactl` porque o vídeo, o som e a escolha de aparelho passam por processos
 # filhos: sem eles o app compila e abre, mas não transmite nem toca nada. A lista é a mesma
-# de `tests/linux/Dockerfile` — `bad` traz o `h264parse` e `ugly` o `x264enc`.
+# de `tests/linux/Dockerfile` — `bad` traz o `h264parse` e `ugly` o `x264enc`. O `xrandr` e o
+# `xdpyinfo` (`x11-xserver-utils`, `x11-utils`) estão no `Depends` do `.deb`: sem eles a captura
+# do X11 não acha tela nenhuma, e o teste vivo da captura falhava aqui por isso.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgtk-4-dev \
         libadwaita-1-dev \
         libdbus-1-dev \
+        libgstreamer1.0-dev \
+        libgstreamer-plugins-base1.0-dev \
         cmake \
         pkg-config \
         xvfb \
@@ -26,6 +31,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gstreamer1.0-x \
         gstreamer1.0-pulseaudio \
         pulseaudio-utils \
+        x11-xserver-utils \
+        x11-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # O `check` do repo cobra clippy, e a imagem base do Rust não o traz.

@@ -24,6 +24,9 @@ mod windows;
 #[cfg(target_os = "windows")]
 mod windows_decoder;
 
+#[cfg(target_os = "linux")]
+mod linux_decoder;
+
 pub use audio::{AudioEncoder, FRAME_MS};
 pub use governor::BitrateGovernor;
 pub use plain::{Feedback, PlainSender, Source};
@@ -41,6 +44,9 @@ pub use windows::MediaFoundationEncoder as PlatformEncoder;
 #[cfg(target_os = "windows")]
 pub use windows_decoder::H264Decoder;
 
+#[cfg(target_os = "linux")]
+pub use linux_decoder::H264Decoder;
+
 /// Um quadro decodificado, pronto para desenhar: RGBA de 8 bits, sem padding entre as linhas.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedFrame {
@@ -49,19 +55,19 @@ pub struct DecodedFrame {
     pub rgba: Vec<u8>,
 }
 
-/// Fora do Windows quem assiste decodifica pelo sistema dele — VideoToolbox no macOS,
-/// GStreamer no Linux —, e este existe só para o app do Windows compilar em qualquer lugar.
-#[cfg(not(target_os = "windows"))]
+/// No macOS quem assiste decodifica pelo VideoToolbox, no Swift, e este existe só para o app
+/// Slint compilar lá.
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub struct H264Decoder;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 impl H264Decoder {
     pub fn new() -> anyhow::Result<Self> {
-        Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
+        Err(anyhow::anyhow!("o decodificador de H.264 do media é do Windows e do Linux"))
     }
 
     pub fn decode(&mut self, _annex_b: &[u8], _timestamp: u32) -> anyhow::Result<Option<DecodedFrame>> {
-        Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
+        Err(anyhow::anyhow!("o decodificador de H.264 do media é do Windows e do Linux"))
     }
 
     pub fn decode_into<'target>(
@@ -70,11 +76,11 @@ impl H264Decoder {
         _timestamp: u32,
         _target: impl FnOnce(u32, u32) -> &'target mut [u8],
     ) -> anyhow::Result<bool> {
-        Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
+        Err(anyhow::anyhow!("o decodificador de H.264 do media é do Windows e do Linux"))
     }
 
     pub fn skip(&mut self, _annex_b: &[u8], _timestamp: u32) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("o decodificador de H.264 do media é só do Windows"))
+        Err(anyhow::anyhow!("o decodificador de H.264 do media é do Windows e do Linux"))
     }
 }
 
@@ -228,34 +234,44 @@ pub enum EncoderError {
     Unsupported,
 }
 
-/// No Linux quem codifica é o x264 dentro do GStreamer, na captura. O que chega aqui já
+/// No Linux quem codifica é o encoder dentro do GStreamer, na captura. O que chega aqui já
 /// é H.264 Annex-B, e este encoder só o repassa — com a mesma forma dos outros para o
-/// `broadcast.rs` não saber a diferença.
+/// `broadcast.rs` não saber a diferença. O pedido de keyframe e a taxa nova vão para o
+/// encoder do pipeline, que chega junto com o primeiro quadro.
 #[cfg(target_os = "linux")]
 pub struct PlatformEncoder {
     bitrate: u32,
+    control: Option<capture::EncoderControl>,
+    /// Pedido de keyframe que chegou antes do primeiro quadro.
+    keyframe_pending: bool,
 }
 
 #[cfg(target_os = "linux")]
 impl PlatformEncoder {
     pub fn new(config: &EncoderConfig) -> Result<Self, EncoderError> {
-        Ok(Self { bitrate: config.bitrate })
+        Ok(Self { bitrate: config.bitrate, control: None, keyframe_pending: false })
     }
 
-    /// ponytail: o x264 no pipe não recebe pedidos; o keyframe periódico (1 s) cobre.
-    pub fn request_keyframe(&mut self) {}
+    pub fn request_keyframe(&mut self) {
+        match &self.control {
+            Some(control) => control.request_keyframe(),
+            None => self.keyframe_pending = true,
+        }
+    }
 
     /// A taxa com que o encoder abriu, que é o teto de quem a ajusta.
     pub fn bitrate(&self) -> u32 {
         self.bitrate
     }
 
-    /// ponytail: sem efeito, e diz que recusou para o governador parar de tentar. O encoder
-    /// é o `gst-launch` filho, com a taxa escrita na linha de comando: o teto é a taxa fixa
-    /// de hoje. A saída é o pipeline dentro do processo (`gstreamer-rs`), onde `bitrate` é
-    /// propriedade que o x264enc e o nvh264enc aceitam com o pipeline no ar.
-    pub fn set_bitrate(&mut self, _bitrate: u32) -> bool {
-        false
+    /// O governador fala na taxa da qualidade escolhida; a câmera abre mais baixa, e segue a
+    /// mesma proporção. Na tela as duas são a mesma.
+    pub fn set_bitrate(&mut self, bitrate: u32) -> bool {
+        let Some(control) = &self.control else {
+            return false;
+        };
+
+        control.set_bitrate(scaled(bitrate, control.launched_bitrate(), self.bitrate))
     }
 
     /// Se o H.264 sai da placa. Quem escolhe o encoder é a captura, que monta o pipeline.
@@ -268,12 +284,26 @@ impl PlatformEncoder {
         surface: &GpuSurface,
         timestamp_ns: u64,
     ) -> Result<EncodedFrame, EncoderError> {
+        if self.control.is_none() {
+            self.control.clone_from(&surface.encoder);
+
+            if std::mem::take(&mut self.keyframe_pending) {
+                self.request_keyframe();
+            }
+        }
+
         Ok(EncodedFrame {
             data: surface.data.clone(),
             keyframe: surface.keyframe,
             timestamp_ns,
         })
     }
+}
+
+/// `bitrate`, que está na escala de `ceiling`, levado para a de `launched`.
+#[cfg(target_os = "linux")]
+fn scaled(bitrate: u32, launched: u32, ceiling: u32) -> u32 {
+    u32::try_from(u64::from(bitrate) * u64::from(launched) / u64::from(ceiling.max(1))).unwrap_or(u32::MAX)
 }
 
 /// Fora dos três sistemas não há encoder. O stub tem a **mesma forma** da implementação
@@ -325,6 +355,13 @@ mod tests {
         let uhd = EncoderConfig::new(Quality::Uhd2160, 60, FULL_HD).bitrate;
 
         assert!(baixo < medio && medio < alto && alto < uhd);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_camera_follows_the_governor_in_proportion() {
+        assert_eq!(scaled(7_000_000, 10_000_000, 10_000_000), 7_000_000, "na tela a escala é a mesma");
+        assert_eq!(scaled(7_000_000, 800_000, 10_000_000), 560_000, "a câmera de 800 kbit/s cai 30% junto");
     }
 
     #[test]
