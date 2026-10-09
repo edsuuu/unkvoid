@@ -19,6 +19,8 @@ const WINDOW_MS = 60_000;
 
 const MAX_BODY = '16kb';
 
+const MAX_MESSAGE_BYTES = 1024 * 1024;
+
 export class App {
     private readonly registry = new RoomRegistry();
 
@@ -81,7 +83,11 @@ export class App {
     }
 
     private listenWebSockets(http: HttpServer): void {
-        const websockets = new WebSocketServer({ server: http, path: config.path });
+        const websockets = new WebSocketServer({
+            server: http,
+            path: config.path,
+            maxPayload: MAX_MESSAGE_BYTES,
+        });
 
         websockets.on('connection', (socket, request) => this.accept(socket, request));
 

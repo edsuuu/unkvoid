@@ -14,6 +14,14 @@ export class JoinController {
 
         const room = await this.registry.findOrCreate(request.roomCode());
 
+        // O socket pode ter caído enquanto o router nascia, e o `close` já passou: quem
+        // entrasse agora ficaria na sala para sempre, sem nada que o tirasse de lá.
+        if (request.session.socket.readyState !== request.session.socket.OPEN) {
+            this.registry.release(room);
+
+            throw new ValidationException('the connection closed before joining');
+        }
+
         const { peer, resumed } = room.addPeer(
             request.name(),
             request.session.socket,
@@ -43,7 +51,7 @@ export class JoinController {
             peerId: peer.id,
             name: peer.name,
             resumeKey: peer.resumeKey,
-            routerRtpCapabilities: room.router.rtpCapabilities,
+            routerRtpCapabilities: room.rtpCapabilities(),
             peers: room.describePeers(peer.id, resumed),
             userId: peer.userId,
             can: peer.can,

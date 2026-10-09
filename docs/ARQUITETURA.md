@@ -138,7 +138,7 @@ O Node não vê um único pacote de vídeo. Por que o SFU é Node: [DECISOES.md]
 
 | Nome | O que é |
 |---|---|
-| `Room` | uma sala. O id é o código da sala por código (3 a 32 caracteres) ou o ULID de um canal de voz (26). A sala inteira mora num worker só, escolhido pelo que tem menos salas |
+| `Room` | uma sala. O id é o código da sala por código (3 a 32 caracteres) ou o ULID de um canal de voz (26). A sala começa num router do worker com menos routers; passando de `SFU_PEERS_PER_ROUTER` pessoas (padrão 10), quem chega vai para um router noutro worker, e o que assiste de lá chega por `pipeToRouter` |
 | `Peer` | uma pessoa conectada: um WebSocket, com uma `resumeKey` para voltar depois de cair |
 | producer | uma origem que alguém manda: `screen`, `screenAudio`, `mic` ou `camera` |
 | consumer | a cópia de um producer indo para uma pessoa; nasce pausado |

@@ -30,7 +30,7 @@ export class Kernel {
             leave: new LeaveController(),
             transport: new TransportController(),
             producer: new ProducerController(),
-            peer: new PeerController(),
+            peer: new PeerController(broadcaster),
             consumer: new ConsumerController(),
             subscription: new SubscriptionController(subscriptions, broadcaster),
         });
