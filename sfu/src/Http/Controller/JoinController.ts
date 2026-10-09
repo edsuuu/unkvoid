@@ -60,6 +60,7 @@ export class JoinController {
             peers: room.describePeers(peer.id, resumed),
             userId: peer.userId,
             can: peer.can,
+            serverMuted: peer.serverMuted,
             elapsedMs: Date.now() - room.createdAt,
         };
     }

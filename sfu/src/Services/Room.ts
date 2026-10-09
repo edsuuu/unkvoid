@@ -199,6 +199,12 @@ export class Room {
 
             if (tokened) {
                 this.applyCan(previous, identity.can);
+
+                // O mudo do servidor vem no token da retomada como vinha no `can`: um `/mute`
+                // perdido se acerta na primeira oscilação.
+                if (previous.serverMuted !== (identity.muted === true)) {
+                    void this.applyServerMute(previous, identity.muted === true);
+                }
             }
 
             for (const producerId of new Set(
@@ -290,14 +296,26 @@ export class Room {
                 continue;
             }
 
-            peer.serverMuted = muted;
-            peer.send('serverMuted', { muted });
+            touched += await this.applyServerMute(peer, muted);
+        }
 
-            for (const producer of peer.producers.values()) {
-                if (producer.appData.source === 'mic') {
-                    await this.setProducerPaused(peer, producer, muted);
-                    touched += 1;
-                }
+        return touched;
+    }
+
+    /**
+     * A marca do mudo do servidor, e o mic junto com ela: pausado enquanto durar, retomado
+     * quando o Laravel devolve a voz. Devolve quantos mics mexeu.
+     */
+    public async applyServerMute(peer: Peer, muted: boolean): Promise<number> {
+        let touched = 0;
+
+        peer.serverMuted = muted;
+        peer.send('serverMuted', { muted });
+
+        for (const producer of peer.producers.values()) {
+            if (producer.appData.source === 'mic') {
+                await this.setProducerPaused(peer, producer, muted);
+                touched += 1;
             }
         }
 
