@@ -680,3 +680,39 @@ it('ensurdecer no servidor exige DEAFEN_MEMBERS, respeita a hierarquia e nunca c
 
     Http::assertNotSent(fn ($request): bool => str_contains((string) $request->url(), '/mute'));
 });
+
+it('categoria agrupa canais: só texto e voz entram nela, e apagá-la devolve os canais à raiz', function (): void {
+    fakeSfu();
+    $owner = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    $text = $server->channels()->where('type', 'text')->firstOrFail();
+
+    $category = $this->actingAs($owner, 'sanctum')->postJson("/api/servers/{$server->id}/channels", ['name' => 'Reuniões', 'type' => 'category'])
+        ->assertCreated()
+        ->assertJsonPath('data.type', 'category')
+        ->assertJsonPath('data.parent_id', null)
+        ->json('data.id');
+
+    $this->actingAs($owner, 'sanctum')->postJson("/api/servers/{$server->id}/channels", ['name' => 'Sala', 'type' => 'voice', 'parent_id' => $category])
+        ->assertCreated()
+        ->assertJsonPath('data.parent_id', $category);
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$text->id}", ['parent_id' => $category])->assertOk()->assertJsonPath('data.parent_id', $category);
+
+    // Categoria dentro de categoria, categoria com limite, pai que é canal de texto, e pai de outro servidor.
+    $this->actingAs($owner, 'sanctum')->postJson("/api/servers/{$server->id}/channels", ['name' => 'Sub', 'type' => 'category', 'parent_id' => $category])->assertUnprocessable();
+    $this->actingAs($owner, 'sanctum')->postJson("/api/servers/{$server->id}/channels", ['name' => 'Sub', 'type' => 'category', 'user_limit' => 3])->assertUnprocessable();
+    $this->actingAs($owner, 'sanctum')->postJson("/api/servers/{$server->id}/channels", ['name' => 'x', 'type' => 'text', 'parent_id' => $text->id])->assertUnprocessable();
+    $other = Server::createFor($owner, 'Outra');
+    $this->actingAs($owner, 'sanctum')->postJson("/api/servers/{$other->id}/channels", ['name' => 'x', 'type' => 'text', 'parent_id' => $category])->assertUnprocessable();
+
+    // Categoria não tem chat.
+    $this->actingAs($owner, 'sanctum')->getJson("/api/channels/{$category}/messages")->assertForbidden();
+    $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$category}/messages", ['body' => 'oi'])->assertForbidden();
+    $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$category}/voice/token")->assertForbidden();
+
+    $this->actingAs($owner, 'sanctum')->getJson("/api/servers/{$server->id}")->assertOk()->assertJsonCount(4, 'data.channels');
+    $this->actingAs($owner, 'sanctum')->deleteJson("/api/channels/{$category}")->assertNoContent();
+
+    expect($text->refresh()->parent_id)->toBeNull()
+        ->and($server->channels()->count())->toBe(3);
+});

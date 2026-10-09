@@ -22,6 +22,7 @@ final class ChannelResource extends JsonResource
             'id' => $this->id,
             'name' => $this->name,
             'type' => $this->type->value,
+            'parent_id' => $this->parent_id,
             'topic' => $this->topic,
             'position' => $this->position,
             'user_limit' => $this->user_limit,
