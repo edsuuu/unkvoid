@@ -1055,6 +1055,8 @@ test('o kick e o mute com a lista de salas só alcançam essas salas: a moderaç
 test('o mudo da retomada que falha no mediasoup não derruba o processo', async () => {
     // Sem rede: a `Room` do `dist/` com um producer cujo `pause()` rejeita, como faz um producer
     // ou um worker já fechado. Sem o catch, a rejeição subia solta e matava o SFU inteiro.
+    // A configuração do `dist/` exige o segredo no ambiente ao ser importada.
+    process.env.SFU_SECRET ??= SECRET;
     const { Room } = await import('./dist/Services/Room.js');
     const { Peer } = await import('./dist/Services/Peer.js');
 
