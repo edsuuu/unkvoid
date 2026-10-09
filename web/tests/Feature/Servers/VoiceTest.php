@@ -95,13 +95,21 @@ it('quem reconecta num canal cheio volta, e o navegador longo demais é cortado'
     joinServer($server, $member);
     $voice = $server->channels()->where('type', 'voice')->firstOrFail();
     $voice->update(['user_limit' => 1]);
-    fakeSfu($voice->id, $member);
 
-    // O membro ainda consta na presença (a carência do SFU): pedir o token de novo não conta contra o limite.
+    $rooms = [];
+    livePresence($rooms);
+
     $this->actingAs($member, 'sanctum')->withHeader('User-Agent', str_repeat('a', 2000))->postJson("/api/channels/{$voice->id}/voice/token")->assertOk();
+
+    expect(mb_strlen((string) ChannelAccess::query()->sole()->user_agent))->toBe(1023);
+
+    // O membro ainda consta na presença (a carência do SFU): pedir o token de novo é reconectar,
+    // não conta contra o limite e não abre outro acesso. O lugar é dele: o dono não entra.
+    $rooms = [$voice->id => [$member]];
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$voice->id}/voice/token")->assertOk();
     $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$voice->id}/voice/token")->assertForbidden();
 
-    expect(mb_strlen((string) ChannelAccess::query()->firstOrFail()->user_agent))->toBe(1023);
+    expect(ChannelAccess::query()->count())->toBe(1);
 });
 
 it('desconectar da voz exige MOVE_MEMBERS e hierarquia, e chama o kick do SFU', function (): void {
@@ -344,15 +352,16 @@ it('mover para canal que a pessoa não vê é recusado, quem move precisa de CON
  * casa responde, então um só, lendo a variável, no lugar de um `fakeSfu()` por cenário.
  *
  * @param  array<string, array<int, User>>  $rooms
+ * @param  array<int, int>  $reconnecting  ids de quem está na carência
  */
-function livePresence(array &$rooms): void
+function livePresence(array &$rooms, array &$reconnecting = []): void
 {
     Http::fake([
-        '*/presence' => function () use (&$rooms): PromiseInterface {
+        '*/presence' => function () use (&$rooms, &$reconnecting): PromiseInterface {
             $payload = [];
 
             foreach ($rooms as $room => $users) {
-                $payload[$room] = array_map(fn (User $user): array => ['sub' => "user:{$user->id}", 'name' => $user->name, 'sources' => ['mic']], $users);
+                $payload[$room] = array_map(fn (User $user): array => ['sub' => "user:{$user->id}", 'name' => $user->name, 'sources' => ['mic'], 'reconnecting' => in_array($user->id, $reconnecting, true)], $users);
             }
 
             return Http::response(['rooms' => $payload]);
@@ -386,6 +395,10 @@ it('mover de volta em menos de 60 s entra: a marca de saída do destino é apaga
     $rooms = [$b->id => [$member]];
     $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$b->id}/voice/members/{$member->id}", ['channel_id' => $a->id])->assertNoContent();
     $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$a->id}/voice/token")->assertOk();
+
+    // E o passe de B morreu com a saída de B: o app antigo, que volta à origem, não volta para lá.
+    $rooms = [];
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$b->id}/voice/token")->assertForbidden();
 });
 
 it('quem foi movido para canal trancado ou cheio reconecta: o passe vale 60 s e, sentado, não passa de novo por CONNECT nem pelo limite', function (): void {
@@ -399,16 +412,18 @@ it('quem foi movido para canal trancado ou cheio reconecta: o passe vale 60 s e,
     $stage = $server->createChannel($owner, 'Palco', ChannelTypeEnum::Voice, null, 1);
     $stage->overwrites()->create(['target_type' => 'role', 'target_id' => $server->everyoneRole()->id, 'allow' => 0, 'deny' => PermissionEnum::Connect->value]);
     $rooms = [$origin->id => [$member], $stage->id => [$other]];
-    livePresence($rooms);
+    $reconnecting = [];
+    livePresence($rooms, $reconnecting);
 
     $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$stage->id}/voice/token")->assertForbidden();
     $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$origin->id}/voice/members/{$member->id}", ['channel_id' => $stage->id])->assertNoContent();
     $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$stage->id}/voice/token")->assertOk();
 
-    // O SFU confirmou a entrada; a presença esconde quem está na carência.
+    // O SFU confirmou a entrada e, na queda, ainda conhece a pessoa (carência).
     $joined = sfuJoined($stage, $member);
     $this->withHeaders(sfuHeaders($joined))->postJson('/api/sfu/events', $joined)->assertNoContent();
-    $rooms = [$stage->id => [$other]];
+    $rooms = [$stage->id => [$other, $member]];
+    $reconnecting = [$member->id];
     $this->travel(61)->seconds();
 
     $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$stage->id}/voice/token")->assertOk();
@@ -416,10 +431,37 @@ it('quem foi movido para canal trancado ou cheio reconecta: o passe vale 60 s e,
     // Reconectar não abre acesso novo: a linha do `joined` continua a valer.
     expect(ChannelAccess::query()->where('user_id', $member->id)->where('channel_id', $stage->id)->whereNull('left_at')->count())->toBe(1);
 
-    // Saiu de vez: a próxima entrada volta a passar por CONNECT.
+    // Saiu de vez (o SFU já não a conhece): a próxima entrada volta a passar por CONNECT.
     $left = sfuJoined($stage, $member, 'left', time() + 5);
     $this->withHeaders(sfuHeaders($left))->postJson('/api/sfu/events', $left)->assertNoContent();
+    $rooms = [$stage->id => [$other]];
     $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$stage->id}/voice/token")->assertForbidden();
+});
+
+it('acesso aberto em banco sem o SFU conhecer a pessoa não é lugar: o `left` perdido não pula CONNECT nem o limite', function (): void {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $other = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+    joinServer($server, $other);
+    $voice = $server->channels()->where('type', 'voice')->firstOrFail();
+    $voice->update(['user_limit' => 1]);
+
+    $rooms = [$voice->id => [$member]];
+    livePresence($rooms);
+
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$voice->id}/voice/token")->assertOk();
+    $joined = sfuJoined($voice, $member);
+    $this->withHeaders(sfuHeaders($joined))->postJson('/api/sfu/events', $joined)->assertNoContent();
+
+    // O SFU reiniciou sem mandar `left`: a linha ficou aberta, mas a sala está vazia.
+    $rooms = [$voice->id => [$other]];
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$voice->id}/voice/token")->assertForbidden()->assertJsonPath('message', 'O canal está cheio.');
+
+    $rooms = [];
+    $voice->overwrites()->create(['target_type' => 'role', 'target_id' => $server->everyoneRole()->id, 'allow' => 0, 'deny' => PermissionEnum::Connect->value]);
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$voice->id}/voice/token")->assertForbidden();
 });
 
 it('quem caiu da rede num canal cheio volta ao lugar dele, mesmo com alguém novo dentro', function (): void {
@@ -435,30 +477,27 @@ it('quem caiu da rede num canal cheio volta ao lugar dele, mesmo com alguém nov
     $voice->update(['user_limit' => 2]);
 
     $rooms = [$voice->id => [$alice, $bob]];
-    livePresence($rooms);
+    $reconnecting = [];
+    livePresence($rooms, $reconnecting);
 
-    foreach ([$alice, $bob] as $user) {
-        $joined = sfuJoined($voice, $user);
-        $this->withHeaders(sfuHeaders($joined))->postJson('/api/sfu/events', $joined)->assertNoContent();
-    }
+    // Alice cai: o SFU a guarda na carência, e o lugar dela fica guardado — Carol não entra.
+    $reconnecting = [$alice->id];
+    $this->actingAs($carol, 'sanctum')->postJson("/api/channels/{$voice->id}/voice/token")->assertForbidden()->assertJsonPath('message', 'O canal está cheio.');
 
-    // Alice cai (some da presença), Carol ocupa o lugar, e a retomada da Alice ainda entra.
-    $rooms = [$voice->id => [$bob]];
-    $this->actingAs($carol, 'sanctum')->postJson("/api/channels/{$voice->id}/voice/token")->assertOk();
-    $rooms = [$voice->id => [$bob, $carol]];
+    // A retomada da Alice entra sem passar pelo limite.
     $this->actingAs($alice, 'sanctum')->postJson("/api/channels/{$voice->id}/voice/token")->assertOk();
 
-    // Quem nunca sentou continua barrado pelo limite.
-    $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$voice->id}/voice/token")->assertForbidden();
+    // A carência acabou sem a Alice voltar: o lugar vaga e Carol entra.
+    $rooms = [$voice->id => [$bob]];
+    $this->actingAs($carol, 'sanctum')->postJson("/api/channels/{$voice->id}/voice/token")->assertOk();
 });
 
-it('quem entra mutado pelo servidor volta a falar quando desmutam: o SFU é avisado na chegada e em todo canal de voz', function (): void {
+it('quem entra mutado pelo servidor volta a falar quando desmutam: o SFU é avisado na chegada e no SFU inteiro', function (): void {
     $owner = User::factory()->create();
     $member = User::factory()->create();
     $server = Server::createFor($owner, 'Casa');
     joinServer($server, $member)->update(['server_mute' => true]);
     $voice = $server->channels()->where('type', 'voice')->firstOrFail();
-    $other = $server->createChannel($owner, 'Outra', ChannelTypeEnum::Voice, null, null);
     fakeSfu($voice->id, $member);
 
     $joined = sfuJoined($voice, $member);
@@ -468,9 +507,7 @@ it('quem entra mutado pelo servidor volta a falar quando desmutam: o SFU é avis
 
     $this->actingAs($owner, 'sanctum')->patchJson("/api/servers/{$server->id}/members/{$member->id}", ['server_mute' => false])->assertOk();
 
-    foreach ([$voice, $other] as $channel) {
-        Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), "/rooms/{$channel->id}/mute") && $request['muted'] === false);
-    }
+    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/mute') && ! str_contains((string) $request->url(), '/rooms/') && $request['userId'] === "user:{$member->id}" && $request['muted'] === false);
 
     // Desmutado, o token sai sem a claim; o `speak` sempre esteve lá.
     $claims = json_decode(base64_decode(strtr(explode('.', (string) $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$voice->id}/voice/token")->assertOk()->json('data.token'))[0], '-_', '+/'), true), true, 512, JSON_THROW_ON_ERROR);
@@ -479,7 +516,7 @@ it('quem entra mutado pelo servidor volta a falar quando desmutam: o SFU é avis
         ->and($claims)->not->toHaveKey('muted');
 });
 
-it('banir, expulsar e mutar chegam ao SFU em todo canal de voz, mesmo com a presença fora do ar ou a pessoa na carência', function (): void {
+it('banir, expulsar e mutar chegam ao SFU numa chamada só, sem sala, mesmo com a presença fora do ar', function (): void {
     $owner = User::factory()->create();
     $banned = User::factory()->create();
     $kicked = User::factory()->create();
@@ -488,9 +525,6 @@ it('banir, expulsar e mutar chegam ao SFU em todo canal de voz, mesmo com a pres
     joinServer($server, $banned);
     joinServer($server, $kicked);
     joinServer($server, $muted);
-    $voice = $server->channels()->where('type', 'voice')->firstOrFail();
-    $other = $server->createChannel($owner, 'Outra', ChannelTypeEnum::Voice, null, null);
-
     Http::fake([
         '*/presence' => Http::response('upstream timeout', 504),
         '*' => Http::response(['kicked' => 0, 'muted' => 0]),
@@ -500,11 +534,10 @@ it('banir, expulsar e mutar chegam ao SFU em todo canal de voz, mesmo com a pres
     $this->actingAs($owner, 'sanctum')->deleteJson("/api/servers/{$server->id}/members/{$kicked->id}")->assertNoContent();
     $this->actingAs($owner, 'sanctum')->patchJson("/api/servers/{$server->id}/members/{$muted->id}", ['server_mute' => true])->assertOk();
 
-    foreach ([$voice, $other] as $channel) {
-        foreach ([$banned, $kicked] as $user) {
-            Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), "/rooms/{$channel->id}/kick") && $request['userId'] === "user:{$user->id}");
-        }
-
-        Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), "/rooms/{$channel->id}/mute") && $request['userId'] === "user:{$muted->id}" && $request['muted'] === true);
+    foreach ([$banned, $kicked] as $user) {
+        Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/kick') && ! str_contains((string) $request->url(), '/rooms/') && $request['userId'] === "user:{$user->id}");
     }
+
+    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/mute') && ! str_contains((string) $request->url(), '/rooms/') && $request['userId'] === "user:{$muted->id}" && $request['muted'] === true);
+    Http::assertNotSent(fn ($request): bool => str_contains((string) $request->url(), '/rooms/'));
 });
