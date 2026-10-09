@@ -55,6 +55,12 @@ const ROUTES: &[(&str, &str, &str)] = &[
         "DELETE",
         "/api/channels/{channel}/voice/members/{user}",
     ),
+    // Mover é o mesmo recurso: `{channel}` é de onde a pessoa sai, o corpo diz para onde.
+    (
+        "moveVoiceMember",
+        "PATCH",
+        "/api/channels/{channel}/voice/members/{user}",
+    ),
     ("messages", "GET", "/api/channels/{channel}/messages"),
     ("sendMessage", "POST", "/api/channels/{channel}/messages"),
     ("friends", "GET", "/api/friends"),
@@ -137,6 +143,15 @@ mod tests {
         assert!(resolve("deleteChannel", &json!({ "channel": "../me" })).is_none());
         assert!(resolve("deleteChannel", &json!({ "channel": "a/b" })).is_none());
         assert!(resolve("somethingElse", &json!({})).is_none());
+    }
+
+    #[test]
+    fn moving_someone_patches_the_voice_member_they_are() {
+        let (method, path) =
+            resolve("moveVoiceMember", &json!({ "channel": "01abc", "user": 42 })).expect("route");
+
+        assert_eq!(method, Method::PATCH);
+        assert_eq!(path, "/api/channels/01abc/voice/members/42");
     }
 
     #[test]

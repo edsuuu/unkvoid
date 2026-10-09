@@ -1,34 +1,32 @@
 import { Slider } from "std-widgets.slint";
-import { Icons, Skin } from "skin.slint";
-import { TileRow, Ui } from "state.slint";
-import { Avatar, CodeChip, GhostButton, Glass, Glyph, LabelMono, LiveBadge, PrimaryButton, RowItem } from "widgets.slint";
+import { Icons, Skin, Theme } from "skin.slint";
+import { PeerRow, TileRow, Ui } from "state.slint";
+import { Avatar, DButton, Glyph, Label, LivePill, LiveBadge, MenuSheet, Meta, Tip } from "widgets.slint";
 
-// O palco: o cartão largo quando ninguém transmite, e a grade de telas quando há. É o
-// `Stage.tsx` do React no desenho que o macOS fixou (`Screens/Room/Stage.swift`).
+// A chamada, no molde do Discord: fundo preto, um cartão 16:9 por pessoa (avatar quando não
+// há vídeo) e um por transmissão, vão de 8, raio 8. O foco põe um cartão grande e os outros
+// numa faixa de 128 embaixo; a tela cheia deixa um só. Serve ao canal de voz e à sala por
+// código: é o mesmo `Stage`.
 
-// Um botão do cartão: 28 de lado, raio 8, como o `IconButton(side: 28)` do Mac.
+// Um botão do cartão: 28 de lado, raio 4, chapado.
 component TileButton inherits Rectangle {
     in property <string> commands;
     in property <string> hint;
-    // "on" é o violeta da marca; "off" é o vermelho de algo desligado.
+    // "on" é a marca; "off" é o vermelho de algo desligado.
     in property <string> tone: "idle";
     in property <bool> filled;
     callback clicked();
 
     width: 28px;
     height: 28px;
-    border-radius: 8px;
-    border-width: 1px;
-    border-color: root.tone == "on" ? #8a7cf599 : (root.tone == "off" ? #e2445c59 : (touch.has-hover ? #8a7cf580 : Skin.line-strong));
-    background: root.tone == "on"
-        ? @linear-gradient(180deg, Skin.brand 0%, Skin.brand-dark 100%)
-        : (root.tone == "off" ? #e2445c1a : #100d1acc);
+    border-radius: 4px;
+    background: root.tone == "on" ? Theme.brand : (root.tone == "off" ? Theme.danger-fill : (touch.has-hover ? Theme.selected : #00000099));
 
     Glyph {
         commands: root.commands;
-        size: 13px;
+        size: 14px;
         filled: root.filled;
-        tint: root.tone == "on" ? Skin.ink-strong : (root.tone == "off" ? Skin.danger : (touch.has-hover ? Skin.ink-strong : Skin.ink-icon));
+        tint: Theme.ink-strong;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
     }
@@ -38,37 +36,88 @@ component TileButton inherits Rectangle {
         clicked => { root.clicked(); }
     }
 
-    // O `.help` do Mac, o `title` do React: o que o botão faz, sem precisar clicar.
-    if touch.has-hover && root.hint != "" : Rectangle {
-        y: -34px;
-        x: min(0px, 28px - said.preferred-width - 16px);
-        width: said.preferred-width + 16px;
-        height: 26px;
-        border-radius: 7px;
-        border-width: 1px;
-        border-color: Skin.line-strong;
-        background: #100d1afa;
+    if touch.has-hover && root.hint != "" : Tip {
+        y: -40px;
+        x: min(0px, 28px - self.width);
+        text: root.hint;
+    }
+}
 
-        said := Text {
-            text: root.hint;
-            color: Skin.ink-icon;
-            font-family: Skin.sans;
-            font-size: 11px;
+// O rótulo no canto de baixo do cartão: fundo preto a 60%, raio 4, 13/600 branco.
+component CardLabel inherits Rectangle {
+    in property <string> text;
+    in property <bool> muted;
+
+    width: inside.preferred-width + 16px;
+    height: 24px;
+    border-radius: 4px;
+    background: #00000099;
+
+    inside := HorizontalLayout {
+        x: 8px;
+        spacing: 6px;
+
+        Text {
+            text: root.text;
+            color: #ffffff;
+            font-size: 13px;
+            font-weight: 600;
             vertical-alignment: center;
-            horizontal-alignment: center;
+        }
+
+        if root.muted : Glyph {
+            commands: Icons.mic-off;
+            size: 14px;
+            tint: Theme.danger;
+            y: (parent.height - self.height) / 2;
         }
     }
 }
 
-// `StreamTile.tsx`: a tela de alguém, com o selo, o nome e os botões por cima.
+// Um cartão de pessoa: avatar de 80 no centro, o nome embaixo à esquerda, contorno interno
+// verde enquanto fala.
+component PersonCard inherits Rectangle {
+    in property <PeerRow> peer;
+    in property <bool> small;
+
+    border-radius: 8px;
+    background: Theme.surface-tile;
+    clip: true;
+
+    Avatar {
+        letter: root.peer.initial;
+        size: root.small ? 48px : 80px;
+        mine: root.peer.mine;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    Rectangle {
+        border-radius: 8px;
+        border-width: 2px;
+        border-color: Theme.online;
+        opacity: root.peer.speaking ? 1.0 : 0.0;
+
+        animate opacity { duration: 120ms; easing: ease-out; }
+    }
+
+    if !root.small : CardLabel {
+        x: 8px;
+        y: parent.height - self.height - 8px;
+        text: root.peer.reconnecting ? root.peer.name + " · voltando" : root.peer.name;
+        muted: root.peer.muted;
+    }
+}
+
+// `StreamTile`: a tela ou a câmera de alguém, com o selo, o nome e os botões por cima.
 component StreamTile inherits Rectangle {
     in property <TileRow> tile;
     in property <bool> thumb;
     property <bool> adjusting;
 
-    border-radius: 16px;
+    border-radius: 8px;
     clip: true;
-    background: #000000;
+    background: Theme.surface-tile;
 
     if root.tile.has-frame : Image {
         source: root.tile.frame;
@@ -77,38 +126,29 @@ component StreamTile inherits Rectangle {
         image-fit: contain;
     }
 
-    // Até o primeiro quadro, o fundo do React que diz que a tela está abrindo.
-    if !root.tile.has-frame && !root.tile.paused : Rectangle {
-        background: @linear-gradient(135deg, #5a3fd640 0%, #000000 100%);
-
-        Text {
-            text: "abrindo…";
-            color: Skin.lilac-2;
-            font-family: Skin.mono;
-            font-size: 11px;
-        }
+    // Até o primeiro quadro, o cartão diz que a tela está abrindo.
+    if !root.tile.has-frame && !root.tile.paused : Meta {
+        text: "abrindo…";
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
     }
 
     if root.tile.paused : Rectangle {
         background: #00000099;
 
-        Text {
+        Meta {
             text: "pausado";
-            color: Skin.ink-icon;
-            font-family: Skin.mono;
-            font-size: 11px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
         }
     }
 
-    // A borda por cima da imagem: com `clip`, a de baixo seria cortada junto do canto.
     Rectangle {
-        border-radius: 16px;
-        border-width: 1px;
-        border-color: root.tile.focused ? #8a7cf599 : Skin.line-strong;
+        border-radius: 8px;
+        border-width: root.tile.focused ? 2px : 0px;
+        border-color: Theme.brand;
     }
 
-    // Os botões moram dentro desta área: passar por cima deles continua sendo passar por
-    // cima do cartão, e a barra não pisca ao ir do vídeo para o botão.
     touch := TouchArea {
         mouse-cursor: root.thumb ? pointer : default;
         clicked => {
@@ -117,301 +157,200 @@ component StreamTile inherits Rectangle {
             }
         }
         double-clicked => {
-            if !root.thumb && !root.tile.camera {
-                Ui.toggle-fullscreen(root.tile.producer);
+            if !root.thumb {
+                Ui.toggle-focus(root.tile.producer);
+            }
+        }
+    }
+
+    if !root.thumb : Rectangle {
+        x: 8px;
+        y: 8px;
+        width: badge.preferred-width + 10px;
+        height: 16px;
+        border-radius: 4px;
+        background: root.tile.camera || root.tile.mine ? Theme.brand : Theme.live;
+
+        badge := Text {
+            text: root.tile.camera ? "CÂMERA" : (root.tile.mine ? "VOCÊ" : "AO VIVO");
+            color: #ffffff;
+            font-size: 11px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    if !root.thumb : HorizontalLayout {
+        x: 8px;
+        y: parent.height - 24px - 8px;
+        height: 24px;
+        spacing: 6px;
+        alignment: start;
+
+        CardLabel {
+            text: root.tile.label;
+        }
+
+        if root.tile.stats != "" && !root.tile.camera : Rectangle {
+            width: stats.preferred-width + 12px;
+            border-radius: 4px;
+            background: #00000099;
+
+            stats := Text {
+                text: root.tile.paused ? "pausado" : root.tile.stats;
+                color: root.tile.loss-high && !root.tile.paused ? Theme.danger : Theme.ink-dim;
+                font-family: Skin.mono;
+                font-size: 10px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
             }
         }
 
-        Rectangle {
-            y: parent.height - self.height;
-            height: 48px;
-            background: @linear-gradient(180deg, #00000000 0%, #000000b3 100%);
+        if root.tile.watchers > 0 : Rectangle {
+            width: eyes.preferred-width + 12px;
+            border-radius: 4px;
+            background: #00000099;
 
-            HorizontalLayout {
-                padding: 10px;
-                spacing: 6px;
+            eyes := HorizontalLayout {
+                x: 6px;
+                spacing: 4px;
 
-                // O selo no meio da barra: num `HorizontalLayout` o filho estica na altura, e
-                // um `y` escrito nele é ignorado.
-                VerticalLayout {
-                    alignment: center;
-
-                    Rectangle {
-                        width: badge.preferred-width + 12px;
-                        height: 16px;
-                        border-radius: 5px;
-                        background: root.tile.camera || root.tile.mine ? Skin.brand : Skin.danger;
-
-                        badge := Text {
-                            text: root.tile.camera ? "CÂMERA" : (root.tile.mine ? "VOCÊ" : "AO VIVO");
-                            color: Skin.ink-strong;
-                            font-family: Skin.mono;
-                            font-size: 9px;
-                            font-weight: 600;
-                        }
-                    }
+                Glyph {
+                    commands: Icons.eye;
+                    size: 12px;
+                    tint: Theme.ink-soft;
+                    y: (parent.height - self.height) / 2;
                 }
 
                 Text {
-                    text: root.tile.label;
-                    color: Skin.ink-strong;
-                    font-family: Skin.sans;
-                    font-size: 12px;
-                    font-weight: 500;
-                    overflow: elide;
+                    text: root.tile.watchers;
+                    color: Theme.ink-soft;
+                    font-size: 11px;
                     vertical-alignment: center;
-                    max-width: parent.width * 0.4;
-                }
-
-                if root.tile.stats != "" && !root.tile.camera : Text {
-                    text: root.tile.paused ? "pausado" : root.tile.stats;
-                    color: root.tile.loss-high && !root.tile.paused ? Skin.danger : Skin.ink-dim;
-                    font-family: Skin.mono;
-                    font-size: 9.5px;
-                    vertical-alignment: center;
-                }
-
-                if root.tile.watchers > 0 : HorizontalLayout {
-                    spacing: 4px;
-
-                    Glyph {
-                        commands: Icons.eye;
-                        size: 11px;
-                        y: (parent.height - self.height) / 2;
-                    }
-
-                    Text {
-                        text: root.tile.watchers;
-                        color: Skin.ink-icon;
-                        font-family: Skin.mono;
-                        font-size: 10px;
-                        vertical-alignment: center;
-                    }
-                }
-
-                Rectangle { horizontal-stretch: 1; }
-
-                if !root.thumb && (touch.has-hover || root.adjusting) : HorizontalLayout {
-                    spacing: 6px;
-
-                    if root.tile.audio : TileButton {
-                        commands: root.tile.heard ? Icons.speaker : Icons.speaker-off;
-                        tone: root.tile.heard ? "idle" : "off";
-                        hint: root.tile.heard ? "Mutar o áudio desta tela" : "Ativar o áudio desta tela";
-                        clicked => { Ui.toggle-heard(root.tile.producer); }
-                    }
-
-                    if root.tile.audio : TileButton {
-                        commands: Icons.sliders;
-                        tone: root.adjusting ? "on" : "idle";
-                        hint: "Volume — só do seu lado, não muda o que os outros ouvem";
-                        clicked => { root.adjusting = !root.adjusting; }
-                    }
-
-                    if !root.tile.mine : TileButton {
-                        commands: root.tile.paused ? Icons.play : Icons.eye;
-                        filled: root.tile.paused;
-                        hint: root.tile.paused ? "Retomar" : "Pausar: para de receber sem sair da sala";
-                        clicked => { Ui.pause-tile(root.tile.producer); }
-                    }
-
-                    TileButton {
-                        commands: Icons.focus;
-                        tone: root.tile.focused ? "on" : "idle";
-                        hint: root.tile.focused ? "Sair do foco" : "Focar esta tela";
-                        clicked => { Ui.toggle-focus(root.tile.producer); }
-                    }
-
-                    if !root.tile.camera : TileButton {
-                        commands: root.tile.full ? Icons.fullscreen-exit : Icons.fullscreen;
-                        hint: root.tile.full ? "Sair da tela cheia" : "Tela cheia";
-                        clicked => { Ui.toggle-fullscreen(root.tile.producer); }
-                    }
-
-                    TileButton {
-                        commands: Icons.close;
-                        hint: root.tile.mine ? "Ocultar minha tela" : "Fechar esta transmissão (continua ao vivo para os outros)";
-                        clicked => {
-                            if root.tile.mine {
-                                Ui.toggle-self-view();
-                            } else {
-                                Ui.close-tile(root.tile.producer);
-                            }
-                        }
-                    }
                 }
             }
+
+            watchers := TouchArea { }
+
+            if watchers.has-hover && root.tile.watcher-names != "" : Tip {
+                text: root.tile.watcher-names;
+                y: -40px;
+            }
+        }
+    }
+
+    // Os botões no hover, no canto de cima à direita: volume, pausar, focar, tela cheia,
+    // fechar.
+    if !root.thumb && (touch.has-hover || root.adjusting) : HorizontalLayout {
+        x: parent.width - self.preferred-width - 8px;
+        y: 8px;
+        height: 28px;
+        spacing: 4px;
+
+        if root.tile.audio : TileButton {
+            commands: root.tile.heard ? Icons.speaker : Icons.speaker-off;
+            tone: root.tile.heard ? "idle" : "off";
+            hint: root.tile.heard ? "Mutar o áudio desta tela" : "Ativar o áudio desta tela";
+            clicked => { Ui.toggle-heard(root.tile.producer); }
         }
 
-        // O volume desta tela. O Mac põe brilho, contraste, saturação e desfoque junto; o
-        // Slint não tem filtro de imagem, e controle que não muda nada não entra.
-        //
-        // ponytail: sem os filtros de imagem do React. Teto: a imagem sai como o decodificador
-        // a entregou. A saída é aplicar a conta no RGB da conversão, no `windows_decoder.rs`.
-        if root.adjusting && !root.thumb : Rectangle {
-            x: parent.width - self.width - 10px;
-            y: parent.height - self.height - 52px;
-            width: 220px;
-            height: 70px;
-            border-radius: 12px;
-            border-width: 1px;
-            border-color: Skin.line-strong;
-            background: #100d1afa;
+        if root.tile.audio : TileButton {
+            commands: Icons.sliders;
+            tone: root.adjusting ? "on" : "idle";
+            hint: "Volume";
+            clicked => { root.adjusting = !root.adjusting; }
+        }
 
-            VerticalLayout {
-                padding: 12px;
-                spacing: 6px;
+        if !root.tile.mine : TileButton {
+            commands: root.tile.paused ? Icons.play : Icons.pause;
+            filled: root.tile.paused;
+            hint: root.tile.paused ? "Retomar" : "Pausar";
+            clicked => { Ui.pause-tile(root.tile.producer); }
+        }
 
-                LabelMono { text: root.tile.heard ? "VOLUME " + root.tile.volume + "%" : "VOLUME (MUDO)"; }
+        TileButton {
+            commands: Icons.focus;
+            tone: root.tile.focused ? "on" : "idle";
+            hint: root.tile.focused ? "Sair do foco" : "Focar";
+            clicked => { Ui.toggle-focus(root.tile.producer); }
+        }
 
-                // O volume de verdade, e zero com o som desligado, como no React: arrastar liga.
-                Slider {
-                    minimum: 0;
-                    maximum: 100;
-                    value: root.tile.heard ? root.tile.volume : 0;
-                    changed(level) => { Ui.set-volume(root.tile.producer, level); }
+        TileButton {
+            commands: root.tile.full ? Icons.fullscreen-exit : Icons.fullscreen;
+            hint: root.tile.full ? "Sair da tela cheia" : "Tela cheia";
+            clicked => { Ui.toggle-fullscreen(root.tile.producer); }
+        }
+
+        TileButton {
+            commands: Icons.close;
+            hint: root.tile.mine ? "Ocultar minha tela" : "Fechar (continua ao vivo para os outros)";
+            clicked => {
+                if root.tile.mine {
+                    Ui.toggle-self-view();
+                } else {
+                    Ui.close-tile(root.tile.producer);
                 }
             }
         }
     }
+
+    // ponytail: sem os filtros de imagem do React. Teto: a imagem sai como o decodificador
+    // a entregou. A saída é aplicar a conta no RGB da conversão.
+    if root.adjusting && !root.thumb : MenuSheet {
+        x: parent.width - self.width - 8px;
+        y: 44px;
+        width: 220px;
+
+        Label {
+            text: root.tile.heard ? "VOLUME " + root.tile.volume + "%" : "VOLUME (MUDO)";
+            x: 8px;
+            height: 20px;
+            vertical-alignment: center;
+        }
+
+        // O volume de verdade, e zero com o som desligado: arrastar liga.
+        Slider {
+            minimum: 0;
+            maximum: 100;
+            value: root.tile.heard ? root.tile.volume : 0;
+            changed(level) => { Ui.set-volume(root.tile.producer, level); }
+        }
+    }
 }
 
-// O cartão largo quando não há tela aberta: o desenho, a frase e o que dá para fazer.
-component EmptyStage inherits Rectangle {
-    in property <string> code;
+// O cartão de uma transmissão que ainda não se abriu: escurecido, com o botão.
+component PendingCard inherits Rectangle {
+    border-radius: 8px;
+    background: Theme.surface-tile;
 
-    Glass {
-        width: min(520px, parent.width - 32px);
-        height: middle.preferred-height;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        border-radius: 24px;
-        drop-shadow-blur: 60px;
-        drop-shadow-offset-y: 30px;
-        drop-shadow-color: #000000cc;
+    VerticalLayout {
+        alignment: center;
+        spacing: 12px;
 
-        middle := VerticalLayout {
-            padding: 36px;
-            spacing: 0px;
+        Glyph {
+            commands: Icons.screen;
+            size: 32px;
+            tint: Theme.ink-dim;
+            x: (parent.width - self.width) / 2;
+        }
+
+        HorizontalLayout {
             alignment: center;
 
-            HorizontalLayout {
-                alignment: center;
-                padding-bottom: 20px;
-
-                Rectangle {
-                    height: 64px;
-                    width: 64px;
-                    border-radius: 20px;
-                    border-width: 1px;
-                    border-color: #8a7cf54d;
-                    background: #8a7cf526;
-
-                    Glyph {
-                        commands: Icons.screen;
-                        size: 26px;
-                        tint: Skin.lilac-2;
-                    }
-                }
-            }
-
-            Text {
-                text: Ui.pending-tiles > 0
-                    ? "Alguém está compartilhando, mas a tela não abriu sozinha."
-                    : (Ui.sharing ? "Você está transmitindo." : "Ninguém está compartilhando ainda.");
-                color: Skin.ink;
-                font-family: Skin.sans;
-                font-size: 19px;
-                font-weight: 600;
-                horizontal-alignment: center;
-                wrap: word-wrap;
-            }
-
-            if Ui.sharing && Ui.pending-tiles == 0 : VerticalLayout {
-                padding-top: 10px;
-
-                Text {
-                    text: "A sua tela não aparece aqui para não gastar um decoder à toa.";
-                    color: Skin.ink-soft;
-                    font-family: Skin.sans;
-                    font-size: 13px;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
-                }
-            }
-
-            if !Ui.sharing && Ui.pending-tiles == 0 && root.code != "" : HorizontalLayout {
-                padding-top: 10px;
-                spacing: 5px;
-                alignment: center;
-
-                Text {
-                    text: "Mande o código";
-                    color: Skin.ink-soft;
-                    font-family: Skin.sans;
-                    font-size: 13px;
-                    vertical-alignment: center;
-                }
-
-                CodeChip { text: root.code; }
-
-                Text {
-                    text: "para quem você quer aqui.";
-                    color: Skin.ink-soft;
-                    font-family: Skin.sans;
-                    font-size: 13px;
-                    vertical-alignment: center;
-                }
-            }
-
-            HorizontalLayout {
-                padding-top: 20px;
-                spacing: 8px;
-                alignment: center;
-
-                if Ui.pending-tiles > 0 : GhostButton {
-                    text: "Assistir";
-                    font-size: 13px;
-                    height: 41px;
-                    width: 120px;
-                    clicked => { Ui.watch-pending(); }
-                }
-
-                if Ui.sharing : GhostButton {
-                    text: "Ver o que a sala vê";
-                    font-size: 13px;
-                    height: 41px;
-                    width: 170px;
-                    clicked => { Ui.toggle-self-view(); }
-                }
-
-                if Ui.can-share && !Ui.sharing : PrimaryButton {
-                    text: "Iniciar compartilhamento";
-                    width: 220px;
-                    clicked => { Ui.open-share(); }
-                }
-            }
-
-            if Ui.reconnecting : VerticalLayout {
-                padding-top: 16px;
-
-                Text {
-                    text: "reconectando…";
-                    color: Skin.danger;
-                    font-family: Skin.mono;
-                    font-size: 11px;
-                    horizontal-alignment: center;
-                }
+            DButton {
+                text: Ui.pending-tiles == 1 ? "Assistir transmissão" : "Assistir " + Ui.pending-tiles + " transmissões";
+                kind: "secondary";
+                width: 200px;
+                clicked => { Ui.watch-pending(); }
             }
         }
     }
 }
 
-// `PeopleMenu.tsx`: a pílula com até três rostos e a contagem, que abre quem está na sala.
-// A sala por código, o palco da voz e a sala focada usam a mesma.
+// `PeopleMenu`: a pílula com até três rostos e a contagem, que abre quem está na sala. A
+// sala por código a usa na barra.
 export component PeopleMenu inherits Rectangle {
-    // A largura sai da conta e não do que está dentro: medir o filho aqui faria o filho medir
-    // o pai de volta.
     property <int> shown: min(3, max(1, Ui.peers.length));
     property <length> faces-width: shown * 26px + (shown - 1) * 5px;
 
@@ -467,102 +406,54 @@ export component PeopleMenu inherits Rectangle {
     list := PopupWindow {
         x: 0px;
         y: parent.height + 6px;
-        width: 320px;
-        height: min(360px, Ui.peers.length * 46px + 52px);
         close-policy: PopupClosePolicy.close-on-click-outside;
 
-        Rectangle {
-            border-radius: 14px;
-            border-width: 1px;
-            border-color: Skin.line-strong;
-            background: #100d1af5;
+        MenuSheet {
+            width: 300px;
 
-            VerticalLayout {
-                padding: 8px;
-                spacing: 6px;
-                alignment: start;
+            Label { text: "NA SALA"; x: 8px; height: 24px; vertical-alignment: center; }
+
+            for peer in Ui.peers : Rectangle {
+                height: 40px;
+                border-radius: 4px;
+                background: peer.mine ? #23A55A1a : transparent;
 
                 HorizontalLayout {
                     padding-left: 8px;
                     padding-right: 8px;
-                    padding-top: 6px;
-                    padding-bottom: 6px;
-                    spacing: 4px;
+                    spacing: 10px;
 
-                    LabelMono {
-                        text: "NA SALA";
-                        horizontal-stretch: 1;
-                    }
-
-                    // "Procurar de novo quem está transmitindo", como o React.
-                    Glyph {
-                        commands: Icons.refresh;
-                        size: 12px;
-                        tint: again.has-hover ? Skin.ink-strong : Skin.ink-dim;
+                    Avatar {
+                        letter: peer.initial;
+                        size: 24px;
+                        mine: peer.mine;
                         y: (parent.height - self.height) / 2;
                     }
 
                     Text {
-                        text: "Atualizar";
-                        color: again.has-hover ? Skin.ink-strong : Skin.ink-dim;
-                        font-family: Skin.sans;
-                        font-size: 11px;
+                        text: peer.name;
+                        color: peer.reconnecting ? Theme.ink-dim : Theme.ink;
+                        font-size: 14px;
+                        font-weight: 500;
+                        horizontal-stretch: 1;
+                        overflow: elide;
                         vertical-alignment: center;
-
-                        again := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { Ui.watch-pending(); }
-                        }
                     }
-                }
 
-                // A linha do React: o rosto, o nome, o microfone cortado, o selo "AO VIVO" de
-                // quem transmite e, no fim, "você", a latência ou "parado". A sua tem o verde.
-                for peer in Ui.peers : Rectangle {
-                    height: 40px;
-                    border-radius: 10px;
-                    background: peer.mine ? #34d3991a : transparent;
+                    if peer.muted : Glyph {
+                        commands: Icons.mic-off;
+                        size: 14px;
+                        tint: Theme.danger;
+                        y: (parent.height - self.height) / 2;
+                    }
 
-                    HorizontalLayout {
-                        padding-left: 8px;
-                        padding-right: 8px;
-                        spacing: 10px;
+                    if peer.sharing : LivePill {
+                        y: (parent.height - self.height) / 2;
+                    }
 
-                        Avatar {
-                            letter: peer.initial;
-                            size: 24px;
-                            mine: peer.mine;
-                            y: (parent.height - self.height) / 2;
-                        }
-
-                        Text {
-                            text: peer.name;
-                            color: peer.reconnecting ? Skin.ink-dim : Skin.ink-body;
-                            font-family: Skin.sans;
-                            font-size: 12.5px;
-                            horizontal-stretch: 1;
-                            overflow: elide;
-                            vertical-alignment: center;
-                        }
-
-                        if peer.muted : Glyph {
-                            commands: Icons.mic-off;
-                            size: 13px;
-                            tint: Skin.danger;
-                            y: (parent.height - self.height) / 2;
-                        }
-
-                        if peer.sharing : LiveBadge {
-                            y: (parent.height - self.height) / 2;
-                        }
-
-                        Text {
-                            text: peer.mine ? "você" : (peer.reconnecting ? "parado" : Ui.ping);
-                            color: Skin.ink-dim;
-                            font-family: Skin.mono;
-                            font-size: 10px;
-                            vertical-alignment: center;
-                        }
+                    Meta {
+                        text: peer.mine ? "você" : (peer.reconnecting ? "parado" : Ui.ping);
+                        vertical-alignment: center;
                     }
                 }
             }
@@ -571,96 +462,145 @@ export component PeopleMenu inherits Rectangle {
 }
 
 export component Stage inherits Rectangle {
-    // O código da sala, para a frase do cartão vazio. No canal de voz fica vazio: lá o
-    // convite é outro, e o React não mostra a frase.
+    // O código da sala, para a frase quando não há ninguém. No canal de voz fica vazio.
     in property <string> code;
 
-    if Ui.tiles.length == 0 : EmptyStage {
-        code: root.code;
-    }
+    // As cartas: as pessoas, as transmissões e, se houver, uma para as que faltam abrir.
+    property <int> waiting: Ui.pending-tiles > 0 ? 1 : 0;
+    property <int> cards: Ui.peers.length + Ui.tiles.length + root.waiting;
+    property <int> columns: max(1, Math.ceil(Math.sqrt(root.cards)));
+    property <int> lines: max(1, Math.ceil(root.cards / root.columns));
+    property <length> gap: 8px;
+    property <length> cell-width: (root.width - 16px - (root.columns - 1) * root.gap) / root.columns;
+    property <length> cell-height: (root.height - 16px - (root.lines - 1) * root.gap) / root.lines;
+    // O cartão é 16:9 dentro da célula, e a grade inteira fica no centro.
+    property <length> card-width: min(root.cell-width, root.cell-height * 16 / 9);
+    property <length> card-height: root.card-width * 9 / 16;
+    property <length> left: (root.width - root.columns * root.card-width - (root.columns - 1) * root.gap) / 2;
+    property <length> top: (root.height - root.lines * root.card-height - (root.lines - 1) * root.gap) / 2;
+    // No foco: o grande em cima, a faixa de 128 embaixo com cartões de 228 (16:9).
+    property <length> strip: 128px;
+    property <length> thumb-width: root.strip * 16 / 9;
+    property <length> big-height: root.height - 16px - root.strip - root.gap;
 
-    if Ui.tiles.length > 0 : VerticalLayout {
-        spacing: 10px;
+    background: Theme.surface-call;
 
-        HorizontalLayout {
-            spacing: 8px;
-            height: 28px;
+    if root.cards == 0 : VerticalLayout {
+        alignment: center;
+        spacing: 12px;
 
-            LabelMono {
-                text: "TRANSMISSÕES";
-                vertical-alignment: center;
-            }
-
-            Rectangle {
-                width: count.preferred-width + 16px;
-                height: 18px;
-                y: (parent.height - self.height) / 2;
-                border-radius: 9px;
-                border-width: 1px;
-                border-color: #8a7cf54d;
-                background: #8a7cf526;
-
-                count := Text {
-                    text: Ui.tiles.length == 1 ? "1 tela" : Ui.tiles.length + " telas";
-                    color: Skin.lilac-2;
-                    font-family: Skin.mono;
-                    font-size: 10px;
-                }
-            }
-
-            if Ui.reconnecting : Text {
-                text: "reconectando…";
-                color: Skin.danger;
-                font-family: Skin.mono;
-                font-size: 10.5px;
-                vertical-alignment: center;
-            }
-
-            Rectangle { horizontal-stretch: 1; }
-
-            if Ui.pending-tiles > 0 : GhostButton {
-                text: "Assistir quem falta";
-                font-size: 11.5px;
-                height: 28px;
-                width: 140px;
-                clicked => { Ui.watch-pending(); }
-            }
-
-            if Ui.focusing : GhostButton {
-                text: "Sair do foco";
-                font-size: 11.5px;
-                height: 28px;
-                width: 100px;
-                clicked => { Ui.toggle-focus(""); }
-            }
+        Text {
+            text: "Ninguém por aqui ainda.";
+            color: Theme.ink-strong;
+            font-size: Theme.title-size;
+            font-weight: 700;
+            horizontal-alignment: center;
         }
 
-        grid := Rectangle {
-            vertical-stretch: 1;
+        if root.code != "" : Text {
+            text: "Mande o código " + root.code + " para quem você quer aqui.";
+            color: Theme.ink-dim;
+            font-size: 14px;
+            horizontal-alignment: center;
+        }
 
-            property <length> cell-width: (self.width - (Ui.grid-columns - 1) * 10px) / Ui.grid-columns;
-            property <length> cell-height: (self.height - (Ui.grid-lines - 1) * 10px) / Ui.grid-lines;
-            property <int> others: Ui.tiles.length - 1;
-            property <length> thumb-width: (self.width - (others - 1) * 10px) / max(1, others);
+        if root.code == "" && Ui.can-invite : HorizontalLayout {
+            alignment: center;
 
-            for tile in Ui.tiles : StreamTile {
-                tile: tile;
-                thumb: Ui.focusing && !tile.focused;
-                visible: !Ui.full-screen || tile.full;
-
-                x: Ui.full-screen || (Ui.focusing && tile.focused)
-                    ? 0px
-                    : (Ui.focusing ? tile.rank * (grid.thumb-width + 10px) : tile.column * (grid.cell-width + 10px));
-                y: Ui.full-screen || (Ui.focusing && tile.focused)
-                    ? 0px
-                    : (Ui.focusing ? grid.height - 104px : tile.line * (grid.cell-height + 10px));
-                width: Ui.full-screen || (Ui.focusing && tile.focused)
-                    ? grid.width
-                    : (Ui.focusing ? grid.thumb-width : grid.cell-width);
-                height: Ui.full-screen
-                    ? grid.height
-                    : (Ui.focusing ? (tile.focused ? grid.height - 114px : 104px) : grid.cell-height);
+            DButton {
+                text: "Convidar pessoas";
+                width: 160px;
+                clicked => { Ui.open-modal("invite", -1); }
             }
+        }
+    }
+
+    // ---- as pessoas ----
+    for peer[index] in Ui.peers : PersonCard {
+        peer: peer;
+        small: Ui.focusing;
+        visible: !Ui.full-screen;
+        x: Ui.focusing ? 8px + index * (root.thumb-width + root.gap) : root.left + Math.mod(index, root.columns) * (root.card-width + root.gap);
+        y: Ui.focusing ? root.height - 8px - root.strip : root.top + Math.floor(index / root.columns) * (root.card-height + root.gap);
+        width: Ui.focusing ? root.thumb-width : root.card-width;
+        height: Ui.focusing ? root.strip : root.card-height;
+    }
+
+    // ---- as transmissões ----
+    for tile in Ui.tiles : StreamTile {
+        property <int> slot: Ui.peers.length + tile.rank;
+        property <int> place: Ui.peers.length + tile.rank;
+
+        tile: tile;
+        thumb: Ui.focusing && !tile.focused;
+        visible: !Ui.full-screen || tile.full;
+        x: Ui.full-screen || (Ui.focusing && tile.focused)
+            ? (Ui.full-screen ? 0px : 8px)
+            : (Ui.focusing ? 8px + self.slot * (root.thumb-width + root.gap) : root.left + Math.mod(self.place, root.columns) * (root.card-width + root.gap));
+        y: Ui.full-screen
+            ? 0px
+            : (Ui.focusing ? (tile.focused ? 8px : root.height - 8px - root.strip) : root.top + Math.floor(self.place / root.columns) * (root.card-height + root.gap));
+        width: Ui.full-screen ? root.width : (Ui.focusing ? (tile.focused ? root.width - 16px : root.thumb-width) : root.card-width);
+        height: Ui.full-screen ? root.height : (Ui.focusing ? (tile.focused ? root.big-height : root.strip) : root.card-height);
+    }
+
+    if root.waiting == 1 && !Ui.full-screen : PendingCard {
+        property <int> place: Ui.peers.length + Ui.tiles.length;
+
+        x: Ui.focusing ? 8px + self.place * (root.thumb-width + root.gap) : root.left + Math.mod(self.place, root.columns) * (root.card-width + root.gap);
+        y: Ui.focusing ? root.height - 8px - root.strip : root.top + Math.floor(self.place / root.columns) * (root.card-height + root.gap);
+        width: Ui.focusing ? root.thumb-width : root.card-width;
+        height: Ui.focusing ? root.strip : root.card-height;
+    }
+
+    if Ui.reconnecting : Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 8px;
+        width: said.preferred-width + 24px;
+        height: 28px;
+        border-radius: 4px;
+        background: Theme.idle;
+
+        said := Text {
+            text: "Reconectando…";
+            color: #000000;
+            font-size: 13px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    // O Esc sai do foco e da tela cheia; o espaço segurado é o "apertar para falar"
+    // enquanto a chamada está em foco (a tecla global é plataforma, e vem depois).
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape && (Ui.focusing || Ui.full-screen) {
+                if Ui.full-screen {
+                    Ui.toggle-fullscreen("");
+                } else {
+                    Ui.toggle-focus("");
+                }
+
+                return accept;
+            }
+
+            if event.text == " " && !event.repeat {
+                Ui.talk(true);
+
+                return accept;
+            }
+
+            return reject;
+        }
+        key-released(event) => {
+            if event.text == " " {
+                Ui.talk(false);
+
+                return accept;
+            }
+
+            return reject;
         }
     }
 }

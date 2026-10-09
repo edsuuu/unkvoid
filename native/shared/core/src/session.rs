@@ -298,9 +298,11 @@ impl Session {
                 event = incoming.recv() => match event {
                     Some(event) => {
                         // O servidor tirou esta sessão de propósito — a conta entrou por outro
-                        // lugar, ou um moderador a removeu. Voltar sozinho derrubaria quem
-                        // entrou, que voltaria e nos derrubaria: os dois brigando para sempre.
-                        if matches!(event.name.as_str(), "replaced" | "kicked") {
+                        // lugar, um moderador a removeu, ou a moveu para outro canal. Voltar
+                        // sozinho derrubaria quem entrou, que voltaria e nos derrubaria: os
+                        // dois brigando para sempre. Quem foi movido entra no destino por
+                        // conta própria, com token novo.
+                        if matches!(event.name.as_str(), "replaced" | "kicked" | "moved") {
                             self.left.store(true, Ordering::Relaxed);
                         }
 

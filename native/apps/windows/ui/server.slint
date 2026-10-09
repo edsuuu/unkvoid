@@ -1,0 +1,789 @@
+import { ScrollView, Slider } from "std-widgets.slint";
+import { Icons, Skin, Theme } from "skin.slint";
+import { Ui } from "state.slint";
+import { Avatar, DButton, DField, FlatIcon, Glyph, Label, Meta, Switch } from "widgets.slint";
+import { ContentArea, SettingsFrame, SideItem, SideLabel, SideLine, SideList, SwitchRow } from "settings.slint";
+
+// As configurações do servidor e os modais do Discord: criar servidor, entrar com convite,
+// criar canal, convidar, editar canal e o "tem certeza?". Quem pode o quê é o Laravel; o
+// que não se pode nem aparece, e o 403 que escapar vira a frase dele.
+
+// ---- a moldura dos modais ----
+//
+// Fundo de trás preto a 70%, cartão `surface-chat` de 440, raio 8, cabeçalho com título em
+// 20/700 e subtítulo, rodapé `surface-side` com "Cancelar" e o primário. Clique fora e Esc
+// fecham.
+component Modal inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> primary;
+    in property <string> primary-kind: "primary";
+    in property <bool> primary-enabled: true;
+    in property <length> card-width: 440px;
+    callback accepted();
+    property <bool> shown;
+
+    background: #000000b3;
+    opacity: root.shown ? 1.0 : 0.0;
+    init => { root.shown = true; }
+
+    animate opacity { duration: 150ms; easing: ease-out; }
+
+    TouchArea {
+        clicked => { Ui.modal = ""; }
+    }
+
+    FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                Ui.modal = "";
+
+                return accept;
+            }
+
+            return reject;
+        }
+    }
+
+    Rectangle {
+        width: root.card-width;
+        height: card.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: 8px;
+        background: Theme.surface-chat;
+        clip: true;
+        drop-shadow-blur: 24px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: #00000066;
+
+        TouchArea { }
+
+        card := VerticalLayout {
+            VerticalLayout {
+                padding: 16px;
+                padding-bottom: 8px;
+                spacing: 8px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    Text {
+                        text: root.title;
+                        color: Theme.ink-strong;
+                        font-size: Theme.title-size;
+                        font-weight: 700;
+                        horizontal-stretch: 1;
+                        wrap: word-wrap;
+                    }
+
+                    FlatIcon {
+                        commands: Icons.close;
+                        size: 24px;
+                        glyph-size: 18px;
+                        clicked => { Ui.modal = ""; }
+                    }
+                }
+
+                if root.subtitle != "" : Text {
+                    text: root.subtitle;
+                    color: Theme.ink-dim;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                }
+            }
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+
+                @children
+            }
+
+            Rectangle {
+                height: 70px;
+                background: Theme.surface-side;
+
+                HorizontalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+                    alignment: end;
+
+                    DButton {
+                        text: "Cancelar";
+                        kind: "text";
+                        clicked => { Ui.modal = ""; }
+                    }
+
+                    if root.primary != "" : DButton {
+                        text: root.primary;
+                        kind: root.primary-kind;
+                        enabled: root.primary-enabled;
+                        clicked => { root.accepted(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Um cartão de escolha do "Criar canal": Texto ou Voz.
+component KindCard inherits Rectangle {
+    in property <string> commands;
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> on;
+    callback clicked();
+
+    height: 60px;
+    border-radius: 4px;
+    background: root.on ? Theme.selected : (touch.has-hover ? Theme.hover : Theme.surface-side);
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 12px;
+
+        Glyph {
+            commands: root.commands;
+            size: 24px;
+            tint: Theme.ink-dim;
+            y: (parent.height - self.height) / 2;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.title;
+                color: Theme.ink-strong;
+                font-size: 16px;
+                font-weight: 500;
+            }
+
+            Text {
+                text: root.detail;
+                color: Theme.ink-dim;
+                font-size: 12px;
+            }
+        }
+
+        Rectangle {
+            width: 20px;
+            height: 20px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 10px;
+            border-width: 2px;
+            border-color: root.on ? Theme.ink-strong : Theme.ink-dim;
+
+            if root.on : Rectangle {
+                width: 10px;
+                height: 10px;
+                x: 5px;
+                y: 5px;
+                border-radius: 5px;
+                background: Theme.ink-strong;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Todos os modais, um por vez, pelo `Ui.modal`.
+export component Modals inherits Rectangle {
+    // O "Criar servidor" tem duas telas: a escolha e o nome.
+    property <bool> naming;
+
+    if Ui.modal == "server-new" && !root.naming : Modal {
+        title: "Crie seu servidor";
+        subtitle: "Seu servidor é onde você e seus amigos se reúnem. Crie o seu e comece a conversar.";
+
+        DButton {
+            text: "Criar o meu";
+            height: 44px;
+            clicked => { root.naming = true; }
+        }
+
+        Rectangle { height: 8px; }
+
+        Label { text: "TEM UM CONVITE?"; horizontal-alignment: center; }
+
+        DButton {
+            text: "Entrar num servidor";
+            kind: "secondary";
+            height: 44px;
+            clicked => { Ui.modal = "server-join"; }
+        }
+    }
+
+    if Ui.modal == "server-new" && root.naming : Modal {
+        title: "Personalize seu servidor";
+        subtitle: "Dê um nome ao servidor. Dá para mudar depois.";
+        primary: "Criar";
+        primary-enabled: server-name.text != "";
+        accepted => {
+            Ui.create-server(server-name.text);
+            Ui.modal = "";
+            root.naming = false;
+        }
+
+        Label { text: "NOME DO SERVIDOR"; }
+
+        server-name := DField {
+            text: "Servidor de " + Ui.user-name;
+            placeholder: "Nome do servidor";
+            accepted => {
+                Ui.create-server(self.text);
+                Ui.modal = "";
+                root.naming = false;
+            }
+        }
+
+        DButton {
+            text: "Voltar";
+            kind: "text";
+            width: 80px;
+            clicked => { root.naming = false; }
+        }
+    }
+
+    if Ui.modal == "server-join" : Modal {
+        title: "Entrar num servidor";
+        subtitle: "Digite o convite abaixo para entrar num servidor que já existe.";
+        primary: "Entrar no servidor";
+        primary-enabled: invite-code.text != "";
+        accepted => {
+            Ui.join-invite(invite-code.text);
+            Ui.modal = "";
+        }
+
+        Label { text: "CÓDIGO DO CONVITE"; }
+
+        invite-code := DField {
+            placeholder: "abcdef1234";
+            accepted => {
+                Ui.join-invite(self.text);
+                Ui.modal = "";
+            }
+        }
+    }
+
+    if Ui.modal == "channel-new" : Modal {
+        title: "Criar canal";
+        subtitle: "em " + (Ui.modal-channel-voice ? "Canais de voz" : "Canais de texto");
+        primary: "Criar canal";
+        primary-enabled: channel-name.text != "";
+        card-width: 460px;
+        accepted => {
+            Ui.create-channel(channel-name.text, Ui.modal-channel-voice);
+            Ui.modal = "";
+        }
+
+        Label { text: "TIPO DE CANAL"; }
+
+        KindCard {
+            commands: Icons.hash;
+            title: "Texto";
+            detail: "Mande mensagens, imagens e opiniões";
+            on: !Ui.modal-channel-voice;
+            clicked => { Ui.modal-channel-voice = false; }
+        }
+
+        KindCard {
+            commands: Icons.speaker;
+            title: "Voz";
+            detail: "Converse por voz e vídeo, e compartilhe a tela";
+            on: Ui.modal-channel-voice;
+            clicked => { Ui.modal-channel-voice = true; }
+        }
+
+        Label { text: "NOME DO CANAL"; }
+
+        channel-name := DField {
+            placeholder: "novo-canal";
+            accepted => {
+                Ui.create-channel(self.text, Ui.modal-channel-voice);
+                Ui.modal = "";
+            }
+        }
+
+        // ponytail: "Canal privado" é uma sobrescrita de VIEW_CHANNEL por cargo; a tela
+        // de permissões por canal fica para a próxima rodada.
+    }
+
+    if Ui.modal == "channel-edit" : Modal {
+        title: "Editar canal";
+        subtitle: (Ui.modal-channel-voice ? "Canal de voz " : "Canal de texto #") + Ui.modal-channel-name;
+        primary: "Salvar";
+        primary-enabled: edited-name.text != "";
+        card-width: 460px;
+        accepted => {
+            Ui.update-channel(Ui.modal-channel-index, edited-name.text, edited-topic.text, Ui.modal-channel-limit);
+            Ui.modal = "";
+        }
+
+        Label { text: "NOME DO CANAL"; }
+
+        edited-name := DField {
+            text: Ui.modal-channel-name;
+            placeholder: "nome";
+        }
+
+        if !Ui.modal-channel-voice : Label { text: "TÓPICO"; }
+
+        edited-topic := DField {
+            text: Ui.modal-channel-topic;
+            placeholder: "Sobre o que é este canal";
+            visible: !Ui.modal-channel-voice;
+            height: Ui.modal-channel-voice ? 0px : 40px;
+        }
+
+        if Ui.modal-channel-voice : Label {
+            text: "LIMITE DE USUÁRIOS — " + (Ui.modal-channel-limit == 0 ? "Sem limite" : Ui.modal-channel-limit);
+        }
+
+        if Ui.modal-channel-voice : Slider {
+            minimum: 0;
+            maximum: 99;
+            value: Ui.modal-channel-limit;
+            changed(limit) => { Ui.modal-channel-limit = Math.round(limit); }
+        }
+
+        Rectangle { height: 8px; }
+
+        DButton {
+            text: "Excluir canal";
+            kind: "danger";
+            width: 140px;
+            clicked => { Ui.ask("delete-channel", Ui.modal-channel-index); }
+        }
+    }
+
+    if Ui.modal == "invite" : Modal {
+        title: "Convidar pessoas";
+        subtitle: "Convide amigos para " + Ui.server-name + ". Quem tem o código entra pelo \"Entrar num servidor\".";
+        property <bool> copied;
+
+        Label { text: "CÓDIGO DO CONVITE"; }
+
+        HorizontalLayout {
+            spacing: 8px;
+
+            Rectangle {
+                height: 40px;
+                horizontal-stretch: 1;
+                border-radius: 4px;
+                background: Theme.surface-input;
+
+                code := TextInput {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    height: parent.height;
+                    text: Ui.invite-code;
+                    read-only: true;
+                    single-line: true;
+                    color: Theme.ink;
+                    font-family: Skin.mono;
+                    font-size: 16px;
+                    vertical-alignment: center;
+                }
+            }
+
+            DButton {
+                text: copied ? "Copiado" : "Copiar";
+                kind: copied ? "secondary" : "primary";
+                height: 40px;
+                width: 100px;
+                clicked => {
+                    code.select-all();
+                    code.copy();
+                    copied = true;
+                }
+            }
+        }
+
+        if Ui.can-invite : HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+
+            Meta { text: "O convite não expira."; vertical-alignment: center; }
+
+            DButton {
+                text: "Gerar outro";
+                kind: "text";
+                height: 24px;
+                clicked => {
+                    Ui.regenerate-invite();
+                    copied = false;
+                }
+            }
+        }
+    }
+
+    if Ui.modal == "confirm" : Modal {
+        title: Ui.confirm-title;
+        subtitle: Ui.confirm-text;
+        primary: Ui.confirm-button;
+        primary-kind: "danger";
+        accepted => {
+            Ui.confirm();
+            Ui.modal = "";
+        }
+    }
+}
+
+// ---- as configurações do servidor ----
+
+component PermissionLine inherits HorizontalLayout {
+    in property <string> label;
+    in property <bool> on;
+    in property <bool> enabled;
+    callback toggled();
+
+    spacing: 16px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+
+    Text {
+        text: root.label;
+        color: Theme.ink;
+        font-size: 14px;
+        font-weight: 500;
+        horizontal-stretch: 1;
+        vertical-alignment: center;
+    }
+
+    Switch {
+        on: root.on;
+        y: (parent.height - self.height) / 2;
+        opacity: root.enabled ? 1.0 : 0.4;
+        toggled(on) => { root.toggled(); }
+    }
+}
+
+export component ServerSettingsModal inherits SettingsFrame {
+    property <string> tab: Ui.server-settings-tab;
+
+    title: root.tab == "overview" ? "Visão geral"
+        : root.tab == "roles" ? "Cargos"
+        : root.tab == "invites" ? "Convites"
+        : root.tab == "bans" ? "Banimentos"
+        : "Registro de auditoria";
+    closed => { Ui.server-settings-open = false; }
+
+    SideList {
+    side-width: root.side-width;
+    height: root.height;
+
+    SideLabel { text: Ui.server-name; }
+
+    if Ui.can-manage-server : SideItem {
+        text: "Visão geral";
+        on: root.tab == "overview";
+        clicked => { Ui.open-server-settings("overview"); }
+    }
+
+    if Ui.can-manage-roles : SideItem {
+        text: "Cargos";
+        on: root.tab == "roles";
+        clicked => { Ui.open-server-settings("roles"); }
+    }
+
+    if Ui.can-invite : SideItem {
+        text: "Convites";
+        on: root.tab == "invites";
+        clicked => { Ui.open-server-settings("invites"); }
+    }
+
+    SideLabel { text: "GERENCIAMENTO DE USUÁRIOS"; }
+
+    if Ui.can-ban : SideItem {
+        text: "Banimentos";
+        on: root.tab == "bans";
+        clicked => { Ui.open-server-settings("bans"); }
+    }
+
+    if Ui.can-audit : SideItem {
+        text: "Registro de auditoria";
+        on: root.tab == "audits";
+        clicked => { Ui.open-server-settings("audits"); }
+    }
+
+    SideLine { }
+
+    if Ui.is-owner : SideItem {
+        text: "Excluir servidor";
+        danger: true;
+        clicked => {
+            Ui.server-settings-open = false;
+            Ui.ask("delete-server", 0);
+        }
+    }
+
+    if !Ui.is-owner : SideItem {
+        text: "Sair do servidor";
+        danger: true;
+        clicked => {
+            Ui.server-settings-open = false;
+            Ui.ask("leave-server", 0);
+        }
+    }
+    }
+
+    ContentArea {
+        content-x: root.content-x;
+        content-y: root.content-y;
+        content-width: root.content-width;
+        height: root.height - root.content-y - 40px;
+
+        if root.tab == "overview" : VerticalLayout {
+            spacing: 8px;
+            alignment: start;
+
+            Label { text: "NOME DO SERVIDOR"; }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                renamed := DField {
+                    text: Ui.server-name;
+                    placeholder: "Nome do servidor";
+                    horizontal-stretch: 1;
+                    accepted => { Ui.rename-server(self.text); }
+                }
+
+                DButton {
+                    text: "Salvar";
+                    height: 40px;
+                    enabled: renamed.text != "" && renamed.text != Ui.server-name;
+                    clicked => { Ui.rename-server(renamed.text); }
+                }
+            }
+
+            // ponytail: o ícone do servidor é `POST /icon` com um arquivo, e o seletor de
+            // arquivo do Slint ainda não existe aqui. Teto: ícone pelo site ou pelo Mac.
+            Meta { text: "O ícone do servidor se troca no site ou no app do Mac."; }
+        }
+
+        if root.tab == "roles" : VerticalLayout {
+            spacing: 8px;
+            alignment: start;
+
+            Meta { text: "Use cargos para agrupar membros e dar permissões. O mais alto manda." ; }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                fresh-role := DField {
+                    placeholder: "Nome do cargo novo";
+                    horizontal-stretch: 1;
+                    accepted => {
+                        Ui.create-role(self.text);
+                        self.text = "";
+                    }
+                }
+
+                DButton {
+                    text: "Criar cargo";
+                    height: 40px;
+                    enabled: fresh-role.text != "";
+                    clicked => {
+                        Ui.create-role(fresh-role.text);
+                        fresh-role.text = "";
+                    }
+                }
+            }
+
+            Rectangle { height: 8px; }
+
+            HorizontalLayout {
+                spacing: 16px;
+                alignment: stretch;
+
+                VerticalLayout {
+                    width: 220px;
+                    spacing: 2px;
+                    alignment: start;
+
+                    Label { text: "CARGOS — " + Ui.roles.length; height: 28px; vertical-alignment: bottom; }
+
+                    for role[index] in Ui.roles : Rectangle {
+                        height: 36px;
+                        border-radius: 4px;
+                        background: Ui.selected-role == index ? Theme.selected : (pick.has-hover ? Theme.hover : transparent);
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 8px;
+
+                            Rectangle {
+                                width: 12px;
+                                height: 12px;
+                                border-radius: 6px;
+                                background: role.colored ? role.color : Theme.offline;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            Text {
+                                text: role.name;
+                                color: Ui.selected-role == index ? Theme.ink-strong : Theme.ink-soft;
+                                font-size: 14px;
+                                font-weight: 500;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+
+                            if role.editable && !role.everyone : FlatIcon {
+                                commands: Icons.trash;
+                                size: 24px;
+                                glyph-size: 14px;
+                                alert: true;
+                                hint: "Excluir cargo";
+                                y: (parent.height - self.height) / 2;
+                                clicked => { Ui.delete-role(role.id); }
+                            }
+                        }
+
+                        pick := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { Ui.select-role(index); }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 0px;
+                    alignment: start;
+
+                    Label {
+                        text: Ui.selected-role < 0 ? "ESCOLHA UM CARGO" : "PERMISSÕES";
+                        height: 28px;
+                        vertical-alignment: bottom;
+                    }
+
+                    for permission in Ui.role-permissions : PermissionLine {
+                        label: permission.label;
+                        on: permission.on;
+                        enabled: true;
+                        toggled => { Ui.toggle-permission(permission.bit); }
+                    }
+                }
+            }
+        }
+
+        if root.tab == "invites" : VerticalLayout {
+            spacing: 8px;
+            alignment: start;
+
+            Label { text: "CÓDIGO DO CONVITE"; }
+
+            Rectangle {
+                height: 40px;
+                border-radius: 4px;
+                background: Theme.surface-input;
+
+                TextInput {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    height: parent.height;
+                    text: Ui.invite-code;
+                    read-only: true;
+                    single-line: true;
+                    color: Theme.ink;
+                    font-family: Skin.mono;
+                    font-size: 16px;
+                    vertical-alignment: center;
+                }
+            }
+
+            Meta { text: "O convite não expira. Gerar outro invalida o anterior."; }
+
+            DButton {
+                text: "Gerar outro";
+                kind: "secondary";
+                width: 140px;
+                clicked => { Ui.regenerate-invite(); }
+            }
+        }
+
+        if root.tab == "bans" : VerticalLayout {
+            spacing: 2px;
+            alignment: start;
+
+            if Ui.bans.length == 0 : Meta { text: "Ninguém banido."; }
+
+            for ban in Ui.bans : Rectangle {
+                height: 48px;
+                border-radius: 4px;
+                background: line.has-hover ? Theme.hover : transparent;
+
+                line := TouchArea { }
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 12px;
+
+                    Avatar {
+                        letter: ban.name == "" ? "?" : ban.name;
+                        size: 32px;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+
+                        Text {
+                            text: ban.name;
+                            color: Theme.ink-strong;
+                            font-size: 16px;
+                            font-weight: 500;
+                            overflow: elide;
+                        }
+
+                        if ban.reason != "" : Meta { text: ban.reason; }
+                    }
+
+                    DButton {
+                        text: "Perdoar";
+                        kind: "secondary";
+                        height: 32px;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { Ui.unban(ban.user-id); }
+                    }
+                }
+            }
+        }
+
+        if root.tab == "audits" : VerticalLayout {
+            spacing: 2px;
+            alignment: start;
+
+            if Ui.audits.length == 0 : Meta { text: "Nada registrado ainda."; }
+
+            for audit in Ui.audits : VerticalLayout {
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 2px;
+
+                Text {
+                    text: audit.text;
+                    color: Theme.ink;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                }
+
+                Meta { text: audit.at; }
+            }
+        }
+    }
+}

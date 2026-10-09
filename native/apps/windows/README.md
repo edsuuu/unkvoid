@@ -83,6 +83,22 @@ O `.deb` sai de `./build-deb.sh` (Debian 12 num contêiner, sem GTK nenhum).
 | `ui/*.slint` | as telas: `entry`, `hub`, `room`, `voice`, `stage`, `share`, `settings`, `clips`, e o vocabulário do desenho em `skin` e `widgets` |
 | `build-installer.ps1`, `installer.nsi` | o instalador do site |
 | `build-msix.ps1`, `msix/AppxManifest.xml` | o pacote da Microsoft Store |
+| `ui/skin.slint` | a paleta (`Skin`, o vidro da entrada e da sala por código; `Theme`, os tokens do Discord com os nomes do macOS), as medidas e os traçados dos ícones |
+| `ui/widgets.slint` | o vocabulário do desenho: vidro, campo, botão, avatar, linha de lista — e o do Discord: `DButton`, `FlatIcon`, `MenuItem`, `Switch`, `Tip` |
+| `ui/state.slint` | o `Ui`: o que a tela mostra e o nome de cada clique |
+| `ui/voice.slint`, `ui/stage.slint` | a chamada: a grade 16:9 (pessoas e transmissões), o foco, a barra de botões redondos |
+| `ui/userbar.slint` | o painel de voz e a barra de baixo: nome, microfone, áudio e a setinha de cada um |
+| `ui/settings.slint`, `ui/server.slint` | as configurações em tela cheia (usuário e servidor), os modais e o de apelido |
+| `examples/vitrine.rs` | desenha cada tela num BMP, sem janela: `cargo run --example vitrine -- <pasta>` |
+
+O desenho de hoje é a réplica do Discord com os tokens do `Theme` (`ui/skin.slint`), os
+mesmos nomes do `Theme.swift` do macOS. O vidro antigo (`Skin`) fica só na entrada e na sala
+por código. `cargo run --example vitrine -- <pasta>` desenha cada tela num BMP, sem janela.
+
+**Este crate é a interface do Windows e do Linux** (decisão de 09/10/2026; o GTK foi
+aposentado). As telas (`ui/`, `bridge.rs`, `stage.rs`) não têm `cfg(target_os)`: o que é de
+sistema (som, aparelhos, janela, empacotamento) fica atrás das mesmas assinaturas em
+`sound.rs`, `devices.rs` e `watching.rs`.
 
 ## O desenho
 

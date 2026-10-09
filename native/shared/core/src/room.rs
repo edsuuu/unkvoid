@@ -342,6 +342,15 @@ impl Room {
                     self.stop_everything();
                     self.tell("room.session", json!({ "state": event.name }));
                 }
+                // Um moderador moveu esta pessoa: a sala acaba aqui e a interface entra no
+                // destino (`to`, o canal) com um token novo, dizendo quem (`by`) a moveu.
+                "moved" => {
+                    self.stop_everything();
+                    self.tell(
+                        "room.session",
+                        json!({ "state": "moved", "to": event.data["to"], "by": event.data["by"] }),
+                    );
+                }
                 local::PING_MEASURED => self.tell(
                     "room.ping",
                     json!({ "ms": event.data, "bars": event.data.as_u64().map(signal_bars) }),

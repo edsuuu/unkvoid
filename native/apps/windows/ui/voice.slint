@@ -1,247 +1,313 @@
-import { Icons, Skin } from "skin.slint";
+import { ScrollView } from "std-widgets.slint";
+import { Icons, Skin, Theme } from "skin.slint";
 import { Ui } from "state.slint";
-import { Glass, Glyph, IconButton } from "widgets.slint";
-import { PeopleMenu, Stage } from "stage.slint";
+import { Avatar, DButton, FlatIcon, Glyph, Label, Meta, Tip } from "widgets.slint";
+import { Stage } from "stage.slint";
 
-// A voz dentro do servidor: o palco que toma o lugar do chat, e a sala focada que toma tudo
-// menos a trilha. É o `VoiceStage` e o `VoiceToolbar` do macOS (`Screens/HubScreen.swift`).
+// A chamada dentro do servidor: fundo preto, o cabeçalho transparente por cima, a grade e a
+// barra de controle de botões redondos embaixo. É a `room/Stage.tsx` no desenho do Discord.
 
-// O `GhostButton` pequeno do Mac: ícone e texto em 12, respiro de 6 por 10.
-component SmallGhost inherits Rectangle {
+// Um botão redondo de 56 da barra: `surface-side` em repouso; ligado é branco com o ícone
+// preto; mutado é vermelho com o ícone cortado em branco.
+component RoundButton inherits Rectangle {
     in property <string> commands;
-    in property <string> text;
+    in property <string> hint;
     in property <bool> on;
-    // Mensagem nova: a bolinha vermelha no canto.
-    in property <bool> fresh;
+    in property <bool> off;
+    in property <bool> hangup;
+    in property <bool> enabled: true;
+    in property <bool> filled;
     callback clicked();
 
-    width: row.preferred-width + 20px;
-    height: 30px;
-    border-radius: 10px;
-    border-width: 1px;
-    border-color: root.on || touch.has-hover ? #8a7cf580 : Skin.line-strong;
-    background: #ffffff0d;
+    width: 56px;
+    height: 56px;
+    border-radius: 28px;
+    background: root.hangup || root.off
+        ? (touch.has-hover ? #A12D2F : Theme.danger-fill)
+        : root.on
+            ? Theme.ink-strong
+            : (touch.has-hover ? Theme.call-hover : Theme.surface-side);
+    opacity: root.enabled ? 1.0 : 0.4;
 
-    row := HorizontalLayout {
-        x: 10px;
-        width: parent.width - 20px;
-        height: parent.height;
-        spacing: 6px;
+    animate background { duration: 100ms; }
 
-        if root.commands != "" : Glyph {
-            commands: root.commands;
-            size: 13px;
-            tint: root.on || touch.has-hover ? Skin.ink-strong : Skin.ink-icon;
-            y: (parent.height - self.height) / 2;
-        }
-
-        Text {
-            text: root.text;
-            color: root.on || touch.has-hover ? Skin.ink-strong : Skin.ink-icon;
-            font-family: Skin.sans;
-            font-size: 12px;
-            vertical-alignment: center;
-        }
-    }
-
-    if root.fresh : Rectangle {
-        x: parent.width - 7px;
-        y: -3px;
-        width: 10px;
-        height: 10px;
-        border-radius: 5px;
-        background: Skin.danger;
+    Glyph {
+        commands: root.commands;
+        size: 24px;
+        filled: root.filled;
+        tint: root.on && !root.off && !root.hangup ? #000000 : #ffffff;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
     }
 
     touch := TouchArea {
+        enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
+
+    if touch.has-hover && root.hint != "" : Tip {
+        text: root.hint;
+        y: -40px;
+        x: (parent.width - self.width) / 2;
+    }
 }
 
-// O palco da voz dentro do servidor: o nome do canal, o caminho de volta ao chat e as
-// transmissões de quem está lá.
-export component VoiceStage inherits Glass {
+export component Call inherits Rectangle {
+    background: Theme.surface-call;
+
     VerticalLayout {
-        padding: 16px;
-        spacing: 12px;
+        // O cabeçalho transparente: o alto-falante, o canal, e à direita o chat e a volta.
+        Rectangle {
+            height: Theme.header;
 
-        HorizontalLayout {
-            spacing: 8px;
-            height: 32px;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 8px;
+                spacing: 8px;
 
-            Glyph {
-                commands: Icons.speaker;
-                size: 15px;
-                tint: Skin.online;
-                y: (parent.height - self.height) / 2;
-            }
-
-            Text {
-                text: Ui.voice-name;
-                color: Skin.ink;
-                font-family: Skin.sans;
-                font-size: 14px;
-                font-weight: 600;
-                overflow: elide;
-                vertical-alignment: center;
-            }
-
-            Rectangle { horizontal-stretch: 1; }
-
-            PeopleMenu {
-                y: (parent.height - self.height) / 2;
-            }
-
-            Rectangle {
-                width: chat.width;
-                height: chat.height;
-                y: (parent.height - self.height) / 2;
-
-                chat := SmallGhost {
-                    commands: Icons.chat;
-                    text: "Chat da voz";
-                    on: Ui.voice-chat-open;
-                    clicked => { Ui.toggle-voice-chat(); }
+                Glyph {
+                    commands: Icons.speaker;
+                    size: 24px;
+                    tint: Theme.ink-dim;
+                    y: (parent.height - self.height) / 2;
                 }
 
-                if Ui.voice-chat-unread > 0 : Rectangle {
-                    x: parent.width - 6px;
-                    y: -4px;
-                    width: 10px;
-                    height: 10px;
-                    border-radius: 5px;
-                    background: Skin.danger;
+                Text {
+                    text: Ui.voice-name;
+                    color: Theme.ink-strong;
+                    font-size: Theme.header-size;
+                    font-weight: 600;
+                    overflow: elide;
+                    vertical-alignment: center;
                 }
-            }
 
-            SmallGhost {
-                commands: Icons.focus;
-                text: "Sala focada";
-                y: (parent.height - self.height) / 2;
-                clicked => { Ui.focused-room = true; }
-            }
+                Rectangle { horizontal-stretch: 1; }
 
-            SmallGhost {
-                text: "Voltar ao chat";
-                y: (parent.height - self.height) / 2;
-                clicked => { Ui.stage-open = false; }
+                if Ui.focusing : DButton {
+                    text: "Sair do foco";
+                    kind: "secondary";
+                    height: 32px;
+                    y: (parent.height - self.height) / 2;
+                    clicked => { Ui.toggle-focus(""); }
+                }
+
+                Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    y: (parent.height - self.height) / 2;
+
+                    FlatIcon {
+                        commands: Icons.chat;
+                        hint: "Chat da voz";
+                        on: Ui.voice-chat-open;
+                        clicked => { Ui.toggle-voice-chat(); }
+                    }
+
+                    if Ui.voice-chat-unread > 0 : Rectangle {
+                        x: parent.width - 8px;
+                        y: -2px;
+                        width: 10px;
+                        height: 10px;
+                        border-radius: 5px;
+                        background: Theme.danger-fill;
+                    }
+                }
+
+                FlatIcon {
+                    commands: Icons.hash;
+                    hint: "Voltar ao chat do canal";
+                    y: (parent.height - self.height) / 2;
+                    clicked => { Ui.stage-open = false; }
+                }
             }
         }
 
         Stage {
             vertical-stretch: 1;
         }
+
+        // A barra de controle: Câmera, Tela, Microfone, Ensurdecer e, separado, Sair.
+        Rectangle {
+            height: 88px;
+
+            HorizontalLayout {
+                alignment: center;
+                spacing: 16px;
+                padding-top: 8px;
+
+                // ponytail: a câmera ainda não abre fora do macOS; o botão fica apagado.
+                RoundButton {
+                    commands: Icons.camera-off;
+                    hint: "A câmera ainda não está ligada nesta versão";
+                    enabled: false;
+                    clicked => { Ui.toggle-camera(); }
+                }
+
+                RoundButton {
+                    commands: Icons.screen;
+                    hint: Ui.sharing ? "Parar de compartilhar" : "Compartilhar tela";
+                    on: Ui.sharing;
+                    enabled: Ui.can-share;
+                    clicked => { Ui.toggle-share(); }
+                }
+
+                RoundButton {
+                    commands: Ui.mic-on ? Icons.mic : Icons.mic-off;
+                    hint: Ui.can-speak ? (Ui.mic-on ? "Mutar" : "Desmutar") : "Mutado pelo servidor";
+                    off: !Ui.mic-on;
+                    enabled: Ui.can-speak;
+                    clicked => { Ui.toggle-mic(); }
+                }
+
+                RoundButton {
+                    commands: Ui.deafened ? Icons.headphones-off : Icons.headphones;
+                    hint: Ui.deafened ? "Voltar a ouvir" : "Ensurdecer";
+                    off: Ui.deafened;
+                    clicked => { Ui.toggle-deafen(); }
+                }
+
+                Rectangle { width: 16px; }
+
+                RoundButton {
+                    commands: Icons.phone-off;
+                    filled: true;
+                    hint: "Sair da voz";
+                    hangup: true;
+                    clicked => { Ui.leave-voice(); }
+                }
+            }
+        }
     }
 }
 
-// `RoomToolbar.tsx` no modo `voice`: voltar aos canais, o canal, quem está, o ping, e
-// câmera, microfone, áudio, chat, tela e sair.
-export component VoiceToolbar inherits Glass {
-    height: 52px;
-    border-radius: 16px;
+// O chat da voz: a gaveta de 360 à direita da chamada.
+export component VoiceChat inherits Rectangle {
+    background: Theme.surface-chat;
 
-    HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 8px;
+    VerticalLayout {
+        Rectangle {
+            height: Theme.header;
 
-        IconButton {
-            commands: Icons.arrow-left;
-            active: true;
-            size: 30px;
-            glyph-size: 14px;
-            y: (parent.height - self.height) / 2;
-            clicked => { Ui.focused-room = false; }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: #04040533;
+            }
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 8px;
+                spacing: 8px;
+
+                Text {
+                    text: "Chat da voz";
+                    color: Theme.ink-strong;
+                    font-size: Theme.header-size;
+                    font-weight: 600;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+
+                FlatIcon {
+                    commands: Icons.close;
+                    hint: "Fechar";
+                    y: (parent.height - self.height) / 2;
+                    clicked => { Ui.voice-chat-open = false; }
+                }
+            }
         }
 
-        Glyph {
-            commands: Icons.speaker;
-            size: 14px;
-            tint: Skin.online;
-            y: (parent.height - self.height) / 2;
-        }
+        ScrollView {
+            vertical-stretch: 1;
 
-        Text {
-            text: Ui.voice-name;
-            color: Skin.ink;
-            font-family: Skin.sans;
-            font-size: 13.5px;
-            font-weight: 600;
-            overflow: elide;
-            vertical-alignment: center;
-        }
+            VerticalLayout {
+                alignment: end;
+                padding: 8px;
+                spacing: 8px;
 
-        PeopleMenu {
-            y: (parent.height - self.height) / 2;
-        }
+                if Ui.voice-messages.length == 0 : Meta {
+                    text: "Nenhuma mensagem nesta voz ainda.";
+                    x: 8px;
+                }
 
-        Text {
-            text: Ui.ping;
-            color: Skin.ink-dim;
-            font-family: Skin.mono;
-            font-size: 10.5px;
-            vertical-alignment: center;
-        }
+                for message in Ui.voice-messages : HorizontalLayout {
+                    spacing: 12px;
+                    padding-left: 8px;
+                    padding-right: 8px;
 
-        Rectangle { horizontal-stretch: 1; }
+                    if !message.continued : Avatar {
+                        letter: message.initial;
+                        size: 32px;
+                        mine: message.mine;
+                        y: 0;
+                    }
 
-        IconButton {
-            commands: Icons.camera-off;
-            y: (parent.height - self.height) / 2;
-            clicked => { Ui.toggle-camera(); }
-        }
+                    if message.continued : Rectangle { width: 32px; }
 
-        IconButton {
-            commands: Ui.mic-on ? Icons.mic : Icons.mic-off;
-            on: Ui.mic-on;
-            enabled: Ui.can-speak;
-            y: (parent.height - self.height) / 2;
-            clicked => { Ui.toggle-mic(); }
-        }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
 
-        IconButton {
-            commands: Ui.deafened ? Icons.headphones-off : Icons.headphones;
-            on: !Ui.deafened;
-            y: (parent.height - self.height) / 2;
-            clicked => { Ui.toggle-deafen(); }
+                        if !message.continued : HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+
+                            Text {
+                                text: message.author;
+                                color: message.colored ? message.color : Theme.ink-strong;
+                                font-size: 14px;
+                                font-weight: 500;
+                            }
+
+                            Meta { text: message.at; vertical-alignment: center; }
+                        }
+
+                        Text {
+                            text: message.body;
+                            color: Theme.ink;
+                            font-size: 14px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
         }
 
         Rectangle {
-            width: talk.width;
-            height: talk.height;
-            y: (parent.height - self.height) / 2;
+            height: 60px;
 
-            talk := IconButton {
-                commands: Icons.chat;
-                active: Ui.voice-chat-open;
-                clicked => { Ui.toggle-voice-chat(); }
+            Rectangle {
+                x: 8px;
+                y: 4px;
+                width: parent.width - 16px;
+                height: 44px;
+                border-radius: 8px;
+                background: Theme.surface-input;
+
+                composer := TextInput {
+                    x: 16px;
+                    width: parent.width - 32px;
+                    height: parent.height;
+                    color: Theme.ink;
+                    font-size: 14px;
+                    single-line: true;
+                    vertical-alignment: center;
+                    accepted => {
+                        Ui.send-voice-message(self.text);
+                        self.text = "";
+                    }
+                }
+
+                Text {
+                    x: 16px;
+                    text: "Conversar em " + Ui.voice-name;
+                    visible: composer.text == "";
+                    color: Theme.ink-dim;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    height: parent.height;
+                }
             }
-
-            if Ui.voice-chat-unread > 0 : Rectangle {
-                x: parent.width - 6px;
-                y: -4px;
-                width: 10px;
-                height: 10px;
-                border-radius: 5px;
-                background: Skin.danger;
-            }
-        }
-
-        IconButton {
-            commands: Icons.screen;
-            active: Ui.sharing;
-            enabled: Ui.can-share;
-            y: (parent.height - self.height) / 2;
-            clicked => { Ui.open-share(); }
-        }
-
-        IconButton {
-            commands: Icons.phone-off;
-            hangup: true;
-            filled: true;
-            y: (parent.height - self.height) / 2;
-            clicked => { Ui.leave-voice(); }
         }
     }
 }
