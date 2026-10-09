@@ -171,5 +171,6 @@ Cada passo abaixo cobre uma correção que não tem como virar teste automático
 6. **Imagem travada no Windows (P1-10).** Alguém transmitindo do Windows; force o decodificador a
    falhar (pausar e retomar a tela, ou perder pacotes). Esperado: a imagem volta em menos de um
    segundo. O `VideoSink` pede `requestKeyframe {producerId}` ao núcleo a cada segundo até o
-   quadro-chave chegar; enquanto a ação não existir no núcleo, a chamada falha em silêncio e a
-   imagem espera o quadro-chave periódico.
+   quadro-chave chegar. A ação é do `unkvoid_app`: entra `{"producerId": "<id>"}`, sai
+   `{"ok": true}` (ou `{"failed": "gone"}` sem sala), e o núcleo manda o PLI na hora pelo
+   caminho de chegada daquele producer.
