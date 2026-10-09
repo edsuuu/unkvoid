@@ -1260,6 +1260,7 @@ mod tests {
             },
             data: vec![9, 8, 7],
             arrived: std::time::Instant::now(),
+            follows: None,
         });
 
         assert_eq!(block, [0, 1, 3, 0, 4, 3, 2, 1, b'a', b'b', b'c', 9, 8, 7]);

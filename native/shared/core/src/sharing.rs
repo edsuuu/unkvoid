@@ -577,6 +577,23 @@ fn rungs(chosen: (capture::Quality, u32)) -> Vec<(capture::Quality, u32)> {
 #[cfg(target_os = "windows")]
 const STILL_EVERY: Duration = Duration::from_secs(1);
 
+/// A captura calada há isto depois de mexer: a última imagem sai de novo uma vez, sem esperar o
+/// segundo. O encoder da placa segura um quadro na fila dele até entrar o seguinte, e o quadro
+/// largado pelo teto de fps ficou só na ponte: sem esta repetição, a última tecla, o slide novo
+/// e a rolagem que parou só apareciam para quem assiste um segundo depois.
+#[cfg(target_os = "windows")]
+const SETTLED: Duration = Duration::from_millis(100);
+
+/// Se é hora de repetir a última imagem: `quiet` desde o último quadro de verdade, e se já houve
+/// repetição depois dele (`since_still`, desde ela).
+#[cfg(any(target_os = "windows", test))]
+fn repeat_due(quiet: Duration, since_still: Option<Duration>, settled: Duration, every: Duration) -> bool {
+    match since_still {
+        None => quiet >= settled,
+        Some(since_still) => quiet >= settled && since_still >= every,
+    }
+}
+
 /// A thread que repete a última imagem — ou uma preta, antes da primeira — enquanto a captura
 /// não entrega quadro: tela parada, janela minimizada. Sem quadro nenhum o servidor derrubava a
 /// transmissão em 30 s (`producerDead`), e quem assistia não tinha como separar a tela parada da
@@ -607,12 +624,13 @@ impl StillFrames {
                     let mut still_at = Instant::now();
 
                     while !stop.load(Ordering::Relaxed) {
-                        std::thread::sleep(STILL_EVERY / 4);
+                        std::thread::sleep(SETTLED / 2);
 
                         let (real_ns, real_at) = *last_frame.lock().unwrap_or_else(PoisonError::into_inner);
                         let now = Instant::now();
+                        let quiet = now.duration_since(real_at);
 
-                        if muted.load(Ordering::Relaxed) || now.duration_since(real_at) < STILL_EVERY {
+                        if muted.load(Ordering::Relaxed) || quiet < SETTLED {
                             continue;
                         }
 
@@ -624,7 +642,9 @@ impl StillFrames {
 
                         encoding.nacked += u64::from(feedback.lost);
 
-                        if !asked && now.duration_since(still_at) < STILL_EVERY {
+                        let since_still = (still_at > real_at).then(|| now.duration_since(still_at));
+
+                        if !asked && !repeat_due(quiet, since_still, SETTLED, STILL_EVERY) {
                             continue;
                         }
 
@@ -1542,6 +1562,19 @@ mod tests {
         second(&mut watch, &mut counts, start, 21, (120, 120, 120));
 
         assert!(!watch.encoder_keeps_failing(), "voltou: a conta recomeça");
+    }
+
+    /// A tela para: a última imagem sai de novo uma vez logo depois, e daí em diante uma vez por
+    /// segundo. Antes a primeira repetição esperava o segundo inteiro.
+    #[test]
+    fn a_still_screen_repeats_the_last_image_soon_and_then_once_a_second() {
+        let (settled, every) = (Duration::from_millis(100), Duration::from_secs(1));
+        let at = Duration::from_millis;
+
+        assert!(!repeat_due(at(50), None, settled, every), "a captura ainda está mexendo");
+        assert!(repeat_due(at(100), None, settled, every), "a primeira repetição não espera o segundo");
+        assert!(!repeat_due(at(600), Some(at(500)), settled, every), "depois da primeira, uma por segundo");
+        assert!(repeat_due(at(1_100), Some(at(1_000)), settled, every));
     }
 
     #[test]

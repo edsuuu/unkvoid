@@ -4988,6 +4988,8 @@ dependencies = [
  "bytes",
  "capture",
  "futures-util",
+ "gstreamer",
+ "gstreamer-app",
  "opus",
  "rand 0.8.8",
  "rayon",

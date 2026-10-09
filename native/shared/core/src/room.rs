@@ -9,7 +9,8 @@
 //! `room.peers` a lista inteira, `room.tiles` o que dá para assistir, `room.mine` o que
 //! esta pessoa manda e pode mandar, `room.session` (`lost`, `rejoined`, `gone`, e `replaced`
 //! ou `kicked` quando o servidor tirou esta sessão de propósito),
-//! `room.failed` (`watch`, `share`, `mic`), `room.watchers` quem assiste a cada tela,
+//! `room.failed` (`watch`, `share`, `shareClosed`, `mic`, `serverMuted` e, no Linux, `camera`),
+//! `room.watchers` quem assiste a cada tela,
 //! `room.ping` a ida e volta até o servidor e
 //! `room.level` o nível do microfone.
 
@@ -457,6 +458,7 @@ impl Room {
             .unwrap_or(&producer.source)
             .to_owned();
 
+        let follows = (source == "screenAudio").then(|| self.screen_beside(&producer.producer_id)).flatten();
         let started = lock(&self.watching).start(Incoming {
             producer_id: producer.producer_id.clone(),
             kind: &kind,
@@ -466,6 +468,7 @@ impl Room {
             ssrc: answer["ssrc"].as_u64().map(|ssrc| ssrc as u32),
             always_muted: source == "screenAudio",
             rtx: crate::watching::rtx_of(&answer),
+            follows,
         });
 
         if let Err(failure) = started {
@@ -500,6 +503,13 @@ impl Room {
         lock(&self.consumers).insert(producer.producer_id.clone(), consumer_id);
 
         Ok(())
+    }
+
+    /// A tela da pessoa que manda este producer: é ela que o som da tela acompanha.
+    fn screen_beside(&self, producer_id: &str) -> Option<String> {
+        let peer = self.session.peers().into_iter().find(|peer| peer.producers.iter().any(|other| other.producer_id == producer_id))?;
+
+        peer.producers.into_iter().find(|other| other.source == "screen").map(|screen| screen.producer_id)
     }
 
     /// Para de receber uma transmissão sem sair da sala; ela continua ao vivo para os outros.
@@ -1008,12 +1018,22 @@ impl Room {
         lock(&self.watching).set_muted(producer_id, muted);
     }
 
+    /// Se o som de uma transmissão está calado aqui agora. `None` enquanto ele não é assistido.
+    pub fn is_watched_muted(&self, producer_id: &str) -> Option<bool> {
+        lock(&self.watching).is_muted(producer_id)
+    }
+
     pub async fn leave(&self) {
         self.stop_sharing().await;
         self.close_microphone().await;
 
         #[cfg(target_os = "macos")]
         self.close_camera().await;
+
+        // A webcam do Linux é captura do núcleo: sem isto ela seguia filmando (e com a luz
+        // acesa) depois da saída, até a interface largar a sala.
+        #[cfg(target_os = "linux")]
+        self.close_captured_camera().await;
 
         lock(&self.watching).stop(None);
 
@@ -1315,15 +1335,26 @@ impl Room {
                 self.close_microphone().await;
                 self.tell("room.failed", json!({ "what": "mic" }));
             }
+            #[cfg(target_os = "linux")]
+            Some(Source::Camera) => {
+                tracing::warn!(reason = ?data["reason"].as_str(), "o servidor fechou a câmera");
+                self.close_captured_camera().await;
+                self.tell("room.failed", json!({ "what": "camera" }));
+            }
             _ => {}
         }
     }
 
-    /// Para tudo o que sobe e o que chega, sem falar com o servidor: o socket já se foi.
+    /// Para tudo o que sobe e o que chega, sem falar com o servidor: o socket já se foi. A
+    /// câmera do Linux também: expulsa, movida ou substituída, a pessoa não filma para ninguém.
     fn stop_everything(&self) {
-        let broadcast = lock(&self.sending).screen.take();
+        let broadcasts = {
+            let mut sending = lock(&self.sending);
 
-        if let Some(mut broadcast) = broadcast {
+            [sending.screen.take(), sending.camera.take()]
+        };
+
+        for mut broadcast in broadcasts.into_iter().flatten() {
             let _ = tokio::task::block_in_place(|| broadcast.stop());
         }
 

@@ -171,6 +171,10 @@ impl LinuxCapturer {
     /// número seguinte; o de captura é o menor. Por isso a ordem é numérica e o nome
     /// repetido fica com o primeiro índice.
     pub fn cameras() -> Vec<(String, String)> {
+        if std::env::var_os("UNKVOID_CAMERA_SOURCE").is_some_and(|source| !source.is_empty()) {
+            return vec![("/dev/video0".to_string(), "UNKVOID_CAMERA_SOURCE".to_string())];
+        }
+
         let found = std::fs::read_dir("/sys/class/video4linux")
             .into_iter()
             .flatten()
@@ -671,16 +675,30 @@ fn microphone_pipeline() -> String {
 /// A taxa da câmera, em kbit/s.
 const CAMERA_BITRATE: u32 = 800;
 
+/// `UNKVOID_CAMERA_SOURCE` troca a webcam por qualquer origem do GStreamer (por exemplo
+/// `videotestsrc is-live=true pattern=ball`): é como se prova a câmera de ponta a ponta numa
+/// máquina sem webcam, e num contêiner, que não tem `/dev/video*`.
+fn camera_source(index: u32) -> String {
+    std::env::var("UNKVOID_CAMERA_SOURCE")
+        .ok()
+        .filter(|source| !source.trim().is_empty())
+        .unwrap_or_else(|| format!("v4l2src device=/dev/video{index}"))
+}
+
 /// O encoder da tela, mas em 640x360 a 30 fps e 800 kbit/s: um cartão pequeno não
-/// precisa de mais, e é banda que a tela de alguém está usando.
+/// precisa de mais, e é banda que a tela de alguém está usando. O pixel quadrado é o que
+/// põe tarja na webcam 4:3 em vez de achatá-la: sem ele o `videoscale` esticava a imagem em
+/// pixel retangular, e o decodificador do Windows, que ignora a proporção do pixel, mostrava
+/// o rosto largo.
 fn camera_pipeline(index: u32) -> String {
     let (width, height) = CAMERA_SIZE;
     let (format, encoder) = encoder_tail(LinuxCapturer::video_encoder(), 30, CAMERA_BITRATE);
 
     format!(
-        "v4l2src device=/dev/video{index} ! videoconvert ! videoscale ! videorate \
-         ! video/x-raw,format={format},colorimetry=bt709,width={width},height={height},framerate=30/1 \
-         ! {encoder} ! {VIDEO_SINK}"
+        "{} ! videoconvert ! videoscale ! videorate \
+         ! video/x-raw,format={format},colorimetry=bt709,width={width},height={height},framerate=30/1,pixel-aspect-ratio=1/1 \
+         ! {encoder} ! {VIDEO_SINK}",
+        camera_source(index)
     )
 }
 
@@ -885,14 +903,18 @@ impl VideoPipeline {
             .set_state(gst::State::Playing)
             .map_err(|failure| refused("a captura não começou", &failure))?;
 
+        let clocked = video.pipeline.downgrade();
+
         std::thread::Builder::new()
             .name("unkvoid-captura".into())
             .spawn(move || {
-                let started = Instant::now();
-
                 // Com o pipeline parado o `appsink` esvazia, e o `pull_sample` devolve erro.
                 while let Ok(sample) = appsink.pull_sample() {
-                    let Some(map) = sample.buffer().and_then(|buffer| buffer.map_readable().ok()) else {
+                    let timestamp_ns = captured_at(clocked.upgrade().as_ref(), &sample);
+                    let Some(buffer) = sample.buffer() else {
+                        continue;
+                    };
+                    let Ok(map) = buffer.map_readable() else {
                         continue;
                     };
                     let data = without_delimiter(&map).to_vec();
@@ -902,7 +924,7 @@ impl VideoPipeline {
                     on_event(CaptureEvent::Video(VideoFrame {
                         width,
                         height,
-                        timestamp_ns: started.elapsed().as_nanos() as u64,
+                        timestamp_ns,
                         surface: Some(EncodedVideo { keyframe: has_idr(&data), data, encoder: Some(control.clone()) }),
                     }));
                 }
@@ -919,6 +941,41 @@ impl Drop for VideoPipeline {
     fn drop(&mut self) {
         let _ = self.pipeline.set_state(gst::State::Null);
     }
+}
+
+/// O zero do relógio dos quadros, um só para o processo inteiro. Trocar a qualidade, refazer
+/// a captura travada ou descer um degrau abre outro pipeline no mesmo producer; com o relógio
+/// recomeçando do zero em cada um, o RTP de quem assiste andava um quadro só no lugar do tempo
+/// que a troca levou, e a imagem ficava esse tanto atrás do som até a espera do `Playout` descer.
+fn capture_epoch() -> Instant {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+
+    *EPOCH.get_or_init(Instant::now)
+}
+
+/// Mais que isto entre a captura e a saída do encoder não é atraso, é relógio que não se
+/// entende com o do buffer: vale a hora da saída.
+const MOST_ENCODER_DELAY: Duration = Duration::from_secs(1);
+
+/// Quando o quadro foi capturado, em nanossegundos desde o `capture_epoch`: a hora em que saiu
+/// do encoder menos o quanto ele passou no pipeline, medido no relógio do próprio pipeline. É a
+/// hora da captura, e não a da saída, que o RTP carrega: o x264 leva de 2 a 15 ms por quadro, e
+/// a hora da saída tremia junto. O carimbo passa pelo segmento porque o encoder o desloca (o
+/// `x264enc` soma mil horas a todo carimbo que sai).
+fn captured_at(pipeline: Option<&gst::Pipeline>, sample: &gst::Sample) -> u64 {
+    let now = Instant::now();
+    let in_pipeline = pipeline
+        .and_then(|pipeline| {
+            let pts = sample.buffer()?.pts()?;
+            let running = sample.segment()?.downcast_ref::<gst::ClockTime>()?.to_running_time(pts)?;
+            let captured = pipeline.base_time()? + running;
+
+            Some(Duration::from_nanos(pipeline.clock()?.time().nseconds().checked_sub(captured.nseconds())?))
+        })
+        .filter(|delay| *delay < MOST_ENCODER_DELAY)
+        .unwrap_or_default();
+
+    now.checked_sub(in_pipeline).unwrap_or(now).saturating_duration_since(capture_epoch()).as_nanos() as u64
 }
 
 /// O áudio do pipe, em blocos de 20 ms, para o callback.
@@ -1313,6 +1370,59 @@ mod tests {
         let after = bytes_in_the_last_second(&seen);
 
         assert!(after * 3 < before, "a taxa não caiu: {before} bytes/s antes, {after} depois");
+    }
+
+    /// Trocar a qualidade abre outro pipeline, e o relógio dos quadros continua de onde estava:
+    /// antes ele recomeçava do zero, e o quadro novo parecia mais velho que o último do pipeline
+    /// anterior. Contra o GStreamer de verdade.
+    #[test]
+    #[ignore]
+    fn the_frame_clock_keeps_going_across_pipelines() {
+        let stamps = |pattern: &str| {
+            let (format, encoder) = encoder_tail("x264enc", 30, 1_000);
+            let description = format!(
+                "videotestsrc is-live=true pattern={pattern} ! video/x-raw,width=320,height=180,framerate=30/1 \
+                 ! videoconvert ! video/x-raw,format={format} ! {encoder} ! {VIDEO_SINK}"
+            );
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let on_event = {
+                let seen = Arc::clone(&seen);
+
+                move |event| {
+                    if let CaptureEvent::Video(frame) = event {
+                        seen.lock().expect("a lista").push(frame.timestamp_ns);
+                    }
+                }
+            };
+            let video = VideoPipeline::start(&description, (None, (320, 180), 1_000_000), (Arc::default(), Arc::default()), Arc::new(on_event))
+                .expect("o pipeline subiu");
+
+            std::thread::sleep(Duration::from_millis(600));
+            drop(video);
+
+            seen.lock().expect("a lista").clone()
+        };
+
+        let first = stamps("ball");
+
+        std::thread::sleep(Duration::from_millis(400));
+
+        let second = stamps("snow");
+        let (Some(&last), Some(&next)) = (first.last(), second.first()) else {
+            panic!("um dos pipelines não deu quadro: {first:?} {second:?}");
+        };
+
+        assert!(first.windows(2).all(|pair| pair[1] > pair[0]), "o relógio andou para trás dentro do pipeline: {first:?}");
+        assert!(next >= last + 400_000_000, "o pipeline novo começou em {next} ns, antes do fim do anterior ({last} ns) mais a pausa");
+    }
+
+    /// A webcam 4:3 sai com tarja, em pixel quadrado, no tamanho do cartão.
+    #[test]
+    fn the_camera_keeps_square_pixels_at_the_card_size() {
+        let words = camera_pipeline(2).split_whitespace().collect::<Vec<_>>().join(" ");
+
+        assert!(words.starts_with("v4l2src device=/dev/video2 ! "), "{words}");
+        assert!(words.contains(",width=640,height=360,framerate=30/1,pixel-aspect-ratio=1/1 "), "{words}");
     }
 
     #[test]

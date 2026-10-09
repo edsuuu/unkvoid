@@ -27,10 +27,18 @@ const DAEMONS: &[&str] = &["pulseaudio", "pipewire", "pipewire-pulse", "wireplum
 pub struct SharedSink {
     module: u32,
     subscribe: Child,
+    /// A saída padrão de quando o sink subiu, para onde os streams voltam no fim.
+    default: String,
 }
 
 impl SharedSink {
     /// Sobe o sink na frente da saída padrão e move para ele o que já toca.
+    ///
+    /// `adjust_time=0` desliga o relógio que acerta a taxa entre os destinos — com um destino
+    /// só não há o que acertar. Ligado, o PulseAudio 16 cai (`Assertion 'u->time_event == e'`
+    /// no `module-combine-sink`) quando um stream com outra taxa (o jogo em 44,1 kHz) entra no
+    /// sink recém-criado: compartilhar a tela derrubava o som da máquina. Quem não conhece o
+    /// argumento recusa o carregamento, e aí ele sobe sem.
     ///
     /// ponytail: a saída padrão é a do momento; trocar de fone no meio da transmissão
     /// deixa o combine preso à antiga até o próximo `start`.
@@ -41,16 +49,13 @@ impl SharedSink {
             return Err("sem saída de som padrão".into());
         }
 
-        let module = pactl(&[
-            "load-module",
-            "module-combine-sink",
-            &format!("sink_name={SINK}"),
-            &format!("slaves={default}"),
-            "sink_properties=device.description=Unkvoid",
-        ])?
-        .trim()
-        .parse()
-        .map_err(|_| "o pactl não devolveu o índice do módulo".to_string())?;
+        let (name, slaves) = (format!("sink_name={SINK}"), format!("slaves={default}"));
+        let arguments = ["load-module", "module-combine-sink", &name, &slaves, "sink_properties=device.description=Unkvoid"];
+        let module = pactl(&[arguments.as_slice(), &["adjust_time=0"]].concat())
+            .or_else(|_| pactl(&arguments))?
+            .trim()
+            .parse()
+            .map_err(|_| "o pactl não devolveu o índice do módulo".to_string())?;
 
         let subscribe = Command::new("pactl")
             .env("LC_ALL", "C")
@@ -60,7 +65,7 @@ impl SharedSink {
             .spawn()
             .map_err(|error| format!("pactl subscribe não abriu ({error})"))?;
 
-        let mut sink = Self { module, subscribe };
+        let mut sink = Self { module, subscribe, default };
         let muted: Vec<String> = if mute_listed_apps {
             CaptureConfig::MUTED_EXECUTABLES.iter().map(|name| name.trim_end_matches(".exe").to_ascii_lowercase()).collect()
         } else {
@@ -84,11 +89,49 @@ impl SharedSink {
 }
 
 impl Drop for SharedSink {
+    /// Cada stream volta à saída padrão antes de o módulo cair. Deixar o descarregamento do
+    /// `module-combine-sink` mover sozinho o que estava nele derruba o PulseAudio 16
+    /// (`Assertion 'size < (1024*1024*96)' failed` no `pa_xmalloc`, reproduzido no Ubuntu
+    /// 24.04): parar de compartilhar com um jogo tocando calava a máquina inteira.
     fn drop(&mut self) {
         let _ = self.subscribe.kill();
         let _ = self.subscribe.wait();
+
+        if let (Ok(sinks), Ok(inputs)) = (pactl(&["list", "sinks", "short"]), pactl(&["list", "sink-inputs", "short"]))
+            && let Some(ours) = index_of_sink(&sinks, SINK)
+        {
+            for input in inputs_on(&inputs, ours) {
+                if let Err(error) = pactl(&["move-sink-input", &input.to_string(), &self.default]) {
+                    tracing::warn!(%error, input, "captura: o stream não voltou à saída padrão antes de o sink cair");
+                }
+            }
+        }
+
         let _ = pactl(&["unload-module", &self.module.to_string()]);
     }
+}
+
+/// O índice de um sink pelo nome, na listagem curta do `pactl` (`índice\tnome\t...`).
+fn index_of_sink(short: &str, name: &str) -> Option<u32> {
+    short.lines().find_map(|line| {
+        let mut columns = line.split('\t');
+        let index = columns.next()?.trim().parse().ok()?;
+
+        (columns.next()? == name).then_some(index)
+    })
+}
+
+/// Os streams que tocam num sink, na listagem curta do `pactl` (`índice\tsink\t...`).
+fn inputs_on(short: &str, sink: u32) -> Vec<u32> {
+    short
+        .lines()
+        .filter_map(|line| {
+            let mut columns = line.split('\t');
+            let index = columns.next()?.trim().parse().ok()?;
+
+            (columns.next()?.trim().parse::<u32>().ok()? == sink).then_some(index)
+        })
+        .collect()
 }
 
 /// Move para o sink cada stream que deve subir. O que já está lá é um no-op.
@@ -227,6 +270,16 @@ Sink Input #15
     }
 
     #[test]
+    fn the_streams_on_our_sink_are_found_by_its_index() {
+        let sinks = "1\tfake\tmodule-null-sink.c\ts16le 2ch 44100Hz\tIDLE\n2\tunkvoid_share\tmodule-combine-sink.c\ts16le 2ch 48000Hz\tRUNNING\n";
+        let inputs = "3\t2\t11\tprotocol-native.c\ts16le 2ch 48000Hz\n4\t1\t12\tprotocol-native.c\ts16le 2ch 48000Hz\n5\t2\t13\tprotocol-native.c\ts16le 2ch 48000Hz\n";
+
+        assert_eq!(index_of_sink(sinks, SINK), Some(2));
+        assert_eq!(index_of_sink(sinks, "outro"), None);
+        assert_eq!(inputs_on(inputs, 2), vec![3, 5]);
+    }
+
+    #[test]
     fn without_the_flag_the_call_goes_up_but_never_ourselves() {
         let parent_of = |pid: u32| (pid == 300).then_some(999);
 
@@ -288,5 +341,47 @@ mod daemon {
         assert!(!pactl(&["list", "sinks", "short"]).unwrap().contains(SINK), "o sink sumiu no fim");
 
         let _ = Command::new("pkill").args(["-f", "unkvoid-audio-test"]).status();
+    }
+
+    /// Parar de compartilhar com um jogo tocando dentro do nosso sink, várias vezes seguidas: o
+    /// servidor de som continua de pé, e o jogo volta à saída padrão. No PulseAudio 16, deixar
+    /// o descarregamento do `module-combine-sink` mover o stream sozinho derrubava o servidor
+    /// (`Assertion 'size < (1024*1024*96)' failed` no `pa_xmalloc`) — e o som da máquina toda.
+    #[test]
+    #[ignore]
+    fn stopping_the_share_with_a_game_playing_keeps_the_sound_server_alive() {
+        let default = pactl(&["get-default-sink"]).expect("pulseaudio no ar").trim().to_string();
+        let which = Command::new("which").arg("paplay").output().unwrap().stdout;
+        let paplay = std::fs::read(String::from_utf8(which).unwrap().trim()).unwrap();
+        let scratch = std::env::temp_dir().join("unkvoid-audio-stop");
+        let game = scratch.join("jogo");
+
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(&game, &paplay).unwrap();
+        std::fs::set_permissions(&game, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        Command::new("sh").arg("-c").arg(format!("{} --raw /dev/urandom </dev/null >/dev/null 2>&1 &", game.display())).status().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        for round in 1..=6 {
+            let sink = SharedSink::open(false).expect("o combine sink sobe");
+
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            drop(sink);
+            std::thread::sleep(std::time::Duration::from_millis(400));
+
+            assert!(pactl(&["info"]).is_ok(), "o servidor de som caiu ao parar de compartilhar, na rodada {round}");
+        }
+
+        let listing = pactl(&["list", "sink-inputs"]).unwrap();
+        let sinks = pactl(&["list", "sinks", "short"]).unwrap();
+        let game_sink = listing
+            .split("Sink Input #")
+            .find(|block| block.contains("application.process.binary = \"jogo\""))
+            .and_then(|block| block.lines().find_map(|line| line.trim().strip_prefix("Sink: ")).map(|index| index.trim().to_string()))
+            .expect("o jogo ainda toca");
+
+        assert!(sinks.lines().any(|line| line.starts_with(&format!("{game_sink}\t{default}\t"))), "o jogo não voltou à saída padrão");
+
+        let _ = Command::new("pkill").args(["-f", "unkvoid-audio-stop"]).status();
     }
 }

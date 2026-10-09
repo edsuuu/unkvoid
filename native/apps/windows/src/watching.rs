@@ -52,6 +52,9 @@ type Drawn = Arc<Mutex<HashMap<String, (u32, u32)>>>;
 /// O aviso de quadro novo, dividido entre as threads das telas.
 type OnFrame = Arc<Mutex<Box<dyn Fn() + Send>>>;
 
+/// A espera em vigor no `Playout` de cada tela, que o som dela segue.
+type Delays = Arc<Mutex<HashMap<String, Duration>>>;
+
 /// O pedido de keyframe ao servidor, para a tela que quebrou do lado de cá.
 type AskKeyframe = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -77,6 +80,7 @@ impl Watch {
         ask_keyframe: impl Fn(&str) + Send + Sync + 'static,
     ) -> Self {
         let (fresh, drawn, stop) = (Fresh::default(), Drawn::default(), Arc::new(AtomicBool::new(false)));
+        let delays = Delays::default();
         let on_frame: OnFrame = Arc::new(Mutex::new(Box::new(on_frame)));
         let ask_keyframe: AskKeyframe = Arc::new(ask_keyframe);
         let thread = std::thread::Builder::new()
@@ -84,7 +88,7 @@ impl Watch {
             .spawn({
                 let (fresh, drawn, speaker, stop) = (fresh.clone(), drawn.clone(), speaker.clone(), stop.clone());
 
-                move || route(&queue, (&fresh, &drawn), &speaker, &stop, (&on_speaking, &on_frame, &ask_keyframe))
+                move || route(&queue, (&fresh, &drawn, &delays), &speaker, &stop, (&on_speaking, &on_frame, &ask_keyframe))
             })
             .ok();
 
@@ -120,7 +124,7 @@ impl Drop for Watch {
 
 fn route(
     queue: &Receiver<Media>,
-    (fresh, drawn): (&Fresh, &Drawn),
+    (fresh, drawn, delays): (&Fresh, &Drawn, &Delays),
     speaker: &Speaker,
     stop: &Arc<AtomicBool>,
     (on_speaking, on_frame, ask_keyframe): (&impl Fn(&str, bool), &OnFrame, &AskKeyframe),
@@ -134,7 +138,7 @@ fn route(
                 MediaKind::Video { keyframe, .. } => {
                     let screen = match screens.entry(item.producer_id.clone()) {
                         Entry::Occupied(entry) => entry.into_mut(),
-                        Entry::Vacant(entry) => match Screen::start(entry.key(), (fresh, drawn), stop, (on_frame, ask_keyframe)) {
+                        Entry::Vacant(entry) => match Screen::start(entry.key(), (fresh, drawn, delays), stop, (on_frame, ask_keyframe)) {
                             Some(screen) => entry.insert(screen),
                             None => continue,
                         },
@@ -144,6 +148,10 @@ fn route(
                 }
                 MediaKind::Audio => {
                     let samples = pcm(&item.data);
+
+                    if let Some(screen) = &item.follows {
+                        speaker.hold(&item.producer_id, lock(delays).get(screen).copied().unwrap_or_default());
+                    }
 
                     speaker.play(&item.producer_id, &samples);
 
@@ -166,6 +174,7 @@ fn route(
             if !keep {
                 lock(fresh).remove(producer);
                 lock(drawn).remove(producer);
+                lock(delays).remove(producer);
             }
 
             keep
@@ -191,13 +200,13 @@ struct Screen {
 }
 
 impl Screen {
-    fn start(producer: &str, (fresh, drawn): (&Fresh, &Drawn), stop: &Arc<AtomicBool>, (on_frame, ask_keyframe): (&OnFrame, &AskKeyframe)) -> Option<Self> {
+    fn start(producer: &str, (fresh, drawn, delays): (&Fresh, &Drawn, &Delays), stop: &Arc<AtomicBool>, (on_frame, ask_keyframe): (&OnFrame, &AskKeyframe)) -> Option<Self> {
         let (frames, queue) = sync_channel(SCREEN_QUEUE);
         let thread = std::thread::Builder::new().name("unkvoid-tela".into()).spawn({
-            let (producer, fresh, drawn, stop, on_frame, ask_keyframe) =
-                (producer.to_owned(), fresh.clone(), drawn.clone(), stop.clone(), on_frame.clone(), ask_keyframe.clone());
+            let (producer, fresh, drawn, delays, stop, on_frame, ask_keyframe) =
+                (producer.to_owned(), fresh.clone(), drawn.clone(), delays.clone(), stop.clone(), on_frame.clone(), ask_keyframe.clone());
 
-            move || decode_screen(&producer, &queue, (&fresh, &drawn), &stop, (&on_frame, &ask_keyframe))
+            move || decode_screen(&producer, &queue, (&fresh, &drawn, &delays), &stop, (&on_frame, &ask_keyframe))
         });
 
         match thread {
@@ -280,7 +289,7 @@ struct Pending {
 /// um reenvio sai espaçado, e não de uma vez. Na hora, os que venceram passam pelo
 /// decodificador na ordem e só o último vira imagem: é assim que quem ficou para trás alcança o
 /// presente.
-fn decode_screen(producer: &str, queue: &Receiver<Media>, (fresh, drawn): (&Fresh, &Drawn), stop: &AtomicBool, (on_frame, ask_keyframe): (&OnFrame, &AskKeyframe)) {
+fn decode_screen(producer: &str, queue: &Receiver<Media>, (fresh, drawn, delays): (&Fresh, &Drawn, &Delays), stop: &AtomicBool, (on_frame, ask_keyframe): (&OnFrame, &AskKeyframe)) {
     let _timer = FineTimer::start();
     let mut decoder = None;
     let mut playout = media::Playout::default();
@@ -307,6 +316,10 @@ fn decode_screen(producer: &str, queue: &Receiver<Media>, (fresh, drawn): (&Fres
 
             arrived = true;
             waiting.push_back(Pending { due: playout.due(timestamp, item.arrived), keyframe, timestamp, data: item.data });
+        }
+
+        if arrived {
+            lock(delays).insert(producer.to_owned(), playout.delay());
         }
 
         // Atrás demais: os mais velhos passam pelo decodificador sem virar imagem, porque todo

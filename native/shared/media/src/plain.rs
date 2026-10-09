@@ -182,9 +182,12 @@ pub struct PlainSender {
     /// contar pacotes não diz nada quando um quadro parado custa 1 KB e um keyframe 300.
     sent_bytes: u64,
 
-    /// Os últimos pacotes de vídeo já cifrados, com o número de sequência, para reenviar
-    /// o que o servidor disser que não chegou. O `bool` diz se ele já foi pedido de volta.
-    history: VecDeque<(u16, Bytes, bool)>,
+    /// Os últimos pacotes de vídeo já cifrados, com o SSRC e o número de sequência, para
+    /// reenviar o que o servidor disser que não chegou. O `bool` diz se ele já foi pedido de
+    /// volta. O SSRC vai junto porque tela e câmera numeram cada uma a sua sequência no mesmo
+    /// histórico: só o número, e o pedido da tela devolvia o pacote da câmera quando os dois
+    /// se cruzavam.
+    history: VecDeque<(u32, u16, Bytes, bool)>,
 
     /// Por onde o vídeo sai, no ritmo. O resto sai direto pelo `socket`.
     pacer: Pacer,
@@ -404,7 +407,9 @@ impl PlainSender {
         let sent = Self::protect(&mut self.srtp, stream, Bytes::from(frame.data), 0)?;
         let packets = sent.len();
 
-        stream.packets += packets as u32;
+        stream.packets = stream.packets.wrapping_add(packets as u32);
+
+        let ssrc = source.ssrc(base);
 
         for (sequence, packet) in sent {
             if self.history.len() == HISTORY {
@@ -412,7 +417,7 @@ impl PlainSender {
             }
 
             self.pacer.push(packet.clone());
-            self.history.push_back((sequence, packet, false));
+            self.history.push_back((ssrc, sequence, packet, false));
         }
 
         self.report(source);
@@ -496,9 +501,9 @@ impl PlainSender {
 
             // ponytail: busca linear no histórico a cada pacote perdido, até 1024 passos.
             // Índice por número de sequência se isto aparecer no custo por quadro.
-            for sequence in lost_video_packets(&plain, self.ssrc_base) {
-                let Some((_, packet, asked)) =
-                    self.history.iter_mut().find(|(stored, ..)| *stored == sequence)
+            for (ssrc, sequence) in lost_video_packets(&plain, self.ssrc_base) {
+                let Some((.., packet, asked)) =
+                    self.history.iter_mut().find(|(stored_ssrc, stored, ..)| *stored_ssrc == ssrc && *stored == sequence)
                 else {
                     continue;
                 };
@@ -530,7 +535,7 @@ impl PlainSender {
 
         let sent = Self::protect(&mut self.srtp, stream, Bytes::copy_from_slice(opus), samples)?;
 
-        stream.packets += sent.len() as u32;
+        stream.packets = stream.packets.wrapping_add(sent.len() as u32);
 
         for (_, packet) in &sent {
             match self.socket.send(packet) {
@@ -563,7 +568,8 @@ impl PlainSender {
         *timestamp = packets.last().map_or(*timestamp, |packet| packet.header.timestamp);
 
         for packet in packets {
-            *payload_bytes += packet.payload.len() as u32;
+            // O relatório conta módulo 2^32 (RFC 3550): uma hora de tela a 10 Mb/s dá a volta.
+            *payload_bytes = payload_bytes.wrapping_add(packet.payload.len() as u32);
 
             let plain = packet
                 .marshal()
@@ -662,11 +668,11 @@ fn lost(heard_at: Option<Instant>, sent_at: Option<Instant>, now: Instant) -> bo
     }
 }
 
-/// Os números de sequência que um NACK genérico diz terem faltado no vídeo.
+/// Os pacotes de vídeo que um NACK genérico diz terem faltado: o SSRC do fluxo e o número.
 ///
 /// Cada entrada é o primeiro perdido e uma máscara de 16 bits com os seguintes: o bit `i`
 /// ligado quer dizer que `primeiro + i + 1` também não chegou.
-fn lost_video_packets(rtcp: &[u8], base: u32) -> Vec<u16> {
+fn lost_video_packets(rtcp: &[u8], base: u32) -> Vec<(u32, u16)> {
     /// Transport-layer feedback, onde mora o NACK.
     const RTPFB: u8 = 205;
     const GENERIC_NACK: u8 = 1;
@@ -683,21 +689,22 @@ fn lost_video_packets(rtcp: &[u8], base: u32) -> Vec<u16> {
 
         let packet = &rest[..size];
 
+        let media = if size >= 16 { u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]) } else { 0 };
+
         if packet[1] == RTPFB
             && packet[0] & 0x1F == GENERIC_NACK
             && size >= 16
-            && [Source::Screen.ssrc(base), Source::Camera.ssrc(base)]
-                .contains(&u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]))
+            && [Source::Screen.ssrc(base), Source::Camera.ssrc(base)].contains(&media)
         {
             for entry in packet[12..].as_chunks::<4>().0 {
                 let first = u16::from_be_bytes([entry[0], entry[1]]);
                 let mask = u16::from_be_bytes([entry[2], entry[3]]);
 
-                lost.push(first);
+                lost.push((media, first));
                 lost.extend(
                     (0..16_u16)
                         .filter(|bit| mask & (1 << bit) != 0)
-                        .map(|bit| first.wrapping_add(bit + 1)),
+                        .map(|bit| (media, first.wrapping_add(bit + 1))),
                 );
             }
         }
@@ -741,7 +748,9 @@ mod tests {
         // Primeiro perdido 100, bits 0 e 2 ligados: faltaram também 101 e 103.
         packet.extend_from_slice(&[0, 100, 0, 0b101]);
 
-        assert_eq!(lost_video_packets(&packet, BASE), vec![100, 101, 103]);
+        let screen = Source::Screen.ssrc(BASE);
+
+        assert_eq!(lost_video_packets(&packet, BASE), vec![(screen, 100), (screen, 101), (screen, 103)]);
 
         packet[16..20].copy_from_slice(&Source::ScreenAudio.ssrc(BASE).to_be_bytes());
 
@@ -819,6 +828,77 @@ mod tests {
 
         assert_eq!(sender.read_feedback(), Feedback::default(), "o mesmo pacote não é perda nova");
         assert!(server_socket.recv(&mut buffer).is_ok(), "o pedido repetido também é atendido");
+    }
+
+    fn nack_for(source: Source, sequence: u16) -> Vec<u8> {
+        let mut nack = vec![0x81, 205, 0x00, 0x03, 0, 0, 0, 1];
+
+        nack.extend_from_slice(&source.ssrc(BASE).to_be_bytes());
+        nack.extend_from_slice(&sequence.to_be_bytes());
+        nack.extend_from_slice(&[0, 0]);
+
+        nack
+    }
+
+    fn server_context(key: &[u8]) -> SrtpContext {
+        SrtpContext::new(&key[..KEY_LEN], &key[KEY_LEN..], ProtectionProfile::Aes128CmHmacSha1_80, None, None)
+            .expect("could not start the server SRTP")
+    }
+
+    /// Tela e câmera numeram cada uma do seu jeito e dividem o histórico de reenvio: quando os dois
+    /// números se cruzam, o pedido da tela devolvia o pacote da câmera, e o buraco da tela ficava.
+    #[test]
+    fn a_nack_resends_the_packet_of_the_stream_that_asked() {
+        let (server_socket, address) = listener();
+        let server_key = PlainSender::generate_key();
+        let mut sender = PlainSender::connect(address, &PlainSender::generate_key(), Some(&server_key), BASE)
+            .expect("could not connect");
+
+        sender
+            .send_frame(Source::Screen, EncodedFrame { data: vec![0, 0, 0, 1, 0x65, 0xAB], keyframe: true, timestamp_ns: 0 }, 60.0)
+            .expect("could not send the frame");
+
+        let mut buffer = [0u8; 2048];
+        let size = media_packet(&server_socket, &mut buffer);
+        let screen = buffer[..size].to_vec();
+        let sequence = u16::from_be_bytes([screen[2], screen[3]]);
+
+        // A câmera saiu antes com o mesmo número: é o mais velho do histórico.
+        sender.history.push_front((Source::Camera.ssrc(BASE), sequence, Bytes::from_static(b"camera"), false));
+
+        let nack = server_context(&server_key).encrypt_rtcp(&nack_for(Source::Screen, sequence)).expect("could not protect the NACK");
+        let port = sender.socket.local_addr().expect("sender without an address").port();
+
+        server_socket.send_to(&nack, ("127.0.0.1", port)).expect("could not send the NACK");
+        std::thread::sleep(Duration::from_millis(50));
+        sender.read_feedback();
+
+        let size = media_packet(&server_socket, &mut buffer);
+
+        assert_eq!(buffer[..size], screen[..], "o reenvio não é o pacote da tela");
+    }
+
+    /// Os contadores do relatório do remetente são de 32 bits e dão a volta, como a RFC 3550 manda.
+    /// Somados com `+=`, uma hora de tela a 10 Mb/s estourava os bytes e derrubava a transmissão no
+    /// build de depuração — 14 minutos em 4K.
+    #[test]
+    fn the_sender_report_counters_turn_over_instead_of_overflowing() {
+        let (_server_socket, address) = listener();
+        let mut sender = PlainSender::connect(address, &PlainSender::generate_key(), None, BASE).expect("could not connect");
+        let frame = || EncodedFrame { data: vec![0, 0, 0, 1, 0x41, 0xAB, 0xCD], keyframe: false, timestamp_ns: 0 };
+
+        sender.send_frame(Source::Screen, frame(), 60.0).expect("first frame");
+
+        let stream = sender.streams.get_mut(&Source::Screen).expect("the screen stream");
+
+        stream.bytes = u32::MAX;
+        stream.packets = u32::MAX;
+
+        sender.send_frame(Source::Screen, frame(), 60.0).expect("the frame that turns the counters over");
+
+        let stream = &sender.streams[&Source::Screen];
+
+        assert_eq!((stream.packets, stream.bytes), (0, 2), "um pacote de três bytes de payload depois do teto");
     }
 
     /// Só é caminho morto com pacote saindo agora e o servidor calado há cinco segundos. Tela

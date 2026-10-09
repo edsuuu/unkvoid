@@ -53,15 +53,25 @@ const DEFAULT_SERVER: &str = "https://unkvoid.com";
 const LEAVING: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// ponytail: a câmera do Windows ainda não existe — o `capture` não abre webcam aqui, e o
-/// `Room` só aceita câmera no macOS. Teto: quem está no Windows vê a câmera dos outros mas
-/// não liga a dele. A saída é a captura por Media Foundation empurrando `room.show`.
+/// `Room` só aceita câmera no macOS e no Linux. Teto: quem está no Windows vê a câmera dos
+/// outros mas não liga a dele. A saída é a captura por Media Foundation empurrando `room.show`.
+#[cfg(not(target_os = "linux"))]
 const NO_CAPTURE: &str = "A câmera ainda não está ligada nesta versão do app.";
+
+/// O computador não tem webcam que o sistema enxergue.
+#[cfg(target_os = "linux")]
+const NO_CAMERA: &str = "Nenhuma câmera foi encontrada neste computador.";
+
+/// O servidor desta voz não deixa esta pessoa ligar a câmera.
+#[cfg(target_os = "linux")]
+const NO_VIDEO: &str = "Você não tem permissão para ligar a câmera aqui.";
 
 /// As falhas que a sala anuncia, na frase do Mac.
 fn room_failure(what: &str) -> &'static str {
     match what {
         "watch" => "Não deu para assistir a uma das transmissões.",
         "mic" => "Não deu para abrir o microfone.",
+        "camera" => "Não deu para ligar a câmera.",
         "shareClosed" => "A janela que você compartilhava foi fechada, e a transmissão parou.",
         "serverMuted" => "Um moderador silenciou o seu microfone.",
         _ => "Não deu para compartilhar a tela.",
@@ -472,9 +482,9 @@ impl Bridge {
         });
 
         ui.on_toggle_camera({
-            let window = self.window.clone();
+            let bridge = self.clone();
 
-            move || complain(&window, NO_CAPTURE)
+            move || bridge.toggle_camera()
         });
 
 
@@ -2488,6 +2498,49 @@ impl Bridge {
         });
     }
 
+    /// Liga ou desliga a câmera, dentro da sala. Só o Linux a captura pelo núcleo (`v4l2src`, a
+    /// primeira webcam da lista); no Windows ela ainda não existe.
+    #[cfg(target_os = "linux")]
+    fn toggle_camera(self: &Rc<Self>) {
+        let (inside, mine) = {
+            let voice = lock(&self.voice);
+
+            (voice.inside, voice.mine)
+        };
+        let Some(room) = lock(&self.room).clone().filter(|_| inside) else {
+            return;
+        };
+        let window = self.window.clone();
+
+        if mine.camera {
+            self.spawn(async move { room.close_captured_camera().await });
+
+            return;
+        }
+
+        if !mine.can_video {
+            return complain(&window, NO_VIDEO);
+        }
+
+        let Some(index) = capture::PlatformCapturer::cameras().first().and_then(|(path, _)| path.strip_prefix("/dev/video")?.parse().ok()) else {
+            return complain(&window, NO_CAMERA);
+        };
+
+        self.spawn(async move {
+            let config = capture::CaptureConfig { source: capture::CaptureSource::Camera(index), capture_audio: false, ..capture::CaptureConfig::default() };
+
+            if let Err(failure) = room.open_captured_camera(config).await {
+                tracing::warn!(failure = %format!("{failure:#}"), "câmera: não abriu");
+                complain(&window, room_failure("camera"));
+            }
+        });
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn toggle_camera(self: &Rc<Self>) {
+        complain(&self.window, NO_CAPTURE);
+    }
+
     /// Ensurdecer cala o que chega. Vale fora da sala também: quem entra surdo continua surdo.
     fn toggle_deafen(self: &Rc<Self>) {
         let deafened = {
@@ -4138,6 +4191,8 @@ fn paint_voice(window: &Weak<AppWindow>, voice: &Arc<Mutex<Voice>>) {
         ui.set_can_speak(!inside || mine.can_speak);
         ui.set_can_share(mine.can_share);
         ui.set_sharing(mine.sharing);
+        ui.set_camera_on(mine.camera);
+        ui.set_camera_available(cfg!(target_os = "linux") && inside);
         ui.set_self_view(mine.self_view);
     });
 }

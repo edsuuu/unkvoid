@@ -276,6 +276,11 @@ impl PlainReceiver {
         }
     }
 
+    /// Se o que chega de um producer está sendo calado aqui. `None` sem rota para ele.
+    pub fn is_muted(&self, id: &str) -> Option<bool> {
+        self.routes.lock().ok()?.active.iter().find(|route| route.id == id).map(|route| route.muted)
+    }
+
     pub fn packets(&self) -> u64 {
         self.packets.load(Ordering::Relaxed)
     }

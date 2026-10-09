@@ -47,20 +47,31 @@ pub struct VideoUnpacker {
 
 impl VideoUnpacker {
     /// Devolve o quadro quando o pacote que o fecha chega (o bit `marker`).
+    ///
+    /// O depacotador da `rtc` guarda o NAL fragmentado até o pedaço final, e só o larga quando
+    /// ele chega: perdido o final, o resto grudava no próximo NAL fragmentado — que depois de um
+    /// buraco costuma ser o IDR do quadro-chave pedido. Por isso ele recomeça a cada buraco e a
+    /// cada início de fragmento.
     pub fn push(&mut self, packet: &[u8]) -> Option<AccessUnit> {
         let packet = Packet::unmarshal(&mut Bytes::copy_from_slice(packet)).ok()?;
         let sequence = packet.header.sequence_number;
 
-        if self.last_sequence.is_some_and(|last| last.wrapping_add(1) != sequence) {
+        let gap = self.last_sequence.is_some_and(|last| last.wrapping_add(1) != sequence);
+
+        if gap || starts_a_fragmented_nal(&packet.payload) {
+            self.h264 = H264Packet::default();
+        }
+
+        if gap {
             self.damaged = true;
             self.waiting_keyframe = true;
         }
 
         self.last_sequence = Some(sequence);
 
-        match self.h264.depacketize(&packet.payload) {
-            Ok(nals) => self.frame.extend_from_slice(&nals),
-            Err(_) => self.damaged = true,
+        match whole_aggregate(&packet.payload).then(|| self.h264.depacketize(&packet.payload)) {
+            Some(Ok(nals)) => self.frame.extend_from_slice(&nals),
+            Some(Err(_)) | None => self.damaged = true,
         }
 
         if !packet.header.marker {
@@ -106,6 +117,38 @@ pub fn nals(annex_b: &[u8]) -> Vec<&[u8]> {
             &nal[..nal.len() - padding]
         })
         .collect()
+}
+
+const NAL_STAP_A: u8 = 24;
+const NAL_FU_A: u8 = 28;
+
+/// O primeiro pedaço de um NAL fragmentado (FU-A com o bit de início).
+fn starts_a_fragmented_nal(payload: &[u8]) -> bool {
+    payload.len() >= 2 && payload[0] & 0x1F == NAL_FU_A && payload[1] & 0x80 != 0
+}
+
+/// Se cada NAL de um STAP-A cabe no pacote. O depacotador da `rtc` lê o comprimento seguinte
+/// sem conferir que ele existe, e um pacote cortado (de um cliente modificado: o SFU repassa
+/// sem olhar) derrubava a thread de quem assiste. O que não é STAP-A passa.
+fn whole_aggregate(payload: &[u8]) -> bool {
+    if payload.first().is_none_or(|header| header & 0x1F != NAL_STAP_A) {
+        return true;
+    }
+
+    let mut rest = &payload[1..];
+
+    while !rest.is_empty() {
+        let Some(&[high, low]) = rest.first_chunk::<2>() else {
+            return false;
+        };
+        let Some(after) = rest.get(2 + usize::from(u16::from_be_bytes([high, low]))..) else {
+            return false;
+        };
+
+        rest = after;
+    }
+
+    true
 }
 
 fn is_keyframe(annex_b: &[u8]) -> bool {
@@ -256,6 +299,49 @@ mod tests {
 
         assert!(key.iter().filter_map(|packet| unpacker.push(packet)).next().is_some_and(|unit| unit.keyframe));
         assert!(!unpacker.waiting_keyframe());
+    }
+
+    /// O fim de um NAL fragmentado se perde e a recuperação desiste: o pedaço que ficou não pode
+    /// grudar no NAL do quadro-chave que vem depois. Grudado, o quadro-chave saía como quadro-chave
+    /// mas com o IDR podre, e a imagem ficava em lixo até o periódico seguinte.
+    #[test]
+    fn a_lost_fragment_end_does_not_rot_the_next_keyframe() {
+        let mut payloader = H264Payloader::default();
+        let mut unpacker = VideoUnpacker::default();
+        let mut big_delta = packets(&mut payloader, &[[0, 0, 0, 1, 0x41].as_slice(), &[7; 4_000]].concat(), 100, 0);
+        let next = 100 + big_delta.len() as u16;
+
+        big_delta.pop();
+
+        assert!(big_delta.iter().filter_map(|packet| unpacker.push(packet)).next().is_none());
+
+        let small_delta = packets(&mut payloader, &[0, 0, 0, 1, 0x41, 9, 9, 9], next, 3_000);
+
+        assert!(small_delta.iter().filter_map(|packet| unpacker.push(packet)).next().is_none(), "o quadro depois do buraco não sai");
+
+        let sent = frame(0x65, 5_000);
+        let key = packets(&mut payloader, &sent, next + 1, 6_000);
+        let got = key.iter().filter_map(|packet| unpacker.push(packet)).next().expect("o quadro-chave saiu");
+
+        assert!(got.keyframe);
+        assert_eq!(nals(&got.data), nals(&sent), "o quadro-chave saiu com o resto do NAL perdido grudado");
+    }
+
+    /// Um STAP-A com o comprimento cortado no meio fazia o depacotador da `rtc` ler além do pacote
+    /// e derrubar a thread de quem assiste: a tela daquela pessoa parava para sempre.
+    #[test]
+    fn a_torn_aggregate_is_a_damaged_frame_and_not_a_panic() {
+        let mut unpacker = VideoUnpacker::default();
+        let torn = Packet {
+            header: Header { version: 2, marker: true, payload_type: 102, sequence_number: 1, ssrc: 7, ..Header::default() },
+            payload: Bytes::from_static(&[0x78, 0x00, 0x01, 0x65, 0x00]),
+        };
+
+        assert!(unpacker.push(&torn.marshal().expect("marshal")).is_none());
+
+        let key = packets(&mut H264Payloader::default(), &frame(0x65, 100), 2, 3_000);
+
+        assert!(key.iter().filter_map(|packet| unpacker.push(packet)).next().is_some_and(|unit| unit.keyframe), "depois do pacote torto o quadro-chave sai");
     }
 
     #[test]

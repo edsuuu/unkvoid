@@ -51,6 +51,10 @@ pub struct Media {
     /// assiste mede: carimbada depois, na fila da interface, a CPU ocupada pelo jogo virava
     /// atraso de rede, e a espera subia a meio segundo por um tranco que a rede nem teve.
     pub arrived: Instant,
+    /// O vídeo que este som acompanha: o som da tela segue a tela. Quem toca o segura o tanto
+    /// que a imagem dele espera no `Playout`, senão numa rede com perda a imagem saía até meio
+    /// segundo depois do som dela.
+    pub follows: Option<String>,
 }
 
 /// O que o `consumePlain` respondeu sobre uma transmissão.
@@ -66,6 +70,8 @@ pub struct Incoming<'a> {
     pub always_muted: bool,
     /// A retransmissão do servidor: é por ela que pacote perdido volta.
     pub rtx: Option<Rtx>,
+    /// O vídeo que este som acompanha — ver `Media::follows`.
+    pub follows: Option<String>,
 }
 
 /// O `rtx` da resposta do `consumePlain`, quando o servidor anuncia um.
@@ -89,6 +95,12 @@ pub struct Watching {
     receiver: Option<PlainReceiver>,
     active: HashMap<String, Watch>,
     deafened: bool,
+    /// O que a pessoa escolheu calar (`true`) ou ouvir em cada som: o da tela que ela ligou, o
+    /// microfone de alguém que ela mutou. Guardado fora da rota porque a rota é refeita — o
+    /// caminho de chegada refeito, a volta de uma queda, o som que chega depois do clique — e a
+    /// rota nova nascia com a regra (o som da tela mudo, o microfone ligado), calada para a tela
+    /// que mostrava a escolha.
+    chosen: HashMap<String, bool>,
     out: SyncSender<Media>,
 }
 
@@ -103,6 +115,7 @@ impl Watching {
                 receiver: None,
                 active: HashMap::new(),
                 deafened: false,
+                chosen: HashMap::new(),
                 out,
             },
             queue,
@@ -137,6 +150,7 @@ impl Watching {
             ssrc,
             always_muted,
             rtx,
+            follows,
         } = incoming;
 
         // Outro endereço é outra sessão no servidor: o que estava aberto já morreu lá.
@@ -172,7 +186,7 @@ impl Watching {
         media::grow_receive_buffer(&socket);
         pump(
             socket,
-            producer_id.clone(),
+            (producer_id.clone(), follows),
             video,
             Arc::clone(&stop),
             (self.out.clone(), receiver.keyframe_asker(producer_id.clone())),
@@ -186,8 +200,8 @@ impl Watching {
             rtx,
         });
 
-        if always_muted || (self.deafened && !video) {
-            self.set_muted(&producer_id, true);
+        if !video && silenced(self.chosen.get(&producer_id).copied(), always_muted, self.deafened) {
+            receiver.set_muted(&producer_id, true);
         }
 
         tracing::info!(producer = %producer_id, kind, "assistindo por RTP puro");
@@ -216,6 +230,12 @@ impl Watching {
                 watch.stop.store(true, Ordering::Relaxed);
             }
 
+            // O producer que fechou não volta: a escolha dele vai junto. Refazer o caminho
+            // (`None`) não fecha producer nenhum, e as escolhas ficam.
+            if producer_id.is_some() {
+                self.chosen.remove(&key);
+            }
+
             if let Some(receiver) = self.receiver.as_ref() {
                 receiver.unroute(&key);
             }
@@ -226,20 +246,34 @@ impl Watching {
         }
     }
 
-    /// Mudo é não repassar o pacote: o decodificador só vê silêncio.
-    pub fn set_muted(&self, producer_id: &str, muted: bool) {
+    /// A escolha da pessoa de calar (ou ouvir) um som, que vale também para a rota que ainda
+    /// não existe ou que for refeita. Mudo é não repassar o pacote: o decodificador só vê
+    /// silêncio. Surda, o som continua calado até ela voltar a ouvir.
+    pub fn set_muted(&mut self, producer_id: &str, muted: bool) {
+        self.chosen.insert(producer_id.to_owned(), muted);
+
         if let Some(receiver) = self.receiver.as_ref() {
-            receiver.set_muted(producer_id, muted);
+            receiver.set_muted(producer_id, muted || self.deafened);
         }
     }
 
-    /// Ensurdecer cala só o áudio: pausar o vídeo faria esperar keyframe na volta.
+    /// Se o som de um producer está calado aqui agora. `None` sem rota para ele.
+    pub fn is_muted(&self, producer_id: &str) -> Option<bool> {
+        self.receiver.as_ref()?.is_muted(producer_id)
+    }
+
+    /// Ensurdecer cala só o áudio: pausar o vídeo faria esperar keyframe na volta. Voltar a
+    /// ouvir devolve cada som à escolha da pessoa, e não à regra.
     pub fn deafen(&mut self, deafened: bool) {
         self.deafened = deafened;
 
+        let Some(receiver) = self.receiver.as_ref() else {
+            return;
+        };
+
         for (producer_id, watch) in &self.active {
             if !watch.video {
-                self.set_muted(producer_id, deafened || watch.always_muted);
+                receiver.set_muted(producer_id, silenced(self.chosen.get(producer_id).copied(), watch.always_muted, deafened));
             }
         }
     }
@@ -267,10 +301,16 @@ impl Drop for Watching {
     }
 }
 
+/// Se um som fica calado: a escolha da pessoa vale sobre a regra (o som da tela chega mudo), e
+/// surdo cala tudo.
+fn silenced(chosen: Option<bool>, always_muted: bool, deafened: bool) -> bool {
+    deafened || chosen.unwrap_or(always_muted)
+}
+
 /// A thread de um producer: lê o RTP que o receptor repassou e põe na fila o que remontou.
 fn pump<Ask: Fn() + Send + 'static>(
     socket: UdpSocket,
-    producer_id: String,
+    (producer_id, follows): (String, Option<String>),
     video: bool,
     stop: Arc<AtomicBool>,
     (out, ask): (SyncSender<Media>, Ask),
@@ -284,14 +324,14 @@ fn pump<Ask: Fn() + Send + 'static>(
     std::thread::Builder::new()
         .name(format!("watch-{producer_id}"))
         .spawn(move || match audio {
-            Some(audio) => pump_audio(&socket, &producer_id, &stop, &out, audio),
+            Some(audio) => pump_audio(&socket, (&producer_id, follows.as_deref()), &stop, &out, audio),
             None => pump_video(&socket, &producer_id, &stop, &out, &ask),
         })?;
 
     Ok(())
 }
 
-fn pump_audio(socket: &UdpSocket, producer_id: &str, stop: &AtomicBool, out: &SyncSender<Media>, mut audio: AudioUnpacker) {
+fn pump_audio(socket: &UdpSocket, (producer_id, follows): (&str, Option<&str>), stop: &AtomicBool, out: &SyncSender<Media>, mut audio: AudioUnpacker) {
     let mut datagram = [0_u8; DATAGRAM];
 
     while !stop.load(Ordering::Relaxed) {
@@ -304,6 +344,7 @@ fn pump_audio(socket: &UdpSocket, producer_id: &str, stop: &AtomicBool, out: &Sy
             kind: MediaKind::Audio,
             data: samples.iter().flat_map(|sample| sample.to_le_bytes()).collect(),
             arrived: Instant::now(),
+            follows: follows.map(str::to_owned),
         };
 
         if let Err(TrySendError::Disconnected(_)) = out.try_send(media) {
@@ -335,6 +376,7 @@ fn pump_video(socket: &UdpSocket, producer_id: &str, stop: &AtomicBool, out: &Sy
                 kind: MediaKind::Video { keyframe: unit.keyframe, timestamp: unit.timestamp },
                 data: unit.data,
                 arrived: now,
+                follows: None,
             };
 
             match out.try_send(media) {
@@ -464,6 +506,45 @@ impl Stalled {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn incoming<'a>(producer_id: &str, kind: &'a str, address: &'a str, server_key: &'a [u8], always_muted: bool) -> Incoming<'a> {
+        Incoming { producer_id: producer_id.to_owned(), kind, address, server_key, payload_type: 111, ssrc: Some(7), always_muted, rtx: None, follows: None }
+    }
+
+    /// O som da tela que a pessoa ligou antes de ele chegar continua ligado quando chega, e
+    /// quando o caminho é refeito; o microfone de quem ela mutou continua mudo depois de ela
+    /// ensurdecer e voltar a ouvir. Antes, a rota nova nascia com a regra e a volta do surdo
+    /// desmutava todo mundo.
+    #[test]
+    fn the_choice_to_hear_or_mute_a_sound_survives_the_route_being_rebuilt() {
+        let server = UdpSocket::bind("127.0.0.1:0").expect("um servidor de mentira");
+        let address = server.local_addr().expect("porta").to_string();
+        let server_key = media::PlainSender::generate_key();
+        let (mut watching, _queue) = Watching::new();
+
+        watching.set_muted("som-da-tela", false);
+        watching.start(incoming("som-da-tela", "audio", &address, &server_key, true)).expect("assistiu");
+        watching.start(incoming("microfone", "audio", &address, &server_key, false)).expect("assistiu");
+
+        assert_eq!(watching.is_muted("som-da-tela"), Some(false), "o som ligado antes de chegar chegou mudo");
+
+        watching.set_muted("microfone", true);
+        watching.deafen(true);
+
+        assert_eq!((watching.is_muted("som-da-tela"), watching.is_muted("microfone")), (Some(true), Some(true)), "surdo cala tudo");
+
+        watching.deafen(false);
+
+        assert_eq!(watching.is_muted("som-da-tela"), Some(false), "voltar a ouvir calou o som da tela");
+        assert_eq!(watching.is_muted("microfone"), Some(true), "voltar a ouvir desmutou quem a pessoa mutou");
+
+        watching.renew();
+        watching.start(incoming("som-da-tela", "audio", &address, &server_key, true)).expect("assistiu de novo");
+        watching.start(incoming("microfone", "audio", &address, &server_key, false)).expect("assistiu de novo");
+
+        assert_eq!(watching.is_muted("som-da-tela"), Some(false), "o caminho refeito calou o som da tela");
+        assert_eq!(watching.is_muted("microfone"), Some(true), "o caminho refeito desmutou quem a pessoa mutou");
+    }
 
     /// O pedido sai na hora, repete a cada segundo enquanto a imagem não volta, e a parada só
     /// conta depois da primeira imagem.

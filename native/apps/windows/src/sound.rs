@@ -48,6 +48,9 @@ const TICK: Duration = Duration::from_millis(10);
 #[cfg(target_os = "windows")]
 const BUFFER: i64 = 500_000;
 
+/// A maior espera que um som segue: a do `Playout`, que nunca passa de meio segundo.
+const MOST_HOLD: usize = 500 * PER_MILLISECOND;
+
 /// O que cada pessoa mandou e ainda não tocou.
 #[derive(Default)]
 struct Lane {
@@ -57,6 +60,39 @@ struct Lane {
     volume: f32,
     /// Passou do teto e ainda está voltando à folga.
     trimming: bool,
+    /// A espera a mais que este som segue, em amostras: a da imagem que ele acompanha.
+    hold: usize,
+}
+
+impl Lane {
+    fn push(&mut self, samples: &[f32]) {
+        self.samples.extend(samples);
+        self.trimming |= self.samples.len() > LONGEST + self.hold;
+
+        if self.trimming {
+            let late = self.samples.len().saturating_sub(CUSHION + self.hold).min(TRIM_STEP);
+
+            self.samples.drain(..late);
+            self.trimming = self.samples.len() > CUSHION + self.hold;
+        }
+    }
+
+    /// A espera cresceu: o que falta entra como silêncio na frente, e o som atrasa junto com a
+    /// imagem — é o mesmo trecho que a imagem fica parada. Diminuiu: o excesso sai aos poucos,
+    /// pelo mesmo passo do teto.
+    fn hold(&mut self, wanted: usize) {
+        let wanted = wanted.min(MOST_HOLD) & !(CHANNELS - 1);
+
+        if wanted > self.hold {
+            for _ in 0..wanted - self.hold {
+                self.samples.push_front(0.0);
+            }
+        } else {
+            self.trimming |= self.samples.len() > CUSHION + wanted;
+        }
+
+        self.hold = wanted;
+    }
 }
 
 type Mix = Arc<Mutex<HashMap<String, Lane>>>;
@@ -96,21 +132,16 @@ impl Speaker {
 
     /// Um bloco de PCM de um producer, estéreo intercalado.
     pub fn play(&self, producer: &str, samples: &[f32]) {
-        let mut mix = lock(&self.mix);
-        let lane = mix.entry(producer.to_owned()).or_insert_with(|| Lane {
-            volume: 1.0,
-            ..Lane::default()
-        });
+        lock(&self.mix).entry(producer.to_owned()).or_insert_with(|| Lane { volume: 1.0, ..Lane::default() }).push(samples);
+    }
 
-        lane.samples.extend(samples);
-        lane.trimming |= lane.samples.len() > LONGEST;
+    /// Quanto o som de um producer espera a mais: a espera da imagem que ele acompanha (o som
+    /// da tela segue a tela). Sem isto, numa rede com perda a imagem esperava o `Playout` e o
+    /// som dela não, e saíam até meio segundo fora de sincronia.
+    pub fn hold(&self, producer: &str, delay: Duration) {
+        let wanted = usize::try_from(delay.as_millis()).unwrap_or(usize::MAX).saturating_mul(PER_MILLISECOND);
 
-        if lane.trimming {
-            let late = lane.samples.len().saturating_sub(CUSHION).min(TRIM_STEP);
-
-            lane.samples.drain(..late);
-            lane.trimming = lane.samples.len() > CUSHION;
-        }
+        lock(&self.mix).entry(producer.to_owned()).or_insert_with(|| Lane { volume: 1.0, ..Lane::default() }).hold(wanted);
     }
 
     pub fn set_volume(&self, producer: &str, volume: f32) {
@@ -136,6 +167,7 @@ pub fn chime(device: Option<String>, samples: Vec<f32>) {
                 primed: true,
                 volume: 1.0,
                 trimming: false,
+                hold: 0,
             },
         );
 
@@ -706,7 +738,47 @@ mod tests {
             primed,
             volume: 1.0,
             trimming: false,
+            hold: 0,
         }
+    }
+
+    /// A imagem passou a esperar 100 ms a mais: o som da tela atrasa os mesmos 100 ms, com
+    /// silêncio na frente do que já esperava. Quando a espera desce, o excesso sai aos poucos.
+    #[test]
+    fn the_sound_follows_the_wait_of_the_picture_it_goes_with() {
+        let mut lane = lane(CUSHION, true);
+
+        lane.hold(100 * PER_MILLISECOND);
+
+        assert_eq!(lane.samples.len(), CUSHION + 100 * PER_MILLISECOND);
+        assert!(lane.samples.iter().take(100 * PER_MILLISECOND).all(|&sample| sample == 0.0), "o silêncio entra na frente");
+        assert_eq!(lane.samples[100 * PER_MILLISECOND], 0.25, "o som que esperava vem depois do silêncio");
+
+        lane.push(&[0.25; 4]);
+
+        assert!(!lane.trimming, "dentro da espera nova nada é cortado");
+
+        lane.hold(20 * PER_MILLISECOND);
+        lane.push(&[0.25; 4]);
+
+        assert!(lane.trimming);
+        assert_eq!(lane.samples.len(), CUSHION + 100 * PER_MILLISECOND + 8 - TRIM_STEP, "um passo por bloco, e não de uma vez");
+
+        while lane.trimming {
+            lane.push(&[]);
+        }
+
+        assert_eq!(lane.samples.len(), CUSHION + 20 * PER_MILLISECOND);
+    }
+
+    #[test]
+    fn the_wait_never_passes_half_a_second_nor_splits_a_stereo_pair() {
+        let mut lane = lane(0, false);
+
+        lane.hold(10 * MOST_HOLD + 1);
+
+        assert_eq!(lane.hold, MOST_HOLD);
+        assert_eq!(lane.samples.len() % CHANNELS, 0);
     }
 
     #[test]
@@ -732,7 +804,7 @@ mod tests {
 
         assert!(out.iter().all(|&sample| (sample - 0.5).abs() < 1e-6), "{out:?}");
 
-        let loud = Lane { samples: std::iter::repeat_n(0.9, CUSHION).collect(), primed: true, volume: 1.0, trimming: false };
+        let loud = Lane { samples: std::iter::repeat_n(0.9, CUSHION).collect(), primed: true, volume: 1.0, trimming: false, hold: 0 };
         let mut mix = HashMap::from([("ada".to_owned(), loud), ("bia".to_owned(), lane(CUSHION, true))]);
 
         mix_into(&mut mix, &mut out);
