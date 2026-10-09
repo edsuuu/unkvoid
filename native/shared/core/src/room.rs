@@ -473,8 +473,9 @@ impl Room {
         }
 
         // Outra tarefa já está abrindo este: o segundo consumer ficaria órfão, com a banda dele
-        // correndo para sempre e pausar e fechar agindo no outro.
-        let Some(_opening) = Opening::mark(&self.opening, &producer.producer_id) else {
+        // correndo para sempre e pausar e fechar agindo no outro. E a sala que já saiu não abre
+        // nada: o `settle` da entrada corre ao lado de um `leave` logo em seguida.
+        let Some(_opening) = Opening::mark(&self.opening, &producer.producer_id).filter(|_| !self.session.has_left()) else {
             return Ok(());
         };
 
@@ -494,8 +495,8 @@ impl Room {
         let consumer_id = text(&answer, "consumerId");
         let address = address_of(&answer);
 
-        // Fechada pela pessoa enquanto o pedido estava no ar.
-        if lock(&self.closed).contains(&producer.producer_id) {
+        // Fechada pela pessoa, ou a sala deixada, enquanto o pedido estava no ar.
+        if lock(&self.closed).contains(&producer.producer_id) || self.session.has_left() {
             let _ = self
                 .session
                 .client()

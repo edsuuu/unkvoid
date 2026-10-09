@@ -256,3 +256,27 @@ async fn the_camera_comes_back_after_a_long_drop() {
 
     room.leave().await;
 }
+
+/// Sair da sala fecha o socket: o SFU só tira a pessoa da sala no `leave`, e a sessão seguia
+/// pingando de 5 em 5 s para sempre, com o `room.ping` da sala velha chegando à interface — uma
+/// sala zumbi a cada troca de canal de voz (auditoria P2-4).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn leaving_the_room_closes_its_socket_and_stops_talking_to_the_ui() {
+    let (url, seen) = fake_sfu(Script::Stay).await;
+    let (updates, ui) = std::sync::mpsc::channel::<String>();
+    let (room, media) = Room::enter(&url, "salateste01", guest(), updates).await.expect("entrou");
+
+    room.leave().await;
+    drop(room);
+    drop(media);
+
+    while ui.try_recv().is_ok() {}
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    let requests: Vec<String> = seen.lock().expect("seen").requests.iter().map(|request| request["action"].as_str().unwrap_or_default().to_owned()).collect();
+    let after: Vec<&String> = requests.iter().skip_while(|action| *action != "leave").skip(1).collect();
+    let told: Vec<String> = ui.try_iter().filter(|line| line.contains("room.ping")).collect();
+
+    assert!(after.is_empty(), "a sala que saiu continuou falando com o SFU: {after:?}");
+    assert!(told.is_empty(), "a sala que saiu continuou falando com a interface: {told:?}");
+}
