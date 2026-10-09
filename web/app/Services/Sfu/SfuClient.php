@@ -37,9 +37,11 @@ final readonly class SfuClient
      *
      * @throws JsonException
      */
-    public function token(Channel $channel, User $user, array $can): string
+    public function token(Channel $channel, User $user, array $can, bool $muted = false): string
     {
-        return $this->sign(['room' => $channel->id, ...$this->identity($user), 'can' => $can]);
+        // `muted` só vai quando é verdade: o token de quem não está mutado continua igual ao
+        // de sempre, e o SFU antigo ignora a claim.
+        return $this->sign(['room' => $channel->id, ...$this->identity($user), 'can' => $can, ...($muted ? ['muted' => true] : [])]);
     }
 
     /**
@@ -93,6 +95,30 @@ final readonly class SfuClient
         return is_int($moved) ? $moved : 0;
     }
 
+    /**
+     * As salas de um servidor numa chamada só: expulsar e banir não dependem de a presença
+     * dizer onde a pessoa está — ela esconde quem está na carência e some quando o SFU demora.
+     * E nunca o SFU inteiro: a sessão da conta pode estar na voz de outro servidor.
+     *
+     * @param  array<int, string>  $rooms
+     */
+    public function kickIn(array $rooms, string $subject): int
+    {
+        $kicked = $this->post('/kick', ['userId' => $subject, 'rooms' => $rooms])['kicked'] ?? 0;
+
+        return is_int($kicked) ? $kicked : 0;
+    }
+
+    /**
+     * @param  array<int, string>  $rooms
+     */
+    public function muteIn(array $rooms, string $subject, bool $muted): int
+    {
+        $mutedCount = $this->post('/mute', ['userId' => $subject, 'muted' => $muted, 'rooms' => $rooms])['muted'] ?? 0;
+
+        return is_int($mutedCount) ? $mutedCount : 0;
+    }
+
     public function mute(Channel $channel, string $subject, bool $muted): int
     {
         $mutedCount = $this->post("/rooms/{$channel->id}/mute", ['userId' => $subject, 'muted' => $muted])['muted'] ?? 0;
@@ -105,7 +131,7 @@ final readonly class SfuClient
      * mesmo request, mesmo que a árvore pergunte canal por canal. `fresh` esquece o cache
      * antes, para quem precisa contar de verdade.
      *
-     * @return array<string, array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool}>> por sala
+     * @return array<string, array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool, reconnecting?: bool}>> por sala
      */
     public function presence(bool $fresh = false): array
     {
@@ -114,7 +140,7 @@ final readonly class SfuClient
                 Cache::forget(self::PRESENCE_CACHE_KEY);
             }
 
-            /** @var array<string, array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool}>> $rooms */
+            /** @var array<string, array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool, reconnecting?: bool}>> $rooms */
             $rooms = Cache::remember(self::PRESENCE_CACHE_KEY, self::PRESENCE_CACHE_SECONDS, fn (): array => (array) ($this->send('GET', '/presence')['rooms'] ?? []));
 
             return $rooms;
@@ -122,7 +148,7 @@ final readonly class SfuClient
     }
 
     /**
-     * @return array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool}>
+     * @return array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool, reconnecting?: bool}>
      */
     public function peers(Channel $channel, bool $fresh = false): array
     {

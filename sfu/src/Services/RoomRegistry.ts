@@ -193,22 +193,32 @@ export class RoomRegistry {
         this.rooms.delete(room.id);
     }
 
+    /**
+     * Quem está na carência de reconexão vem junto, com `reconnecting`: é o SFU quem sabe
+     * quem ainda tem lugar na sala, e o Laravel decide por isso se o token é de reconexão.
+     */
     public presence(): Record<
         string,
-        { sub: string; name: string; sources: string[]; muted: boolean; deafened: boolean }[]
+        {
+            sub: string;
+            name: string;
+            sources: string[];
+            muted: boolean;
+            deafened: boolean;
+            reconnecting: boolean;
+        }[]
     > {
         return Object.fromEntries(
             [...this.rooms.values()].map((room) => [
                 room.id,
-                [...room.peers.values()]
-                    .filter((peer) => !peer.isOrphaned())
-                    .map((peer) => ({
-                        sub: peer.userId,
-                        name: peer.name,
-                        sources: peer.sources(),
-                        muted: peer.muted,
-                        deafened: peer.deafened,
-                    })),
+                [...room.peers.values()].map((peer) => ({
+                    sub: peer.userId,
+                    name: peer.name,
+                    sources: peer.sources(),
+                    muted: peer.muted,
+                    deafened: peer.deafened,
+                    reconnecting: peer.isOrphaned(),
+                })),
             ]),
         );
     }
