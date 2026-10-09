@@ -1,0 +1,25 @@
+# A distro mais velha que o .deb precisa rodar: um binário fica preso à glibc da máquina que o
+# compila. Debian 12 é o piso do repositório APT do projeto (docs/AUTO-UPDATE.md).
+FROM debian:12
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# `libdbus-1-dev` é do chaveiro (o token da conta mora no Secret Service); `libfontconfig1-dev`,
+# `libxkbcommon-dev` e `libwayland-dev` são o que o `winit` e o `femtovg` pedem para compilar;
+# `libgstreamer1.0-dev` e `libgstreamer-plugins-base1.0-dev` são a captura do Linux (o GStreamer
+# roda dentro do processo); `dpkg-dev` traz o `dpkg-shlibdeps`, que escreve as dependências de
+# biblioteca do pacote — a `libgstreamer-1.0-0` entra por ele. Sem GTK nenhum: a janela é do Slint.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential curl ca-certificates pkg-config cmake dpkg-dev \
+        libdbus-1-dev libfontconfig1-dev libxkbcommon-dev libwayland-dev \
+        libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# O toolchain fica em /usr/local, legível por qualquer usuário: o build roda com o uid de quem
+# chama, para os arquivos gerados não ficarem de root no disco.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    PATH=/usr/local/cargo/bin:$PATH
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | CARGO_HOME=/usr/local/cargo sh -s -- -y --no-modify-path --profile minimal \
+    && chmod -R a+rwX /usr/local/rustup /usr/local/cargo

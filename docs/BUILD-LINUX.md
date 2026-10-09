@@ -2,6 +2,13 @@
 
 ## O `.deb` (a release)
 
+## O app Slint no Linux
+
+O app Slint (`native/apps/windows`, o mesmo crate do Windows) compila, testa e abre num
+contêiner próprio, e tem o seu `.deb` em `native/apps/windows/build-deb.sh` (Debian 12, sem GTK):
+está tudo em [`native/apps/windows/README.md`](../native/apps/windows/README.md). O que segue é
+o `.deb` do app GTK e o laboratório da captura.
+
 O pacote é o `unkvoid`, do app nativo (`native/apps/linux`, GTK4), compilado dentro de um
 **Debian 12** (`native/apps/linux/Dockerfile.deb`): o binário fica preso à glibc de quem compila,
 e o Debian 12 é a distro mais velha que queremos suportar. Precisa de Docker; num Windows, roda
