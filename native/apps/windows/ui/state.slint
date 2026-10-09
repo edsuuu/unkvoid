@@ -13,14 +13,27 @@ export struct ServerRow {
     at: string,
 }
 
+/// O que eu posso fazer com uma pessoa, decidido pelo núcleo (`member_actions`) na ordem
+/// do Discord: hierarquia e bits. A tela só esconde item de menu.
+export struct ActionsRow {
+    mute: bool,
+    disconnect: bool,
+    kick: bool,
+    ban: bool,
+    /// Mutada pelo servidor: o microfone cortado fica vermelho.
+    server-muted: bool,
+}
+
 /// Quem está num canal de voz em que você não está, pelo que o Laravel sabe.
 export struct VoicePersonRow {
+    user-id: int,
     name: string,
     initial: string,
     mine: bool,
     muted: bool,
     camera: bool,
     live: bool,
+    actions: ActionsRow,
 }
 
 export struct ChannelRow {
@@ -30,19 +43,30 @@ export struct ChannelRow {
     /// O identificador do canal, que é o que diz se a voz aberta é esta.
     id: string,
     name: string,
+    topic: string,
+    /// O limite de pessoas na voz; zero é sem limite.
+    limit: int,
     voice: bool,
     current: bool,
     people: [VoicePersonRow],
+    /// Mover alguém daqui pede MOVE_MEMBERS neste canal; mover para cá pede MOVE_MEMBERS e
+    /// CONNECT aqui. O Laravel decide de verdade; a tela só esconde o item.
+    can-move-from: bool,
+    can-move-here: bool,
 }
 
 export struct MemberRow {
+    user-id: int,
     name: string,
     initial: string,
     owner: bool,
     mine: bool,
+    /// "Na voz: Reunião", "Transmitindo", ou nada.
+    note: string,
+    actions: ActionsRow,
 }
 
-/// Um grupo da lista de membros, como o React: o cargo mais alto de quem está online, e os
+/// Um grupo da lista de membros, como o Discord: o cargo mais alto de quem está online, e os
 /// offline no fim. `colored` diz se o cargo tem cor.
 export struct MemberGroupRow {
     label: string,
@@ -50,6 +74,34 @@ export struct MemberGroupRow {
     colored: bool,
     offline: bool,
     members: [MemberRow],
+}
+
+/// Um cargo na tela de configuração, com o que o núcleo diz que dá para fazer nele.
+export struct RoleRow {
+    id: int,
+    name: string,
+    color: color,
+    colored: bool,
+    everyone: bool,
+    editable: bool,
+}
+
+/// Um bit de permissão do cargo escolhido.
+export struct PermissionRow {
+    bit: int,
+    label: string,
+    on: bool,
+}
+
+export struct BanRow {
+    user-id: int,
+    name: string,
+    reason: string,
+}
+
+export struct AuditRow {
+    at: string,
+    text: string,
 }
 
 /// Uma tela ou um aplicativo do seletor. `value` é `display:<id>` ou `window:<id>`, o que o
@@ -79,9 +131,15 @@ export struct MessageRow {
     at: string,
     /// Se é sua: só a sua se edita, e o "⋯" só aparece nela.
     mine: bool,
+    /// Continuação da anterior (mesma pessoa, pouco depois): sem avatar nem nome.
+    continued: bool,
+    /// A cor do cargo mais alto de quem escreveu.
+    color: color,
+    colored: bool,
 }
 
 export struct PeerRow {
+    user-id: int,
     name: string,
     initial: string,
     note: string,
@@ -90,13 +148,17 @@ export struct PeerRow {
     speaking: bool,
     /// Com o microfone desenhado como desligado.
     muted: bool,
-    /// Transmitindo a tela: o selo vermelho "AO VIVO" do menu de pessoas.
+    /// Transmitindo a tela: o selo "AO VIVO".
     sharing: bool,
+    camera: bool,
     /// Caiu e está na carência: o nome apaga e a latência vira "parado".
     reconnecting: bool,
+    /// Calada só para mim, pelo menu.
+    local-muted: bool,
+    actions: ActionsRow,
 }
 
-/// Uma transmissão que se está assistindo: um cartão do palco.
+/// Uma transmissão que se está assistindo: um cartão da chamada.
 export struct TileRow {
     /// O producer do vídeo: é ele que volta nos cliques do cartão.
     producer: string,
@@ -120,10 +182,8 @@ export struct TileRow {
     /// O último quadro. Até o primeiro chegar, o cartão mostra que está abrindo.
     frame: image,
     has-frame: bool,
-    /// Onde o cartão cai. A conta é do Rust: a grade é coluna e linha, o foco põe um no
-    /// palco (`focused`) e os outros em fila pela ordem (`rank`), e a tela cheia deixa um.
-    column: int,
-    line: int,
+    /// O foco põe um cartão grande e os outros na faixa de baixo pela ordem (`rank`); a
+    /// tela cheia deixa um só.
     rank: int,
     focused: bool,
     full: bool,
@@ -197,6 +257,7 @@ export global Ui {
 
     in property <string> server-name: "Servidores";
     in property <string> channel-name;
+    in property <string> channel-topic;
     in property <[ServerRow]> servers;
     in property <[ChannelRow]> text-channels;
     in property <[ChannelRow]> voice-channels;
@@ -222,14 +283,27 @@ export global Ui {
     /// e no React elas são pastilhas que descem de linha quando não cabem.
     in property <[[string]]> recent-rooms;
 
+    /// O que eu posso no servidor aberto, pelos bits que o núcleo conferiu.
+    in property <bool> is-owner;
+    in property <bool> can-manage-server;
+    in property <bool> can-manage-channels;
+    in property <bool> can-manage-roles;
+    in property <bool> can-invite;
+    in property <bool> can-ban;
+    in property <bool> can-audit;
+
+    /// A lista de membros à direita. Abaixo de 1100 de largura ela começa fechada.
+    in-out property <bool> members-open: true;
+
     /// O canal de voz em que se está, e o nome dele. Vazio quer dizer fora da voz — e é
-    /// dentro do hub que isso aparece, como no React: não se troca de tela para falar.
+    /// dentro do hub que isso aparece, como no Discord: não se troca de tela para falar.
     in property <string> voice-channel;
     in property <string> voice-name;
-    /// O palco da voz no lugar do chat, e a sala focada que toma tudo menos a trilha.
+    /// "connecting", "connected", "reconnecting"; vazio fora da voz.
+    in property <string> voice-state;
+    /// A chamada no lugar do chat.
     in-out property <bool> stage-open;
-    in-out property <bool> focused-room;
-    /// O chat do canal de voz, ao lado do palco.
+    /// O chat do canal de voz, a gaveta à direita da chamada.
     in-out property <bool> voice-chat-open;
     in property <[MessageRow]> voice-messages;
 
@@ -241,6 +315,8 @@ export global Ui {
     in property <string> ping: "-- ms";
     /// O mesmo número, para a cor do sinal decidir sozinha. Negativo é "ainda medindo".
     in property <int> ping-ms: -1;
+    /// Quantas barrinhas o núcleo contou (0 a 4).
+    in property <int> ping-bars: 0;
     in property <string> elapsed: "0:00:00";
 
     in property <bool> mic-on;
@@ -248,27 +324,58 @@ export global Ui {
     in property <bool> deafened;
     /// Eu falando agora: o anel verde na barra de baixo.
     in property <bool> speaking;
+    /// O nível do próprio microfone, de 0 a 1: o medidor da sensibilidade.
+    in property <float> mic-level;
 
     /// As telas que se está assistindo, uma por cartão, e quantas estão ao vivo sem estar
-    /// abertas — é o que acende o "Assistir".
+    /// abertas — é o que acende o "Assistir transmissão".
     in property <[TileRow]> tiles;
     in property <int> pending-tiles;
-    /// A grade do palco, e se um cartão está no foco ou em tela cheia. Só do lado de quem olha.
-    in property <int> grid-columns: 1;
-    in property <int> grid-lines: 1;
+    /// Um cartão está no foco (os outros na faixa) ou em tela cheia. Só do lado de quem olha.
     in property <bool> focusing;
     in property <bool> full-screen;
     in property <bool> can-share: true;
     in property <bool> reconnecting;
     /// "Ver o que a sala vê": a própria tela aberta no palco.
     in property <bool> self-view;
-    /// As configurações da conta: o modal do React, por cima de tudo.
+
+    /// As configurações da conta: o modal do Discord, por cima de tudo.
     in-out property <bool> settings-open;
     // A seção aberta nas Configurações: "account", "voice" ou "clips". Fica aqui, e não no
     // modal, para a engrenagem dos Clips abrir direto na seção deles.
     in-out property <string> settings-tab: "account";
     in property <[DeviceRow]> microphones;
     in property <[DeviceRow]> speakers;
+    /// Voz e vídeo: "open", "voice" ou "ptt"; a sensibilidade de 0 a 100; e as marcas.
+    in property <string> input-mode: "open";
+    in property <int> sensitivity: 35;
+    in property <bool> mute-on-join;
+    in property <bool> echo-cancel: true;
+    in property <bool> noise-suppress: true;
+    in property <bool> auto-gain: true;
+
+    /// O modal aberto: "", "server-new", "server-join", "channel-new", "invite",
+    /// "channel-edit" ou "confirm". Um por vez, como no Discord.
+    in-out property <string> modal;
+    /// O canal que o "Editar canal" mostra, e o que o "Criar canal" já vem marcando.
+    in property <int> modal-channel-index: -1;
+    in-out property <string> modal-channel-name;
+    in-out property <string> modal-channel-topic;
+    in-out property <int> modal-channel-limit;
+    in-out property <bool> modal-channel-voice;
+    /// O "tem certeza?": título, frase e o botão vermelho. O que ele faz, a ponte guardou.
+    in property <string> confirm-title;
+    in property <string> confirm-text;
+    in property <string> confirm-button;
+
+    /// As configurações do servidor: a tela cheia com a barra lateral.
+    in-out property <bool> server-settings-open;
+    in-out property <string> server-settings-tab: "overview";
+    in property <[RoleRow]> roles;
+    in-out property <int> selected-role: -1;
+    in property <[PermissionRow]> role-permissions;
+    in property <[BanRow]> bans;
+    in property <[AuditRow]> audits;
 
     callback create-room(string, string);
     callback join-room(string, string);
@@ -285,11 +392,15 @@ export global Ui {
     callback open-channel(int);
     /// O nome e se é de voz. Quem não pode criar canal recebe a recusa do Laravel.
     callback create-channel(string, bool);
+    /// O índice do canal, o nome, o tópico e o limite (zero é sem limite).
+    callback update-channel(int, string, string, int);
     callback send-message(string);
     callback edit-message(int, string);
     callback delete-message(int);
     callback create-server(string);
     callback join-invite(string);
+    callback rename-server(string);
+    callback regenerate-invite();
     /// Volta para a Home e recarrega o que ela mostra.
     callback show-hub-home();
     callback load-friends();
@@ -301,6 +412,30 @@ export global Ui {
     /// O índice do amigo na lista: abre a conversa com ele.
     callback talk-to-friend(int);
     callback open-recent-room(string);
+
+    /// Abre um modal; os que editam um canal recebem o índice dele.
+    callback open-modal(string, int);
+    /// Pede confirmação antes de algo que não volta: "delete-channel", "delete-server",
+    /// "leave-server", "kick", "ban" — com o id do canal (índice) ou da pessoa.
+    callback ask(string, int);
+    callback confirm();
+
+    /// As configurações do servidor: abrir numa aba, escolher um cargo, mexer nele.
+    callback open-server-settings(string);
+    callback select-role(int);
+    callback create-role(string);
+    callback delete-role(int);
+    callback toggle-permission(int);
+    callback unban(int);
+    /// Moderação de uma pessoa, pelo id de usuário.
+    callback server-mute(int, bool);
+    callback disconnect-voice(int);
+    /// Move a pessoa para o canal de voz no índice dado.
+    callback move-voice(int, int);
+    /// Abre a conversa direta com a pessoa (id e nome).
+    callback message-user(int, string);
+    /// Cala uma pessoa da voz só para mim.
+    callback mute-person(int, bool);
 
     callback leave-room();
     callback leave-voice();
@@ -346,9 +481,13 @@ export global Ui {
     callback toggle-fullscreen(string);
     /// De 0 a 100, só do lado de quem ouve. Mexer nele liga o som da tela, e zero desliga.
     callback set-volume(string, float);
+    /// O volume de uma pessoa da voz (pelo id de usuário), de 0 a 2.
+    callback set-person-volume(int, float);
 
     callback toggle-mic();
     callback toggle-deafen();
+    /// A tecla de apertar para falar desceu ou subiu.
+    callback talk(bool);
     // A lista é pedida na hora de abrir o popover: aparelho ligado depois que o app abriu
     // tem de aparecer sem reiniciar nada.
     callback list-microphones();
@@ -357,4 +496,8 @@ export global Ui {
     callback close-settings();
     callback use-microphone(int);
     callback use-speaker(int);
+    /// "open", "voice" ou "ptt", e a sensibilidade.
+    callback set-input-mode(string, int);
+    /// Uma marca de Voz e vídeo: "muteOnJoin", "echoCancel", "noiseSuppress", "autoGain".
+    callback set-voice-flag(string, bool);
 }

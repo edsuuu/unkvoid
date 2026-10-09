@@ -645,7 +645,7 @@ As ações de `unkvoid_app`:
 | `sendMessage` | `{channel, body}` | `{ok, message}` |
 | `editMessage` | `{id, body}` | `{ok, message}` |
 | `deleteMessage` | `{id}` | `{ok}` |
-| `api` | `{name, params, body}` | `{ok, data}`: uma rota do Laravel pelo **nome** (`shared/core/src/routes.rs`): `createServer`, `kickMember`, `putOverwrite`, `friends`, `sendDirect`… `params` preenche o caminho (`{server}`, `{user}`) e pode levar `query`. **Pendente no núcleo** (09/10/2026): `moveInVoice` (`PATCH …/voice/members/{user}`), `readMessages` (`POST …/messages/read`), e tratar `moved` em `session.rs` sem virar `kicked` |
+| `api` | `{name, params, body}` | `{ok, data}`: uma rota do Laravel pelo **nome** (`shared/core/src/routes.rs`): `createServer`, `kickMember`, `putOverwrite`, `friends`, `sendDirect`… `params` preenche o caminho (`{server}`, `{user}`) e pode levar `query`. `moveVoiceMember` (`PATCH …/voice/members/{user}`) e o `moved` em `session.rs` (que não vira `kicked`) já estão no núcleo (09/10/2026); **pendente**: `readMessages` (`POST …/messages/read`) |
 | `upload` | `{name, params, field, files, fields}` | `{ok, data}`: o mesmo, em `multipart` — foto, ícone do servidor, imagens de uma mensagem. `files` são caminhos no disco |
 | `preference`, `setPreference` | `{key}` / `{key, value}` | `{value}` / `{ok}`: o que se guarda em disco, com as chaves do app de hoje (`unkvoid:voice`…). O token não sai por aqui |
 | `keys`, `keyName` | `{accelerator}` / `{code}` | macOS: um atalho (`CmdOrCtrl+Shift+KeyM`) nos códigos do sistema, e o caminho de volta |
@@ -684,6 +684,13 @@ sala aberta não têm canal:
 escreve a frase em português. A exceção é validação: `{invalid: {field, message}}`, que o
 Laravel já devolve em português e sobre o campo digitado. Caminho, endereço e código de
 status ficam no log.
+
+**Movido de canal.** Quando o SFU manda `moved { to, by }` ao peer, o núcleo para a sala e
+avisa `room.session` com `{ "state": "moved", "to": "<ulid>", "by": "<nome>" }` — e **não**
+reconecta sozinho, como em `kicked`. A interface fecha o que ficou aberto sem o toque de
+saída, pede `POST /api/channels/{to}/voice/token` e entra no destino, dizendo "{by} moveu
+você para {canal}". A rota de quem move é `moveVoiceMember` no mapa de rotas
+(`PATCH /api/channels/{channel}/voice/members/{user}` com `{ channel_id }`).
 
 ## App — comandos do Tauri
 

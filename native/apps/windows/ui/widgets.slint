@@ -1,4 +1,4 @@
-import { Icons, Skin } from "skin.slint";
+import { Icons, Skin, Theme } from "skin.slint";
 
 // O vocabulário do desenho. Cada um destes existe porque o CSS já o tinha como classe, e
 // repetir a cadeia de propriedades em cada tela é como as telas começam a divergir.
@@ -412,5 +412,385 @@ export component CodeChip inherits Rectangle {
         font-size: 13px;
         vertical-alignment: center;
         height: parent.height;
+    }
+}
+
+// ---- o vocabulário da réplica do Discord ----
+//
+// Daqui para baixo nada tem vidro: superfícies chapadas do `Theme`, raio 4 ou 8, e a fonte
+// do sistema. O de cima continua para a entrada e a sala por código.
+
+// O rótulo em caixa alta: categoria, grupo de membros, rótulo de campo.
+export component Label inherits Text {
+    color: Theme.ink-dim;
+    font-size: Theme.label-size;
+    font-weight: 600;
+    letter-spacing: 0.24px;
+}
+
+// A hora, o "Online", o subtítulo: 12 em 500.
+export component Meta inherits Text {
+    color: Theme.ink-dim;
+    font-size: Theme.meta-size;
+    font-weight: 500;
+    overflow: elide;
+}
+
+// O botão do Discord: `kind` é "primary" (brand), "danger" (danger-fill), "secondary"
+// (surface-input) ou "text" (só o texto, sublinha no hover).
+export component DButton inherits Rectangle {
+    in property <string> text;
+    in property <string> kind: "primary";
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 38px;
+    min-width: 96px;
+    border-radius: 4px;
+    background: root.kind == "primary"
+        ? (touch.has-hover ? Theme.brand-hover : Theme.brand)
+        : root.kind == "danger"
+            ? (touch.has-hover ? #A12D2F : Theme.danger-fill)
+            : root.kind == "secondary"
+                ? (touch.has-hover ? Theme.selected : Theme.surface-input)
+                : transparent;
+    opacity: root.enabled ? 1.0 : 0.5;
+
+    animate background { duration: 100ms; }
+
+    Text {
+        text: root.text;
+        color: root.kind == "text" ? Theme.ink : Theme.ink-strong;
+        font-size: Theme.button-size;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    if root.kind == "text" && touch.has-hover : Rectangle {
+        y: parent.height - 9px;
+        height: 1px;
+        width: parent.width - 32px;
+        x: 16px;
+        background: Theme.ink;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// O balão do Discord: `surface-float`, 14/600, respiro 8 12, raio 6, na hora.
+export component Tip inherits Rectangle {
+    in property <string> text;
+
+    width: said.preferred-width + 24px;
+    height: 32px;
+    border-radius: 6px;
+    background: Theme.surface-float;
+    drop-shadow-blur: 16px;
+    drop-shadow-offset-y: 8px;
+    drop-shadow-color: #0000003d;
+
+    said := Text {
+        text: root.text;
+        color: Theme.ink;
+        font-size: 14px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// O botão quadrado de ícone: 32 de lado, raio 4, fundo `hover` sob o mouse.
+export component FlatIcon inherits Rectangle {
+    in property <string> commands;
+    in property <length> size: 32px;
+    in property <length> glyph-size: 20px;
+    in property <bool> enabled: true;
+    in property <bool> alert;
+    in property <bool> on;
+    in property <string> hint;
+    in property <bool> filled;
+    callback clicked();
+
+    width: root.size;
+    height: root.size;
+    border-radius: 4px;
+    background: root.on || touch.has-hover ? Theme.hover : transparent;
+    opacity: root.enabled ? 1.0 : 0.4;
+
+    animate background { duration: 100ms; }
+
+    Glyph {
+        commands: root.commands;
+        size: root.glyph-size;
+        filled: root.filled;
+        tint: root.alert ? Theme.danger : (root.on || touch.has-hover ? Theme.ink-strong : Theme.ink-soft);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    if touch.has-hover && root.hint != "" : Tip {
+        text: root.hint;
+        y: -34px;
+        x: (parent.width - self.width) / 2;
+    }
+}
+
+// O interruptor das configurações: 40×24, verde ligado.
+export component Switch inherits Rectangle {
+    in-out property <bool> on;
+    callback toggled(bool);
+
+    width: 40px;
+    height: 24px;
+    border-radius: 12px;
+    background: root.on ? Theme.online : Theme.offline;
+
+    animate background { duration: 150ms; }
+
+    Rectangle {
+        width: 18px;
+        height: 18px;
+        x: root.on ? 19px : 3px;
+        y: 3px;
+        border-radius: 9px;
+        background: #ffffff;
+
+        animate x { duration: 150ms; easing: ease-out; }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.on = !root.on;
+            root.toggled(root.on);
+        }
+    }
+}
+
+// O campo do Discord: `surface-input`, raio 4, 16 de letra, 40 de altura. Serve ao composer
+// e aos modais.
+export component DField inherits VerticalLayout {
+    in property <string> placeholder;
+    in property <string> error;
+    in property <bool> password;
+    in property <bool> enabled: true;
+    in property <length> font-size: 16px;
+    in-out property <string> text <=> input.text;
+    callback accepted();
+    callback edited();
+
+    spacing: 6px;
+    forward-focus: input;
+
+    Rectangle {
+        height: 40px;
+        background: Theme.surface-input;
+        border-radius: 4px;
+        border-width: root.error != "" ? 1px : 0px;
+        border-color: Theme.danger;
+        opacity: root.enabled ? 1.0 : 0.55;
+        clip: true;
+
+        Rectangle {
+            x: 12px;
+            width: parent.width - 24px;
+            clip: true;
+
+            input := TextInput {
+                property <length> shift;
+
+                x: min(0px, max(parent.width - self.width, self.shift));
+                width: max(parent.width, self.preferred-width + 2px);
+                height: parent.height;
+                color: Theme.ink;
+                font-size: root.font-size;
+                single-line: true;
+                enabled: root.enabled;
+                vertical-alignment: center;
+                input-type: root.password ? InputType.password : InputType.text;
+                accepted => { root.accepted(); }
+                edited => { root.edited(); }
+                cursor-position-changed(position) => {
+                    if position.x + self.shift < 0px {
+                        self.shift = -position.x;
+                    } else if position.x + self.shift > parent.width - 2px {
+                        self.shift = parent.width - 2px - position.x;
+                    }
+                }
+            }
+        }
+
+        Text {
+            x: 12px;
+            text: root.placeholder;
+            visible: input.text == "";
+            color: Theme.ink-dim;
+            font-size: root.font-size;
+            vertical-alignment: center;
+        }
+    }
+
+    if root.error != "" : Text {
+        text: root.error;
+        color: Theme.danger;
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+}
+
+// Um item do menu de contexto: 32 de altura, 14/500; no hover, `brand` e texto branco (o
+// de perigo fica em `danger-fill`).
+export component MenuItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> danger;
+    in property <bool> enabled: true;
+    in property <bool> checked;
+    in property <bool> checkable;
+    in property <bool> submenu;
+    callback clicked();
+
+    height: 32px;
+    border-radius: 4px;
+    background: touch.has-hover ? (root.danger ? Theme.danger-fill : Theme.brand) : transparent;
+    opacity: root.enabled ? 1.0 : 0.4;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 8px;
+
+        Text {
+            text: root.text;
+            color: touch.has-hover ? #ffffff : (root.danger ? Theme.danger : Theme.ink-soft);
+            font-size: Theme.button-size;
+            font-weight: 500;
+            horizontal-stretch: 1;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+
+        if root.checkable : Rectangle {
+            width: 18px;
+            height: 18px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 3px;
+            border-width: 1px;
+            border-color: touch.has-hover ? #ffffff : Theme.ink-dim;
+            background: root.checked ? (touch.has-hover ? #ffffff : Theme.brand) : transparent;
+
+            if root.checked : Glyph {
+                commands: Icons.check;
+                size: 12px;
+                tint: touch.has-hover ? Theme.brand : #ffffff;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+
+        if root.submenu : Glyph {
+            commands: Icons.chevron-right;
+            size: 14px;
+            tint: touch.has-hover ? #ffffff : Theme.ink-dim;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component MenuLine inherits Rectangle {
+    height: 9px;
+
+    Rectangle {
+        y: 4px;
+        height: 1px;
+        x: 4px;
+        width: parent.width - 8px;
+        background: Theme.line;
+    }
+}
+
+// A moldura de todo menu: `surface-float`, raio 8, respiro 6 8, 188 no mínimo, sombra.
+export component MenuSheet inherits Rectangle {
+    min-width: 188px;
+    border-radius: 8px;
+    background: Theme.surface-float;
+    drop-shadow-blur: 16px;
+    drop-shadow-offset-y: 8px;
+    drop-shadow-color: #0000003d;
+
+    VerticalLayout {
+        padding-top: 6px;
+        padding-bottom: 6px;
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 2px;
+        alignment: start;
+
+        @children
+    }
+}
+
+// A bolinha de status no canto do avatar: 10 com anel de 3 na cor do fundo. Online é o
+// círculo cheio; offline, o anel vazado.
+export component StatusDot inherits Rectangle {
+    in property <bool> online;
+    in property <color> ring: Theme.surface-side;
+
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    background: root.ring;
+
+    Rectangle {
+        width: 10px;
+        height: 10px;
+        x: 3px;
+        y: 3px;
+        border-radius: 5px;
+        background: root.online ? Theme.online : transparent;
+        border-width: root.online ? 0px : 2px;
+        border-color: Theme.offline;
+    }
+}
+
+// O selo "AO VIVO" do Discord: fundo `live`, raio 4, 11/700 branco.
+export component LivePill inherits Rectangle {
+    callback clicked();
+    in property <bool> clickable;
+
+    width: said.preferred-width + 10px;
+    height: 16px;
+    border-radius: 4px;
+    background: Theme.live;
+
+    said := Text {
+        text: "AO VIVO";
+        color: #ffffff;
+        font-size: 11px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    TouchArea {
+        enabled: root.clickable;
+        mouse-cursor: root.clickable ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
     }
 }

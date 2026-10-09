@@ -1,62 +1,27 @@
 import { ScrollView } from "std-widgets.slint";
-import { Icons, Skin } from "skin.slint";
+import { Icons, Skin, Theme } from "skin.slint";
 import { DeviceRow, Ui } from "state.slint";
-import { Avatar, Glyph, LabelMono, Muted, RowItem } from "widgets.slint";
+import { Avatar, FlatIcon, Glyph, Label, MenuItem, MenuSheet, Meta, StatusDot, Tip } from "widgets.slint";
 
-// Os controles da barra são chapados: sem contorno, o fundo só aparece ao passar o mouse, e
-// o desenho cresce um pouco junto — é o `btn-icon` dessa barra no React e no Mac.
-component BarButton inherits Rectangle {
-    in property <string> commands;
-    in property <bool> enabled: true;
-    in property <bool> alert;
-    in property <bool> open;
-    callback clicked();
-
-    // As medidas que o Mac fixou: 16,5 numa caixa de 28, e escala 1,12 sob o mouse.
-    width: 28px;
-    height: 28px;
-    border-radius: 8px;
-    background: root.open || touch.has-hover ? Skin.row : transparent;
-    opacity: root.enabled ? 1.0 : 0.4;
-
-    Glyph {
-        commands: root.commands;
-        size: touch.has-hover ? 18.5px : 16.5px;
-        tint: root.alert ? Skin.danger : (root.open ? Skin.ink-strong : Skin.ink-icon);
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-
-        animate width, height { duration: 90ms; easing: ease-out; }
-    }
-
-    touch := TouchArea {
-        enabled: root.enabled;
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-}
-
-// A setinha ao lado do botão, como no Mac: ela abre a lista de aparelhos sem depender de
-// estar numa voz para escolher.
+// A setinha ao lado do microfone e do fone: 12 de largura, abre a lista de aparelhos — e
+// vale fora da voz também, para escolher antes de entrar.
 component DeviceArrow inherits Rectangle {
     in property <[DeviceRow]> devices;
     in property <string> heading;
     callback opening();
     callback chosen(int);
 
-    width: 18px;
-    height: 28px;
-    border-radius: 6px;
-    background: touch.has-hover ? Skin.row : transparent;
+    width: 14px;
+    height: 32px;
+    border-radius: 4px;
+    background: touch.has-hover ? Theme.hover : transparent;
 
     Glyph {
         commands: Icons.chevron-down;
-        size: touch.has-hover ? 14px : 12.5px;
-        tint: touch.has-hover ? Skin.ink-strong : Skin.ink-dim;
+        size: 12px;
+        tint: touch.has-hover ? Theme.ink-strong : Theme.ink-dim;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-
-        animate width, height { duration: 90ms; easing: ease-out; }
     }
 
     touch := TouchArea {
@@ -70,284 +35,294 @@ component DeviceArrow inherits Rectangle {
     }
 
     list := PopupWindow {
-        x: -246px;
-        y: -196px;
-        width: 260px;
-        height: 188px;
+        x: -200px;
+        y: -8px - 44px - root.devices.length * 34px;
         close-policy: PopupClosePolicy.close-on-click-outside;
 
-        Rectangle {
-            background: #100d1af5;
-            border-radius: 14px;
-            border-width: 1px;
-            border-color: Skin.line-strong;
+        MenuSheet {
+            width: 240px;
 
-            ScrollView {
+            Label {
+                text: root.heading;
                 x: 8px;
-                y: 8px;
-                width: parent.width - 16px;
-                height: parent.height - 16px;
+                height: 24px;
+                vertical-alignment: center;
+            }
 
-                VerticalLayout {
-                    spacing: 4px;
-                    alignment: start;
+            if root.devices.length == 0 : Meta {
+                text: "Nenhum aparelho encontrado.";
+                x: 8px;
+                height: 32px;
+                vertical-alignment: center;
+            }
 
-                    LabelMono { text: root.heading; }
-
-                    if root.devices.length == 0 : Muted {
-                        text: "Nenhum aparelho encontrado.";
-                    }
-
-                    for device[index] in root.devices : RowItem {
-                        on: device.current;
-                        clicked => {
-                            root.chosen(index);
-                            list.close();
-                        }
-
-                        HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            spacing: 10px;
-
-                            Rectangle {
-                                width: 9px;
-                                height: 9px;
-                                border-radius: 5px;
-                                background: device.current ? Skin.brand : #ffffff33;
-                                y: (parent.height - self.height) / 2;
-                            }
-
-                            Text {
-                                text: device.label;
-                                color: device.current ? Skin.ink-strong : Skin.ink-icon;
-                                font-family: Skin.sans;
-                                font-size: 12.5px;
-                                horizontal-stretch: 1;
-                                overflow: elide;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
+            for device[index] in root.devices : MenuItem {
+                text: device.label;
+                checkable: true;
+                checked: device.current;
+                clicked => {
+                    root.chosen(index);
+                    list.close();
                 }
             }
         }
     }
 }
 
-// O botão largo da voz: metade da linha, como o `wide` do React.
-component WideIcon inherits Rectangle {
-    in property <string> commands;
-    in property <bool> active;
-    callback clicked();
+// O sinal de 4 barrinhas do painel de voz, que o hover explica em milissegundos.
+component Signal inherits Rectangle {
+    width: 16px;
+    height: 16px;
 
-    height: 32px;
-    horizontal-stretch: 1;
-    border-radius: 9px;
-    border-width: 1px;
-    border-color: root.active ? #8a7cf599 : Skin.line-strong;
-    background: root.active
-        ? @linear-gradient(180deg, Skin.brand 0%, Skin.brand-dark 100%)
-        : (touch.has-hover ? Skin.row : #ffffff0d);
+    HorizontalLayout {
+        spacing: 2px;
+        alignment: start;
 
-    Glyph {
-        commands: root.commands;
-        size: 16px;
-        tint: root.active ? Skin.ink-strong : Skin.ink-icon;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        for bar[index] in [4px, 8px, 12px, 16px] : Rectangle {
+            width: 2.5px;
+            height: bar;
+            y: parent.height - self.height;
+            border-radius: 1px;
+            background: Ui.ping-bars > index
+                ? (Ui.ping-bars >= 4 ? Theme.online : (Ui.ping-bars == 3 ? Theme.idle : (Ui.ping-bars == 2 ? #FB923C : Theme.danger)))
+                : Theme.ink-ghost;
+        }
     }
 
-    touch := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+    touch := TouchArea { }
+
+    if touch.has-hover : Tip {
+        text: Ui.ping-ms < 0 ? "Medindo…" : Ui.ping;
+        y: -36px;
+        x: 8px - self.width / 2;
     }
 }
 
-// A barra de baixo: quem é você, o microfone, o som e a engrenagem — os mesmos controles do
-// `VoicePanel` do React, na ordem do Mac.
-export component UserBar inherits Rectangle {
-    property <bool> in-voice: Ui.voice-channel != "";
-
+// O painel de voz acima da barra: `surface-panel`, borda de cima em `line`, respiro 8.
+component VoicePanel inherits Rectangle {
     height: sheet.preferred-height;
-    background: #ffffff08;
-    border-radius: 14px;
-    border-width: 1px;
-    border-color: Skin.line;
+    background: Theme.surface-panel;
+
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.line;
+    }
 
     sheet := VerticalLayout {
-        padding: 12px;
-        spacing: 10px;
+        padding: 8px;
+        spacing: 8px;
 
-        // O bloco da voz: só existe dentro de um canal de voz, e é o que o React mostra
-        // em cima da linha de quem você é.
-        if root.in-voice : VerticalLayout {
-            // O `animate-rise` do React: o bloco da voz aparece quando se entra no canal.
-            property <bool> shown;
+        HorizontalLayout {
+            spacing: 8px;
 
-            spacing: 10px;
-            opacity: shown ? 1.0 : 0.0;
-            init => { shown = true; }
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                horizontal-stretch: 1;
 
-            animate opacity { duration: 220ms; easing: ease-out; }
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
 
-            HorizontalLayout {
-                spacing: 10px;
-
-                // O sinal muda de cor com a latência, como no React: verde até 150 ms,
-                // lilás acima disso, apagado enquanto o primeiro não voltou.
-                Rectangle {
-                    width: 15px;
-                    height: 15px;
-                    y: (parent.height - self.height) / 2;
-
-                    Glyph {
-                        commands: Icons.signal;
-                        size: 15px;
-                        tint: Ui.ping-ms < 0
-                            ? Skin.ink-dim
-                            : (Ui.ping-ms > 150 ? Skin.lilac : Skin.online);
+                    Signal {
+                        y: (parent.height - self.height) / 2;
                     }
-
-                    signal-touch := TouchArea { }
-
-                    // O balão do `title` do React: a ida e volta até o servidor de mídia.
-                    Rectangle {
-                        visible: signal-touch.has-hover;
-                        x: 0;
-                        y: -30px;
-                        width: said.preferred-width + 20px;
-                        height: 24px;
-                        border-radius: 8px;
-                        border-width: 1px;
-                        border-color: Skin.line-strong;
-                        background: #100d1afa;
-
-                        said := Text {
-                            text: Ui.ping-ms < 0
-                                ? "Medindo a ida e volta até o servidor de mídia"
-                                : Ui.ping + " até o servidor de mídia";
-                            color: Skin.ink-icon;
-                            font-family: Skin.sans;
-                            font-size: 11.5px;
-                            x: 10px;
-                            y: (parent.height - self.height) / 2;
-                        }
-                    }
-                }
-
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 2px;
-                    horizontal-stretch: 1;
 
                     Text {
-                        text: "Voz conectada";
-                        color: Skin.online;
-                        font-family: Skin.sans;
-                        font-size: 13px;
+                        text: Ui.voice-state == "connected"
+                            ? "Voz conectada"
+                            : (Ui.voice-state == "reconnecting" ? "Reconectando…" : "Conectando…");
+                        color: Ui.voice-state == "connected" ? Theme.online : Theme.idle;
+                        font-size: 14px;
                         font-weight: 600;
-                        overflow: elide;
-                    }
-
-                    Text {
-                        text: Ui.voice-name;
-                        color: Skin.ink-dim;
-                        font-family: Skin.mono;
-                        font-size: 10.5px;
-                        overflow: elide;
+                        vertical-alignment: center;
                     }
                 }
 
-                BarButton {
-                    commands: Icons.phone-off;
-                    alert: true;
-                    y: (parent.height - self.height) / 2;
-                    clicked => { Ui.leave-voice(); }
+                Rectangle {
+                    height: 16px;
+
+                    Meta {
+                        text: Ui.voice-name + " / " + Ui.server-name;
+                        width: parent.width;
+                        height: parent.height;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Ui.stage-open = true; }
+                    }
                 }
             }
 
-            HorizontalLayout {
-                spacing: 6px;
-
-                WideIcon {
-                    commands: Icons.camera;
-                    clicked => { Ui.toggle-camera(); }
-                }
-
-                WideIcon {
-                    commands: Icons.screen;
-                    active: Ui.sharing;
-                    clicked => { Ui.open-share(); }
-                }
-            }
-
-            Rectangle {
-                height: 1px;
-                background: Skin.line;
+            FlatIcon {
+                commands: Icons.phone-off;
+                filled: true;
+                hint: "Desconectar";
+                alert: true;
+                y: (parent.height - self.height) / 2;
+                clicked => { Ui.leave-voice(); }
             }
         }
 
         HorizontalLayout {
             spacing: 8px;
 
-            // O rosto de quem está logado, com o anel verde enquanto se fala.
+            // ponytail: a câmera no Windows ainda não existe (o `capture` não abre webcam
+            // fora do macOS). O botão fica, desabilitado, com o porquê no balão.
             Rectangle {
-                width: 30px;
-                height: 30px;
+                height: 32px;
+                horizontal-stretch: 1;
+                border-radius: 4px;
+                background: camera.has-hover ? Theme.selected : Theme.hover;
+                opacity: 0.5;
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
+
+                    Glyph {
+                        commands: Icons.camera;
+                        size: 18px;
+                        tint: Theme.ink-soft;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Text {
+                        text: "Câmera";
+                        color: Theme.ink;
+                        font-size: 14px;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                    }
+                }
+
+                camera := TouchArea {
+                    clicked => { Ui.toggle-camera(); }
+                }
+
+                if camera.has-hover : Tip {
+                    text: "A câmera ainda não está ligada nesta versão";
+                    y: -36px;
+                    x: (parent.width - self.width) / 2;
+                }
+            }
+
+            Rectangle {
+                height: 32px;
+                horizontal-stretch: 1;
+                border-radius: 4px;
+                background: screen.has-hover ? Theme.selected : Theme.hover;
+                opacity: Ui.can-share ? 1.0 : 0.5;
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
+
+                    Glyph {
+                        commands: Icons.screen;
+                        size: 18px;
+                        tint: Ui.sharing ? Theme.online : Theme.ink-soft;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Text {
+                        text: Ui.sharing ? "Parar" : "Tela";
+                        color: Theme.ink;
+                        font-size: 14px;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                    }
+                }
+
+                screen := TouchArea {
+                    enabled: Ui.can-share;
+                    mouse-cursor: pointer;
+                    clicked => { Ui.toggle-share(); }
+                }
+
+                if screen.has-hover && !Ui.can-share : Tip {
+                    text: "Você não tem permissão para compartilhar a tela aqui";
+                    y: -36px;
+                    x: (parent.width - self.width) / 2;
+                }
+            }
+        }
+    }
+}
+
+// A barra de baixo: 52 de altura, `surface-panel`; avatar 32 com a bolinha, o nome em
+// 14/600, "Online" em 12, e os três botões de 32 com as setinhas de aparelho.
+export component UserBar inherits VerticalLayout {
+    if Ui.voice-channel != "" : VoicePanel { }
+
+    Rectangle {
+        height: Theme.user-bar;
+        background: Theme.surface-panel;
+
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 2px;
+
+            Rectangle {
+                width: 32px;
+                height: 32px;
                 y: (parent.height - self.height) / 2;
 
                 Avatar {
                     letter: Ui.user-initial;
-                    size: 30px;
+                    size: 32px;
                     mine: Ui.signed-in;
                 }
 
                 Rectangle {
                     x: -2px;
                     y: -2px;
-                    width: 34px;
-                    height: 34px;
-                    border-radius: 17px;
+                    width: 36px;
+                    height: 36px;
+                    border-radius: 18px;
                     border-width: 2px;
-                    border-color: Skin.online;
+                    border-color: Theme.online;
                     opacity: Ui.speaking ? 1.0 : 0.0;
 
                     animate opacity { duration: 120ms; easing: ease-out; }
                 }
+
+                StatusDot {
+                    online: true;
+                    ring: Theme.surface-panel;
+                    x: 20px;
+                    y: 20px;
+                }
             }
 
-            Rectangle { width: 2px; }
+            Rectangle { width: 6px; }
 
             VerticalLayout {
                 alignment: center;
-                spacing: 1px;
+                spacing: 0px;
+                horizontal-stretch: 1;
 
                 Text {
                     text: Ui.user-name == "" ? "Sem conta" : Ui.user-name;
-                    color: Skin.ink-strong;
-                    font-family: Skin.sans;
-                    font-size: 12.5px;
+                    color: Theme.ink-strong;
+                    font-size: 14px;
                     font-weight: 600;
                     overflow: elide;
                 }
 
-                // Sempre "Online": o estado do microfone já está no botão, e escrevê-lo
-                // duas vezes só dava chance de as duas linhas discordarem.
-                Text {
-                    text: "Online";
-                    color: Skin.ink-dim;
-                    font-family: Skin.sans;
-                    font-size: 10.5px;
-                    overflow: elide;
-                }
+                // Sempre "Online": o estado do microfone já está no botão.
+                Meta { text: "Online"; }
             }
 
-            Rectangle { horizontal-stretch: 1; }
-
-            BarButton {
+            FlatIcon {
                 commands: Ui.mic-on ? Icons.mic : Icons.mic-off;
                 alert: !Ui.mic-on;
+                enabled: Ui.can-speak;
+                hint: Ui.can-speak ? (Ui.mic-on ? "Mutar" : "Desmutar") : "Mutado pelo servidor";
                 y: (parent.height - self.height) / 2;
                 clicked => { Ui.toggle-mic(); }
             }
@@ -360,11 +335,10 @@ export component UserBar inherits Rectangle {
                 chosen(index) => { Ui.use-microphone(index); }
             }
 
-            Rectangle { width: 2px; }
-
-            BarButton {
+            FlatIcon {
                 commands: Ui.deafened ? Icons.headphones-off : Icons.headphones;
                 alert: Ui.deafened;
+                hint: Ui.deafened ? "Voltar a ouvir" : "Ensurdecer";
                 y: (parent.height - self.height) / 2;
                 clicked => { Ui.toggle-deafen(); }
             }
@@ -377,11 +351,10 @@ export component UserBar inherits Rectangle {
                 chosen(index) => { Ui.use-speaker(index); }
             }
 
-            Rectangle { width: 2px; }
-
-            BarButton {
+            FlatIcon {
                 commands: Icons.gear;
-                open: Ui.settings-open;
+                on: Ui.settings-open;
+                hint: "Configurações de usuário";
                 y: (parent.height - self.height) / 2;
                 clicked => {
                     Ui.settings-tab = "account";

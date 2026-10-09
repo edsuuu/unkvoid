@@ -19,6 +19,8 @@ use core_app::models::{
     Channel, ChannelKind, Conversation, DirectMessage, Friendship, FriendshipStatus, Person, RoomIdentity,
     ServerSummary, ServerTree, User, VoicePerson,
 };
+use core_app::permissions::{self, MemberActions};
+use core_app::sharing::InputMode;
 use core_app::realtime::{self, Realtime, Reading};
 use core_app::reconnect::Backoff;
 use core_app::resume::{self, Resume, VoiceSeat};
@@ -33,8 +35,8 @@ use crate::sound::{Microphone, Speaker};
 use crate::stage::{Stage, Voice, peers_of};
 use crate::watching::Watch;
 use crate::{
-    AppWindow, ChannelRow, ConversationRow, DeviceRow, FriendRow, MemberGroupRow, MemberRow, MessageRow, PeerRow,
-    ServerRow, TileRow, ToastRow, Ui, VoicePersonRow,
+    ActionsRow, AppWindow, AuditRow, BanRow, ChannelRow, ConversationRow, DeviceRow, FriendRow, MemberGroupRow,
+    MemberRow, MessageRow, PeerRow, PermissionRow, RoleRow, ServerRow, TileRow, ToastRow, Ui, VoicePersonRow,
 };
 
 /// Os avisos na tela, e o número do próximo.
@@ -118,6 +120,8 @@ pub struct Bridge {
     followed: Arc<Mutex<BTreeSet<String>>>,
     /// Quem está online no servidor aberto.
     online: Arc<Mutex<HashSet<i64>>>,
+    /// O que o "tem certeza?" vai fazer quando a pessoa confirmar: a ação e o id.
+    pending: Arc<Mutex<Option<(String, i64)>>>,
     toasts: Toasts,
     /// A versão nova já baixada e conferida, com o número dela: o que o botão verde instala.
     installer: Arc<Mutex<Option<(PathBuf, String)>>>,
@@ -128,6 +132,31 @@ pub struct Bridge {
     /// O servidor do canal de voz em que se está: é ele que a tela abre ao voltar.
     voice_server: Arc<Mutex<Option<i64>>>,
 }
+
+/// A preferência de voz guardada (`unkvoid:voice`), a mesma chave do app de hoje.
+const VOICE_KEY: &str = "unkvoid:voice";
+
+/// Os bits de permissão na ordem da tela de cargos, com o nome em português.
+const PERMISSIONS: &[(i64, &str)] = &[
+    (permissions::ADMINISTRATOR, "Administrador"),
+    (permissions::MANAGE_SERVER, "Gerenciar servidor"),
+    (permissions::MANAGE_ROLES, "Gerenciar cargos"),
+    (permissions::MANAGE_CHANNELS, "Gerenciar canais"),
+    (permissions::KICK_MEMBERS, "Expulsar membros"),
+    (permissions::BAN_MEMBERS, "Banir membros"),
+    (permissions::CREATE_INVITE, "Criar convite"),
+    (permissions::VIEW_AUDIT_LOG, "Ver registro de auditoria"),
+    (permissions::VIEW_CHANNEL, "Ver canais"),
+    (permissions::SEND_MESSAGES, "Enviar mensagens"),
+    (permissions::MANAGE_MESSAGES, "Gerenciar mensagens"),
+    (permissions::CONNECT, "Conectar à voz"),
+    (permissions::SPEAK, "Falar"),
+    (permissions::STREAM, "Compartilhar tela"),
+    (permissions::VIDEO, "Câmera"),
+    (permissions::MUTE_MEMBERS, "Mutar membros"),
+    (permissions::DEAFEN_MEMBERS, "Ensurdecer membros"),
+    (permissions::MOVE_MEMBERS, "Mover e desconectar membros"),
+];
 
 impl Bridge {
     pub fn new(window: Weak<AppWindow>) -> anyhow::Result<Rc<Self>> {
@@ -170,6 +199,7 @@ impl Bridge {
             live: Arc::default(),
             followed: Arc::default(),
             online: Arc::default(),
+            pending: Arc::default(),
             toasts: Arc::default(),
             installer: Arc::default(),
             resumed: Arc::default(),
@@ -704,6 +734,157 @@ impl Bridge {
 
             move || bridge.resume_session()
         });
+
+        ui.on_open_modal({
+            let bridge = self.clone();
+
+            move |kind, index| bridge.open_modal(&kind, index)
+        });
+
+        ui.on_ask({
+            let bridge = self.clone();
+
+            move |action, id| bridge.ask(&action, id)
+        });
+
+        ui.on_confirm({
+            let bridge = self.clone();
+
+            move || bridge.confirm()
+        });
+
+        ui.on_rename_server({
+            let bridge = self.clone();
+
+            move |name| bridge.manage("updateServer", serde_json::json!({ "name": name.trim() }), serde_json::json!({}), None)
+        });
+
+        ui.on_regenerate_invite({
+            let bridge = self.clone();
+
+            move || bridge.regenerate_invite()
+        });
+
+        ui.on_update_channel({
+            let bridge = self.clone();
+
+            move |index, name, topic, limit| bridge.update_channel(index, &name, &topic, limit)
+        });
+
+        ui.on_open_server_settings({
+            let bridge = self.clone();
+
+            move |tab| bridge.open_server_settings(&tab)
+        });
+
+        ui.on_select_role({
+            let bridge = self.clone();
+
+            move |index| bridge.select_role(index)
+        });
+
+        ui.on_create_role({
+            let bridge = self.clone();
+
+            move |name| {
+                let name = name.trim().to_owned();
+
+                if !name.is_empty() {
+                    bridge.manage("createRole", serde_json::json!({ "name": name, "permissions": 0 }), serde_json::json!({}), None);
+                }
+            }
+        });
+
+        ui.on_delete_role({
+            let bridge = self.clone();
+
+            move |role| bridge.manage("deleteRole", serde_json::Value::Null, serde_json::json!({ "role": role }), None)
+        });
+
+        ui.on_toggle_permission({
+            let bridge = self.clone();
+
+            move |bit| bridge.toggle_permission(bit)
+        });
+
+        ui.on_unban({
+            let bridge = self.clone();
+
+            move |user| bridge.manage("unban", serde_json::Value::Null, serde_json::json!({ "user": user }), None)
+        });
+
+        ui.on_server_mute({
+            let bridge = self.clone();
+
+            move |user, muted| {
+                bridge.manage("updateMember", serde_json::json!({ "server_mute": muted }), serde_json::json!({ "user": user }), None);
+            }
+        });
+
+        ui.on_disconnect_voice({
+            let bridge = self.clone();
+
+            move |user| bridge.move_voice(user, None)
+        });
+
+        ui.on_move_voice({
+            let bridge = self.clone();
+
+            move |user, index| bridge.move_voice(user, Some(index))
+        });
+
+        ui.on_message_user({
+            let bridge = self.clone();
+
+            move |user, name| {
+                bridge.show_hub_home();
+                bridge.talk_with(Person { id: i64::from(user), name: name.to_string(), avatar_url: None });
+            }
+        });
+
+        ui.on_mute_person({
+            let bridge = self.clone();
+
+            move |user, muted| bridge.mute_person(i64::from(user), muted)
+        });
+
+        ui.on_set_person_volume({
+            let bridge = self.clone();
+
+            move |user, level| {
+                let microphone = lock(&bridge.voice).microphone_of(i64::from(user));
+
+                // ponytail: o `Speaker` de hoje corta em 100%; os 200% do Discord chegam
+                // com o `Playout` do núcleo, que ganha o volume por pessoa.
+                if let (Some(microphone), Some(watch)) = (microphone, lock(&bridge.watch).as_ref()) {
+                    watch.speaker().set_volume(&microphone, level.min(1.0));
+                }
+            }
+        });
+
+        ui.on_set_input_mode({
+            let bridge = self.clone();
+
+            move |mode, sensitivity| bridge.set_input_mode(&mode, i64::from(sensitivity))
+        });
+
+        ui.on_set_voice_flag({
+            let bridge = self.clone();
+
+            move |key, on| bridge.set_voice_flag(&key, on)
+        });
+
+        ui.on_talk({
+            let bridge = self.clone();
+
+            move |talking| {
+                if let Some(room) = lock(&bridge.room).clone() {
+                    room.talk(talking);
+                }
+            }
+        });
+
+        self.paint_voice_preferences();
     }
 
     /// A abertura: o servidor responde? Onde fica o SFU? O token guardado ainda vale? Aberto,
@@ -1167,6 +1348,7 @@ impl Bridge {
                 return;
             }
             "room.notice" => return self.notify(data["text"].as_str().unwrap_or_default(), false),
+            "room.moved" => return self.moved(data),
             _ => {}
         }
 
@@ -1249,7 +1431,9 @@ impl Bridge {
         let owned = channel.to_owned();
 
         if lock(&self.reading).as_deref() == Some(channel) {
-            self.spawn(async move { read_channel(&api, &window, &owned, mine).await });
+            let tree = self.tree();
+
+            self.spawn(async move { read_channel(&api, &window, &owned, mine, tree).await });
 
             return;
         }
@@ -1264,7 +1448,9 @@ impl Bridge {
         let ui = app.global::<Ui>();
 
         if ui.get_voice_chat_open() {
-            self.spawn(async move { read_voice_chat(&api, &window, &owned, mine).await });
+            let tree = self.tree();
+
+            self.spawn(async move { read_voice_chat(&api, &window, &owned, mine, tree).await });
         } else if unread {
             ui.set_voice_chat_unread(ui.get_voice_chat_unread() + 1);
         }
@@ -1398,6 +1584,7 @@ impl Bridge {
             known: self.servers.clone(),
             me: *lock(&self.me),
             online: self.online.clone(),
+            voice: self.voice.clone(),
         }
     }
 
@@ -1478,22 +1665,25 @@ impl Bridge {
         let (id, name) = (channel.id.clone(), channel.name.clone());
         let (chosen, mine) = (index as usize, *lock(&self.me));
 
-        let tree = lock(&self.opened).and_then(|server| self.api.known_tree(server));
-        let voice_people = tree.map(|tree| tree.voice).unwrap_or_default();
+        let tree = self.tree();
         let listed = lock(&self.channels).clone();
+        let topic = channel.topic.clone().unwrap_or_default();
 
         paint(&window, move |app| {
             let ui = app.global::<Ui>();
-            let (text, voice) = split_channels(&listed, Some(chosen), &voice_people, mine);
+            let (text, voice) = split_channels(&listed, Some(chosen), tree.as_ref(), mine);
 
             ui.set_text_channels(model(text));
             ui.set_voice_channels(model(voice));
-            ui.set_channel_name(format!("# {name}").into());
+            ui.set_channel_name(name.into());
+            ui.set_channel_topic(topic.into());
         });
+
+        let tree = self.tree();
 
         self.follow();
         self.spawn(async move {
-            read_channel(&api, &window, &id, mine).await;
+            read_channel(&api, &window, &id, mine, tree).await;
         });
     }
 
@@ -1511,6 +1701,8 @@ impl Bridge {
             return;
         }
 
+        let tree = self.tree();
+
         self.spawn(async move {
             if let Err(failure) = api.edit_message(i64::from(id), &body).await {
                 complain(&window, said(&failure));
@@ -1518,7 +1710,7 @@ impl Bridge {
                 return;
             }
 
-            read_channel(&api, &window, &channel, mine).await;
+            read_channel(&api, &window, &channel, mine, tree).await;
         });
     }
 
@@ -1530,6 +1722,8 @@ impl Bridge {
         let (api, window) = (self.api.clone(), self.window.clone());
         let mine = *lock(&self.me);
 
+        let tree = self.tree();
+
         self.spawn(async move {
             if let Err(failure) = api.delete_message(i64::from(id)).await {
                 complain(&window, said(&failure));
@@ -1537,7 +1731,7 @@ impl Bridge {
                 return;
             }
 
-            read_channel(&api, &window, &channel, mine).await;
+            read_channel(&api, &window, &channel, mine, tree).await;
         });
     }
 
@@ -1555,6 +1749,8 @@ impl Bridge {
         let (api, window, body) = (self.api.clone(), self.window.clone(), body.to_owned());
         let mine = *lock(&self.me);
 
+        let tree = self.tree();
+
         self.spawn(async move {
             if let Err(failure) = api.send_message(&channel, &body).await {
                 complain(&window, said(&failure));
@@ -1564,7 +1760,7 @@ impl Bridge {
 
             // Reler o canal em vez de emendar a mensagem na lista: o que aparece é o que o
             // servidor gravou, e não o que este app achou que mandou.
-            read_channel(&api, &window, &channel, mine).await;
+            read_channel(&api, &window, &channel, mine, tree).await;
         });
     }
 
@@ -1596,6 +1792,18 @@ impl Bridge {
         *lock(&self.voice_channel) = Some(id.to_owned());
         *lock(&self.voice_server) = *lock(&self.opened);
         self.follow();
+
+        // O clique vale na hora: o canal se marca e o painel diz "Conectando…" enquanto o
+        // token, o SFU e o microfone acontecem por trás.
+        let (shown_id, shown_name) = (id.to_owned(), name.to_owned());
+
+        paint(&self.window, move |app| {
+            let ui = app.global::<Ui>();
+
+            ui.set_voice_channel(shown_id.into());
+            ui.set_voice_name(shown_name.into());
+            ui.set_voice_state("connecting".into());
+        });
         self.connect(Ok(id.to_owned()), Some(id.to_owned()), Some(name.to_owned()));
     }
 
@@ -1615,9 +1823,9 @@ impl Bridge {
         }
 
         if let (true, Some(channel)) = (open, lock(&self.voice_channel).clone()) {
-            let (api, window, mine) = (self.api.clone(), self.window.clone(), *lock(&self.me));
+            let (api, window, mine, tree) = (self.api.clone(), self.window.clone(), *lock(&self.me), self.tree());
 
-            self.spawn(async move { read_voice_chat(&api, &window, &channel, mine).await });
+            self.spawn(async move { read_voice_chat(&api, &window, &channel, mine, tree).await });
         }
     }
 
@@ -1633,6 +1841,8 @@ impl Bridge {
         let (api, window, body) = (self.api.clone(), self.window.clone(), body.to_owned());
         let mine = *lock(&self.me);
 
+        let tree = self.tree();
+
         self.spawn(async move {
             if let Err(failure) = api.send_message(&channel, &body).await {
                 complain(&window, said(&failure));
@@ -1640,7 +1850,7 @@ impl Bridge {
                 return;
             }
 
-            read_voice_chat(&api, &window, &channel, mine).await;
+            read_voice_chat(&api, &window, &channel, mine, tree).await;
         });
     }
 
@@ -1679,8 +1889,8 @@ impl Bridge {
 
             ui.set_voice_channel(SharedString::new());
             ui.set_voice_name(SharedString::new());
+            ui.set_voice_state(SharedString::new());
             ui.set_stage_open(false);
-            ui.set_focused_room(false);
             ui.set_voice_chat_open(false);
             ui.set_voice_chat_unread(0);
             ui.set_voice_messages(ModelRc::default());
@@ -1896,6 +2106,7 @@ impl Bridge {
         // Tirada já: se esta entrada falhar, a próxima que a pessoa fizer à mão não pode sair
         // transmitindo sozinha.
         let resumed_share = lock(&self.resumed_share).take();
+        let (voice_channel, input_mode) = (self.voice_channel.clone(), self.input_mode());
 
         // Da escolha do canal até o microfone abrir, o botão não pinta mudo.
         lock(&voice).opening = in_voice;
@@ -1930,6 +2141,17 @@ impl Bridge {
                     let reason = sentence(Failure::from_error(&failure));
 
                     complain(&window, format!("Não deu para entrar na sala. {reason}"));
+
+                    // A entrada falhou: a pessoa sai da lista do canal, como entrou.
+                    if in_voice {
+                        *lock(&voice_channel) = None;
+                        paint(&window, |app| {
+                            let ui = app.global::<Ui>();
+
+                            ui.set_voice_channel(SharedString::new());
+                            ui.set_voice_state(SharedString::new());
+                        });
+                    }
 
                     return;
                 }
@@ -2019,6 +2241,7 @@ impl Bridge {
                     Some(name) => {
                         ui.set_voice_channel(code.clone().into());
                         ui.set_voice_name(name.into());
+                        ui.set_voice_state("connected".into());
                         ui.set_stage_open(true);
                     }
                     None => {
@@ -2032,7 +2255,7 @@ impl Bridge {
 
             // Entrar na voz abre o microfone, como no Mac e no React: quem entra já é ouvido.
             if in_voice {
-                open_microphone(opened.clone(), microphone, voice.clone(), window.clone(), microphone_device).await;
+                open_microphone(opened.clone(), microphone, voice.clone(), window.clone(), microphone_device, input_mode).await;
             }
 
             lock(&voice).opening = false;
@@ -2077,6 +2300,25 @@ impl Bridge {
         });
 
         let window = self.window.clone();
+
+        // Com o portal do Wayland quem escolhe a tela ou a janela é o sistema, ao confirmar:
+        // não há o que listar nem prévia que tirar, e o seletor mostra só as opções.
+        if capture::uses_system_picker() {
+            paint(&self.window, |app| {
+                let ui = app.global::<Ui>();
+                let system = Source {
+                    value: "display:0".into(),
+                    label: "A tela ou a janela que você escolher".into(),
+                    detail: "O sistema abre o seletor ao confirmar".into(),
+                };
+
+                ui.set_share_source(system.value.clone().into());
+                ui.set_share_displays(model(vec![system.row()]));
+                ui.set_share_loading(false);
+            });
+
+            return;
+        }
 
         std::thread::spawn(move || {
             let listed = core_app::sharing::displays().unwrap_or_else(|failure| {
@@ -2168,14 +2410,35 @@ impl Bridge {
                 (live.capture_audio, live.mute_listed_apps) == (recipe.capture_audio, recipe.mute_listed_apps)
             });
 
+            // No Wayland a fonte é a que o seletor do sistema deu: trocar só a qualidade vale
+            // com a tela no ar; trocar de tela é parar e começar de novo, que reabre o seletor.
+            let source = (!capture::uses_system_picker()).then_some(recipe.source);
             let started = if same_sound {
-                room.change_quality(recipe.quality, recipe.frame_rate, Some(recipe.source)).await
+                room.change_quality(recipe.quality, recipe.frame_rate, source).await
             } else {
                 if live.is_some() {
                     room.stop_sharing().await;
                 }
 
-                room.share(recipe).await
+                // O seletor do sistema (o portal do Wayland) abre aqui, antes da captura, e
+                // espera a pessoa escolher — por isso fora do laço do Tokio. No X11, no Windows
+                // e no macOS é uma chamada vazia.
+                let prepared = match tokio::task::block_in_place(|| capture::prepare(&recipe)) {
+                    Ok(prepared) => prepared,
+                    Err(failure) => {
+                        tracing::warn!(%failure, "o seletor de tela não abriu");
+                        complain(&window, "Não deu para escolher a tela.");
+
+                        return;
+                    }
+                };
+                let shared = room.share(recipe).await;
+
+                // A captura consumiu a sessão escolhida; largá-la antes fecharia o que o seletor
+                // abriu, e o sistema ficaria dizendo que a tela está sendo compartilhada.
+                drop(prepared);
+
+                shared
             };
 
             if let Err(failure) = started {
@@ -2212,13 +2475,13 @@ impl Bridge {
         }
 
         let (cell, voice, window) = (self.microphone.clone(), self.voice.clone(), self.window.clone());
-        let device = lock(&self.chosen).0.clone();
+        let (device, input_mode) = (lock(&self.chosen).0.clone(), self.input_mode());
 
         lock(&voice).opening = true;
         paint_voice(&window, &voice);
 
         self.spawn(async move {
-            open_microphone(room, cell, voice.clone(), window.clone(), device).await;
+            open_microphone(room, cell, voice.clone(), window.clone(), device, input_mode).await;
 
             lock(&voice).opening = false;
             paint_voice(&window, &voice);
@@ -2239,6 +2502,428 @@ impl Bridge {
         }
 
         paint_voice(&self.window, &self.voice);
+    }
+
+    /// A árvore do servidor aberto, como o núcleo a guardou.
+    fn tree(&self) -> Option<ServerTree> {
+        lock(&self.opened).and_then(|server| self.api.known_tree(server))
+    }
+
+    fn voice_preference(&self) -> serde_json::Value {
+        self.core.preference(VOICE_KEY).unwrap_or(serde_json::Value::Null)
+    }
+
+    /// O modo do microfone guardado: detecção de voz com a sensibilidade, apertar para
+    /// falar, ou sempre aberto. É o núcleo (`InputMode`) que fecha e abre o microfone.
+    fn input_mode(&self) -> InputMode {
+        let voice = self.voice_preference();
+
+        InputMode::parse(voice["mode"].as_str().unwrap_or("open"), voice["sensitivity"].as_u64().unwrap_or(35))
+    }
+
+    /// Voz e vídeo na tela, a partir do que está guardado.
+    fn paint_voice_preferences(self: &Rc<Self>) {
+        let voice = self.voice_preference();
+        let flag = |key: &str, default: bool| voice[key].as_bool().unwrap_or(default);
+        let mode = voice["mode"].as_str().unwrap_or("open").to_owned();
+        let sensitivity = i32::try_from(voice["sensitivity"].as_i64().unwrap_or(35)).unwrap_or(35);
+        let (mute_on_join, echo, noise, gain) =
+            (flag("muteOnJoin", false), flag("echoCancel", true), flag("noiseSuppress", true), flag("autoGain", true));
+
+        lock(&self.voice).mute_on_join = mute_on_join;
+
+        paint(&self.window, move |app| {
+            let ui = app.global::<Ui>();
+
+            ui.set_input_mode(mode.into());
+            ui.set_sensitivity(sensitivity);
+            ui.set_mute_on_join(mute_on_join);
+            ui.set_echo_cancel(echo);
+            ui.set_noise_suppress(noise);
+            ui.set_auto_gain(gain);
+        });
+    }
+
+    fn save_voice(self: &Rc<Self>, change: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>)) {
+        let mut voice = self.voice_preference();
+
+        if !voice.is_object() {
+            voice = serde_json::json!({});
+        }
+
+        if let Some(fields) = voice.as_object_mut() {
+            change(fields);
+        }
+
+        self.core.set_preference(VOICE_KEY, voice);
+        self.paint_voice_preferences();
+    }
+
+    fn set_input_mode(self: &Rc<Self>, mode: &str, sensitivity: i64) {
+        let mode = mode.to_owned();
+
+        self.save_voice(move |voice| {
+            voice.insert("mode".into(), mode.into());
+            voice.insert("sensitivity".into(), sensitivity.clamp(0, 100).into());
+        });
+
+        if let Some(room) = lock(&self.room).clone() {
+            room.set_input_mode(self.input_mode());
+        }
+    }
+
+    // ponytail: "echoCancel", "noiseSuppress" e "autoGain" só ficam guardadas até o
+    // `VoiceProcessor` do `shared/media` ler a preferência; a chave já é a dele.
+    fn set_voice_flag(self: &Rc<Self>, key: &str, on: bool) {
+        let key = key.to_owned();
+
+        self.save_voice(move |voice| {
+            voice.insert(key, on.into());
+        });
+    }
+
+    /// Abre um modal. Os de canal levam o canal clicado para os campos.
+    fn open_modal(self: &Rc<Self>, kind: &str, index: i32) {
+        let (kind, channel) = (kind.to_owned(), at(&self.channels, index));
+
+        paint(&self.window, move |app| {
+            let ui = app.global::<Ui>();
+
+            match &channel {
+                Some(channel) => {
+                    ui.set_modal_channel_index(index);
+                    ui.set_modal_channel_name(channel.name.clone().into());
+                    ui.set_modal_channel_topic(channel.topic.clone().unwrap_or_default().into());
+                    ui.set_modal_channel_limit(i32::try_from(channel.user_limit.unwrap_or(0)).unwrap_or(0));
+                    ui.set_modal_channel_voice(channel.kind == ChannelKind::Voice);
+                }
+                None => {
+                    ui.set_modal_channel_index(-1);
+                    ui.set_modal_channel_voice(false);
+                }
+            }
+
+            ui.set_modal(kind.into());
+        });
+    }
+
+    /// O "tem certeza?" antes do que não volta. A frase é montada aqui; o que fazer fica
+    /// guardado para o `confirm`.
+    fn ask(self: &Rc<Self>, action: &str, id: i32) {
+        let server = self.tree().map(|tree| tree.name).unwrap_or_default();
+        let person = self.member_name(i64::from(id));
+        let channel = at(&self.channels, id).map(|channel| channel.name).unwrap_or_default();
+        let (title, text, button) = match action {
+            "delete-channel" => (
+                format!("Excluir #{channel}"),
+                format!("Tem certeza de que quer excluir #{channel}? Isso não pode ser desfeito."),
+                "Excluir canal",
+            ),
+            "delete-server" => (
+                "Excluir servidor".to_owned(),
+                format!("Tem certeza de que quer excluir {server}? Isso não pode ser desfeito."),
+                "Excluir servidor",
+            ),
+            "leave-server" => (
+                format!("Sair de {server}"),
+                format!("Tem certeza de que quer sair de {server}? Para voltar, vai precisar de um convite novo."),
+                "Sair do servidor",
+            ),
+            "kick" => (
+                format!("Expulsar {person}"),
+                format!("Tem certeza de que quer expulsar {person}? Com um convite a pessoa volta."),
+                "Expulsar",
+            ),
+            "ban" => (
+                format!("Banir {person}"),
+                format!("Tem certeza de que quer banir {person}? A pessoa não volta nem com convite, até ser perdoada."),
+                "Banir",
+            ),
+            _ => return,
+        };
+
+        *lock(&self.pending) = Some((action.to_owned(), i64::from(id)));
+
+        paint(&self.window, move |app| {
+            let ui = app.global::<Ui>();
+
+            ui.set_confirm_title(title.into());
+            ui.set_confirm_text(text.into());
+            ui.set_confirm_button(button.into());
+            ui.set_modal("confirm".into());
+        });
+    }
+
+    fn confirm(self: &Rc<Self>) {
+        let Some((action, id)) = lock(&self.pending).take() else {
+            return;
+        };
+
+        match action.as_str() {
+            "delete-channel" => {
+                if let Some(channel) = at(&self.channels, i32::try_from(id).unwrap_or(-1)) {
+                    self.manage("deleteChannel", serde_json::Value::Null, serde_json::json!({ "channel": channel.id }), None);
+                }
+            }
+            "delete-server" => self.manage("deleteServer", serde_json::Value::Null, serde_json::json!({}), None),
+            "leave-server" => self.manage("leaveServer", serde_json::json!({}), serde_json::json!({}), None),
+            "kick" => self.manage("kickMember", serde_json::Value::Null, serde_json::json!({ "user": id }), None),
+            "ban" => self.manage("ban", serde_json::json!({}), serde_json::json!({ "user": id }), None),
+            _ => {}
+        }
+    }
+
+    fn member_name(&self, user: i64) -> String {
+        self.tree()
+            .and_then(|tree| tree.members.iter().find(|member| member.user_id == user).map(|member| core_app::members::display_name(member).to_owned()))
+            .unwrap_or_default()
+    }
+
+    /// Uma escrita no servidor aberto pelo mapa de rotas do núcleo. `params` ganha o
+    /// `server` sozinho. Depois a árvore é relida; apagar ou sair do servidor volta à Home.
+    fn manage(self: &Rc<Self>, route: &'static str, body: serde_json::Value, mut params: serde_json::Value, success: Option<String>) {
+        let Some(server) = *lock(&self.opened) else {
+            return;
+        };
+
+        params["server"] = server.into();
+
+        let (api, window, opening, landing) = (self.api.clone(), self.window.clone(), self.opening(), self.landing());
+        let selected = self.window.upgrade().map(|app| app.global::<Ui>().get_selected_role()).unwrap_or(-1);
+        let gone = matches!(route, "deleteServer" | "leaveServer");
+        let toasts = self.toasts.clone();
+
+        self.spawn(async move {
+            if let Err(failure) = api.perform(route, &params, &body).await {
+                return complain(&window, said(&failure));
+            }
+
+            if let Some(text) = success {
+                notify(&window, &toasts, &text, false);
+            }
+
+            if gone {
+                refresh_servers(&api, &window, &landing).await;
+
+                return;
+            }
+
+            show_tree(&api, &window, &opening, server, true).await;
+
+            if route == "updateServer" {
+                refresh_servers(&api, &window, &landing).await;
+                paint(&window, |app| app.global::<Ui>().set_in_server(true));
+            }
+
+            // Mexeu em cargo: a lista de permissões do cargo escolhido acompanha.
+            if route.contains("Role")
+                && let Some(tree) = api.known_tree(server)
+            {
+                paint_role_permissions(&window, &tree, selected);
+            }
+        });
+    }
+
+    fn regenerate_invite(self: &Rc<Self>) {
+        let Some(server) = *lock(&self.opened) else {
+            return;
+        };
+        let (api, window) = (self.api.clone(), self.window.clone());
+
+        self.spawn(async move {
+            match api.regenerate_invite(server).await {
+                Ok(code) => paint(&window, move |app| app.global::<Ui>().set_invite_code(code.into())),
+                Err(failure) => complain(&window, said(&failure)),
+            }
+        });
+    }
+
+    fn update_channel(self: &Rc<Self>, index: i32, name: &str, topic: &str, limit: i32) {
+        let Some(channel) = at(&self.channels, index) else {
+            return;
+        };
+        let name = name.trim();
+
+        if name.is_empty() {
+            return;
+        }
+
+        let body = if channel.kind == ChannelKind::Voice {
+            serde_json::json!({ "name": name, "user_limit": (limit > 0).then_some(limit) })
+        } else {
+            serde_json::json!({ "name": name, "topic": topic.trim() })
+        };
+
+        self.manage("updateChannel", body, serde_json::json!({ "channel": channel.id }), None);
+    }
+
+    /// Abre as configurações do servidor numa aba, buscando o que a aba mostra.
+    fn open_server_settings(self: &Rc<Self>, tab: &str) {
+        let Some(server) = *lock(&self.opened) else {
+            return;
+        };
+        let (api, window, tab) = (self.api.clone(), self.window.clone(), tab.to_owned());
+        let listing = tab.clone();
+
+        paint(&self.window, move |app| {
+            let ui = app.global::<Ui>();
+
+            ui.set_server_settings_tab(tab.into());
+            ui.set_server_settings_open(true);
+        });
+
+        match listing.as_str() {
+            "bans" => self.spawn(async move {
+                match api.perform("bans", &serde_json::json!({ "server": server }), &serde_json::Value::Null).await {
+                    Ok(listed) => {
+                        let rows: Vec<BanRow> = listed["data"]
+                            .as_array()
+                            .or(listed.as_array())
+                            .into_iter()
+                            .flatten()
+                            .map(|ban| BanRow {
+                                user_id: i32::try_from(ban["user_id"].as_i64().unwrap_or_default()).unwrap_or_default(),
+                                name: ban["name"].as_str().unwrap_or_default().into(),
+                                reason: ban["reason"].as_str().unwrap_or_default().into(),
+                            })
+                            .collect();
+
+                        paint(&window, move |app| app.global::<Ui>().set_bans(model(rows)));
+                    }
+                    Err(failure) => complain(&window, said(&failure)),
+                }
+            }),
+            "audits" => self.spawn(async move {
+                match api.perform("audits", &serde_json::json!({ "server": server }), &serde_json::Value::Null).await {
+                    Ok(listed) => {
+                        let rows: Vec<AuditRow> = listed["data"]
+                            .as_array()
+                            .or(listed.as_array())
+                            .into_iter()
+                            .flatten()
+                            .map(|entry| AuditRow {
+                                at: at_of(entry["at"].as_str().unwrap_or_default()),
+                                text: format!(
+                                    "{} {}",
+                                    entry["actor"]["name"].as_str().unwrap_or("Alguém"),
+                                    entry["summary"].as_str().unwrap_or_default()
+                                )
+                                .into(),
+                            })
+                            .collect();
+
+                        paint(&window, move |app| app.global::<Ui>().set_audits(model(rows)));
+                    }
+                    Err(failure) => complain(&window, said(&failure)),
+                }
+            }),
+            _ => {}
+        }
+    }
+
+    /// Os cargos do mais alto para o mais baixo, como a tela lista.
+    fn roles(&self) -> Vec<core_app::models::Role> {
+        let mut roles = self.tree().map(|tree| tree.roles).unwrap_or_default();
+
+        roles.sort_by_key(|role| std::cmp::Reverse(role.position));
+
+        roles
+    }
+
+    fn select_role(self: &Rc<Self>, index: i32) {
+        if let Some(tree) = self.tree() {
+            paint_role_permissions(&self.window, &tree, index);
+        }
+    }
+
+    fn toggle_permission(self: &Rc<Self>, bit: i32) {
+        let selected = self.window.upgrade().map(|app| app.global::<Ui>().get_selected_role()).unwrap_or(-1);
+        let Some(role) = usize::try_from(selected).ok().and_then(|index| self.roles().get(index).cloned()) else {
+            return;
+        };
+        let permissions = role.permissions ^ i64::from(bit);
+
+        self.manage("updateRole", serde_json::json!({ "permissions": permissions }), serde_json::json!({ "role": role.id }), None);
+    }
+
+    /// Desconecta (`to` vazio) ou move uma pessoa da voz em que está. Quem decide se pode é
+    /// o Laravel; a pessoa movida entra no destino sozinha, pelo `moved` do SFU.
+    fn move_voice(self: &Rc<Self>, user: i32, to: Option<i32>) {
+        let user = i64::from(user);
+        let Some(tree) = self.tree() else {
+            return;
+        };
+        let Some(from) = tree.voice.iter().find(|(_, people)| people.iter().any(|person| person.user_id == user)).map(|(channel, _)| channel.clone()) else {
+            return complain(&self.window, "Essa pessoa não está em nenhuma voz agora.");
+        };
+        let name = self.member_name(user);
+        let params = serde_json::json!({ "channel": from, "user": user });
+
+        match to.and_then(|index| at(&self.channels, index)) {
+            Some(target) => self.manage(
+                "moveVoiceMember",
+                serde_json::json!({ "channel_id": target.id }),
+                params,
+                Some(format!("{name} foi movido para {}.", target.name)),
+            ),
+            None if to.is_some() => {}
+            None => self.manage("disconnectFromVoice", serde_json::Value::Null, params, None),
+        }
+    }
+
+    /// Cala uma pessoa só para mim: o microfone dela deixa de tocar aqui.
+    fn mute_person(self: &Rc<Self>, user: i64, muted: bool) {
+        let microphone = {
+            let mut voice = lock(&self.voice);
+
+            if muted {
+                voice.muted_people.insert(user);
+            } else {
+                voice.muted_people.remove(&user);
+            }
+
+            voice.microphone_of(user)
+        };
+
+        if let (Some(microphone), Some(room)) = (microphone, lock(&self.room).clone()) {
+            room.mute_watched(&microphone, muted);
+        }
+
+        paint_voice(&self.window, &self.voice);
+    }
+
+    /// Um moderador moveu esta pessoa: a sala de antes já parou no núcleo; aqui se fecha o
+    /// que ficou aberto, sem o toque de saída, e se entra no destino com token novo.
+    fn moved(self: &Rc<Self>, data: &serde_json::Value) {
+        let to = data["to"].as_str().unwrap_or_default();
+        let by = data["by"].as_str().unwrap_or("Um moderador").to_owned();
+        let destination = lock(&self.channels).iter().find(|channel| channel.id == to).cloned();
+        let held = self.close_room();
+
+        self.spawn(async move {
+            if let Some(room) = held {
+                room.leave().await;
+            }
+        });
+
+        match destination {
+            Some(channel) => {
+                self.join_voice(&channel);
+                self.notify(&format!("{by} moveu você para {}.", channel.name), false);
+            }
+            None => {
+                *lock(&self.voice_channel) = None;
+                self.follow();
+                paint(&self.window, |app| {
+                    let ui = app.global::<Ui>();
+
+                    ui.set_voice_channel(SharedString::new());
+                    ui.set_voice_state(SharedString::new());
+                    ui.set_stage_open(false);
+                });
+                self.notify("Você foi movido para um canal que não enxerga.", true);
+            }
+        }
     }
 
     /// Um clique que vira pedido à sala aberta, fora da thread da janela.
@@ -2588,7 +3273,10 @@ fn direct_rows(messages: &[DirectMessage]) -> Vec<MessageRow> {
             author: message.sender.name.clone().into(),
             body: message.body.clone().into(),
             at: at_of(&message.created_at),
-            mine: false,
+            mine: message.mine,
+            continued: false,
+            color: slint::Color::default(),
+            colored: false,
         })
         .collect()
 }
@@ -2807,10 +3495,10 @@ fn paint_recent(core: &Arc<App>, window: &Weak<AppWindow>) {
     });
 }
 
-async fn read_channel(api: &Arc<Api>, window: &Weak<AppWindow>, channel: &str, me: Option<i64>) {
+async fn read_channel(api: &Arc<Api>, window: &Weak<AppWindow>, channel: &str, me: Option<i64>, tree: Option<ServerTree>) {
     match api.messages(channel).await {
         Ok(messages) => {
-            let rows = message_rows(&messages, me);
+            let rows = message_rows(&messages, me, tree.as_ref());
 
             paint(window, move |app| app.global::<Ui>().set_messages(model(rows)));
         }
@@ -2818,10 +3506,10 @@ async fn read_channel(api: &Arc<Api>, window: &Weak<AppWindow>, channel: &str, m
     }
 }
 
-async fn read_voice_chat(api: &Arc<Api>, window: &Weak<AppWindow>, channel: &str, me: Option<i64>) {
+async fn read_voice_chat(api: &Arc<Api>, window: &Weak<AppWindow>, channel: &str, me: Option<i64>, tree: Option<ServerTree>) {
     match api.messages(channel).await {
         Ok(messages) => {
-            let rows = message_rows(&messages, me);
+            let rows = message_rows(&messages, me, tree.as_ref());
 
             paint(window, move |app| app.global::<Ui>().set_voice_messages(model(rows)));
         }
@@ -2829,19 +3517,52 @@ async fn read_voice_chat(api: &Arc<Api>, window: &Weak<AppWindow>, channel: &str
     }
 }
 
-fn message_rows(messages: &[core_app::models::Message], me: Option<i64>) -> Vec<MessageRow> {
+/// As mensagens como o Discord as agrupa: a de quem acabou de falar (mesma pessoa, até 7
+/// minutos depois) vem sem avatar nem nome, e o nome leva a cor do cargo mais alto.
+fn message_rows(messages: &[core_app::models::Message], me: Option<i64>, tree: Option<&ServerTree>) -> Vec<MessageRow> {
+    let color_of_user = |user: i64| -> Option<slint::Color> {
+        let tree = tree?;
+        let member = tree.members.iter().find(|member| member.user_id == user)?;
+
+        core_app::members::top_role(tree, member)?.color.as_deref().and_then(color_of)
+    };
+
     #[allow(clippy::cast_possible_truncation)]
     messages
         .iter()
-        .map(|message| MessageRow {
-            id: message.id as i32,
-            initial: initial(&message.user.name),
-            author: message.user.name.clone().into(),
-            body: message.body.clone().into(),
-            at: message.created_at.get(11..16).unwrap_or_default().into(),
-            mine: Some(message.user.id) == me,
+        .enumerate()
+        .map(|(index, message)| {
+            let color = color_of_user(message.user.id);
+            let previous = index.checked_sub(1).and_then(|index| messages.get(index));
+
+            MessageRow {
+                id: message.id as i32,
+                initial: initial(&message.user.name),
+                author: message.user.name.clone().into(),
+                body: if message.kind == "join" { format!("{} chegou no servidor!", message.user.name).into() } else { message.body.clone().into() },
+                at: message.created_at.get(11..16).unwrap_or_default().into(),
+                mine: Some(message.user.id) == me,
+                continued: previous.is_some_and(|previous| continues(previous, message)),
+                colored: color.is_some(),
+                color: color.unwrap_or_default(),
+            }
         })
         .collect()
+}
+
+/// A mensagem continua a anterior: mesma pessoa, mesmo dia, menos de 7 minutos depois.
+fn continues(previous: &core_app::models::Message, message: &core_app::models::Message) -> bool {
+    let minute_of = |stamp: &str| -> Option<i64> {
+        let hours: i64 = stamp.get(11..13)?.parse().ok()?;
+        let minutes: i64 = stamp.get(14..16)?.parse().ok()?;
+
+        Some(hours * 60 + minutes)
+    };
+
+    previous.user.id == message.user.id
+        && previous.kind == message.kind
+        && previous.created_at.get(..10) == message.created_at.get(..10)
+        && matches!((minute_of(&previous.created_at), minute_of(&message.created_at)), (Some(before), Some(now)) if (0..7).contains(&(now - before)))
 }
 
 fn rows_of(servers: &[ServerSummary], chosen: Option<usize>, me: Option<i64>) -> Vec<ServerRow> {
@@ -2895,6 +3616,8 @@ struct Opening {
     known: Arc<Mutex<Vec<ServerSummary>>>,
     me: Option<i64>,
     online: Arc<Mutex<HashSet<i64>>>,
+    /// A voz recebe da árvore o que eu posso com cada pessoa, para o menu da lista.
+    voice: Arc<Mutex<Voice>>,
 }
 
 /// Busca a árvore e a desenha. `keep` é a releitura do tempo real: o canal que se está lendo
@@ -2922,7 +3645,7 @@ fn paint_tree(window: &Weak<AppWindow>, opening: &Opening, tree: &ServerTree, ke
         None
     };
 
-    let (listed, people) = (ordered.clone(), tree.voice.clone());
+    let listed = ordered.clone();
 
     *lock(channels) = ordered;
 
@@ -2935,10 +3658,34 @@ fn paint_tree(window: &Weak<AppWindow>, opening: &Opening, tree: &ServerTree, ke
     let servers = rows_of(&lock(known), chosen, me);
     let name = tree.name.clone();
     let invite = tree.invite_code.clone().unwrap_or_default();
+    let topic = kept.and_then(|index| listed.get(index)).and_then(|channel| channel.topic.clone()).unwrap_or_default();
+    let abilities = tree.abilities();
+    let can = |flag: &str| abilities.can.contains(&flag);
+    let flags = (
+        abilities.owner,
+        can("manageServer"),
+        can("manageChannels"),
+        can("manageRoles"),
+        can("createInvite"),
+        can("banMembers"),
+        can("viewAuditLog"),
+    );
+    let roles = role_rows(tree);
+
+    // A voz guarda o que eu posso com cada pessoa: a lista de quem está no canal desenha
+    // o menu por aqui, sem a árvore na mão.
+    {
+        let mut voice = lock(&opening.voice);
+
+        voice.moderation = tree.members.iter().map(|member| (member.user_id, tree.member_actions(member))).collect();
+        voice.server_muted = tree.members.iter().filter(|member| member.server_mute).map(|member| member.user_id).collect();
+    }
+
+    let tree = tree.clone();
 
     paint(window, move |app| {
         let ui = app.global::<Ui>();
-        let (text, voice) = split_channels(&listed, kept, &people, me);
+        let (text, voice) = split_channels(&listed, kept, Some(&tree), me);
 
         ui.set_server_name(name.into());
         ui.set_servers(model(servers));
@@ -2946,6 +3693,15 @@ fn paint_tree(window: &Weak<AppWindow>, opening: &Opening, tree: &ServerTree, ke
         ui.set_voice_channels(model(voice));
         ui.set_member_groups(model_of_groups(groups));
         ui.set_invite_code(invite.into());
+        ui.set_channel_topic(topic.into());
+        ui.set_roles(model(roles));
+        ui.set_is_owner(flags.0);
+        ui.set_can_manage_server(flags.1);
+        ui.set_can_manage_channels(flags.2);
+        ui.set_can_manage_roles(flags.3);
+        ui.set_can_invite(flags.4);
+        ui.set_can_ban(flags.5);
+        ui.set_can_audit(flags.6);
         ui.set_in_server(true);
 
         if kept.is_none() {
@@ -2953,6 +3709,72 @@ fn paint_tree(window: &Weak<AppWindow>, opening: &Opening, tree: &ServerTree, ke
             ui.set_channel_name(SharedString::new());
         }
     });
+}
+
+/// Os cargos do mais alto para o mais baixo, com o que o núcleo diz que dá para mexer.
+fn role_rows(tree: &ServerTree) -> Vec<RoleRow> {
+    let editable: HashMap<i64, bool> = tree.role_rows().into_iter().map(|row| (row.id, row.editable)).collect();
+    let mut roles: Vec<&core_app::models::Role> = tree.roles.iter().collect();
+
+    roles.sort_by_key(|role| std::cmp::Reverse(role.position));
+
+    roles
+        .into_iter()
+        .map(|role| {
+            let color = role.color.as_deref().and_then(color_of);
+
+            RoleRow {
+                id: i32::try_from(role.id).unwrap_or_default(),
+                name: role.name.clone().into(),
+                colored: color.is_some(),
+                color: color.unwrap_or_default(),
+                everyone: role.is_everyone,
+                editable: editable.get(&role.id).copied().unwrap_or(false),
+            }
+        })
+        .collect()
+}
+
+/// Os bits do cargo escolhido (pela posição na lista, do mais alto para o mais baixo).
+fn paint_role_permissions(window: &Weak<AppWindow>, tree: &ServerTree, index: i32) {
+    let mut roles: Vec<&core_app::models::Role> = tree.roles.iter().collect();
+
+    roles.sort_by_key(|role| std::cmp::Reverse(role.position));
+
+    let rows: Vec<PermissionRow> = usize::try_from(index)
+        .ok()
+        .and_then(|index| roles.get(index))
+        .map(|role| {
+            PERMISSIONS
+                .iter()
+                .map(|(bit, label)| PermissionRow {
+                    bit: i32::try_from(*bit).unwrap_or_default(),
+                    label: (*label).into(),
+                    on: role.permissions & bit != 0,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    paint(window, move |app| {
+        let ui = app.global::<Ui>();
+
+        ui.set_selected_role(index);
+        ui.set_role_permissions(model(rows));
+    });
+}
+
+/// O que eu posso com uma pessoa, na linha que a tela lê.
+fn actions_row(actions: Option<MemberActions>, server_muted: bool) -> ActionsRow {
+    let actions = actions.unwrap_or_default();
+
+    ActionsRow {
+        mute: actions.mute,
+        disconnect: actions.disconnect,
+        kick: actions.kick,
+        ban: actions.ban,
+        server_muted,
+    }
 }
 
 /// Um grupo de membros ainda sem modelo: o `ModelRc` só nasce na thread da janela.
@@ -2973,12 +3795,25 @@ fn member_groups(tree: &ServerTree, online: &HashSet<i64>, me: Option<i64>) -> V
                 .iter()
                 .map(|member| {
                     let name = core_app::members::display_name(member);
+                    let voice = tree
+                        .voice
+                        .iter()
+                        .find(|(_, people)| people.iter().any(|person| person.user_id == member.user_id))
+                        .and_then(|(channel, people)| {
+                            let name = tree.channels.iter().find(|known| known.id == *channel)?.name.clone();
+                            let live = people.iter().any(|person| person.user_id == member.user_id && person.sources.iter().any(|source| source == "screen"));
+
+                            Some(if live { "Transmitindo".to_owned() } else { format!("Na voz: {name}") })
+                        });
 
                     MemberRow {
+                        user_id: i32::try_from(member.user_id).unwrap_or_default(),
                         initial: initial(name),
                         name: name.into(),
                         owner: member.is_owner,
                         mine: Some(member.user_id) == me,
+                        note: voice.unwrap_or_default().into(),
+                        actions: actions_row(Some(tree.member_actions(member)), member.server_mute),
                     }
                 })
                 .collect();
@@ -3019,11 +3854,21 @@ fn color_of(hex: &str) -> Option<slint::Color> {
 fn split_channels(
     ordered: &[Channel],
     chosen: Option<usize>,
-    people: &HashMap<String, Vec<VoicePerson>>,
+    tree: Option<&ServerTree>,
     me: Option<i64>,
 ) -> (Vec<ChannelRow>, Vec<ChannelRow>) {
     let mut text = Vec::new();
     let mut voice = Vec::new();
+    let empty = HashMap::<String, Vec<VoicePerson>>::new();
+    let people = tree.map_or(&empty, |tree| &tree.voice);
+    let actions_of = |user: i64| -> ActionsRow {
+        let member = tree.and_then(|tree| tree.members.iter().find(|member| member.user_id == user));
+
+        actions_row(
+            member.and_then(|member| tree.map(|tree| tree.member_actions(member))),
+            member.is_some_and(|member| member.server_mute),
+        )
+    };
 
     for (index, channel) in ordered.iter().enumerate() {
         let inside: Vec<VoicePersonRow> = people
@@ -3031,21 +3876,27 @@ fn split_channels(
             .into_iter()
             .flatten()
             .map(|person| VoicePersonRow {
+                user_id: i32::try_from(person.user_id).unwrap_or_default(),
                 initial: initial(&person.name),
                 name: person.name.clone().into(),
                 mine: Some(person.user_id) == me,
                 muted: person.muted,
                 camera: person.sources.iter().any(|source| source == "camera"),
                 live: person.sources.iter().any(|source| source == "screen"),
+                actions: actions_of(person.user_id),
             })
             .collect();
         let row = ChannelRow {
             index: index as i32,
             id: channel.id.clone().into(),
             name: channel.name.clone().into(),
+            topic: channel.topic.clone().unwrap_or_default().into(),
+            limit: i32::try_from(channel.user_limit.unwrap_or(0)).unwrap_or(0),
             voice: channel.kind == ChannelKind::Voice,
             current: Some(index) == chosen,
             people: model(inside),
+            can_move_from: permissions::has(channel.permissions, permissions::MOVE_MEMBERS),
+            can_move_here: permissions::has(channel.permissions, permissions::MOVE_MEMBERS | permissions::CONNECT),
         };
 
         if row.voice {
@@ -3066,11 +3917,13 @@ async fn open_microphone(
     voice: Arc<Mutex<Voice>>,
     window: Weak<AppWindow>,
     device: Option<String>,
+    input_mode: InputMode,
 ) {
     let (can_speak, muted_at_rest) = {
         let voice = lock(&voice);
 
-        (voice.mine.can_speak, voice.muted_at_rest)
+        // "Silenciar ao entrar" vale como o mudo guardado: o microfone abre, mas calado.
+        (voice.mine.can_speak, voice.muted_at_rest || voice.mute_on_join)
     };
 
     if !can_speak {
@@ -3090,6 +3943,7 @@ async fn open_microphone(
     match started {
         Ok(microphone) => {
             *lock(&cell) = Some(microphone);
+            room.set_input_mode(input_mode);
 
             if muted_at_rest {
                 room.mute_microphone(true).await;
@@ -3140,6 +3994,17 @@ fn listen(heard: std::sync::mpsc::Receiver<String>, window: Weak<AppWindow>, sta
                         before != voice.speaking_myself()
                     };
 
+                    // O medidor da sensibilidade, só enquanto as configurações estão abertas.
+                    let level = f32::from(percent) / 100.0;
+
+                    paint(&window, move |app| {
+                        let ui = app.global::<Ui>();
+
+                        if ui.get_settings_open() {
+                            ui.set_mic_level(level);
+                        }
+                    });
+
                     if changed {
                         paint_voice(&window, &voice);
                     }
@@ -3148,20 +4013,43 @@ fn listen(heard: std::sync::mpsc::Receiver<String>, window: Weak<AppWindow>, sta
                     if let Some(milliseconds) = data["ms"].as_u64() {
                         let said = format!("{milliseconds} ms");
                         let measured = i32::try_from(milliseconds).unwrap_or(i32::MAX);
+                        let bars = i32::from(data["bars"].as_u64().and_then(|bars| u8::try_from(bars).ok()).unwrap_or_else(|| core_app::room::signal_bars(milliseconds)));
 
                         paint(&window, move |app| {
                             let ui = app.global::<Ui>();
 
                             ui.set_ping(said.into());
                             ui.set_ping_ms(measured);
+                            ui.set_ping_bars(bars);
                         });
                     }
                 }
                 "room.session" => match data["state"].as_str().unwrap_or_default() {
-                    "lost" => paint(&window, |app| app.global::<Ui>().set_reconnecting(true)),
+                    "lost" => paint(&window, |app| {
+                        let ui = app.global::<Ui>();
+
+                        ui.set_reconnecting(true);
+
+                        if ui.get_voice_channel() != "" {
+                            ui.set_voice_state("reconnecting".into());
+                        }
+                    }),
                     "rejoined" => {
-                        paint(&window, |app| app.global::<Ui>().set_reconnecting(false));
+                        paint(&window, |app| {
+                            let ui = app.global::<Ui>();
+
+                            ui.set_reconnecting(false);
+
+                            if ui.get_voice_channel() != "" {
+                                ui.set_voice_state("connected".into());
+                            }
+                        });
                         complain(&window, "");
+                    }
+                    "moved" => {
+                        let line = serde_json::json!({ "event": "room.moved", "data": data }).to_string();
+
+                        paint(&window, move |app| app.global::<Ui>().invoke_heard_live(line.into()));
                     }
                     "gone" => {
                         paint(&window, |app| app.global::<Ui>().set_reconnecting(false));
@@ -3257,10 +4145,10 @@ fn paint_voice(window: &Weak<AppWindow>, voice: &Arc<Mutex<Voice>>) {
 /// Pinta o palco. Com os mesmos cartões na mesma ordem, cada linha é trocada no lugar: o
 /// cartão não é recriado, e não perde o hover nem o painel do volume aberto.
 fn paint_stage(window: &Weak<AppWindow>, stage: &Arc<Mutex<Stage>>) {
-    let (placed, (columns, lines), focusing, full, pending) = {
+    let (placed, focusing, full, pending) = {
         let stage = lock(stage);
 
-        (stage.placed(), stage.grid(), stage.focusing(), stage.full_screen(), stage.pending())
+        (stage.placed(), stage.focusing(), stage.full_screen(), stage.pending())
     };
 
     paint(window, move |app| {
@@ -3298,8 +4186,6 @@ fn paint_stage(window: &Weak<AppWindow>, stage: &Arc<Mutex<Stage>>) {
                         .is_some_and(|row| row.loss_high),
                     has_frame: frame.is_some(),
                     frame: frame.unwrap_or_default(),
-                    column: i32::try_from(placed.column).unwrap_or_default(),
-                    line: i32::try_from(placed.line).unwrap_or_default(),
                     rank: i32::try_from(placed.rank).unwrap_or_default(),
                     focused: placed.focused,
                     full: placed.full,
@@ -3317,8 +4203,6 @@ fn paint_stage(window: &Weak<AppWindow>, stage: &Arc<Mutex<Stage>>) {
             ui.set_tiles(model(rows));
         }
 
-        ui.set_grid_columns(i32::try_from(columns).unwrap_or(1));
-        ui.set_grid_lines(i32::try_from(lines).unwrap_or(1));
         ui.set_focusing(focusing);
         ui.set_full_screen(full);
         ui.set_pending_tiles(i32::try_from(pending).unwrap_or_default());
@@ -3329,7 +4213,17 @@ fn peer_rows(voice: &Voice) -> Vec<PeerRow> {
     voice
         .peers
         .iter()
-        .map(|peer| PeerRow {
+        .map(|peer| {
+            let user = Voice::user_of(peer);
+
+            PeerRow {
+            user_id: user.and_then(|user| i32::try_from(user).ok()).unwrap_or_default(),
+            camera: peer.producers.iter().any(|producer| producer.source == "camera"),
+            local_muted: user.is_some_and(|user| voice.muted_people.contains(&user)),
+            actions: actions_row(
+                user.and_then(|user| voice.moderation.get(&user).copied()).filter(|_| !peer.self_peer),
+                user.is_some_and(|user| voice.server_muted.contains(&user)),
+            ),
             initial: initial(&peer.name),
             name: peer.name.clone().into(),
             note: if peer.reconnecting {
@@ -3349,6 +4243,7 @@ fn peer_rows(voice: &Voice) -> Vec<PeerRow> {
             } else {
                 !peer.producers.iter().any(|producer| producer.source == "mic" && !producer.paused)
             },
+            }
         })
         .collect()
 }
@@ -3740,8 +4635,19 @@ impl Entering {
     }
 }
 
+/// O sistema e o nome da máquina, como aparecem na lista de sessões da conta.
 fn device_name() -> String {
-    std::env::var("COMPUTERNAME").map(|host| format!("windows-{host}")).unwrap_or("windows".into())
+    let host = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|host| host.trim().to_owned())
+        .filter(|host| !host.is_empty());
+
+    match host {
+        Some(host) => format!("{}-{host}", std::env::consts::OS),
+        None => std::env::consts::OS.to_owned(),
+    }
 }
 
 #[cfg(test)]

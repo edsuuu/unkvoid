@@ -1,36 +1,253 @@
-import { ScrollView } from "std-widgets.slint";
-import { Icons, Skin } from "skin.slint";
+import { ScrollView, Slider } from "std-widgets.slint";
+import { Icons, Skin, Theme } from "skin.slint";
 import { Ui } from "state.slint";
-import { Avatar, Field, Glyph, LabelMono, LinkButton, Muted, PrimaryButton, RowItem } from "widgets.slint";
+import { Avatar, DButton, DField, Glyph, Label, Meta, Switch } from "widgets.slint";
 import { ClipsSettings, ClipsUi } from "clips.slint";
 
-// Uma linha da coluna da esquerda.
-component Section inherits RowItem {
-    in property <string> commands;
+// As configurações em tela cheia, no molde do Discord: a barra lateral de 218 alinhada à
+// direita em `surface-side`, o conteúdo em `surface-chat` com até 740 de largura, e o
+// círculo de fechar com "ESC" embaixo. A mesma moldura serve ao usuário e ao servidor.
+
+// Uma linha da barra lateral: 32, 16/500 `ink-soft`, selecionada em `selected`.
+export component SideItem inherits Rectangle {
     in property <string> text;
+    in property <bool> on;
     in property <bool> danger;
+    callback clicked();
+
+    height: 32px;
+    border-radius: 4px;
+    background: root.on ? Theme.selected : (touch.has-hover ? Theme.hover : transparent);
+
+    Text {
+        text: root.text;
+        color: root.danger ? Theme.danger : (root.on ? Theme.ink-strong : (touch.has-hover ? Theme.ink : Theme.ink-soft));
+        font-size: Theme.list-size;
+        font-weight: 500;
+        x: 10px;
+        vertical-alignment: center;
+        height: parent.height;
+        width: parent.width - 20px;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component SideLabel inherits Label {
+    x: 10px;
+    height: 28px;
+    vertical-alignment: bottom;
+    font-weight: 700;
+}
+
+export component SideLine inherits Rectangle {
+    height: 17px;
+
+    Rectangle {
+        y: 8px;
+        x: 10px;
+        width: parent.width - 20px;
+        height: 1px;
+        background: Theme.line;
+    }
+}
+
+// A moldura: a barra lateral, o fundo do conteúdo, o título e o fechar. Quem usa põe os
+// itens numa `SideList` e o miolo numa `ContentArea`, as duas com a geometria da moldura:
+// a raiz de um componente não enxerga o pai, e o Slint só tem um `@children`.
+export component SettingsFrame inherits Rectangle {
+    in property <string> title;
+    callback closed();
+
+    out property <length> side-width: max(218px, (root.width - 740px) / 2 - 20px);
+    out property <length> content-x: root.side-width + 40px;
+    out property <length> content-width: min(740px, root.width - root.side-width - 120px);
+    out property <length> content-y: 104px;
+
+    background: Theme.surface-chat;
+
+    focus := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.closed();
+
+                return accept;
+            }
+
+            return reject;
+        }
+    }
+
+    Rectangle {
+        x: 0;
+        width: root.side-width;
+        background: Theme.surface-side;
+    }
+
+    Text {
+        x: root.content-x;
+        y: 60px;
+        width: root.content-width;
+        text: root.title;
+        color: Theme.ink-strong;
+        font-size: Theme.title-size;
+        font-weight: 600;
+    }
+
+    VerticalLayout {
+        x: root.content-x + root.content-width + 20px;
+        y: 60px;
+        width: 36px;
+        height: 60px;
+        spacing: 6px;
+        alignment: start;
+
+        Rectangle {
+            width: 36px;
+            height: 36px;
+            border-radius: 18px;
+            border-width: 2px;
+            border-color: close-touch.has-hover ? Theme.ink-strong : Theme.ink-dim;
+
+            Glyph {
+                commands: Icons.close;
+                size: 18px;
+                tint: close-touch.has-hover ? Theme.ink-strong : Theme.ink-soft;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+
+            close-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.closed(); }
+            }
+        }
+
+        Label {
+            text: "ESC";
+            horizontal-alignment: center;
+        }
+    }
+
+    Rectangle {
+        @children
+    }
+}
+
+// Os itens da barra lateral, alinhados à direita dela.
+export component SideList inherits Rectangle {
+    in property <length> side-width;
+
+    x: root.side-width - 218px - 6px;
+    y: 0;
+    width: 218px;
+
+    ScrollView {
+        VerticalLayout {
+            padding-top: 60px;
+            padding-bottom: 60px;
+            spacing: 2px;
+            alignment: start;
+
+            @children
+        }
+    }
+}
+
+// Onde o miolo de uma tela de configuração cai: a coluna do conteúdo, abaixo do título.
+export component ContentArea inherits Rectangle {
+    in property <length> content-x;
+    in property <length> content-y;
+    in property <length> content-width;
+
+    x: root.content-x;
+    y: root.content-y;
+    width: root.content-width;
+
+    ScrollView {
+        @children
+    }
+}
+
+// Uma linha "nome à esquerda, interruptor à direita".
+export component SwitchRow inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> detail;
+    in-out property <bool> on;
+    callback toggled(bool);
+
+    spacing: 16px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+
+    VerticalLayout {
+        horizontal-stretch: 1;
+        alignment: center;
+        spacing: 2px;
+
+        Text {
+            text: root.text;
+            color: Theme.ink;
+            font-size: Theme.list-size;
+            font-weight: 500;
+        }
+
+        if root.detail != "" : Text {
+            text: root.detail;
+            color: Theme.ink-dim;
+            font-size: 14px;
+            wrap: word-wrap;
+        }
+    }
+
+    Switch {
+        on <=> root.on;
+        y: (parent.height - self.height) / 2;
+        toggled(on) => { root.toggled(on); }
+    }
+}
+
+// Um aparelho escolhível: a bolinha e o nome.
+component Choice inherits Rectangle {
+    in property <string> label;
+    in property <bool> on;
+    callback clicked();
+
+    height: 36px;
+    border-radius: 4px;
+    background: root.on ? Theme.selected : (touch.has-hover ? Theme.hover : Theme.surface-input);
 
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
+        padding-left: 12px;
+        padding-right: 12px;
         spacing: 10px;
 
-        Glyph {
-            commands: root.commands;
-            size: 14px;
-            tint: root.danger ? Skin.danger : (root.on ? Skin.ink-strong : Skin.ink-icon);
+        Rectangle {
+            width: 10px;
+            height: 10px;
+            border-radius: 5px;
+            background: root.on ? Theme.brand : Theme.ink-ghost;
             y: (parent.height - self.height) / 2;
         }
 
         Text {
-            text: root.text;
-            color: root.danger ? Skin.danger : (root.on ? Skin.ink-strong : Skin.ink-icon);
-            font-family: Skin.sans;
-            font-size: 13px;
+            text: root.label;
+            color: root.on ? Theme.ink-strong : Theme.ink-soft;
+            font-size: 14px;
+            font-weight: 500;
             horizontal-stretch: 1;
             overflow: elide;
             vertical-alignment: center;
         }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
     }
 }
 
@@ -40,343 +257,282 @@ component Line inherits HorizontalLayout {
     in property <string> value;
 
     spacing: 10px;
+    padding-top: 6px;
+    padding-bottom: 6px;
 
-    Text {
-        text: root.label;
-        color: Skin.ink-soft;
-        font-family: Skin.sans;
-        font-size: 12.5px;
-    }
-
+    Label { text: root.label; vertical-alignment: center; }
     Rectangle { horizontal-stretch: 1; }
 
     Text {
         text: root.value;
-        color: Skin.ink-body;
-        font-family: Skin.sans;
-        font-size: 12.5px;
+        color: Theme.ink;
+        font-size: 14px;
         overflow: elide;
     }
 }
 
-// Um aparelho escolhível: a bolinha e o nome.
-component Choice inherits RowItem {
-    in property <string> label;
-
-    HorizontalLayout {
-        padding-left: 11px;
-        padding-right: 11px;
-        spacing: 10px;
-
-        Rectangle {
-            width: 9px;
-            height: 9px;
-            border-radius: 5px;
-            background: root.on ? Skin.brand : #ffffff33;
-            y: (parent.height - self.height) / 2;
-        }
-
-        Text {
-            text: root.label;
-            color: root.on ? Skin.ink-strong : Skin.ink-icon;
-            font-family: Skin.sans;
-            font-size: 12.5px;
-            horizontal-stretch: 1;
-            overflow: elide;
-            vertical-alignment: center;
-        }
-    }
-}
-// As configurações da conta, no molde do Discord — e o mesmo desenho que o macOS já tem: um
-// painel que toma quase a janela toda, as seções agrupadas à esquerda, a seção aberta à
-// direita e o "X / ESC" no canto.
+// As configurações da conta.
 //
-// Só entram as abas que têm o que mostrar. "Teclas" e "Notificações" existem no Mac porque
-// as preferências de voz moram na ABI dele; aqui elas ainda não subiram para o núcleo, e aba
-// que não faz nada não entra.
-export component SettingsModal inherits Rectangle {
-    // Sem conta, "Minha conta" não tem o que mostrar: abre no que há.
+// ponytail: "Teclas de atalho" e "Notificações" ficam de fora até as teclas globais subirem
+// para o núcleo (hoje só o macOS as tem). Aba que não faz nada não entra.
+export component SettingsModal inherits SettingsFrame {
+    // A seção mora no `Ui` (a engrenagem dos Clips abre direto na deles). Sem conta, "Minha
+    // conta" não tem o que mostrar: abre no que há.
     property <string> tab: !Ui.signed-in && Ui.settings-tab == "account" ? (ClipsUi.available ? "clips" : "voice") : Ui.settings-tab;
-    property <bool> shown;
 
-    background: #06050abd;
-    opacity: root.shown ? 1.0 : 0.0;
-    init => { root.shown = true; }
+    title: root.tab == "account" ? "Minha conta" : (root.tab == "clips" ? "Clips" : "Voz e vídeo");
+    closed => { Ui.close-settings(); }
 
-    animate opacity { duration: 180ms; easing: ease-out; }
+    SideList {
+    side-width: root.side-width;
+    height: root.height;
 
-    // Clicar fora fecha, e o Esc também. O painel come o clique dele.
-    TouchArea {
-        mouse-cursor: pointer;
-        clicked => { Ui.close-settings(); }
+    if Ui.signed-in : SideLabel { text: "CONFIGURAÇÕES DE USUÁRIO"; }
+
+    if Ui.signed-in : SideItem {
+        text: "Minha conta";
+        on: root.tab == "account";
+        clicked => { Ui.settings-tab = "account"; }
     }
 
-    focus := FocusScope {
-        key-pressed(event) => {
-            if (event.text == Key.Escape) {
-                Ui.close-settings();
+    SideLabel { text: "CONFIGURAÇÕES DO APP"; }
 
-                return accept;
-            }
+    SideItem {
+        text: "Voz e vídeo";
+        on: root.tab == "voice";
+        clicked => { Ui.settings-tab = "voice"; }
+    }
 
-            return reject;
+    if ClipsUi.available : SideItem {
+        text: "Clips";
+        on: root.tab == "clips";
+        clicked => { Ui.settings-tab = "clips"; }
+    }
+
+    if Ui.signed-in : SideLine { }
+
+    if Ui.signed-in : SideItem {
+        text: "Sair";
+        danger: true;
+        clicked => {
+            Ui.close-settings();
+            Ui.sign-out();
         }
     }
+    }
 
-    // O painel sobe ao aparecer (o `animate-rise` do React) e tem a sombra funda do
-    // `.glass-panel`: é ela que o descola do fundo em vez de deixá-lo colado na janela.
-    Rectangle {
-        x: 24px;
-        y: root.shown ? 24px : 34px;
-        width: parent.width - 48px;
-        height: parent.height - 48px;
-        background: #100d1af7;
-        border-radius: 22px;
-        border-width: 1px;
-        border-color: #ffffff1a;
-        drop-shadow-blur: 45px;
-        drop-shadow-offset-y: 20px;
-        drop-shadow-color: #000000f2;
+    ContentArea {
+        content-x: root.content-x;
+        content-y: root.content-y;
+        content-width: root.content-width;
+        height: root.height - root.content-y - 40px;
 
-        animate y { duration: 220ms; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
-
-        TouchArea { }
-
-        HorizontalLayout {
-            // ---- a coluna das seções ----
-            Rectangle {
-                width: 252px;
-                background: #0000002e;
-                border-top-left-radius: 20px;
-                border-bottom-left-radius: 20px;
-
-                VerticalLayout {
-                    padding-left: 14px;
-                    padding-right: 14px;
-                    padding-top: 22px;
-                    padding-bottom: 22px;
-                    spacing: 4px;
-                    alignment: start;
-
-                    if Ui.signed-in : LabelMono {
-                        text: "CONFIGURAÇÕES DE USUÁRIO";
-                        // O mesmo respiro do Mac em volta do título de cada grupo.
-                        x: 10px;
-                    }
-
-                    if Ui.signed-in : Section {
-                        commands: Icons.users;
-                        text: "Minha conta";
-                        on: root.tab == "account";
-                        clicked => { Ui.settings-tab = "account"; }
-                    }
-
-                    if Ui.signed-in : Rectangle { height: 10px; }
-
-                    LabelMono {
-                        text: "CONFIGURAÇÕES DO APP";
-                        x: 10px;
-                    }
-
-                    Section {
-                        commands: Icons.mic;
-                        text: "Voz e vídeo";
-                        on: root.tab == "voice";
-                        clicked => { Ui.settings-tab = "voice"; }
-                    }
-
-                    if ClipsUi.available : Section {
-                        commands: Icons.play;
-                        text: "Clips";
-                        on: root.tab == "clips";
-                        clicked => { Ui.settings-tab = "clips"; }
-                    }
-
-                    if Ui.signed-in : Rectangle { height: 10px; }
-
-                    if Ui.signed-in : Rectangle {
-                        height: 1px;
-                        background: Skin.line;
-                    }
-
-                    if Ui.signed-in : Rectangle { height: 10px; }
-
-                    if Ui.signed-in : Section {
-                        commands: Icons.logout;
-                        text: "Sair da conta";
-                        danger: true;
-                        clicked => {
-                            Ui.close-settings();
-                            Ui.sign-out();
-                        }
-                    }
-                }
-            }
-
-            Rectangle {
-                width: 1px;
-                background: Skin.line;
-            }
-
-            // ---- a seção aberta ----
-            ScrollView {
-                horizontal-stretch: 1;
-
-                VerticalLayout {
-                    padding-left: 40px;
-                    padding-right: 40px;
-                    padding-top: 36px;
-                    padding-bottom: 36px;
-                    spacing: 20px;
-                    alignment: start;
-
-                    Text {
-                        text: root.tab == "account" ? "Minha conta" : (root.tab == "clips" ? "Clips" : "Voz e vídeo");
-                        color: Skin.ink-strong;
-                        font-family: Skin.sans;
-                        font-size: 20px;
-                        font-weight: 600;
-                    }
-
-                    if root.tab == "account" : VerticalLayout {
-                        spacing: 8px;
-
-                        LabelMono { text: "FOTO DE PERFIL"; }
-
-                        HorizontalLayout {
-                            spacing: 12px;
-                            alignment: start;
-
-                            Avatar {
-                                letter: Ui.user-initial;
-                                size: 56px;
-                                mine: true;
-                            }
-
-                            VerticalLayout {
-                                alignment: center;
-                                spacing: 4px;
-
-                                // ponytail: trocar a foto é `POST /api/me/avatar` com um
-                                // arquivo, e o seletor de arquivo do Slint ainda não existe
-                                // aqui. Teto: a foto se troca pelo site ou pelo Mac.
-                                Muted { text: "A foto se troca no site ou no app do Mac."; }
-                            }
-                        }
-
-                        Rectangle { height: 8px; }
-
-                        LabelMono { text: "APELIDO"; }
-
-                        HorizontalLayout {
-                            spacing: 10px;
-
-                            nickname := Field {
-                                horizontal-stretch: 1;
-                                text: Ui.user-name;
-                                placeholder: "seu.apelido";
-                                error: Ui.nickname-error;
-                                enabled: !Ui.nickname-busy;
-                                init => { Ui.nickname-error = ""; }
-                                accepted => { Ui.rename(self.text); }
-                                edited => { Ui.nickname-error = ""; }
-                            }
-
-                            // O campo cresce com o erro embaixo; o botão fica na altura dele.
-                            VerticalLayout {
-                                alignment: start;
-
-                                PrimaryButton {
-                                    text: Ui.nickname-busy ? "Salvando…" : "Salvar";
-                                    enabled: !Ui.nickname-busy && nickname.text != Ui.user-name;
-                                    clicked => { Ui.rename(nickname.text); }
-                                }
-                            }
-                        }
-
-                        Muted { text: "É o nome que todo mundo vê. De 3 a 32 letras, números, ponto e _, sem espaço."; }
-
-                        Rectangle { height: 8px; }
-
-                        LabelMono { text: "CONTA"; }
-
-                        Line {
-                            label: "Entrada";
-                            value: Ui.signed-in ? "conta conectada" : "usando sem login";
-                        }
-                    }
-
-                    if root.tab == "clips" : ClipsSettings { }
-
-                    if root.tab == "voice" : VerticalLayout {
-                        spacing: 8px;
-
-                        LabelMono { text: "MICROFONE"; }
-
-                        if Ui.microphones.length == 0 : Muted {
-                            text: "Nenhum aparelho encontrado.";
-                        }
-
-                        for device[index] in Ui.microphones : Choice {
-                            label: device.label;
-                            on: device.current;
-                            clicked => { Ui.use-microphone(index); }
-                        }
-
-                        Rectangle { height: 8px; }
-
-                        LabelMono { text: "SAÍDA DE ÁUDIO"; }
-
-                        if Ui.speakers.length == 0 : Muted {
-                            text: "Nenhum aparelho encontrado.";
-                        }
-
-                        for device[index] in Ui.speakers : Choice {
-                            label: device.label;
-                            on: device.current;
-                            clicked => { Ui.use-speaker(index); }
-                        }
-
-                        Muted { text: "Vale para a voz das pessoas, o áudio das telas e os sons do app."; }
-                    }
-                }
-            }
-
-            // ---- o "X / ESC" do canto ----
-            VerticalLayout {
-                padding-top: 36px;
-                padding-right: 28px;
-                padding-left: 8px;
-                spacing: 6px;
+            if root.tab == "account" : VerticalLayout {
+                spacing: 8px;
                 alignment: start;
 
-                Rectangle {
-                    width: 34px;
-                    height: 34px;
-                    border-radius: 17px;
-                    border-width: 1.5px;
-                    border-color: close-touch.has-hover ? Skin.ink-strong : Skin.ink-dim;
+                Label { text: "FOTO DE PERFIL"; }
 
-                    Glyph {
-                        commands: Icons.close;
-                        size: 14px;
-                        tint: close-touch.has-hover ? Skin.ink-strong : Skin.ink-soft;
-                        x: (parent.width - self.width) / 2;
-                        y: (parent.height - self.height) / 2;
+                HorizontalLayout {
+                    spacing: 16px;
+                    alignment: start;
+                    padding-bottom: 16px;
+
+                    Avatar {
+                        letter: Ui.user-initial;
+                        size: 80px;
+                        mine: true;
                     }
 
-                    close-touch := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { Ui.close-settings(); }
+                    VerticalLayout {
+                        alignment: center;
+
+                        // ponytail: trocar a foto é `POST /api/me/avatar` com um arquivo, e
+                        // o seletor de arquivo do Slint ainda não existe aqui.
+                        Meta { text: "A foto se troca no site ou no app do Mac."; }
                     }
                 }
 
-                LabelMono {
-                    text: "ESC";
-                    horizontal-alignment: center;
+                Label { text: "APELIDO"; }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    nickname := DField {
+                        horizontal-stretch: 1;
+                        text: Ui.user-name;
+                        placeholder: "seu.apelido";
+                        error: Ui.nickname-error;
+                        enabled: !Ui.nickname-busy;
+                        init => { Ui.nickname-error = ""; }
+                        accepted => { Ui.rename(self.text); }
+                        edited => { Ui.nickname-error = ""; }
+                    }
+
+                    // O campo cresce com o erro embaixo; o botão fica na altura dele.
+                    VerticalLayout {
+                        alignment: start;
+
+                        DButton {
+                            text: Ui.nickname-busy ? "Salvando…" : "Salvar";
+                            height: 40px;
+                            enabled: !Ui.nickname-busy && nickname.text != Ui.user-name;
+                            clicked => { Ui.rename(nickname.text); }
+                        }
+                    }
+                }
+
+                Meta { text: "É o nome que todo mundo vê. De 3 a 32 letras, números, ponto e _, sem espaço."; }
+
+                Rectangle { height: 8px; }
+
+                Label { text: "CONTA"; }
+
+                Rectangle {
+                    height: card.preferred-height;
+                    border-radius: 8px;
+                    background: Theme.surface-side;
+
+                    card := VerticalLayout {
+                        padding: 16px;
+
+                        Line { label: "ENTRADA"; value: Ui.signed-in ? "conta conectada" : "usando sem login"; }
+                    }
                 }
             }
-        }
+
+            if root.tab == "clips" : ClipsSettings { }
+
+            if root.tab == "voice" : VerticalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                Label { text: "DISPOSITIVO DE ENTRADA"; }
+
+                if Ui.microphones.length == 0 : Meta { text: "Nenhum aparelho encontrado."; }
+
+                for device[index] in Ui.microphones : Choice {
+                    label: device.label;
+                    on: device.current;
+                    clicked => { Ui.use-microphone(index); }
+                }
+
+                Rectangle { height: 12px; }
+
+                Label { text: "DISPOSITIVO DE SAÍDA"; }
+
+                if Ui.speakers.length == 0 : Meta { text: "Nenhum aparelho encontrado."; }
+
+                for device[index] in Ui.speakers : Choice {
+                    label: device.label;
+                    on: device.current;
+                    clicked => { Ui.use-speaker(index); }
+                }
+
+                Meta { text: "Vale para a voz das pessoas, o áudio das telas e os sons do app."; }
+
+                Rectangle { height: 20px; }
+
+                Label { text: "MODO DE ENTRADA"; }
+
+                Choice {
+                    label: "Detecção de voz";
+                    on: Ui.input-mode == "voice";
+                    clicked => { Ui.set-input-mode("voice", Ui.sensitivity); }
+                }
+
+                Choice {
+                    label: "Apertar para falar";
+                    on: Ui.input-mode == "ptt";
+                    clicked => { Ui.set-input-mode("ptt", Ui.sensitivity); }
+                }
+
+                Choice {
+                    label: "Sempre aberto";
+                    on: Ui.input-mode == "open";
+                    clicked => { Ui.set-input-mode("open", Ui.sensitivity); }
+                }
+
+                // ponytail: a tecla do "apertar para falar" é global, e isso é plataforma
+                // (Win32 ou o portal do Linux), fora da interface. Até lá, a tecla é o
+                // espaço com a janela em foco.
+                if Ui.input-mode == "ptt" : Meta {
+                    text: "Segure o espaço com a janela em foco para falar. A tecla global vem numa próxima versão.";
+                }
+
+                if Ui.input-mode == "voice" : VerticalLayout {
+                    spacing: 8px;
+                    padding-top: 12px;
+
+                    Label { text: "SENSIBILIDADE DE ENTRADA"; }
+
+                    Meta { text: "O microfone abre quando o som passa da marca. A barra mostra o nível agora."; }
+
+                    // O nível ao vivo por trás do deslizador: verde até a marca, cinza depois.
+                    Rectangle {
+                        height: 8px;
+                        border-radius: 4px;
+                        background: Theme.surface-input;
+                        clip: true;
+
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * min(1.0, Ui.mic-level);
+                            border-radius: 4px;
+                            background: Ui.mic-level * 100 >= Ui.sensitivity ? Theme.online : Theme.ink-ghost;
+
+                            animate width { duration: 60ms; }
+                        }
+                    }
+
+                    Slider {
+                        minimum: 0;
+                        maximum: 100;
+                        value: Ui.sensitivity;
+                        released(level) => { Ui.set-input-mode("voice", Math.round(level)); }
+                    }
+                }
+
+                Rectangle { height: 20px; }
+
+                Label { text: "PROCESSAMENTO DE VOZ"; }
+
+                // ponytail: as três marcas só ficam guardadas até o `VoiceProcessor` do
+                // `shared/media` (do Atlas) entrar no caminho do microfone; a interface já
+                // manda a preferência pelo nome que ele vai ler.
+                SwitchRow {
+                    text: "Cancelamento de eco";
+                    on: Ui.echo-cancel;
+                    toggled(on) => { Ui.set-voice-flag("echoCancel", on); }
+                }
+
+                SwitchRow {
+                    text: "Supressão de ruído";
+                    on: Ui.noise-suppress;
+                    toggled(on) => { Ui.set-voice-flag("noiseSuppress", on); }
+                }
+
+                SwitchRow {
+                    text: "Controle automático de ganho";
+                    on: Ui.auto-gain;
+                    toggled(on) => { Ui.set-voice-flag("autoGain", on); }
+                }
+
+                Rectangle { height: 12px; }
+
+                SwitchRow {
+                    text: "Silenciar ao entrar";
+                    detail: "Entra no canal de voz com o microfone mutado.";
+                    on: Ui.mute-on-join;
+                    toggled(on) => { Ui.set-voice-flag("muteOnJoin", on); }
+                }
+
+                Rectangle { height: 20px; }
+
+                Label { text: "CONFIGURAÇÕES DE VÍDEO"; }
+
+                Meta { text: "A câmera ainda não está ligada nesta versão do app."; }
+            }
     }
 }
 
@@ -386,7 +542,7 @@ export component SettingsModal inherits Rectangle {
 export component NicknameModal inherits Rectangle {
     property <bool> shown;
 
-    background: #06050abd;
+    background: #000000b3;
     opacity: root.shown ? 1.0 : 0.0;
     init => { root.shown = true; }
 
@@ -400,31 +556,33 @@ export component NicknameModal inherits Rectangle {
         height: box.preferred-height;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2 + (root.shown ? 0px : 10px);
-        background: #100d1af7;
-        border-radius: 22px;
-        border-width: 1px;
-        border-color: #ffffff1a;
-        drop-shadow-blur: 45px;
-        drop-shadow-offset-y: 20px;
-        drop-shadow-color: #000000f2;
+        background: Theme.surface-chat;
+        border-radius: 8px;
+        drop-shadow-blur: 24px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: #00000066;
 
         animate y { duration: 220ms; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
 
         box := VerticalLayout {
-            padding: 28px;
+            padding: 24px;
             spacing: 14px;
 
             Text {
                 text: "Escolha seu apelido";
-                color: Skin.ink-strong;
-                font-family: Skin.sans;
-                font-size: 18px;
-                font-weight: 600;
+                color: Theme.ink-strong;
+                font-size: Theme.title-size;
+                font-weight: 700;
             }
 
-            Muted { text: "É como as pessoas te acham. Sem espaço, e ninguém mais pode usar o mesmo."; }
+            Text {
+                text: "É como as pessoas te acham. Sem espaço, e ninguém mais pode usar o mesmo.";
+                color: Theme.ink-dim;
+                font-size: 14px;
+                wrap: word-wrap;
+            }
 
-            nickname := Field {
+            nickname := DField {
                 text: Ui.user-name;
                 placeholder: "apelido";
                 error: Ui.nickname-error;
@@ -440,13 +598,13 @@ export component NicknameModal inherits Rectangle {
             HorizontalLayout {
                 alignment: space-between;
 
-                LinkButton {
-                    label: "Sair da conta";
-                    vertical-alignment: center;
+                DButton {
+                    text: "Sair da conta";
+                    kind: "text";
                     clicked => { Ui.sign-out(); }
                 }
 
-                PrimaryButton {
+                DButton {
                     text: Ui.nickname-busy ? "Salvando…" : "Confirmar";
                     enabled: !Ui.nickname-busy;
                     clicked => { Ui.rename(nickname.text); }
