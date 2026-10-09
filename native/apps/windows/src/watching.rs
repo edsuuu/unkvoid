@@ -43,6 +43,11 @@ const MOST_WAITING: usize = 30;
 /// pede o quadro-chave.
 const SCREEN_IDLE: Duration = Duration::from_secs(20);
 
+/// Tela sem quadro por isto não segura mais o som dela: foi pausada, saiu da vista ou fechou, e
+/// a espera do `Playout` que ficou é de uma imagem que não anda. A tela parada de quem
+/// transmite repete a imagem de segundo em segundo, bem dentro disto.
+const PICTURE_STILL: Duration = Duration::from_secs(3);
+
 /// O quadro mais novo de cada tela que a janela ainda não desenhou.
 type Fresh = Arc<Mutex<HashMap<String, SharedPixelBuffer<Rgba8Pixel>>>>;
 
@@ -150,7 +155,7 @@ fn route(
                     let samples = pcm(&item.data);
 
                     if let Some(screen) = &item.follows {
-                        speaker.hold(&item.producer_id, lock(delays).get(screen).copied().unwrap_or_default());
+                        speaker.hold(&item.producer_id, picture_wait(screen, &screens, delays));
                     }
 
                     speaker.play(&item.producer_id, &samples);
@@ -179,6 +184,16 @@ fn route(
 
             keep
         });
+    }
+}
+
+/// A espera que o som de uma tela segue: a da imagem dela, enquanto ela anda. Imagem pausada,
+/// fechada ou que ainda não chegou não segura o som; antes ele seguia a espera velha por até
+/// 20 s, atrasado à toa.
+fn picture_wait(screen: &str, screens: &HashMap<String, Screen>, delays: &Delays) -> Duration {
+    match screens.get(screen) {
+        Some(moving) if moving.frames.is_some() && moving.last.elapsed() < PICTURE_STILL => lock(delays).get(screen).copied().unwrap_or_default(),
+        _ => Duration::ZERO,
     }
 }
 
@@ -465,6 +480,37 @@ mod tests {
         bytes.push(7);
 
         assert_eq!(pcm(&bytes), [0.5]);
+    }
+
+    /// O som da tela segue a espera da imagem só enquanto ela anda: pausada, fora da vista ou
+    /// fechada, a espera velha não atrasa mais o som.
+    #[test]
+    fn the_sound_lets_go_of_a_picture_that_stopped() {
+        let delays = Delays::default();
+        let (frames, _queue) = sync_channel(1);
+        let screen = |last: Instant| Screen {
+            producer: "tela".into(),
+            frames: Some(frames.clone()),
+            thread: None,
+            broken: false,
+            stalled: Stalled::default(),
+            dropped: 0,
+            last,
+            ask_keyframe: Arc::new(|_: &str| {}),
+        };
+        let mut screens = HashMap::from([("tela".to_owned(), screen(Instant::now()))]);
+
+        lock(&delays).insert("tela".into(), Duration::from_millis(300));
+
+        assert_eq!(picture_wait("tela", &screens, &delays), Duration::from_millis(300));
+
+        screens.insert("tela".into(), screen(Instant::now() - PICTURE_STILL));
+
+        assert_eq!(picture_wait("tela", &screens, &delays), Duration::ZERO, "a imagem parou");
+
+        screens.clear();
+
+        assert_eq!(picture_wait("tela", &screens, &delays), Duration::ZERO, "a tela fechou");
     }
 
     /// Contra a pilha no ar e alguém transmitindo na sala: prova que o Windows assiste — o
