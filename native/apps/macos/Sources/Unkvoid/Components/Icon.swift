@@ -12,6 +12,7 @@ enum IconName: CaseIterable {
     case chat
     case check
     case chevronDown
+    case chevronRight
     case close
     case copy
     case crown
@@ -22,6 +23,7 @@ enum IconName: CaseIterable {
     case fullscreen
     case gear
     case grid
+    case hash
     case headphones
     case headphonesOff
     case home
@@ -39,6 +41,7 @@ enum IconName: CaseIterable {
     case speaker
     case speakerOff
     case trash
+    case userPlus
     case users
 }
 
@@ -106,6 +109,8 @@ struct Icon: View {
             [.stroke("M5 12l5 5L19 7")]
         case .chevronDown:
             [.stroke("M7 10l5 5 5-5")]
+        case .chevronRight:
+            [.stroke("M10 7l5 5-5 5")]
         case .close:
             [.stroke("M6 6l12 12M18 6L6 18")]
         case .copy:
@@ -127,6 +132,8 @@ struct Icon: View {
                 .stroke("M10.3 4.3a1 1 0 0 1 1-.8h1.4a1 1 0 0 1 1 .8l.3 1.6a7 7 0 0 1 1.7 1l1.5-.6a1 1 0 0 1 1.2.4l.7 1.2a1 1 0 0 1-.2 1.3l-1.2 1a7 7 0 0 1 0 2l1.2 1a1 1 0 0 1 .2 1.3l-.7 1.2a1 1 0 0 1-1.2.4l-1.5-.6a7 7 0 0 1-1.7 1l-.3 1.6a1 1 0 0 1-1 .8h-1.4a1 1 0 0 1-1-.8l-.3-1.6a7 7 0 0 1-1.7-1l-1.5.6a1 1 0 0 1-1.2-.4l-.7-1.2a1 1 0 0 1 .2-1.3l1.2-1a7 7 0 0 1 0-2l-1.2-1a1 1 0 0 1-.2-1.3l.7-1.2a1 1 0 0 1 1.2.4l1.5-.6a7 7 0 0 1 1.7-1z"),
                 .circle(12, 12, 2.5, filled: false),
             ]
+        case .hash:
+            [.stroke("M9 4L7 20M17 4l-2 16M4 9h16M3 15h16")]
         case .grid:
             [
                 .rect(4, 4, 7, 7, 1.2, filled: false),
@@ -173,6 +180,8 @@ struct Icon: View {
             [.stroke("M4 9h4l5-4v14l-5-4H4z"), .stroke("M17 9l5 6M22 9l-5 6")]
         case .trash:
             [.stroke("M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13")]
+        case .userPlus:
+            [.circle(9, 8, 3.5, filled: false), .stroke("M3 20a6 6 0 0 1 12 0M19 8v6M16 11h6")]
         case .users:
             [.circle(9, 8, 3.5, filled: false), .stroke("M3 20a6 6 0 0 1 12 0M16 4.5a3.5 3.5 0 0 1 0 7M21 20a6 6 0 0 0-4-5.6")]
         }

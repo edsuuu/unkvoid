@@ -31,7 +31,7 @@ struct UserSettingsModal: View {
 
     var body: some View {
         ZStack {
-            Color(hex: 0x06050A).opacity(0.74)
+            Color.black.opacity(0.7)
                 .ignoresSafeArea()
                 .onTapGesture(perform: close)
 
@@ -63,7 +63,7 @@ struct UserSettingsModal: View {
                 escape
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .glassPanel()
+            .modalPanel()
             .padding(24)
         }
         .onExitCommand(perform: close)
@@ -140,7 +140,7 @@ struct UserSettingsModal: View {
                     .font(Theme.sans(13))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .foregroundStyle(tint ?? (selected ? Theme.inkStrong : Theme.inkIcon))
+            .foregroundStyle(tint ?? (selected ? Theme.inkStrong : Theme.inkSoft))
             .rowItem(selected: selected)
             .contentShape(Rectangle())
         }
@@ -373,11 +373,11 @@ private struct VoiceTab: View {
                 Text(label)
             }
             .font(Theme.sans(12.5))
-            .foregroundStyle(on ? Theme.inkStrong : Theme.inkIcon)
+            .foregroundStyle(on ? Theme.inkStrong : Theme.inkSoft)
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .background(on ? Theme.brand.opacity(0.2) : Theme.row, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(on ? Theme.brand.opacity(0.5) : Theme.lineStrong, lineWidth: 1))
+            .background(on ? Theme.brand.opacity(0.2) : Theme.hover, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(on ? Theme.brand.opacity(0.5) : Theme.line, lineWidth: 1))
         }
         .buttonStyle(.pointer)
     }
@@ -437,7 +437,7 @@ private struct NoticesTab: View {
         }
         .toggleStyle(.checkbox)
         .font(Theme.sans(13))
-        .foregroundStyle(Theme.inkIcon)
+        .foregroundStyle(Theme.inkSoft)
         .tint(Theme.brand)
     }
 }
@@ -464,12 +464,12 @@ struct KeybindField: View {
             } label: {
                 Text(capturing ? "aperte a tecla…" : label)
                     .font(Theme.mono(12))
-                    .foregroundStyle(capturing ? Theme.lilac2 : value.isEmpty ? Theme.inkDim : Theme.ink)
+                    .foregroundStyle(capturing ? Theme.brandText : value.isEmpty ? Theme.inkDim : Theme.ink)
                     .frame(minWidth: 150)
                     .padding(.vertical, 8)
                     .padding(.horizontal, 12)
-                    .background(Theme.fieldFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(capturing ? Theme.brand.opacity(0.6) : Theme.fieldLine, lineWidth: 1))
+                    .background(Theme.surfaceInput, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(capturing ? Theme.brand.opacity(0.6) : Theme.line, lineWidth: 1))
             }
             .buttonStyle(.pointer)
 
@@ -608,7 +608,7 @@ struct LogsModal: View {
         ModalFrame(title: "Logs", subtitle: path, width: 760, onClose: { model.modal = nil }) {
             Text(lines.isEmpty ? "Nada registrado ainda." : lines.joined(separator: "\n"))
                 .font(Theme.mono(11))
-                .foregroundStyle(Theme.inkIcon)
+                .foregroundStyle(Theme.inkSoft)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } footer: {

@@ -168,7 +168,7 @@ extension AppModel {
                 watchers[producer] = (data["watchers"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
             }
         case "room.session":
-            sessionChanged(data["state"] as? String)
+            sessionChanged(data["state"] as? String, data)
         case "room.failed":
             complain(Self.roomFailure(data["what"] as? String))
         default:
@@ -176,7 +176,7 @@ extension AppModel {
         }
     }
 
-    private func sessionChanged(_ state: String?) {
+    private func sessionChanged(_ state: String?, _ data: [String: Any]) {
         switch state {
         case "lost":
             reconnecting = true
@@ -190,9 +190,49 @@ extension AppModel {
             Task { await thrownOut("Esta conta entrou na sala por outro lugar.") }
         case "kicked":
             Task { await thrownOut("Você foi removido desta sala.") }
+        case "moved":
+            Task { await moved(to: data["to"] as? String, by: data["by"] as? String) }
         default:
             break
         }
+    }
+
+    /// Um moderador moveu esta sessão para outro canal de voz. A sala de origem já acabou no
+    /// servidor; aqui se fecha o que sobrou dela e se entra no destino, que o Laravel deixa
+    /// passar mesmo trancado ou cheio (o passe de 60 s do mover).
+    private func moved(to room: String?, by moderator: String?) async {
+        let destination = tree?.voiceChannels.first { $0.id == Self.channelId(ofRoom: room) }
+
+        closeRoom()
+
+        await voiceChat.close()
+
+        _ = await ask("leaveRoom")
+
+        enteredRoomAt = nil
+
+        guard let destination else {
+            await readState()
+
+            say("Você foi movido para outro canal de voz.")
+
+            return
+        }
+
+        await joinVoice(destination)
+
+        say(moderator.map { "\($0) moveu você para \(destination.name)." } ?? "Você foi movido para \(destination.name).")
+    }
+
+    /// O `to` do `moved` é o ULID do canal de destino. A sala dele no SFU chama-se
+    /// `channel.<ulid>`, e esse nome também é aceito, para o app não depender de qual dos dois o
+    /// servidor manda.
+    static func channelId(ofRoom room: String?) -> String? {
+        guard let room else {
+            return nil
+        }
+
+        return room.hasPrefix("channel.") ? String(room.dropFirst("channel.".count)) : room
     }
 
     /// O servidor tirou esta sessão da sala. A pessoa volta para onde estava antes, e o motivo

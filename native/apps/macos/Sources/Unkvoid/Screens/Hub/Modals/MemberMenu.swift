@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// `modals/MemberMenu.tsx`: quem é a pessoa, mandar mensagem, e o que dá para fazer com ela
-/// aqui — apelido, cargos, mutar, ensurdecer, tirar da voz, expulsar e banir. O que aparece
-/// é o que o núcleo calculou; quem autoriza é o Laravel.
+/// A janelinha de um membro: quem é a pessoa, o volume dela, mandar mensagem, e o que dá para
+/// fazer com ela aqui — apelido, cargos, mutar, ensurdecer, mover para outra voz, tirar da voz,
+/// expulsar e banir. O que aparece é o que o núcleo calculou; quem autoriza é o Laravel.
 struct MemberMenu: View {
     @EnvironmentObject private var model: AppModel
 
@@ -11,6 +11,7 @@ struct MemberMenu: View {
     @State private var nickname = ""
     @State private var note = ""
     @State private var banning = false
+    @State private var moving = false
     @State private var reason = ""
 
     var body: some View {
@@ -23,19 +24,19 @@ struct MemberMenu: View {
                 .ignoresSafeArea()
                 .onTapGesture { model.memberMenu = nil }
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
-                    Avatar(name: member.displayName, url: member.avatar_url, size: 38, mine: this)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 12) {
+                    Avatar(name: member.displayName, url: member.avatar_url, size: 40, mine: this, status: model.online.contains("\(member.user_id)") || this, ring: Theme.surfaceFloat)
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(member.displayName)
-                            .font(Theme.sans(13.5, .semibold))
-                            .foregroundStyle(Theme.ink)
+                            .font(Theme.header)
+                            .foregroundStyle(Theme.inkStrong)
                             .lineLimit(1)
 
                         if member.nickname != nil {
                             Text(member.name)
-                                .font(Theme.sans(11))
+                                .font(Theme.meta)
                                 .foregroundStyle(Theme.inkDim)
                         }
 
@@ -44,44 +45,56 @@ struct MemberMenu: View {
                         }
                     }
                 }
+                .padding(.horizontal, 8)
+                .padding(.top, 4)
+                .padding(.bottom, 8)
 
                 if !badges.isEmpty {
                     FlowRow(spacing: 4) {
                         ForEach(badges) { role in
-                            Text(role.name)
-                                .font(Theme.sans(10.5))
-                                .foregroundStyle(Theme.hex(role.color) ?? Theme.inkIcon)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                                .overlay(Capsule().strokeBorder(Theme.hex(role.color) ?? Theme.lineStrong, lineWidth: 1))
+                            HStack(spacing: 4) {
+                                Circle().fill(Theme.hex(role.color) ?? Theme.inkDim).frame(width: 12, height: 12)
+
+                                Text(role.name)
+                                    .font(Theme.meta)
+                                    .foregroundStyle(Theme.ink)
+                            }
+                            .padding(.horizontal, 6)
+                            .frame(height: 22)
+                            .background(Theme.hover, in: RoundedRectangle(cornerRadius: Theme.Size.radius, style: .continuous))
                         }
                     }
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 8)
                 }
 
                 if !this, model.voiceProducer(of: member) != nil {
-                    Divider().overlay(Theme.line)
+                    MenuDivider()
 
-                    HStack(spacing: 8) {
-                        Icon(name: .speaker, size: 13).foregroundStyle(Theme.inkIcon)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Volume do usuário").labelMono()
 
-                        Slider(value: Binding(
-                            get: { Double(model.voiceVolumes["user:\(member.user_id)"] ?? 1) },
-                            set: { model.setVoiceVolume(member, Float($0)) }
-                        ), in: 0 ... 1)
-                            .tint(Theme.brand)
+                        HStack(spacing: 8) {
+                            Slider(value: Binding(
+                                get: { Double(model.voiceVolumes["user:\(member.user_id)"] ?? 1) },
+                                set: { model.setVoiceVolume(member, Float($0)) }
+                            ), in: 0 ... 2)
+                                .tint(Theme.brand)
 
-                        Text("\(Int((model.voiceVolumes["user:\(member.user_id)"] ?? 1) * 100))%")
-                            .font(Theme.mono(10.5))
-                            .foregroundStyle(Theme.inkDim)
-                            .frame(width: 36, alignment: .trailing)
+                            Text("\(Int((model.voiceVolumes["user:\(member.user_id)"] ?? 1) * 100))%")
+                                .font(Theme.meta)
+                                .foregroundStyle(Theme.inkDim)
+                                .frame(width: 40, alignment: .trailing)
+                        }
                     }
+                    .padding(.horizontal, 8)
                     .help("Volume desta pessoa — só do seu lado")
                 }
 
                 if !this {
-                    Divider().overlay(Theme.line)
+                    MenuDivider()
 
-                    line("Mensagem para \(member.name)", text: $note, button: "Enviar") {
+                    line("Mensagem para \(member.displayName)", text: $note, button: "Enviar") {
                         let body = note.trimmingCharacters(in: .whitespacesAndNewlines)
 
                         guard !body.isEmpty else {
@@ -101,8 +114,9 @@ struct MemberMenu: View {
 
                 if !actions.any, !this {
                     Text("Nada que você possa mudar nesta pessoa.")
-                        .font(Theme.sans(12))
+                        .font(Theme.meta)
                         .foregroundStyle(Theme.inkDim)
+                        .padding(8)
                 }
 
                 if actions.nickname {
@@ -117,31 +131,52 @@ struct MemberMenu: View {
                     roles
                 }
 
-                if actions.mute || actions.deafen || actions.disconnect || actions.kick || actions.ban {
-                    Divider().overlay(Theme.line)
+                if actions.mute || actions.deafen || actions.disconnect {
+                    MenuDivider()
 
                     if actions.mute {
-                        item(member.server_mute ? "Desmutar no servidor" : "Mutar no servidor") {
-                            await model.updateMember(member, ["server_mute": !member.server_mute])
+                        MenuRow(label: member.server_mute ? "Desmutar no servidor" : "Mutar no servidor") {
+                            Task { await model.updateMember(member, ["server_mute": !member.server_mute]) }
                         }
                     }
 
                     if actions.deafen {
-                        item(member.server_deaf ? "Devolver o áudio" : "Ensurdecer no servidor") {
-                            await model.updateMember(member, ["server_deaf": !member.server_deaf])
+                        MenuRow(label: member.server_deaf ? "Voltar a ouvir no servidor" : "Ensurdecer no servidor") {
+                            Task { await model.updateMember(member, ["server_deaf": !member.server_deaf]) }
+                        }
+                    }
+
+                    if actions.disconnect, !destinations.isEmpty {
+                        MenuRow(icon: moving ? .chevronDown : .chevronRight, label: "Mover para") {
+                            withAnimation(.easeOut(duration: 0.15)) { moving.toggle() }
+                        }
+
+                        if moving {
+                            ForEach(destinations) { channel in
+                                MenuRow(icon: .speaker, label: channel.name) {
+                                    Task { await model.moveToVoice(member, to: channel) }
+                                }
+                                .padding(.leading, 16)
+                            }
                         }
                     }
 
                     if actions.disconnect {
-                        item("Desconectar da sala de voz") { await model.disconnectFromVoice(member) }
+                        MenuRow(label: "Desconectar") {
+                            Task { await model.disconnectFromVoice(member) }
+                        }
                     }
+                }
+
+                if actions.kick || actions.ban {
+                    MenuDivider()
 
                     if actions.kick {
-                        item("Expulsar do servidor", danger: true) { model.kick(member) }
+                        MenuRow(label: "Expulsar \(member.displayName)", danger: true) { model.kick(member) }
                     }
 
                     if actions.ban, !banning {
-                        item("Banir do servidor…", danger: true) { banning = true }
+                        MenuRow(label: "Banir \(member.displayName)", danger: true) { banning = true }
                     }
 
                     if actions.ban, banning {
@@ -151,11 +186,16 @@ struct MemberMenu: View {
                     }
                 }
             }
-            .padding(12)
-            .frame(width: 272)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .frame(width: 280)
             .popoverPanel()
         }
         .onAppear { nickname = member.nickname ?? "" }
+    }
+
+    private var destinations: [Channel] {
+        model.moveDestinations(for: member)
     }
 
     private var roles: some View {
@@ -164,9 +204,9 @@ struct MemberMenu: View {
 
         return VStack(alignment: .leading, spacing: 4) {
             if !offered.isEmpty {
-                Divider().overlay(Theme.line)
+                MenuDivider()
 
-                Text("Cargos").labelMono()
+                Text("Cargos").labelMono().padding(.horizontal, 8)
             }
 
             ForEach(offered) { role in
@@ -179,10 +219,11 @@ struct MemberMenu: View {
                     }
                 )) {
                     Text(role.name)
-                        .font(Theme.sans(12.5))
-                        .foregroundStyle(Theme.hex(role.color) ?? Theme.inkIcon)
+                        .font(Theme.button)
+                        .foregroundStyle(Theme.hex(role.color) ?? Theme.inkSoft)
                 }
                 .toggleStyle(.checkbox)
+                .padding(.horizontal, 8)
             }
         }
     }
@@ -191,11 +232,11 @@ struct MemberMenu: View {
         HStack(spacing: 6) {
             TextField(placeholder, text: text)
                 .textFieldStyle(.plain)
-                .font(Theme.sans(12.5))
+                .font(Theme.button)
+                .foregroundStyle(Theme.ink)
                 .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(Theme.fieldFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Theme.fieldLine, lineWidth: 1))
+                .frame(height: Theme.Size.row)
+                .background(Theme.surfaceInput, in: RoundedRectangle(cornerRadius: Theme.Size.radius, style: .continuous))
                 .onSubmit { Task { await action() } }
 
             if button == "Banir" {
@@ -207,23 +248,10 @@ struct MemberMenu: View {
                 Button(button) {
                     Task { await action() }
                 }
-                .buttonStyle(PrimaryButton(wide: false, font: Theme.sans(12, .semibold)))
+                .buttonStyle(PrimaryButton(wide: false))
             }
         }
-    }
-
-    private func item(_ label: String, danger: Bool = false, _ action: @escaping @MainActor () async -> Void) -> some View {
-        Button {
-            Task { await action() }
-        } label: {
-            Text(label)
-                .font(Theme.sans(12.5))
-                .foregroundStyle(danger ? Theme.danger : Theme.inkIcon)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 7)
-                .padding(.horizontal, 10)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.pointer)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
     }
 }

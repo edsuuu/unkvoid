@@ -47,6 +47,34 @@ struct HubTests {
 
     private static var kept: AppModel?
 
+    /// `channel.<ulid>` é a sala de um canal no SFU; o movido precisa do id do canal para pedir
+    /// o token do destino.
+    @Test
+    func theRoomOfAVoiceChannelNamesTheChannel() {
+        #expect(AppModel.channelId(ofRoom: "channel.01HZXABC") == "01HZXABC")
+        #expect(AppModel.channelId(ofRoom: "abcdefghijkl") == "abcdefghijkl")
+        #expect(AppModel.channelId(ofRoom: nil) == nil)
+    }
+
+    /// A mesma pessoa, logo depois, sem responder a ninguém: a mensagem continua a anterior e sai
+    /// sem foto nem nome. Qualquer coisa diferente recomeça o grupo.
+    @Test
+    func aMessageContinuesThePreviousOneOnlyFromTheSamePersonSoonAfter() {
+        let ada = Person(id: 1, name: "Ada", avatar_url: nil)
+        let grace = Person(id: 2, name: "Grace", avatar_url: nil)
+        let first = message(1, from: ada, at: "2026-10-09T10:00:00Z")
+
+        #expect(ChatPanel.continues(message(2, from: ada, at: "2026-10-09T10:03:00Z"), after: first))
+        #expect(!ChatPanel.continues(message(3, from: ada, at: "2026-10-09T10:08:00Z"), after: first))
+        #expect(!ChatPanel.continues(message(4, from: grace, at: "2026-10-09T10:01:00Z"), after: first))
+        #expect(!ChatPanel.continues(message(5, from: ada, at: "2026-10-09T10:01:00Z", replyTo: ReplyTo(id: 1, name: "Ada", body: "oi")), after: first))
+        #expect(!ChatPanel.continues(message(6, from: ada, at: "2026-10-09T10:01:00Z", type: "join"), after: first))
+    }
+
+    private func message(_ id: Int, from person: Person, at when: String, replyTo: ReplyTo? = nil, type: String = "user") -> Message {
+        Message(id: id, channel_id: "c", type: type, user: person, reply_to: replyTo, files: nil, body: "x", edited_at: nil, created_at: when)
+    }
+
     @Test(.enabled(if: ready))
     func aMessageIsSentAnsweredEditedAndDeleted() async throws {
         let model = try await signedIn()

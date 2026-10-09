@@ -86,11 +86,11 @@ private struct RoomToolbar: View {
                         .monospacedDigit()
                 }
                 .font(Theme.mono(11))
-                .foregroundStyle(Theme.inkIcon)
+                .foregroundStyle(Theme.inkSoft)
                 .padding(.vertical, 6)
                 .padding(.horizontal, 12)
-                .background(Theme.row, in: Capsule())
-                .overlay(Capsule().strokeBorder(Theme.lineStrong, lineWidth: 1))
+                .background(Theme.hover, in: Capsule())
+                .overlay(Capsule().strokeBorder(Theme.line, lineWidth: 1))
                 .help("Tempo na sala")
             }
 
@@ -119,7 +119,7 @@ private struct RoomToolbar: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .glass(radius: 16)
+        .surface()
     }
 }
 
@@ -179,7 +179,7 @@ private struct ShareButton: View {
                     Task { await model.openShare() }
                 }
 
-                MenuRow(icon: .close, label: "Parar de transmitir", tint: Theme.danger) {
+                MenuRow(icon: .close, label: "Parar de transmitir", danger: true) {
                     open = false
 
                     Task { await model.stopSharing() }

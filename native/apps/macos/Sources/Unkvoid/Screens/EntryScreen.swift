@@ -25,7 +25,7 @@ struct EntryScreen: View {
             .padding(.top, 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.back)
+        .background(Theme.surfaceChat)
     }
 }
 
@@ -100,7 +100,7 @@ private struct RoomCard: View {
         }
         .padding(32)
         .frame(maxWidth: 420, maxHeight: .infinity, alignment: .top)
-        .glass(radius: 22, shadowed: true)
+        .surface()
     }
 
     private func create() {
@@ -206,7 +206,7 @@ private struct AuthCard: View {
         }
         .padding(32)
         .frame(maxWidth: 420, maxHeight: .infinity, alignment: .top)
-        .glass(radius: 22, shadowed: true)
+        .surface()
     }
 
     private var googleLabel: String {
