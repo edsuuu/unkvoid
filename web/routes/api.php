@@ -107,10 +107,12 @@ Route::name('api.')->group(function (): void {
             Route::prefix('messages')->name('messages.')->group(function (): void {
                 Route::get('/', [MessageController::class, 'index'])->name('index');
                 Route::post('/', [MessageController::class, 'store'])->middleware('throttle:60,1')->name('store');
+                Route::post('/read', [MessageController::class, 'read'])->name('read');
             });
 
             Route::prefix('voice')->name('voice.')->group(function (): void {
                 Route::post('/token', [VoiceController::class, 'token'])->name('token');
+                Route::patch('/members/{user}', [VoiceController::class, 'update'])->name('update');
                 Route::delete('/members/{user}', [VoiceController::class, 'disconnect'])->name('disconnect');
             });
         });

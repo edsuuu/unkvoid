@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Enums\ChannelTypeEnum;
 use App\Enums\MessageTypeEnum;
 use App\Enums\PermissionEnum;
 use App\Events\MessageDeleted;
@@ -604,4 +605,45 @@ it('o log do tempo real não guarda a conversa: só o canal e o evento', functio
         expect(json_encode($context))->not->toContain($segredo);
         expect($context['body'])->toContain('MessageSent');
     }
+});
+
+it('conta as não lidas por canal e por servidor, e abrir o canal ou marcar como lido zera', function (): void {
+    fakeSfu();
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+    $text = $server->channels()->where('type', 'text')->firstOrFail();
+    $secret = $server->createChannel($owner, 'segredo', ChannelTypeEnum::Text, null, null);
+    $secret->overwrites()->create(['target_type' => 'role', 'target_id' => $server->everyoneRole()->id, 'allow' => 0, 'deny' => PermissionEnum::ViewChannel->value]);
+
+    $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$text->id}/messages", ['body' => 'um'])->assertCreated();
+    $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$text->id}/messages", ['body' => 'dois'])->assertCreated();
+    $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$secret->id}/messages", ['body' => 'escondido'])->assertCreated();
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$text->id}/messages", ['body' => 'minha'])->assertCreated();
+
+    // As minhas não contam, e o canal oculto não acende o servidor.
+    $this->actingAs($member, 'sanctum')->getJson("/api/servers/{$server->id}")->assertOk()->assertJsonPath('data.channels.0.unread', 2);
+    $this->actingAs($member, 'sanctum')->getJson('/api/servers')->assertOk()->assertJsonPath('data.0.unread', 2);
+    $this->actingAs($owner, 'sanctum')->getJson('/api/servers')->assertOk()->assertJsonPath('data.0.unread', 1);
+
+    // Abrir o canal (a primeira página) lê tudo; paginar para trás não.
+    $this->actingAs($member, 'sanctum')->getJson("/api/channels/{$text->id}/messages")->assertOk();
+    $this->actingAs($member, 'sanctum')->getJson("/api/servers/{$server->id}")->assertOk()->assertJsonPath('data.channels.0.unread', 0);
+
+    $third = (int) $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$text->id}/messages", ['body' => 'três'])->assertCreated()->json('data.id');
+    $this->actingAs($owner, 'sanctum')->postJson("/api/channels/{$text->id}/messages", ['body' => 'quatro'])->assertCreated();
+    $this->actingAs($member, 'sanctum')->getJson("/api/channels/{$text->id}/messages?before={$third}")->assertOk();
+    $this->actingAs($member, 'sanctum')->getJson("/api/servers/{$server->id}")->assertOk()->assertJsonPath('data.channels.0.unread', 2);
+
+    // Marcar até uma mensagem deixa as depois dela; marcar sem id lê tudo; a marca não volta.
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$text->id}/messages/read", ['message_id' => $third])->assertNoContent();
+    $this->actingAs($member, 'sanctum')->getJson("/api/servers/{$server->id}")->assertOk()->assertJsonPath('data.channels.0.unread', 1);
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$text->id}/messages/read")->assertNoContent();
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$text->id}/messages/read", ['message_id' => 1])->assertNoContent();
+    $this->actingAs($member, 'sanctum')->getJson("/api/servers/{$server->id}")->assertOk()->assertJsonPath('data.channels.0.unread', 0);
+    $this->actingAs($member, 'sanctum')->getJson('/api/servers')->assertOk()->assertJsonPath('data.0.unread', 0);
+
+    // Canal que a pessoa não vê não se marca.
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$secret->id}/messages/read")->assertForbidden();
 });

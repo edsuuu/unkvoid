@@ -72,6 +72,7 @@ Ações novas (mesmo envelope `{id, action, data}`):
 | `resumeProducer` | `{ producerId }` | `{ status: 'resumed' }` |
 | `closeConsumer` | `{ consumerId }` | `{ status: 'closed' }` |
 | `ping` | `{}` | `{}` — vale sem ter entrado em sala |
+| `voiceState` | `{ muted, deafened }` (os dois booleanos, obrigatórios; só dentro de sala) | `{ muted, deafened }` |
 
 `Source` passa a ser `screen | screenAudio | mic | camera`. `producePlain` aceita os
 quatro. `newProducer`, `producerClosed`, `consume`, `consumePlain` e `describePeers`
@@ -138,6 +139,32 @@ o Laravel o `left` da sala antiga. O visitante (`guest:`) só é substituído pe
 `peerJoined`, então valer como identidade deixaria qualquer um derrubar qualquer um. O
 app ignora `replaced`, `kicked` e `closed` de um `SfuClient` que já não é o atual.
 
+**Worker do mediasoup que morre leva só as salas dele.** O socket de cada pessoa dessas salas
+fecha com o código **1012** (servidor reiniciando), sem evento antes; o worker renasce no mesmo
+lugar e com as mesmas portas. Para o app é uma queda como outra qualquer: reconecta com a
+`resumeKey`, recebe `resumed: false` (a sala acabou) e publica de novo. As outras salas não
+percebem nada. Sem nenhum worker vivo, o `GET /health` responde **503** e o `join` também; o
+corpo do `/health` traz `workersDown`, quantos estão caídos agora.
+
+**Mover alguém de voz é o `kick` com destino.** O `POST /rooms/:code/kick` com `to` manda ao
+peer `moved { to, by }` (`to` é o ULID do canal de destino, `by` o nome de quem moveu, ou
+`null`) em vez de `kicked`, e fecha o socket com o código **4003** (`moved`; 4001 é `kicked`,
+4002 é `replaced`). A sala recebe só o `peerLeft` de sempre, sem `peerKicked`, e o webhook
+`left` sai normal. O app do movido **não** trata `moved` como queda: para o `SfuClient` antes do
+fechamento (como no `kicked`), sai da sala sem o toque de saída, pede o token de voz do destino
+ao Laravel e entra sozinho — o SFU só avisa. O app antigo, que não conhece `moved`, reconecta
+na origem com token novo: por isso o Laravel recusa o token da origem por 60 s depois de mover.
+
+**O estado de voz de cada pessoa (mudo e surdo) é dela, e o SFU só repete.** O app manda
+`voiceState { muted, deafened }` logo depois de **cada** `join` (entrada nova nasce
+`false/false`; a retomada guarda o que tinha) e a cada troca. O SFU guarda no `Peer`, devolve nos
+`peers` do `join` (`muted`, `deafened` por pessoa) e no `GET /presence`, e publica ele mesmo, no
+tempo real, `VoiceMuteUpdated { channel_id, user_id, name, muted, deafened }` em
+`channel.<room>` — só em sala de 26 caracteres (canal), só para `sub` de conta (`user:N`), e só
+quando o estado mudou. O nome não é `VoiceStateUpdated` de propósito: o app antigo tira da
+lista quem chega nesse evento com `event` diferente de `joined`. Mudo e surdo **do servidor**
+(`server_mute`, `server_deaf`) continuam vindo do Laravel, na árvore.
+
 Quem está logado entra na sala por código **com token**: `POST /api/rooms/{code}/token`
 (`auth:sanctum`, código de 3 a 32 caracteres e nunca 26) devolve o mesmo
 `{ token, url, expires_in }` da voz, com `room` = o código, `sub` = a conta e
@@ -153,10 +180,10 @@ sobre `ts\nMÉTODO\ncaminho\ncorpo`, janela de 300 s — como o `kick` de hoje):
 
 | rota | corpo | resposta |
 |---|---|---|
-| `POST /rooms/:code/kick` (já existe) | `{ "userId": "user:12" }` | `{ kicked: n }` |
+| `POST /rooms/:code/kick` (já existe) | `{ "userId": "user:12", "to"?: "<ulid do destino>", "by"?: "Edsu" }` — com `to`, é mover (acima); `to` fora de `[a-z0-9]{26}` ou `by` que não é string de até 64 → 422 | `{ kicked: n }` |
 | `POST /broadcast` | `{ channel, event, data }` — o tempo real do Laravel | `{ delivered: n }` (quantos sockets inscritos receberam) |
 | `POST /rooms/:code/mute` | `{ "userId": "user:12", "muted": true }` — pausa/retoma o producer `mic` daquela conta | `{ muted: n }` |
-| `GET /presence` | corpo vazio | `{ rooms: { "<room>": [ { sub, name, sources: ["mic","screen"] } ] } }` |
+| `GET /presence` | corpo vazio | `{ rooms: { "<room>": [ { sub, name, sources: ["mic","screen"], muted, deafened } ] } }` |
 
 `consumePlain` devolve também `ssrc` do consumer: o receptor nativo do Linux separa os
 producers de uma mesma porta por SSRC, sem adivinhar pelo primeiro pacote.
@@ -244,7 +271,7 @@ Servidores:
 
 | rota | corpo | resposta |
 |---|---|---|
-| `GET /api/servers` | — | `[ { id, name, owner_id, icon_url, last_accessed_at } ]`, do último acesso à voz mais recente para o mais antigo; nunca acessado vai para o fim, pela data em que entrou no servidor |
+| `GET /api/servers` | — | `[ { id, name, owner_id, icon_url, last_accessed_at, unread } ]`, do último acesso à voz mais recente para o mais antigo; nunca acessado vai para o fim, pela data em que entrou no servidor. `unread` é a soma das não lidas dos canais que a pessoa vê (abaixo) |
 | `POST /api/servers` | `{ name }` | `ServerResource` (cria `@everyone`, `#geral` texto, `Geral` voz) |
 | `GET /api/servers/{server}` | — | ver "árvore" abaixo |
 | `PATCH /api/servers/{server}` | `{ name }` | `ServerResource` (`MANAGE_SERVER`) |
@@ -277,15 +304,23 @@ membro apagados de vez saem da lista, porque o filtro é por id que ainda existe
 { "id": 1, "name": "Meu servidor", "owner_id": 12, "icon_url": null, "invite_code": "abcdef1234" (só com CREATE_INVITE, senão null),
   "me": { "user_id": 12, "permissions": 262143, "top_position": 3 },   // dono: top_position = 2147483647
   "roles": [ { "id": 1, "name": "@everyone", "color": null, "position": 0, "permissions": 31552, "is_everyone": true } ],
-  "channels": [ { "id": "01j7…", "name": "geral", "type": "text", "topic": null, "position": 0, "user_limit": null,
+  "channels": [ { "id": "01j7…", "name": "geral", "type": "text", "parent_id": null, "topic": null, "position": 0, "user_limit": null,
+                  "unread": 3,            // mensagens de outras pessoas depois da minha marca de leitura; 0 em categoria
                   "permissions": 31552,   // as MINHAS efetivas neste canal
                   "overwrites": [ { "target_type": "role", "target_id": 1, "allow": 0, "deny": 256 } ] } ],   // só com MANAGE_ROLES
   "members": [ { "user_id": 12, "name": "Edsu", "avatar_url": null, "nickname": null, "role_ids": [1, 3],
                  "server_mute": false, "server_deaf": false, "is_owner": true } ],
-  "voice": { "01j7…": [ { "user_id": 12, "name": "Edsu", "sources": ["mic"] } ] },   // do SFU (/presence), cache 3 s
+  "voice": { "01j7…": [ { "user_id": 12, "name": "Edsu", "sources": ["mic"], "muted": false, "deafened": false } ] },   // do SFU (/presence), cache 3 s
   "bans": [ { "user_id": 40, "name": "Fulano", "reason": "…", "banned_by": 12, "created_at": "…" } ] }   // só com BAN_MEMBERS; banned_by null se quem baniu apagou a conta
 ```
 Canais que eu não tenho `VIEW_CHANNEL` **não aparecem**.
+
+**Categoria** é um canal com `type: "category"`: agrupa os de texto e de voz que apontam para
+ela por `parent_id`, não tem chat, voz nem `user_limit`, e não entra em outra categoria. A
+visibilidade dela é a de qualquer canal (as próprias sobrescritas); as dos filhos **não**
+sincronizam com a dela — cada canal tem as suas, como antes. Apagar a categoria devolve os
+canais dela à raiz (`parent_id: null`). A ordem é `position`, dentro e fora de categoria; o app
+agrupa por `parent_id`.
 
 Membros (`{user}` é id de usuário):
 
@@ -309,9 +344,9 @@ Canais:
 
 | rota | corpo |
 |---|---|
-| `POST /api/servers/{server}/channels` | `{ name, type, topic?, user_limit? }` (`MANAGE_CHANNELS`) |
-| `PATCH /api/channels/{channel}` | `{ name?, topic?, position?, user_limit? }` |
-| `DELETE /api/channels/{channel}` | — (último canal de texto → 422) |
+| `POST /api/servers/{server}/channels` | `{ name, type: text\|voice\|category, topic?, user_limit?, parent_id? }` (`MANAGE_CHANNELS`; `parent_id` tem de ser categoria do mesmo servidor, e categoria não leva `parent_id` nem `user_limit` → 422) |
+| `PATCH /api/channels/{channel}` | `{ name?, topic?, position?, user_limit?, parent_id? }` (`parent_id: null` tira da categoria) |
+| `DELETE /api/channels/{channel}` | — (último canal de texto → 422; categoria solta os canais dela) |
 | `PUT /api/channels/{channel}/overwrites/{type}/{id}` | `{ allow, deny }` (`MANAGE_ROLES`; `type` = `role`\|`member`; `id` = id do cargo ou id do usuário) |
 | `DELETE /api/channels/{channel}/overwrites/{type}/{id}` | — |
 
@@ -319,7 +354,8 @@ Mensagens:
 
 | rota | corpo | resposta |
 |---|---|---|
-| `GET /api/channels/{channel}/messages?before={id}` | — | 50 mais recentes antes de `before`, ordem crescente: `[ { id, channel_id, user: {id,name,avatar_url}, type, body, files, reply_to, edited_at, created_at } ]` |
+| `GET /api/channels/{channel}/messages?before={id}` | — | 50 mais recentes antes de `before`, ordem crescente: `[ { id, channel_id, user: {id,name,avatar_url}, type, body, files, reply_to, edited_at, created_at } ]`. **Sem `before`, marca o canal como lido** até a mensagem mais recente — é o canal aberto na tela; paginar para trás não marca |
+| `POST /api/channels/{channel}/messages/read` | `{ message_id? }` | 204. Marca como lido até `message_id` (sem ele, até a mais recente); a marca nunca volta. É o que o app chama quando a mensagem cai com o canal **já aberto**, e o "Marcar como lido" do menu. `VIEW_CHANNEL`; categoria → 403 |
 | `POST /api/channels/{channel}/messages` | JSON `{ body }` (1–2000), `reply_to_id` opcional; ou `multipart` com `images[]` (1 a 3 arquivos, jpeg/png/webp/gif, ≤ 2 MB cada) e aí o `body` é opcional (0–2000) | `MessageResource` (`SEND_MESSAGES`). O `reply_to_id` tem de ser de mensagem **do mesmo canal**, senão 422: aceitar id de fora vazaria texto de canal que a pessoa talvez nem enxergue |
 | `PATCH /api/messages/{message}` | `{ body }` | só o autor. As imagens não mudam; o `body` só pode ficar vazio em mensagem que tem imagem |
 | `DELETE /api/messages/{message}` | — | autor ou `MANAGE_MESSAGES`. Apaga também as imagens do bucket e as linhas de `files`: quem apagou uma foto mandada por engano não pode deixá-la no ar |
@@ -334,7 +370,14 @@ pivô para ela, e criar é migration.
 
 **Canal de voz também tem chat.** As rotas e os eventos acima valem para `type: voice` com as
 mesmas permissões (`VIEW_CHANNEL` para ler, `SEND_MESSAGES` para escrever); o app mostra esse
-chat ao lado do palco de quem está naquela voz.
+chat ao lado do palco de quem está naquela voz. Categoria não tem: 403.
+
+**Não lidas.** `unread` de um canal é quantas mensagens **de outras pessoas** chegaram depois da
+marca de leitura da pessoa naquele canal (`channel_reads`: uma linha por pessoa e canal com o id
+da última mensagem lida; sem linha, nunca leu e tudo conta). As próprias mensagens nunca contam.
+O `unread` do servidor (`GET /api/servers`) soma só os canais que a pessoa vê: canal oculto não
+acende a bolinha. O tempo real não traz o número: o app soma o `MessageSent` que chega em canal
+que não está aberto e zera ao abrir (o `GET` marca) — ao reconectar, a árvore traz o número certo.
 
 `reply_to` é `null` ou `{ id, name, body }` com o corpo cortado em 120 caracteres — é só o
 que o cartão da resposta mostra. Apagar a mensagem original é soft delete: a resposta
@@ -352,7 +395,8 @@ Voz:
 
 | rota | corpo | resposta |
 |---|---|---|
-| `POST /api/channels/{channel}/voice/token` | — | `{ token, url, expires_in: 60 }` (`CONNECT` no canal de voz; `user_limit` cheio → 403; grava `channel_accesses`) |
+| `POST /api/channels/{channel}/voice/token` | — | `{ token, url, expires_in: 60 }` (`CONNECT` no canal de voz; `user_limit` cheio → 403; grava `channel_accesses`). Quem acabou de ser **movido para cá** entra sem `CONNECT` e sem contar o limite, uma vez, por 60 s; quem acabou de ser **movido daqui** é recusado por 60 s (403 "Você acabou de ser movido para outro canal.") |
+| `PATCH /api/channels/{channel}/voice/members/{user}` | `{ channel_id }` (o ULID do destino) | 204: **move** a pessoa para outra voz (regra do Discord). Quem move: `MOVE_MEMBERS` na origem **e** no destino, `CONNECT` no destino, e hierarquia sobre a pessoa. Quem é movido: **não** precisa de `CONNECT` e o `user_limit` do destino é ignorado; só tem de **ver** o destino (403); ela tem de estar na voz da origem agora (404); o destino tem de ser canal de voz do mesmo servidor e outro que a origem (422). O Laravel grava o passe de 60 s e chama o `kick` do SFU com `to` e `by`; o resto é o SFU avisar `moved` e o app do movido entrar sozinho (acima). `VoiceStateUpdated left/joined` saem pelos webhooks como sempre |
 | `DELETE /api/channels/{channel}/voice/members/{user}` | — | 204 (`MOVE_MEMBERS` + hierarquia; `kick` no SFU) |
 
 Webhook (assinado, sem Sanctum): `POST /api/sfu/events` — corpo acima. `joined` fecha
@@ -433,7 +477,7 @@ mais recentes do canal e da conversa abertos, emendando com o que já estava na 
 
 | canal | quem entra | eventos |
 |---|---|---|
-| `channel.{ulid}` | `VIEW_CHANNEL` | texto: `MessageSent { message }`, `MessageUpdated { message }`, `MessageDeleted { id, channel_id }` · voz: `VoiceStateUpdated { channel_id, user_id, name, event: joined\|left }` (no canal da própria voz, para canal oculto não vazar quem está nele; o app assina o canal de cada voz que enxerga) |
+| `channel.{ulid}` | `VIEW_CHANNEL` | texto: `MessageSent { message }`, `MessageUpdated { message }`, `MessageDeleted { id, channel_id }` · voz: `VoiceStateUpdated { channel_id, user_id, name, event: joined\|left }` (no canal da própria voz, para canal oculto não vazar quem está nele; o app assina o canal de cada voz que enxerga) · `VoiceMuteUpdated { channel_id, user_id, name, muted, deafened }` (publicado pelo **SFU**, não pelo Laravel: é o `voiceState` de quem está na voz) |
 | `server.{id}` | membro | `ServerUpdated { server_id }` (qualquer mudança de estrutura: o app refaz o `GET`) |
 | `user.{id}` | o próprio | `FriendshipUpdated { friendship, removed }` (`FriendResource`, nos canais dos **dois** lados) · `MemberRemoved { server_id, reason: kicked\|banned }` · `DirectMessageCreated { message, recipient }`, `DirectMessageUpdated { message, recipient }`, `DirectMessageDeleted { id }` (nos canais dos **dois** lados da conversa; `message` é o `DirectMessageResource` sem o `mine`) |
 
@@ -558,7 +602,7 @@ As ações de `unkvoid_app`:
 | `sendMessage` | `{channel, body}` | `{ok, message}` |
 | `editMessage` | `{id, body}` | `{ok, message}` |
 | `deleteMessage` | `{id}` | `{ok}` |
-| `api` | `{name, params, body}` | `{ok, data}`: uma rota do Laravel pelo **nome** (`shared/core/src/routes.rs`): `createServer`, `kickMember`, `putOverwrite`, `friends`, `sendDirect`… `params` preenche o caminho (`{server}`, `{user}`) e pode levar `query` |
+| `api` | `{name, params, body}` | `{ok, data}`: uma rota do Laravel pelo **nome** (`shared/core/src/routes.rs`): `createServer`, `kickMember`, `putOverwrite`, `friends`, `sendDirect`… `params` preenche o caminho (`{server}`, `{user}`) e pode levar `query`. **Pendente no núcleo** (09/10/2026): `moveInVoice` (`PATCH …/voice/members/{user}`), `readMessages` (`POST …/messages/read`), e tratar `moved` em `session.rs` sem virar `kicked` |
 | `upload` | `{name, params, field, files, fields}` | `{ok, data}`: o mesmo, em `multipart` — foto, ícone do servidor, imagens de uma mensagem. `files` são caminhos no disco |
 | `preference`, `setPreference` | `{key}` / `{key, value}` | `{value}` / `{ok}`: o que se guarda em disco, com as chaves do app de hoje (`unkvoid:voice`…). O token não sai por aqui |
 | `keys`, `keyName` | `{accelerator}` / `{code}` | macOS: um atalho (`CmdOrCtrl+Shift+KeyM`) nos códigos do sistema, e o caminho de volta |

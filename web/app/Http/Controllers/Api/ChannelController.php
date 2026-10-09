@@ -16,7 +16,7 @@ use Illuminate\Http\Response;
 use Throwable;
 
 /**
- * Canais de texto e de voz de um servidor.
+ * Canais de texto e de voz de um servidor, e as categorias que os agrupam.
  */
 final class ChannelController
 {
@@ -33,6 +33,7 @@ final class ChannelController
             ChannelTypeEnum::from($request->string('type')->toString()),
             $topic === '' ? null : $topic,
             $request->filled('user_limit') ? $request->integer('user_limit') : null,
+            $request->filled('parent_id') ? $request->string('parent_id')->toString() : null,
         );
 
         return new ChannelResource($channel);
@@ -43,7 +44,7 @@ final class ChannelController
      */
     public function update(UpdateChannelRequest $request, Channel $channel, #[CurrentUser] User $user): ChannelResource
     {
-        /** @var array{name?: string, topic?: ?string, position?: int, user_limit?: ?int} $changes */
+        /** @var array{name?: string, topic?: ?string, position?: int, user_limit?: ?int, parent_id?: ?string} $changes */
         $changes = $request->validated();
 
         $channel->change($user, $changes);

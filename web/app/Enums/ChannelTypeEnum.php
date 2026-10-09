@@ -8,4 +8,5 @@ enum ChannelTypeEnum: string
 {
     case Text = 'text';
     case Voice = 'voice';
+    case Category = 'category';
 }

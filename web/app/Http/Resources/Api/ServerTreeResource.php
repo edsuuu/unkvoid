@@ -6,6 +6,7 @@ namespace App\Http\Resources\Api;
 
 use App\Enums\ChannelTypeEnum;
 use App\Enums\PermissionEnum;
+use App\Models\ChannelRead;
 use App\Models\Server;
 use App\Models\ServerMember;
 use App\Models\User;
@@ -42,6 +43,7 @@ final class ServerTreeResource extends JsonResource
         $canBan = $this->me->can(PermissionEnum::BanMembers);
 
         $channels = [];
+        $channelIds = [];
         $voice = [];
 
         foreach ($this->server->channels->sortBy('position') as $channel) {
@@ -52,7 +54,9 @@ final class ServerTreeResource extends JsonResource
             $entry = new ChannelResource($channel)->resolve();
             $entry['permissions'] = $this->me->permissions($channel);
             $entry['overwrites'] = $canManageRoles ? OverwriteResource::collection($channel->overwrites)->resolve() : [];
+            $entry['unread'] = 0;
             $channels[] = $entry;
+            $channelIds[] = $channel->id;
 
             if ($channel->type !== ChannelTypeEnum::Voice) {
                 continue;
@@ -65,8 +69,16 @@ final class ServerTreeResource extends JsonResource
                     'user_id' => User::fromSubject($peer['sub']),
                     'name' => $peer['name'],
                     'sources' => $peer['sources'],
+                    'muted' => $peer['muted'] ?? false,
+                    'deafened' => $peer['deafened'] ?? false,
                 ];
             }
+        }
+
+        $unread = ChannelRead::unreadFor($this->me->user_id, $channelIds);
+
+        foreach ($channelIds as $index => $channelId) {
+            $channels[$index]['unread'] = $unread[$channelId] ?? 0;
         }
 
         foreach ($this->server->members as $member) {

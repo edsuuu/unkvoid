@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api;
 
 use App\Http\Requests\Api\Servers\IndexMessageRequest;
+use App\Http\Requests\Api\Servers\ReadMessagesRequest;
 use App\Http\Requests\Api\Servers\StoreMessageRequest;
 use App\Http\Requests\Api\Servers\UpdateMessageRequest;
 use App\Http\Resources\Api\MessageResource;
@@ -31,6 +32,16 @@ final class MessageController
         $before = $request->filled('before') ? $request->integer('before') : null;
 
         return MessageResource::collection($channel->messagesBefore($user, $before));
+    }
+
+    /**
+     * @throws Throwable
+     */
+    public function read(ReadMessagesRequest $request, Channel $channel, #[CurrentUser] User $user): Response
+    {
+        $channel->markRead($user, $request->filled('message_id') ? $request->integer('message_id') : null);
+
+        return response()->noContent();
     }
 
     /**

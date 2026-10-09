@@ -82,6 +82,17 @@ final readonly class SfuClient
         return is_int($kicked) ? $kicked : 0;
     }
 
+    /**
+     * Mover é o `kick` com destino: o SFU avisa `moved { to, by }` ao peer em vez de `kicked`,
+     * e quem entra no destino é o próprio app, com o token de voz de sempre.
+     */
+    public function move(Channel $from, Channel $to, string $subject, string $by): int
+    {
+        $moved = $this->post("/rooms/{$from->id}/kick", ['userId' => $subject, 'to' => $to->id, 'by' => $by])['kicked'] ?? 0;
+
+        return is_int($moved) ? $moved : 0;
+    }
+
     public function mute(Channel $channel, string $subject, bool $muted): int
     {
         $mutedCount = $this->post("/rooms/{$channel->id}/mute", ['userId' => $subject, 'muted' => $muted])['muted'] ?? 0;
@@ -94,7 +105,7 @@ final readonly class SfuClient
      * mesmo request, mesmo que a árvore pergunte canal por canal. `fresh` esquece o cache
      * antes, para quem precisa contar de verdade.
      *
-     * @return array<string, array<int, array{sub: string, name: string, sources: array<int, string>}>> por sala
+     * @return array<string, array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool}>> por sala
      */
     public function presence(bool $fresh = false): array
     {
@@ -103,7 +114,7 @@ final readonly class SfuClient
                 Cache::forget(self::PRESENCE_CACHE_KEY);
             }
 
-            /** @var array<string, array<int, array{sub: string, name: string, sources: array<int, string>}>> $rooms */
+            /** @var array<string, array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool}>> $rooms */
             $rooms = Cache::remember(self::PRESENCE_CACHE_KEY, self::PRESENCE_CACHE_SECONDS, fn (): array => (array) ($this->send('GET', '/presence')['rooms'] ?? []));
 
             return $rooms;
@@ -111,7 +122,7 @@ final readonly class SfuClient
     }
 
     /**
-     * @return array<int, array{sub: string, name: string, sources: array<int, string>}>
+     * @return array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool}>
      */
     public function peers(Channel $channel, bool $fresh = false): array
     {

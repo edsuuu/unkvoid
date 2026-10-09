@@ -40,6 +40,7 @@ use Throwable;
  * @property string $invite_code
  * @property ?string $icon_path
  * @property ?CarbonImmutable $last_accessed_at só em `listFor`
+ * @property ?int $unread só em `listFor`
  * @property-read Collection<int, ServerRole> $roles
  * @property-read Collection<int, ServerMember> $members
  * @property-read Collection<int, Channel> $channels
@@ -130,7 +131,7 @@ final class Server extends Model implements Auditable
             ->whereColumn('channels.server_id', 'servers.id')
             ->where('channel_accesses.user_id', $user->id);
 
-        return self::query()
+        $servers = self::query()
             ->select('servers.*')
             ->addSelect(['last_accessed_at' => $lastAccess])
             ->join('server_members', 'server_members.server_id', '=', 'servers.id')
@@ -139,7 +140,32 @@ final class Server extends Model implements Auditable
             ->orderByDesc('last_accessed_at')
             ->orderByDesc('server_members.joined_at')
             ->orderBy('servers.id')
+            ->with(['roles', 'channels.overwrites'])
             ->get();
+
+        // O não lido do servidor só conta os canais que a pessoa vê: canal oculto não pode
+        // acender a bolinha do trilho.
+        $members = ServerMember::query()->with('roles')->where('user_id', $user->id)->whereIn('server_id', $servers->modelKeys())->get()->keyBy('server_id');
+        $visible = [];
+
+        foreach ($servers as $server) {
+            $member = $members[$server->id] ?? null;
+
+            if (is_null($member)) {
+                continue;
+            }
+
+            $member->setRelation('server', $server);
+            $visible[$server->id] = $server->channels->filter(fn (Channel $channel): bool => $member->can(PermissionEnum::ViewChannel, $channel))->modelKeys();
+        }
+
+        $unread = ChannelRead::unreadFor($user->id, array_merge(...array_values($visible)));
+
+        foreach ($servers as $server) {
+            $server->setAttribute('unread', array_sum(array_intersect_key($unread, array_flip($visible[$server->id] ?? []))));
+        }
+
+        return $servers;
     }
 
     /**
@@ -501,16 +527,19 @@ final class Server extends Model implements Auditable
     /**
      * @throws Throwable
      */
-    public function createChannel(User $actor, string $name, ChannelTypeEnum $type, ?string $topic, ?int $userLimit): Channel
+    public function createChannel(User $actor, string $name, ChannelTypeEnum $type, ?string $topic, ?int $userLimit, ?string $parentId = null): Channel
     {
         $this->memberOrFail($actor)->authorize(PermissionEnum::ManageChannels);
 
-        if ($type === ChannelTypeEnum::Text && ! is_null($userLimit)) {
+        if ($type !== ChannelTypeEnum::Voice && ! is_null($userLimit)) {
             throw ValidationException::withMessages(['user_limit' => 'Só canal de voz tem limite de pessoas.']);
         }
 
+        Channel::parentOrFail($this, $type, $parentId);
+
         $channel = self::write('falha ao criar o canal', fn (): Channel => $this->channels()->create([
             'name' => $name,
+            'parent_id' => $parentId,
             'type' => $type,
             'topic' => $topic,
             'user_limit' => $userLimit,
