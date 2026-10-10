@@ -90,10 +90,13 @@ encerra() {
         echo "AVISO: o usuário $USUARIO_REDE ficou; apague com: sudo userdel -r $USUARIO_REDE"
     fi
 
-    # O sink do som da tela, se um teste caiu com ele de pé.
-    for modulo in $(pactl list modules short 2>/dev/null | awk '$2 == "module-combine-sink" && /sink_name=unkvoid_share/ { print $1 }'); do
-        pactl unload-module "$modulo" >/dev/null 2>&1
-    done
+    # O sink do som da tela, se um teste caiu com ele de pé (`unkvoid_share_<pid>_<n>`, pid já
+    # morto); o de um Unkvoid aberto na máquina fica.
+    pactl list modules short 2>/dev/null \
+        | awk '$2 == "module-combine-sink" { for (i = 3; i <= NF; i++) if ($i ~ /^sink_name=unkvoid_share_[0-9]+_/) { split(substr($i, 25), partes, "_"); print $1, partes[1] } }' \
+        | while read -r modulo pid; do
+            [ -d "/proc/$pid" ] || pactl unload-module "$modulo" >/dev/null 2>&1
+        done
 
     [ -n "$SAIDA_ANTES" ] && pactl set-default-sink "$SAIDA_ANTES" >/dev/null 2>&1
     [ -n "$ENTRADA_ANTES" ] && pactl set-default-source "$ENTRADA_ANTES" >/dev/null 2>&1

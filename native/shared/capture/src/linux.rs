@@ -33,7 +33,7 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 
-use crate::linux_audio::{self, SharedSink};
+use crate::linux_audio::SharedSink;
 use crate::{
     AudioChunk, CaptureConfig, CaptureError, CaptureEvent, CaptureSource, Display, Quality,
     VideoFrame, Window,
@@ -325,7 +325,7 @@ impl LinuxCapturer {
         } else {
             None
         };
-        let monitor = if shared_sink.is_some() { linux_audio::MONITOR } else { "@DEFAULT_MONITOR@" };
+        let monitor = shared_sink.as_ref().map_or_else(|| "@DEFAULT_MONITOR@".to_string(), SharedSink::monitor);
 
         let audio = if config.capture_audio {
             match launch(&format!("pulsesrc device={monitor} ! {AUDIO_TAIL}"), Stdio::null()) {

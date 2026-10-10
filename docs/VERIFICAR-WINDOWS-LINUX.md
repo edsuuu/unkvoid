@@ -110,9 +110,10 @@ pulseaudio --kill
 ```
 
 `--test-threads=1`: dois testes subindo o sink combinado ao mesmo tempo derrubam o PulseAudio 16
-(é bug dele, e é por isso que o app só sobe um). Os três: o jogo vai para o sink e a chamada não;
-parar de compartilhar seis vezes com um jogo tocando não derruba o servidor; e o sink que um app
-morto deixou com o jogo dentro sai na transmissão seguinte.
+(é bug dele, e é por isso que o app só sobe um). Os quatro: o jogo vai para o sink e a chamada não;
+parar de compartilhar seis vezes com um jogo tocando não derruba o servidor; o sink que um app
+morto deixou com o jogo dentro (e o do nome antigo, sem pid) sai na transmissão seguinte; e o de
+outra instância viva do app (`unkvoid_share_<pid>_<n>`, pid vivo) nunca cai.
 
 O mesmo no PipeWire (`sudo apt-get install -y pipewire pipewire-pulse wireplumber dbus`). Numa
 sessão de desktop ele já está no ar; num contêiner:
