@@ -97,6 +97,8 @@ test('e. mover quem transmite de canal: a origem para de receber, o destino pass
     await ana.publish('camera', CAMERA);
     await ana.publish('mic');
     await waitFor(() => bia.watchSummaries().filter(summary => summary.decodable > 0).length === 2, 5000, 'bia watching ana');
+    // A lista de voz da origem já mostra a Ana: num Laravel lento, o `joined` dela chegava depois do mover.
+    await waitFor(() => realtime.some(entry => entry.event === 'VoiceStateUpdated' && entry.data.user_id === accounts.ana.user.id && entry.data.channel_id === origin && entry.data.event === 'joined'), 15_000, 'the origin list showing ana');
 
     const before = { totals: await sfu.totals(), presence: await sfu.presence() };
     const watchedAtOrigin = [...bia.consumers.keys()];

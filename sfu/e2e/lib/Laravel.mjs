@@ -13,6 +13,10 @@ const CACHE = join(dirname(fileURLToPath(import.meta.url)), '..', '.cache');
  * O Laravel de verdade (`web/`) num banco sqlite descartável, ligado ao SFU do cenário: é
  * quem assina o token de voz e quem move a pessoa de canal (`PATCH .../voice/members`).
  *
+ * O storage e o cache de inicialização também são descartáveis (`e2e/.cache`): no `web/` de
+ * quem roda, o log `sfu` do harness se misturava ao do dia, e ficavam views compiladas e o
+ * `bootstrap/cache` de outro ambiente.
+ *
  * `E2E_PHP` aponta o PHP 8.4 (o padrão é `php` do PATH). Sem PHP 8.4 ou sem o `vendor/`,
  * `unavailable()` diz por quê, e o cenário que depende dele é pulado com o motivo.
  */
@@ -23,6 +27,7 @@ export class Laravel {
         this.php = process.env.E2E_PHP ?? 'php';
         this.url = `http://127.0.0.1:${port}`;
         this.database = join(CACHE, `laravel-${port}.sqlite`);
+        this.storage = join(CACHE, `laravel-${port}-storage`);
         this.output = [];
         this.env = {
             APP_KEY: `base64:${randomBytes(32).toString('base64')}`,
@@ -42,6 +47,13 @@ export class Laravel {
             SFU_URL: sfu.http,
             SFU_PUBLIC_URL: sfu.url,
             SFU_SECRET: SECRET,
+            LARAVEL_STORAGE_PATH: this.storage,
+            VIEW_COMPILED_PATH: join(this.storage, 'framework', 'views'),
+            APP_PACKAGES_CACHE: join(this.storage, 'bootstrap', 'packages.php'),
+            APP_SERVICES_CACHE: join(this.storage, 'bootstrap', 'services.php'),
+            APP_CONFIG_CACHE: join(this.storage, 'bootstrap', 'config.php'),
+            APP_ROUTES_CACHE: join(this.storage, 'bootstrap', 'routes.php'),
+            APP_EVENTS_CACHE: join(this.storage, 'bootstrap', 'events.php'),
         };
     }
 
@@ -65,7 +77,12 @@ export class Laravel {
     async start() {
         mkdirSync(CACHE, { recursive: true });
         rmSync(this.database, { force: true });
+        rmSync(this.storage, { recursive: true, force: true });
         writeFileSync(this.database, '');
+
+        for (const folder of ['app', 'logs', 'bootstrap', join('framework', 'cache', 'data'), join('framework', 'sessions'), join('framework', 'views')]) {
+            mkdirSync(join(this.storage, folder), { recursive: true });
+        }
 
         const env = { ...process.env, ...this.env };
 
@@ -141,19 +158,18 @@ export class Laravel {
     }
 
     async stop() {
-        if (!this.process || this.process.exitCode !== null) {
-            return;
-        }
+        if (this.process && this.process.exitCode === null) {
+            const exited = new Promise(resolve => this.process.once('exit', resolve));
 
-        const exited = new Promise(resolve => this.process.once('exit', resolve));
+            this.process.kill('SIGTERM');
+            await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 5000))]);
 
-        this.process.kill('SIGTERM');
-        await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 5000))]);
-
-        if (this.process.exitCode === null) {
-            this.process.kill('SIGKILL');
+            if (this.process.exitCode === null) {
+                this.process.kill('SIGKILL');
+            }
         }
 
         rmSync(this.database, { force: true });
+        rmSync(this.storage, { recursive: true, force: true });
     }
 }

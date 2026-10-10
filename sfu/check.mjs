@@ -966,6 +966,24 @@ test('o /presence assinado lista quem está na sala e o que cada um produz', asy
     volta.close();
 });
 
+test('o /stats só responde assinado, e só com contagens', async () => {
+    let http = await fetch(`${URL_HTTP}/stats`);
+    assert.equal(http.status, 401, 'o /stats sem assinatura tem de ser recusado');
+
+    http = await fetch(`${URL_HTTP}/stats`, { headers: signed('GET', '/presence', '') });
+    assert.equal(http.status, 401, 'a assinatura de outra rota não vale para o /stats');
+
+    http = await fetch(`${URL_HTTP}/stats`, { headers: signed('GET', '/stats', '', '1000') });
+    assert.equal(http.status, 401, 'nem a assinatura com hora velha');
+
+    http = await fetch(`${URL_HTTP}/stats`, { headers: signed('GET', '/stats', '') });
+    assert.equal(http.status, 200, 'assinado, passa');
+
+    const stats = await http.json();
+    assert.ok(stats.rooms >= 1 && stats.peers >= 1, `conta as salas e as pessoas: ${JSON.stringify(stats)}`);
+    assert.ok(!JSON.stringify(stats).includes(room), 'e não diz o id de sala nenhuma');
+});
+
 test('sair no botão avisa a sala na hora, sem esperar a carência', async () => {
     // Sair de propósito não deixa fantasma: a sala avisa na hora.
     assistindo.events.length = 0;

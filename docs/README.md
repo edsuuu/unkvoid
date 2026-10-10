@@ -12,7 +12,6 @@ falta: [ESTADO.md](ESTADO.md).
 | uma rota, um evento, o formato do token, uma ação do SFU | [CONTRATO.md](CONTRATO.md) |
 | por que algo foi feito assim (ex.: por que o SFU é Node) | [DECISOES.md](DECISOES.md) |
 | o que falta, o que nunca rodou em hardware, o que espera o dono | [ESTADO.md](ESTADO.md) |
-| o que a prova ponta a ponta do SFU mediu, os bugs achados no servidor e no app | [relatorios/nimbus.md](relatorios/nimbus.md) |
 | o que é cifrado, o que está protegido e o que não está | [SEGURANCA.md](SEGURANCA.md) |
 | por que o Windows 10 mostrava uma borda amarela, e como ela saiu | [BORDA-AMARELA.md](BORDA-AMARELA.md) |
 
