@@ -563,6 +563,13 @@ pub unsafe extern "C" fn unkvoid_app(
 
             json!({ "ok": true })
         }),
+        // O decodificador da interface recusou um quadro: sem isto a imagem espera o
+        // quadro-chave periódico de quem transmite (4 s vindo do Windows).
+        "requestKeyframe" => handle.in_room(|room, _| {
+            room.request_keyframe(&field("producerId"));
+
+            json!({ "ok": true })
+        }),
 
         // O tempo real do chat: apresenta esta conta ao SFU com o token que o Laravel
         // assina. Inscrever-se num canal depois disso é `unkvoid_call("subscribe")`.
@@ -1194,6 +1201,11 @@ mod tests {
             "o `can` do servidor chega à interface: {room}"
         );
         assert_eq!(room["mine"]["sharing"], false);
+        assert_eq!(
+            app_call(handle, "requestKeyframe", r#"{"producerId":"tela"}"#)["ok"],
+            true,
+            "o decodificador do macOS pede o quadro-chave pela ABI"
+        );
 
         app_call(handle, "leaveRoom", "{}");
 
@@ -1260,6 +1272,7 @@ mod tests {
             },
             data: vec![9, 8, 7],
             arrived: std::time::Instant::now(),
+            follows: None,
         });
 
         assert_eq!(block, [0, 1, 3, 0, 4, 3, 2, 1, b'a', b'b', b'c', 9, 8, 7]);

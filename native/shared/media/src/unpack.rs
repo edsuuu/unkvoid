@@ -8,6 +8,8 @@
 //! ponytail: sem fila de reordenação. Pacote fora de ordem conta como perda, o quadro cai
 //! e a imagem espera o próximo keyframe. Se rede ruim pesar, entra um jitter buffer aqui.
 
+use std::time::{Duration, Instant};
+
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use opus::{Channels, Decoder};
@@ -47,20 +49,31 @@ pub struct VideoUnpacker {
 
 impl VideoUnpacker {
     /// Devolve o quadro quando o pacote que o fecha chega (o bit `marker`).
+    ///
+    /// O depacotador da `rtc` guarda o NAL fragmentado até o pedaço final, e só o larga quando
+    /// ele chega: perdido o final, o resto grudava no próximo NAL fragmentado — que depois de um
+    /// buraco costuma ser o IDR do quadro-chave pedido. Por isso ele recomeça a cada buraco e a
+    /// cada início de fragmento.
     pub fn push(&mut self, packet: &[u8]) -> Option<AccessUnit> {
         let packet = Packet::unmarshal(&mut Bytes::copy_from_slice(packet)).ok()?;
         let sequence = packet.header.sequence_number;
 
-        if self.last_sequence.is_some_and(|last| last.wrapping_add(1) != sequence) {
+        let gap = self.last_sequence.is_some_and(|last| last.wrapping_add(1) != sequence);
+
+        if gap || starts_a_fragmented_nal(&packet.payload) {
+            self.h264 = H264Packet::default();
+        }
+
+        if gap {
             self.damaged = true;
             self.waiting_keyframe = true;
         }
 
         self.last_sequence = Some(sequence);
 
-        match self.h264.depacketize(&packet.payload) {
-            Ok(nals) => self.frame.extend_from_slice(&nals),
-            Err(_) => self.damaged = true,
+        match whole_aggregate(&packet.payload).then(|| self.h264.depacketize(&packet.payload)) {
+            Some(Ok(nals)) => self.frame.extend_from_slice(&nals),
+            Some(Err(_)) | None => self.damaged = true,
         }
 
         if !packet.header.marker {
@@ -108,6 +121,38 @@ pub fn nals(annex_b: &[u8]) -> Vec<&[u8]> {
         .collect()
 }
 
+const NAL_STAP_A: u8 = 24;
+const NAL_FU_A: u8 = 28;
+
+/// O primeiro pedaço de um NAL fragmentado (FU-A com o bit de início).
+fn starts_a_fragmented_nal(payload: &[u8]) -> bool {
+    payload.len() >= 2 && payload[0] & 0x1F == NAL_FU_A && payload[1] & 0x80 != 0
+}
+
+/// Se cada NAL de um STAP-A cabe no pacote. O depacotador da `rtc` lê o comprimento seguinte
+/// sem conferir que ele existe, e um pacote cortado (de um cliente modificado: o SFU repassa
+/// sem olhar) derrubava a thread de quem assiste. O que não é STAP-A passa.
+fn whole_aggregate(payload: &[u8]) -> bool {
+    if payload.first().is_none_or(|header| header & 0x1F != NAL_STAP_A) {
+        return true;
+    }
+
+    let mut rest = &payload[1..];
+
+    while !rest.is_empty() {
+        let Some(&[high, low]) = rest.first_chunk::<2>() else {
+            return false;
+        };
+        let Some(after) = rest.get(2 + usize::from(u16::from_be_bytes([high, low]))..) else {
+            return false;
+        };
+
+        rest = after;
+    }
+
+    true
+}
+
 fn is_keyframe(annex_b: &[u8]) -> bool {
     nals(annex_b).iter().any(|nal| nal.first().is_some_and(|header| matches!(header & 0x1F, NAL_IDR | NAL_SPS)))
 }
@@ -119,6 +164,16 @@ const OPUS_BLOCK: usize = (SAMPLE_RATE / 1000 * FRAME_MS) as usize * 2;
 /// (o fluxo pausou, a pessoa saiu), e som inventado por mais de 100 ms soa pior que silêncio.
 const MOST_CONCEALED: u16 = 5;
 
+/// O mais atrasado que um pacote de verdade chega: dois segundos de som. Um número mais para
+/// trás que isso não é atraso, é a numeração que andou enquanto o receptor não repassava (som
+/// mudo ou surdo): tomá-lo por atrasado calava tudo até a conta de 16 bits dar a volta, até
+/// 11 minutos.
+const LATE_WINDOW: u16 = 100;
+
+/// Calado por mais que isto, o próximo pacote recomeça a conta, venha com o número que vier:
+/// atraso de rede não passa de um segundo, e o que se perdeu já não tem lugar para tocar.
+const QUIET_RESTART: Duration = Duration::from_secs(1);
+
 /// Opus de um pacote RTP para PCM `f32` estéreo intercalado a 48 kHz.
 ///
 /// Pacote que não chegou vira som estimado pelo próprio Opus, com o que veio antes, em vez de
@@ -126,7 +181,8 @@ const MOST_CONCEALED: u16 = 5;
 /// WebRTC do navegador faz no som de quem fala.
 pub struct AudioUnpacker {
     decoder: Decoder,
-    last: Option<u16>,
+    /// O número do último pacote tocado, e quando ele chegou.
+    last: Option<(u16, Instant)>,
 }
 
 impl AudioUnpacker {
@@ -138,16 +194,23 @@ impl AudioUnpacker {
     }
 
     pub fn push(&mut self, packet: &[u8]) -> Option<Vec<f32>> {
+        self.push_at(packet, Instant::now())
+    }
+
+    fn push_at(&mut self, packet: &[u8], now: Instant) -> Option<Vec<f32>> {
         let packet = Packet::unmarshal(&mut Bytes::copy_from_slice(packet)).ok()?;
         let sequence = packet.header.sequence_number;
-        let missing = self.last.map_or(0, |last| sequence.wrapping_sub(last).wrapping_sub(1));
+        let last = self.last.filter(|&(_, at)| now.saturating_duration_since(at) < QUIET_RESTART).map(|(last, _)| last);
+        let missing = last.map_or(0, |last| sequence.wrapping_sub(last).wrapping_sub(1));
 
         // Atrasado ou repetido: o lugar dele já tocou, estimado.
-        if missing >= u16::MAX / 2 {
+        if missing >= u16::MAX / 2 && last.is_some_and(|last| last.wrapping_sub(sequence) <= LATE_WINDOW) {
             return None;
         }
 
-        self.last = Some(sequence);
+        let missing = if missing >= u16::MAX / 2 { 0 } else { missing };
+
+        self.last = Some((sequence, now));
 
         let mut samples = Vec::new();
 
@@ -258,6 +321,49 @@ mod tests {
         assert!(!unpacker.waiting_keyframe());
     }
 
+    /// O fim de um NAL fragmentado se perde e a recuperação desiste: o pedaço que ficou não pode
+    /// grudar no NAL do quadro-chave que vem depois. Grudado, o quadro-chave saía como quadro-chave
+    /// mas com o IDR podre, e a imagem ficava em lixo até o periódico seguinte.
+    #[test]
+    fn a_lost_fragment_end_does_not_rot_the_next_keyframe() {
+        let mut payloader = H264Payloader::default();
+        let mut unpacker = VideoUnpacker::default();
+        let mut big_delta = packets(&mut payloader, &[[0, 0, 0, 1, 0x41].as_slice(), &[7; 4_000]].concat(), 100, 0);
+        let next = 100 + big_delta.len() as u16;
+
+        big_delta.pop();
+
+        assert!(big_delta.iter().filter_map(|packet| unpacker.push(packet)).next().is_none());
+
+        let small_delta = packets(&mut payloader, &[0, 0, 0, 1, 0x41, 9, 9, 9], next, 3_000);
+
+        assert!(small_delta.iter().filter_map(|packet| unpacker.push(packet)).next().is_none(), "o quadro depois do buraco não sai");
+
+        let sent = frame(0x65, 5_000);
+        let key = packets(&mut payloader, &sent, next + 1, 6_000);
+        let got = key.iter().filter_map(|packet| unpacker.push(packet)).next().expect("o quadro-chave saiu");
+
+        assert!(got.keyframe);
+        assert_eq!(nals(&got.data), nals(&sent), "o quadro-chave saiu com o resto do NAL perdido grudado");
+    }
+
+    /// Um STAP-A com o comprimento cortado no meio fazia o depacotador da `rtc` ler além do pacote
+    /// e derrubar a thread de quem assiste: a tela daquela pessoa parava para sempre.
+    #[test]
+    fn a_torn_aggregate_is_a_damaged_frame_and_not_a_panic() {
+        let mut unpacker = VideoUnpacker::default();
+        let torn = Packet {
+            header: Header { version: 2, marker: true, payload_type: 102, sequence_number: 1, ssrc: 7, ..Header::default() },
+            payload: Bytes::from_static(&[0x78, 0x00, 0x01, 0x65, 0x00]),
+        };
+
+        assert!(unpacker.push(&torn.marshal().expect("marshal")).is_none());
+
+        let key = packets(&mut H264Payloader::default(), &frame(0x65, 100), 2, 3_000);
+
+        assert!(key.iter().filter_map(|packet| unpacker.push(packet)).next().is_some_and(|unit| unit.keyframe), "depois do pacote torto o quadro-chave sai");
+    }
+
     #[test]
     fn opus_comes_back_as_stereo_pcm() {
         let mut encoder = crate::AudioEncoder::new(48_000).expect("encoder");
@@ -332,5 +438,67 @@ mod tests {
         assert_eq!(unpacker.push(&packets[0]).expect("pcm").len(), 1920);
         assert_eq!(unpacker.push(&packets[2]).expect("pcm").len(), 1920 * 2, "o perdido e o que chegou");
         assert!(unpacker.push(&packets[1]).is_none(), "o atrasado já tocou estimado");
+    }
+
+    /// Um bloco de voz de 20 ms com o número `sequence`.
+    fn voice_packet(encoder: &mut crate::AudioEncoder, sequence: u16) -> Vec<u8> {
+        let tone: Vec<f32> = (0..1_920).map(|index| (index as f32 * 0.05).sin() * 0.4).collect();
+        let block = capture::AudioChunk { sample_rate: 48_000, channels: 2, samples: tone };
+        let opus = encoder.push(&block).expect("encode").pop().expect("um pacote por bloco");
+        let header = Header { version: 2, payload_type: 111, sequence_number: sequence, timestamp: u32::from(sequence).wrapping_mul(960), ssrc: 7, ..Header::default() };
+
+        Packet { header, payload: Bytes::from(opus) }.marshal().expect("marshal").to_vec()
+    }
+
+    /// Ensurdecer, ou o som de uma tela que chega mudo, faz o receptor parar de repassar os
+    /// pacotes; o servidor continua numerando. Na volta, 15 min depois (45 000 pacotes), o
+    /// número caía na metade de cima dos 16 bits e era tomado por atrasado: 6,8 min sem som.
+    #[test]
+    fn audio_comes_back_right_after_a_long_local_mute() {
+        let mut encoder = crate::AudioEncoder::for_voice(48_000).expect("encoder");
+
+        let start = Instant::now();
+
+        for muted in [45_000_u16, 32_768, 40_000, 65_000, 65_436] {
+            let mut unpacker = AudioUnpacker::new().expect("decoder");
+            let back = start + Duration::from_millis(20 * u64::from(muted));
+
+            assert!(unpacker.push_at(&voice_packet(&mut encoder, 0), start).is_some());
+            assert!(unpacker.push_at(&voice_packet(&mut encoder, 1), start).is_some());
+            assert!(
+                unpacker.push_at(&voice_packet(&mut encoder, 1_u16.wrapping_add(muted)), back).is_some(),
+                "o som não voltou depois de {muted} pacotes mudos"
+            );
+            assert_eq!(unpacker.push_at(&voice_packet(&mut encoder, 2_u16.wrapping_add(muted)), back).map(|pcm| pcm.len()), Some(1_920), "e segue sem estimar nada");
+        }
+
+        // O mesmo sem relógio, como a auditoria o reproduziu: o número longe demais para ser atraso.
+        let mut unpacker = AudioUnpacker::new().expect("decoder");
+
+        assert!(unpacker.push(&voice_packet(&mut encoder, 1)).is_some());
+        assert!(unpacker.push(&voice_packet(&mut encoder, 1 + 45_000)).is_some(), "o som só voltava depois de 20 537 pacotes");
+    }
+
+    /// O número que cai a até `LATE_WINDOW` atrás é atraso de verdade, e qualquer número depois
+    /// de um segundo calado recomeça a conta, mesmo o que pareceria atrasado.
+    #[test]
+    fn a_late_packet_is_dropped_but_a_quiet_second_starts_over() {
+        let mut encoder = crate::AudioEncoder::for_voice(48_000).expect("encoder");
+        let mut unpacker = AudioUnpacker::new().expect("decoder");
+        let start = Instant::now();
+
+        assert!(unpacker.push_at(&voice_packet(&mut encoder, 500), start).is_some());
+        assert!(unpacker.push_at(&voice_packet(&mut encoder, 500 - LATE_WINDOW), start).is_none(), "atrasado");
+        assert!(unpacker.push_at(&voice_packet(&mut encoder, 450), start + QUIET_RESTART).is_some(), "um segundo calado recomeça");
+    }
+
+    /// Um minuto de mudo (3 000 pacotes) sempre voltou na hora: a contraprova.
+    #[test]
+    fn audio_comes_back_after_a_short_local_mute() {
+        let mut encoder = crate::AudioEncoder::for_voice(48_000).expect("encoder");
+        let mut unpacker = AudioUnpacker::new().expect("decoder");
+
+        assert!(unpacker.push(&voice_packet(&mut encoder, 0)).is_some());
+        assert!(unpacker.push(&voice_packet(&mut encoder, 1 + 3_000)).is_some());
     }
 }

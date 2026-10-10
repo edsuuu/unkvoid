@@ -171,13 +171,13 @@ component VoicePanel inherits Rectangle {
             spacing: 8px;
 
             // ponytail: a câmera no Windows ainda não existe (o `capture` não abre webcam
-            // fora do macOS). O botão fica, desabilitado, com o porquê no balão.
+            // lá). O botão fica, desabilitado, com o porquê no balão; no Linux ele liga.
             Rectangle {
                 height: 32px;
                 horizontal-stretch: 1;
                 border-radius: 4px;
-                background: camera.has-hover ? Theme.selected : Theme.hover;
-                opacity: 0.5;
+                background: Ui.camera-on ? Theme.selected : (camera.has-hover ? Theme.selected : Theme.hover);
+                opacity: Ui.camera-available ? 1 : 0.5;
 
                 HorizontalLayout {
                     alignment: center;
@@ -204,7 +204,7 @@ component VoicePanel inherits Rectangle {
                 }
 
                 if camera.has-hover : Tip {
-                    text: "A câmera ainda não está ligada nesta versão";
+                    text: !Ui.camera-available ? "A câmera ainda não está ligada nesta versão" : (Ui.camera-on ? "Desligar a câmera" : "Ligar a câmera");
                     y: -36px;
                     x: (parent.width - self.width) / 2;
                 }

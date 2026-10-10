@@ -390,15 +390,16 @@ fn start_duplication(
     sink: EventSink,
     frames: Arc<AtomicU64>,
 ) -> Result<Duplication, String> {
-    let started_at = std::time::Instant::now();
-
     Duplication::start(monitor, config.frame_rate, config.show_cursor, move |frame| {
         frames.fetch_add(1, Ordering::Relaxed);
 
+        // A hora em que a tela foi apresentada, no QPC — o mesmo relógio do Graphics Capture.
+        // Contada da abertura desta captura, ela recomeçava do zero a cada troca de qualidade, e
+        // o RTP de quem assiste andava um quadro só no lugar do tempo que a troca levou.
         sink(CaptureEvent::Video(VideoFrame {
             width: frame.width,
             height: frame.height,
-            timestamp_ns: started_at.elapsed().as_nanos() as u64,
+            timestamp_ns: frame.timestamp_ns,
             surface: Some(GpuSurface {
                 texture: frame.texture.clone(),
                 device: frame.device.clone(),

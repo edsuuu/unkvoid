@@ -159,6 +159,11 @@ impl Pacer {
         self.shared.rate.store((video_bitrate * 5 / 2).max(FLOOR), Ordering::Relaxed);
     }
 
+    #[cfg(test)]
+    pub(crate) fn rate(&self) -> u64 {
+        self.shared.rate.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn sent_bytes(&self) -> u64 {
         self.shared.sent_bytes.load(Ordering::Relaxed)
     }

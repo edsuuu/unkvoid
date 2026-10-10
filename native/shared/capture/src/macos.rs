@@ -36,6 +36,16 @@ struct Sink<F: Fn(CaptureEvent) + Send + Sync + 'static> {
     last_surface: Mutex<Option<crate::GpuSurface>>,
 }
 
+/// O zero do relógio dos quadros, um só para o processo inteiro. Trocar a qualidade abre outra
+/// captura no mesmo producer; com o relógio recomeçando do zero em cada uma, o RTP de quem
+/// assiste andava um quadro só no lugar do tempo que a troca levou, e a imagem ficava esse tanto
+/// atrás do som até a espera do `Playout` descer — o mesmo defeito que o Linux tinha.
+fn capture_epoch() -> std::time::Instant {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+    *EPOCH.get_or_init(std::time::Instant::now)
+}
+
 impl<F: Fn(CaptureEvent) + Send + Sync + 'static> SCStreamOutputTrait for Sink<F> {
     fn did_output_sample_buffer(&self, sample: CMSampleBuffer, kind: SCStreamOutputType) {
         let timestamp_ns = self.started_at.elapsed().as_nanos() as u64;
@@ -354,7 +364,7 @@ impl MacCapturer {
 
         let mut stream = SCStream::new(&filter, &stream_config);
         let on_event = Arc::new(on_event);
-        let started_at = std::time::Instant::now();
+        let started_at = capture_epoch();
 
         // Vídeo e áudio são saídas separadas do ScreenCaptureKit, e cada uma precisa do
         // próprio tratador. Registrar só o da tela deixava o som de fora, calado.

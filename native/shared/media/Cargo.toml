@@ -26,6 +26,12 @@ tokio-tungstenite = "0.30.0"
 # O exemplo `encoder` mostra o que o MFT disse: a recusa de um ajuste só sai pelo log.
 tracing-subscriber.workspace = true
 
+# Quem assiste no Linux decodifica pelo GStreamer dentro do processo (`linux_decoder.rs`), com
+# as mesmas versões que a captura já liga ao binário.
+[target.'cfg(target_os = "linux")'.dependencies]
+gstreamer = "0.24"
+gstreamer-app = "0.24"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 videotoolbox = "0.19"
 apple-cf = { version = "0.9", features = ["cv"] }

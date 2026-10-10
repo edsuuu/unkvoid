@@ -102,9 +102,10 @@ async fn main() -> anyhow::Result<()> {
 
                 println!(
                     "t={second:>3}s fps={second_frames:>3} imagens={shown:>3} kf={second_keyframes} pacotes={} recuperados={} perdidos={} atraso: chegada={:.0} ms decodificado={:.0} ms decodificar: média={:.1} ms pior={:.1} ms",
-                    received - counted.0,
-                    recovered - counted.1,
-                    lost - counted.2,
+                    // Refazer o caminho de chegada abre outro receptor, e a contagem recomeça.
+                    received.saturating_sub(counted.0),
+                    recovered.saturating_sub(counted.1),
+                    lost.saturating_sub(counted.2),
                     arrival_lag * 1000.0,
                     decoded_lag * 1000.0,
                     decode_total.as_secs_f64() * 1000.0 / f64::from(decoded.max(1)),
@@ -145,10 +146,10 @@ async fn main() -> anyhow::Result<()> {
                         clock.2 = clock.2.min(lag);
                         arrival_lag = arrival_lag.max(lag - clock.2);
 
-                        // O decodificador do `media` é só do Windows: no Linux e no macOS a conta
-                        // fica no que chega — quadros, keyframes, pausas, atraso e pacotes —, que é
-                        // o que mostra congelamento de rede, e as colunas de imagem ficam em zero.
-                        if cfg!(target_os = "windows") && keyframe && !decoders.contains_key(&next.producer_id) {
+                        // O decodificador do `media` é do Windows e do Linux: no macOS a conta fica
+                        // no que chega — quadros, keyframes, pausas, atraso e pacotes —, que é o
+                        // que mostra congelamento de rede, e as colunas de imagem ficam em zero.
+                        if cfg!(any(target_os = "windows", target_os = "linux")) && keyframe && !decoders.contains_key(&next.producer_id) {
                             decoders.insert(next.producer_id.clone(), media::H264Decoder::new()?);
                         }
 

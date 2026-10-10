@@ -313,6 +313,10 @@ impl Session {
                     None => return !self.left.load(Ordering::Relaxed),
                 },
                 _ = beat.tick() => {
+                    if self.left.load(Ordering::Relaxed) {
+                        return false;
+                    }
+
                     let client = self.client();
                     let sent_at = std::time::Instant::now();
 
@@ -428,9 +432,21 @@ impl Session {
         self.state().roster.apply(event)
     }
 
+    /// A pessoa saiu, ou o servidor a tirou da sala de propósito: nada mais se abre por aqui.
+    pub fn has_left(&self) -> bool {
+        self.left.load(Ordering::Relaxed)
+    }
+
+    /// Avisa a sala e fecha o socket. O SFU só tira a pessoa da sala no `leave`, sem fechar: sem
+    /// fechar daqui, a sessão seguia pingando de 5 em 5 s, o `room.ping` da sala velha chegava à
+    /// interface junto com o da nova, e cada troca de canal de voz deixava uma sala zumbi.
     pub async fn leave(&self) -> Result<()> {
         self.left.store(true, Ordering::Relaxed);
-        self.client().call(action::LEAVE, json!({})).await?;
+
+        let said = self.client().call(action::LEAVE, json!({})).await;
+
+        self.client().close();
+        said?;
 
         Ok(())
     }
