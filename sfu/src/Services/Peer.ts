@@ -1,4 +1,10 @@
-import type { Consumer, PlainTransport, Producer, WebRtcTransport } from 'mediasoup/types';
+import type {
+    Consumer,
+    PlainTransport,
+    Producer,
+    Transport,
+    WebRtcTransport,
+} from 'mediasoup/types';
 import type { WebSocket } from 'ws';
 
 import type { MediaRouter } from './Room.js';
@@ -26,6 +32,12 @@ export class Peer {
     public media: MediaRouter | null = null;
 
     public routing: Promise<MediaRouter> | null = null;
+
+    /** A fila de cada sentido do RTP puro: um transporte de subida e um de chegada, nunca dois. */
+    public readonly plainOpening = new Map<'send' | 'receive', Promise<unknown>>();
+
+    /** Quantos `producePlain` ainda esperam o worker: o transporte de subida não fecha embaixo deles. */
+    public producingPlain = 0;
 
     private closed = false;
 
@@ -69,6 +81,11 @@ export class Peer {
     public addPlainTransport(transport: PlainTransport): void {
         this.admit(transport);
         this.plainTransports.set(transport.id, transport);
+        transport.observer.once('close', () => {
+            if (this.plainTransports.get(transport.id) === transport) {
+                this.plainTransports.delete(transport.id);
+            }
+        });
     }
 
     /**
@@ -79,6 +96,19 @@ export class Peer {
         if (this.closed) {
             transport.close();
             throw new NotFoundException('this participant already left the room');
+        }
+    }
+
+    /**
+     * O producer e o consumer também nascem depois de uma ida ao worker, e nesse meio-tempo o
+     * transporte pode ter fechado (chave nova, a pessoa saiu) sem levar junto o que ainda não
+     * existia: guardado e anunciado assim, ele nunca receberia o `transportclose` que o tira
+     * da sala.
+     */
+    public assertStillOpen(transport: Transport, media: Producer | Consumer): void {
+        if (this.closed || transport.closed) {
+            media.close();
+            throw new NotFoundException('the transport closed before the media was ready');
         }
     }
 

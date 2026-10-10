@@ -82,6 +82,27 @@ test('a. tela 1080p60, câmera 360p30 e microfone chegam em ordem, sem buraco, n
     assert.deepEqual({ producers: totals.producers, consumers: totals.consumers }, { producers: 3, consumers: 6 });
 });
 
+test('a. quem assiste recebe só a mídia: sem a sondagem de banda do mediasoup nem enchimento', async () => {
+    const room = 'e2e-so-midia';
+    const ana = await new Participant({ name: 'ana', url: sfu.url, identity: guest(room, 'ana'), watch: false }).join();
+    const bia = await new Participant({ name: 'bia', url: sfu.url, identity: guest(room, 'bia') }).join();
+
+    people.push(ana, bia);
+
+    await ana.publish('screen', SCREEN);
+    await ana.publish('camera', CAMERA);
+    await ana.publish('mic');
+    await waitFor(() => bia.watchSummaries().filter(summary => summary.decodable > 0 || summary.packets > 0).length === 3, 5000, 'bia receiving');
+    await sleep(6000);
+
+    const { datagrams, extended, padding, strays } = bia.receiver.stats;
+
+    record('a-so-midia', { datagrams, extended, padding, strays });
+
+    assert.ok(datagrams > 500, `chegou pouco: ${datagrams}`);
+    assert.deepEqual({ padding, strays }, { padding: 0, strays: 0 });
+});
+
 test('a. tela e câmera juntas no ritmo do app: a câmera derruba o ritmo da tela e o quadro atrasa', async () => {
     const room = 'e2e-ritmo';
     const ana = await new Participant({ name: 'ana', url: sfu.url, identity: guest(room, 'ana'), watch: false, pacing: 'sum' }).join();

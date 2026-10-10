@@ -38,7 +38,7 @@ export class PlainReceiver {
         this.sequence = randomInt(0, 65536);
         this.routes = new Map();
         this.retired = new Set();
-        this.stats = { datagrams: 0, rejected: 0, nacks: 0, plis: 0, strays: 0 };
+        this.stats = { datagrams: 0, rejected: 0, nacks: 0, plis: 0, strays: 0, extended: 0, padding: 0 };
         this.socket = createSocket('udp4');
         this.closed = false;
     }
@@ -140,6 +140,11 @@ export class PlainReceiver {
         if (!parsed) {
             return;
         }
+
+        // O que o app nativo não usa e só ocupa a descida: o pacote só de enchimento. A extensão
+        // de cabeçalho é contada para o relatório: o mediasoup reescreve a dele em todo pacote.
+        this.stats.extended += plain[0] & 0x10 ? 1 : 0;
+        this.stats.padding += parsed.payload.length === 0 ? 1 : 0;
 
         let route = null;
         let packet = plain;

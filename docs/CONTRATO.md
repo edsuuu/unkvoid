@@ -64,13 +64,21 @@ fica sabendo. O `join` devolve `serverMuted: boolean`.
 Mutado pelo servidor, o `produce`/`producePlain` do `mic` **não** é recusado: o producer nasce
 pausado (a resposta traz `paused: true`), e o `/mute false` o retoma — assim o app liga o mic como
 sempre, sem erro, e a voz volta sem clique. Só `resumeProducer` do mic continua sendo 403
-enquanto durar.
+enquanto durar. O `/mute false` **não** retoma o mic que a própria pessoa pausou
+(`pauseProducer`): o desmutar do moderador devolve a permissão de falar, não abre o microfone de
+ninguém, e a resposta conta só os mics que mexeu.
 
 - `room` é o ULID do canal **em minúsculas** (26 chars de `a-z0-9`; passa no regex atual).
 - `sub` é `user:<id>`. A sala anônima continua entrando sem token como `guest:<installId>`
   e o SFU dá a ela `can: ["speak", "stream", "video"]`.
 - `exp` = agora + 60 s. O app pede um token novo **antes de cada `join`**, inclusive nas
   reconexões.
+- O token de **antes** de uma expulsão não entra de novo (desde 10/10/2026): o `kick` da sala
+  (com ou sem `to`, ou seja, mover também) e o `/kick` com salas marcam a conta naquelas salas
+  por 120 s, e o `join` cujo `exp` é até a hora do kick + 60 s (o token assinado até o segundo
+  do kick) é 403. O token novo, que o Laravel só assina para quem ainda tem direito, passa. É o
+  que impede o expulso, o banido ou o movido de voltar com o token que já tinha (um cliente
+  modificado); por isso o `exp` tem de continuar sendo a hora da assinatura + 60 s.
 - `can` substitui o `owner: boolean` de hoje. O SFU recusa (403) `produce`/`producePlain`
   de `mic` sem `speak`, de `screen`/`screenAudio` sem `stream`, de `camera` sem `video`.
 
@@ -103,7 +111,9 @@ regras que o cliente precisa saber para não contar errado:
   `resumeConsumer` e no `pauseConsumer` — e em `closeConsumer`, na queda do transporte, na
   perda de sinalização (a pessoa sai da lista na hora) e na retomada dentro da carência (ela
   volta);
-- quem está na carência de reconexão não conta como plateia.
+- quem está na carência de reconexão não conta como plateia;
+- quem **transmite** e retoma recebe, só para si, o `watchers` de cada tela sua: o que saiu
+  enquanto o socket dele estava caído se perdeu.
 
 A resposta do `join` traz `elapsedMs`: há quanto tempo a sala existe, desde a primeira pessoa
 — a sala nasce com ela e some com a última. O relógio da barra da sala conta daí, igual para
@@ -150,6 +160,12 @@ os bits do canal) para decidir se liga o mic, a câmera e a tela. Mutado pelo se
 **com** `speak` e com a marca `muted` do token: o SFU recusa `produce`/`resumeProducer` do mic
 enquanto durar, manda `serverMuted { muted }` para a própria pessoa quando o Laravel chama
 `/mute` (também na chegada de quem já estava mutado), e é por esse evento que o app sabe.
+
+**`removePeer { peerId }` só tira a própria sessão que caiu** (a mesma conta, ou a mesma
+instalação sem conta): 422 para quem está com o socket de pé, como antes, e 403 para a sessão
+caída de outra pessoa (desde 10/10/2026). A carência guarda o lugar de quem está reconectando;
+tirado por outro, a volta dele virava entrada nova, com a mídia do zero e o lugar do canal cheio
+solto. Só o Tauri legado chamava a ação para outra pessoa; expulsar é do site.
 
 **Uma conta, uma sessão no SFU inteiro.** O `join` com token (`sub` que não começa com
 `guest:`) derruba qualquer outra sessão daquela conta, na mesma sala ou em outra, e ela
@@ -226,10 +242,15 @@ Sem `rtx`, o receptor ainda reordena e pede keyframe; só não recebe o reenvio.
 **O servidor diz se a tela está chegando nele.** A sala inteira (o dono também, por causa
 do "ver o que a sala vê") recebe
 `producerReceiving { producerId, receiving }` quando o RTP de um producer começa ou para de
-chegar ao SFU — o mediasoup zera a nota ~1,5 s depois do último pacote —, e o `consumePlain`
-devolve o estado do momento em `receiving`. É assim que o app de quem assiste separa a tela
-parada de quem transmite (`receiving: false`, nada a fazer) do caminho até ele que morreu
-(`receiving: true` e nada chegando há 5 s: refaz o transporte de chegada).
+chegar ao SFU, e o `consumePlain` devolve o estado do momento em `receiving`. O SFU conta os
+pacotes do producer de segundo em segundo (`getStats`): `true` no primeiro segundo com pacote,
+`false` depois de dois segundos seguidos sem nenhum (2 a 3 s depois do último) **e na hora em que
+o producer pausa** — pausado, nada sai daqui, mesmo com o app mandando silêncio. Até 10/10/2026
+vinha da nota do mediasoup, que só zera por inatividade em simulcast: quem transmitia parava e a
+sala ouvia `receiving: true` para sempre, e cada espectador refazia o caminho de chegada inteiro
+a cada 10–60 s. É assim que o app de quem assiste separa a tela parada de quem transmite
+(`receiving: false`, nada a fazer) do caminho até ele que morreu (`receiving: true` e nada
+chegando há 5 s: refaz o transporte de chegada).
 
 **Chave nova troca o transporte.** O `producePlain` e o `consumePlain` reaproveitam o
 transporte de RTP puro da pessoa (um de subida, um de chegada) enquanto a `keyBase64` for a
@@ -239,6 +260,20 @@ app refaz o caminho: o `comedia` prende o transporte ao primeiro endereço de on
 pacote, e quando o roteador da pessoa troca de endereço (o provedor reconectou, o roteador
 reiniciou) tudo o que vem do endereço novo é descartado. O app troca a chave de chegada a
 cada retomada do `join` e a de subida quando passa 5 s mandando sem nenhum RTCP de volta.
+
+**Um transporte por sentido, também com pedidos ao mesmo tempo.** O SFU atende o
+`producePlain` (e o `consumePlain`) de uma pessoa um de cada vez na criação do transporte: o
+microfone e a tela pedidos no mesmo instante, com a mesma chave, caem no mesmo transporte e na
+mesma porta. Chaves diferentes em rajada fecham uma a outra: fica só o transporte da última, e o
+pedido cujo transporte fechou no meio responde 404 (o producer ou o consumer que nasceu nele é
+fechado, nunca anunciado). Até 10/10/2026 dois pedidos juntos abriam dois transportes — o app
+mandava tudo para a porta da última resposta e o outro producer morria sem pacote — e uma
+rajada de chaves prendia todas as portas de RTP puro do worker até a pessoa sair.
+
+O consumer do `consumePlain` não negocia o transport-cc nem o REMB do router (são do
+navegador): sem eles o mediasoup não sonda a banda de quem assiste com pacotes de enchimento (o
+SSRC 1234) que o app nunca usa. O bloco de extensões de cabeçalho que o mediasoup reescreve em
+todo pacote continua vindo; o receptor o pula.
 
 Webhook do SFU para o Laravel, **fora do caminho do `join`**, fire-and-forget, para conta
 (`user:`) e visitante da sala por código (`guest:<installId>`, `room` com o código de 3 a
@@ -551,9 +586,10 @@ interfaces só executam.
 
 Vale a partir do momento em que acontece; quem já tinha saído antes não é reprocessado.
 
-- **Voz:** o Laravel chama o `kick` do SFU procurando a pessoa na presença fresca (sem o cache
-  de 3 s). O token de voz de antes do kick vale 60 s: o webhook `joined` de quem já não é
-  membro chama o `kick` na hora, sem abrir acesso nem emitir `VoiceStateUpdated`.
+- **Voz:** o Laravel chama o `/kick` do SFU com os canais de voz deste servidor, sem depender
+  da presença (desde o #52). O token de voz de antes do kick é recusado pelo próprio SFU nas salas em que o kick
+  agiu (o `exp` até a hora do kick + 60 s, acima); e o webhook `joined` de quem já não é membro
+  ainda chama o `kick` na hora, sem abrir acesso nem emitir `VoiceStateUpdated`.
 - **Tempo real:** `MemberRemoved` no `user.{id}` faz o app sair dos canais do servidor, e
   assinar de novo é recusado pelo `POST /api/sfu/authorize`. **Limite:** quem já estava
   inscrito continua inscrito — o SFU não refaz a pergunta sozinho. Um cliente modificado que

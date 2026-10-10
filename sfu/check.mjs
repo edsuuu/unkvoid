@@ -696,6 +696,72 @@ test('tela e câmera do mesmo peer são aceitas, na mesma porta', async () => {
     assert.equal(camera.data.port, plain.data.port, 'na mesma porta');
 });
 
+test('producePlain e consumePlain ao mesmo tempo, com a mesma chave, dividem um transporte por sentido', async () => {
+    // O microfone e a tela abertos no mesmo instante: o app manda tudo para a porta da última
+    // resposta, e com dois transportes o outro producer morria sem pacote em 30 s.
+    const pressa = await abrir();
+    await entrar(pressa, { token: token({ room: 'checkroom011', sub: '90', name: 'Pressa', can: TUDO }) });
+
+    const [mic, tela] = await Promise.all([
+        pressa.call('producePlain', audioPuro('mic', 0x901)),
+        pressa.call('producePlain', videoPuro('screen', 0x902)),
+    ]);
+    assert.equal(mic.ok && tela.ok, true, `os dois sobem: ${JSON.stringify([mic, tela])}`);
+    assert.equal(mic.data.port, tela.data.port, 'abertos juntos, na mesma porta');
+
+    const chave = { cryptoSuite: 'AES_CM_128_HMAC_SHA1_80', keyBase64: Buffer.alloc(30, 3).toString('base64') };
+    const [ouve, ve] = await Promise.all([
+        pressa.call('consumePlain', { producerId: mic.data.producerId, srtpParameters: chave }),
+        pressa.call('consumePlain', { producerId: tela.data.producerId, srtpParameters: chave }),
+    ]);
+    assert.equal(ouve.ok && ve.ok, true, `os dois consumers nascem: ${JSON.stringify([ouve, ve])}`);
+    assert.equal(ouve.data.port, ve.data.port, 'e chegam pela mesma porta');
+
+    await pressa.call('leave');
+    pressa.close();
+});
+
+test('chaves novas em rajada fecham uma a outra e não prendem as portas de RTP puro do worker', async () => {
+    const port = 3194;
+    const server = await startSfu(port, {
+        SFU_MEDIA_PORT: '40400',
+        SFU_PLAIN_PORT: '42500',
+        SFU_PLAIN_PORTS: '4',
+    });
+    const conectar = async () => {
+        const cliente = new Client(`ws://127.0.0.1:${port}/sfu`);
+
+        await cliente.open();
+
+        return cliente;
+    };
+
+    try {
+        const rajada = await conectar();
+        await entrar(rajada, { room: 'rajada-de-chaves', name: 'Rajada' });
+
+        const mic = await rajada.call('producePlain', audioPuro('mic', 0x921));
+        assert.equal(mic.ok, true, JSON.stringify(mic));
+
+        await Promise.all([...Array(6).keys()].map(indice =>
+            rajada.call('consumePlain', {
+                producerId: mic.data.producerId,
+                srtpParameters: { cryptoSuite: 'AES_CM_128_HMAC_SHA1_80', keyBase64: Buffer.alloc(30, 40 + indice).toString('base64') },
+            })));
+
+        const outra = await conectar();
+        await entrar(outra, { room: 'outra-sala-da-rajada', name: 'Outra' });
+
+        const tela = await outra.call('producePlain', videoPuro('screen', 0x922));
+        assert.equal(tela.ok, true, `outra sala ainda transmite no mesmo worker: ${JSON.stringify(tela)}`);
+
+        rajada.close();
+        outra.close();
+    } finally {
+        server.kill('SIGKILL');
+    }
+});
+
 test('outra pessoa na sala consome a transmissão pura como qualquer outra', async () => {
     // O ponto inteiro: outra pessoa na sala consome como qualquer transmissão.
     assistindo = await abrir();
@@ -767,6 +833,38 @@ test('quem transmite descobre quem está assistindo, e sai da lista quem pausou'
     );
 
     await assistindo.call('resumeConsumer', { consumerId: consumo.data.consumerId });
+});
+
+test('quem transmite e retoma volta sabendo quem o assiste', async () => {
+    // O `watchers` que saiu com o socket caído se perdeu: a retomada manda o de agora.
+    const sala = 'checkroom007';
+    const transmite = await abrir();
+    const chegada = await entrar(transmite, { token: token({ room: sala, sub: '91', name: 'Transmite', can: TUDO }) });
+    const tela = await transmite.call('producePlain', videoPuro('screen', 0x911));
+    assert.equal(tela.ok, true, JSON.stringify(tela));
+
+    const espectador = await abrir();
+    await entrar(espectador, { token: token({ room: sala, sub: '92', name: 'Espectador', can: TUDO }) });
+
+    const transporte = await espectador.call('createTransport');
+    const visto = await espectador.call('consume', { transportId: transporte.data.transportId, producerId: tela.data.producerId, rtpCapabilities: CAPACIDADES });
+    assert.equal(visto.ok, true, JSON.stringify(visto));
+
+    transmite.socket.close();
+    await espera(800);
+    await espectador.call('resumeConsumer', { consumerId: visto.data.consumerId });
+
+    const volta = await abrir();
+    const retomada = await entrar(volta, { token: token({ room: sala, sub: '91', name: 'Transmite', can: TUDO }), resumeKey: chegada.resumeKey, resume: true });
+    assert.equal(retomada.resumed, true, 'é a mesma sessão');
+    await espera(300);
+
+    const plateia = volta.events.filter(evento => evento.event === 'watchers' && evento.data.producerId === tela.data.producerId).at(-1);
+    assert.deepEqual(plateia?.data.watchers.map(pessoa => pessoa.name), ['Espectador'], 'quem começou a assistir durante a queda aparece na volta');
+
+    await volta.call('leave');
+    volta.close();
+    espectador.close();
 });
 
 test('o áudio da mesma transmissão divide a porta com o vídeo', async () => {
@@ -936,6 +1034,36 @@ test('a retomada obedece a claim `muted` do token novo, como obedece o `can`', a
     volta.close();
 });
 
+test('o desmutar do servidor não abre o microfone que a própria pessoa pausou', async () => {
+    const sala = 'checkroom008';
+    const falante = await abrir();
+    await entrar(falante, { token: token({ room: sala, sub: '93', name: 'Calada', can: TUDO }) });
+
+    const mic = await falante.call('producePlain', audioPuro('mic', 0x931));
+    assert.equal(mic.ok, true, JSON.stringify(mic));
+    assert.equal((await falante.call('pauseProducer', { producerId: mic.data.producerId })).ok, true, 'a pessoa se cala');
+
+    const mutePath = `/rooms/${sala}/mute`;
+    const mute = async muted => {
+        const body = JSON.stringify({ userId: '93', muted });
+        const http = await fetch(`${URL_HTTP}${mutePath}`, { method: 'POST', body, headers: signed('POST', mutePath, body) });
+
+        return http.json();
+    };
+
+    assert.deepEqual(await mute(true), { muted: 1 }, 'o moderador muta');
+    assert.deepEqual(await mute(false), { muted: 0 }, 'e desmuta sem mexer no microfone que ela mesma calou');
+
+    const olha = await abrir();
+    const vista = await entrar(olha, { token: token({ room: sala, sub: '94', name: 'Olha', can: TUDO }) });
+    assert.equal(vista.peers.find(pessoa => pessoa.userId === '93')?.producers[0]?.paused, true, 'o microfone continua pausado');
+
+    assert.equal((await falante.call('resumeProducer', { producerId: mic.data.producerId })).ok, true, 'e ela o abre quando quiser');
+
+    falante.close();
+    olha.close();
+});
+
 
 test('o /presence assinado lista quem está na sala e o que cada um produz', async () => {
     // Quem está em cada sala, para o site desenhar a lista de voz.
@@ -1070,6 +1198,41 @@ test('o kick e o mute com a lista de salas só alcançam essas salas: a moderaç
     assert.deepEqual(await http.json(), { kicked: 0 }, 'quem já não está em sala nenhuma não é erro');
 });
 
+test('quem foi expulso não volta com o token que já tinha, e o token assinado depois entra', async () => {
+    const sala = 'checkroom009';
+    const antigo = token({ room: sala, sub: '95', name: 'Expulso', can: TUDO });
+    const expulso = await abrir();
+    await entrar(expulso, { token: antigo });
+
+    const kickPath = `/rooms/${sala}/kick`;
+    const kickBody = JSON.stringify({ userId: '95' });
+    let http = await fetch(`${URL_HTTP}${kickPath}`, { method: 'POST', body: kickBody, headers: signed('POST', kickPath, kickBody) });
+    assert.deepEqual(await http.json(), { kicked: 1 });
+
+    const volta = await abrir();
+    let reply = await volta.call('join', { token: antigo });
+    assert.equal(reply.status, 403, `o token de antes da expulsão não entra de novo: ${JSON.stringify(reply)}`);
+
+    // O Laravel só assina token novo para quem ainda tem direito, e ele nasce depois.
+    const novo = token({ room: sala, sub: '95', name: 'Expulso', can: TUDO, exp: Math.floor(Date.now() / 1000) + 61 });
+    reply = await volta.call('join', { token: novo });
+    assert.equal(reply.ok, true, `o token assinado depois da expulsão entra: ${JSON.stringify(reply)}`);
+
+    const anterior = token({ room: sala, sub: '95', name: 'Expulso', can: TUDO });
+    const banBody = JSON.stringify({ userId: '95', rooms: [sala] });
+    http = await fetch(`${URL_HTTP}/kick`, { method: 'POST', body: banBody, headers: signed('POST', '/kick', banBody) });
+    assert.deepEqual(await http.json(), { kicked: 1 });
+
+    const banido = await abrir();
+    reply = await banido.call('join', { token: anterior });
+    assert.equal(reply.status, 403, 'o banimento pelo /kick com salas barra o token de antes dele');
+
+    reply = await banido.call('join', { token: token({ room: 'checkroom010', sub: '95', name: 'Expulso', can: TUDO }) });
+    assert.equal(reply.ok, true, 'e só naquela sala');
+
+    banido.close();
+});
+
 test('o mudo da retomada que falha no mediasoup não derruba o processo', async () => {
     // Sem rede: a `Room` do `dist/` com um producer cujo `pause()` rejeita, como faz um producer
     // ou um worker já fechado. Sem o catch, a rejeição subia solta e matava o SFU inteiro.
@@ -1098,10 +1261,114 @@ test('o mudo da retomada que falha no mediasoup não derruba o processo', async 
     assert.deepEqual(soltas, [], 'a rejeição do pause foi tratada, não subiu solta');
 });
 
+test('o producer que nasce num transporte já fechado, ou depois de perder a permissão, não fica na sala', async () => {
+    // Sem rede: o `ProducerController` do `dist/` com um transporte cujo `produce` só responde
+    // quando o teste manda, para o transporte fechar (ou o `can` encolher) no meio.
+    process.env.SFU_SECRET ??= SECRET;
+    const { Room } = await import('./dist/Services/Room.js');
+    const { Peer } = await import('./dist/Services/Peer.js');
+    const { ProducerController } = await import('./dist/Http/Controller/ProducerController.js');
+
+    const socketFalso = () => ({ readyState: 1, OPEN: 1, send() {}, close() {}, terminate() {} });
+    const sala = new Room('sala-unitaria-2', { router: {}, webRtcServer: {}, worker: {} }, async () => null);
+    const pessoa = new Peer('peer-2', 'Falante', socketFalso(), 'chave-2', 'user:2', TUDO, '127.0.0.1');
+    const fechados = [];
+    let solta = () => {};
+    const transporte = {
+        closed: false,
+        async produce() {
+            await new Promise(resolve => (solta = resolve));
+
+            return { id: `producer-${fechados.length}`, kind: 'video', paused: false, closed: false, appData: {}, observer: { once() {} }, on() {}, close() { fechados.push(this.id); } };
+        },
+    };
+    const pedido = source => ({ peer: () => pessoa, room: () => sala, source: () => source, kind: () => 'video', rtpParameters: () => ({}), srtpParameters: () => ({}) });
+
+    sala.peers.set(pessoa.id, pessoa);
+    sala.plainTransportFor = async () => transporte;
+
+    const controller = new ProducerController();
+    let resposta = controller.storePlain(pedido('screen'));
+
+    await espera(20);
+    transporte.closed = true;
+    solta();
+    await assert.rejects(resposta, falha => falha.status === 404, 'o transporte fechou no meio: 404');
+    assert.deepEqual([pessoa.producers.size, fechados.length], [0, 1], 'e o producer órfão fecha, sem entrar na sala');
+
+    transporte.closed = false;
+    resposta = controller.storePlain(pedido('screen'));
+    await espera(20);
+    pessoa.can = ['speak'];
+    solta();
+    await assert.rejects(resposta, falha => falha.status === 403, 'a permissão caiu no meio: 403');
+    assert.deepEqual([pessoa.producers.size, fechados.length], [0, 2], 'e o producer fecha também');
+});
+
+test('o router que nasce quando a última pessoa já saiu fecha junto com a sala', async () => {
+    process.env.SFU_SECRET ??= SECRET;
+    const { Room } = await import('./dist/Services/Room.js');
+    const { Peer } = await import('./dist/Services/Peer.js');
+
+    const socketFalso = () => ({ readyState: 1, OPEN: 1, send() {}, close() {}, terminate() {} });
+    const primeiro = { router: { close() {} }, webRtcServer: {}, worker: {} };
+    const fechados = [];
+    let entrega = () => {};
+    const sala = new Room('sala-unitaria-3', primeiro, () => new Promise(resolve => (entrega = resolve)));
+
+    // O primeiro router cheio (o `SFU_PEERS_PER_ROUTER`): quem chega pede um router noutro worker.
+    for (let indice = 0; indice < Number(process.env.SFU_PEERS_PER_ROUTER ?? 10); indice += 1) {
+        const cheio = new Peer(`cheio-${indice}`, 'Cheio', socketFalso(), `chave-${indice}`, `user:${300 + indice}`, TUDO, '127.0.0.1');
+
+        cheio.media = primeiro;
+        sala.peers.set(cheio.id, cheio);
+    }
+
+    const chegou = new Peer('chegou', 'Chegou', socketFalso(), 'chave-chegou', 'user:399', TUDO, '127.0.0.1');
+
+    sala.peers.set(chegou.id, chegou);
+
+    const escolha = sala.routerOf(chegou);
+
+    for (const pessoa of [...sala.peers.values()]) {
+        sala.removePeer(pessoa);
+    }
+
+    // O que o registro faz com a sala vazia.
+    sala.close();
+    entrega({ router: { close() { fechados.push('novo'); } }, webRtcServer: {}, worker: {} });
+
+    await assert.rejects(escolha, falha => falha.status === 404, 'a sala fechou: ninguém mais recebe router dela');
+    assert.deepEqual(fechados, ['novo'], 'e o router que chegou atrasado fecha, em vez de ficar aberto no worker');
+});
+
 test('remover alguém ao vivo pelo socket é recusado', async () => {
     // Quem já caiu pode ser tirado da lista por qualquer um; quem está ao vivo, não.
     const reply = await dono.call('removePeer', { peerId: entrada.peerId });
     assert.equal(reply.status, 422, 'remover alguém ao vivo pelo socket é recusado — isso é do Laravel');
+});
+
+test('remover pelo socket só vale para a própria sessão que caiu, não para a de outra pessoa', async () => {
+    const sala = 'checkroom006';
+    const cai = await abrir();
+    const caiu = await entrar(cai, { room: sala, name: 'Cai', installId: 'inst-fantasma' });
+    const outro = await abrir();
+    await entrar(outro, { room: sala, name: 'Outro', installId: 'inst-outro' });
+
+    cai.close();
+    await espera(800);
+
+    let reply = await outro.call('removePeer', { peerId: caiu.peerId });
+    assert.equal(reply.status, 403, 'a carência guarda o lugar de quem está voltando: ninguém mais o tira');
+
+    // A mesma instalação, entrando de novo sem retomar, tira o próprio fantasma.
+    const mesmo = await abrir();
+    await entrar(mesmo, { room: sala, name: 'Cai', installId: 'inst-fantasma' });
+    reply = await mesmo.call('removePeer', { peerId: caiu.peerId });
+    assert.deepEqual(reply.data, { status: 'removed' }, 'a própria sessão que caiu sai');
+
+    outro.close();
+    mesmo.close();
 });
 
 /**

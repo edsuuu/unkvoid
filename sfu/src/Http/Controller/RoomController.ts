@@ -14,9 +14,12 @@ export class RoomController {
     public constructor(private readonly registry: RoomRegistry) {}
 
     public kick(request: Request, response: Response): void {
-        const room = this.registry.find(this.roomId(request));
+        const roomId = this.roomId(request);
+        const userId = this.userId(request);
+        const move = this.move(request);
 
-        response.json({ kicked: room?.kickUser(this.userId(request), this.move(request)) ?? 0 });
+        this.registry.bar(roomId, userId);
+        response.json({ kicked: this.registry.find(roomId)?.kickUser(userId, move) ?? 0 });
     }
 
     /**
@@ -29,6 +32,7 @@ export class RoomController {
         let kicked = 0;
 
         for (const roomId of this.rooms(request)) {
+            this.registry.bar(roomId, userId);
             kicked += this.registry.find(roomId)?.kickUser(userId) ?? 0;
         }
 

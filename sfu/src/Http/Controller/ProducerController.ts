@@ -1,4 +1,4 @@
-import type { Producer } from 'mediasoup/types';
+import type { PlainTransport, Producer } from 'mediasoup/types';
 
 import type { SourceName } from '../../Enums/Source.js';
 import type { Payload } from '../../Routers/WebSocketRouter.js';
@@ -12,6 +12,10 @@ const MEDIA_IDLE_MS = 30_000;
 
 const KEYFRAME_REQUEST_DELAY_MS = 500;
 
+const ARRIVAL_POLL_MS = 1000;
+
+const ARRIVAL_SILENT_POLLS = 2;
+
 export class ProducerController {
     public async store(request: ProduceRequest): Promise<Payload> {
         const peer = request.peer();
@@ -19,13 +23,15 @@ export class ProducerController {
 
         peer.assertCanProduce(request.source());
 
-        const producer = await peer.getTransport(request.transportId()).produce({
+        const transport = peer.getTransport(request.transportId());
+        const producer = await transport.produce({
             kind: request.kind(),
             rtpParameters: request.rtpParameters(),
             keyFrameRequestDelay: KEYFRAME_REQUEST_DELAY_MS,
             appData: { source: request.source() },
         });
 
+        peer.assertStillOpen(transport, producer);
         await this.announce(peer, room, producer, request.source());
 
         return {
@@ -42,15 +48,24 @@ export class ProducerController {
 
         peer.assertCanProduce(request.source());
 
-        const transport = await room.plainTransportFor(peer, request.srtpParameters());
+        peer.producingPlain += 1;
 
-        const producer = await transport.produce({
-            kind: request.kind(),
-            rtpParameters: request.rtpParameters(),
-            keyFrameRequestDelay: KEYFRAME_REQUEST_DELAY_MS,
-            appData: { plain: true },
-        });
+        let transport: PlainTransport;
+        let producer: Producer;
 
+        try {
+            transport = await room.plainTransportFor(peer, request.srtpParameters());
+            producer = await transport.produce({
+                kind: request.kind(),
+                rtpParameters: request.rtpParameters(),
+                keyFrameRequestDelay: KEYFRAME_REQUEST_DELAY_MS,
+                appData: { plain: true },
+            });
+        } finally {
+            peer.producingPlain -= 1;
+        }
+
+        peer.assertStillOpen(transport, producer);
         await this.announce(peer, room, producer, request.source());
 
         return {
@@ -70,6 +85,13 @@ export class ProducerController {
         producer: Producer,
         source: SourceName,
     ): Promise<void> {
+        // A retomada com `can` menor pode ter chegado enquanto o worker criava o producer: a
+        // permissão conferida antes dos `await` já não vale.
+        if (!peer.allows(source)) {
+            producer.close();
+            peer.assertCanProduce(source);
+        }
+
         peer.addProducer(producer, source);
 
         // Mutado pelo servidor: o mic sobe, mas calado, e o `/mute false` o retoma.
@@ -101,20 +123,7 @@ export class ProducerController {
             );
         });
 
-        let receiving = false;
-
-        // O mediasoup zera a nota ~1,5 s depois do último pacote. É assim que quem assiste
-        // separa a tela parada de quem transmite (nada chega aqui) do caminho até ele que morreu
-        // (chega aqui e não lá).
-        producer.on('score', (scores) => {
-            const now = scores.some((entry) => entry.score > 0);
-
-            if (now === receiving) {
-                return;
-            }
-
-            receiving = now;
-            producer.appData.receiving = now;
+        this.watchArrival(producer, (receiving) => {
             room.broadcast('producerReceiving', { producerId: producer.id, receiving });
 
             if (receiving && idleTimer) {
@@ -137,10 +146,57 @@ export class ProducerController {
         );
     }
 
+    /**
+     * Se o RTP do producer está chegando aqui, contado pelo próprio SFU: a nota do mediasoup
+     * só zera por inatividade em simulcast, e o app manda um fluxo só — quem transmite parava
+     * e a sala seguia ouvindo `receiving: true` para sempre. Para depois de dois intervalos
+     * sem pacote (2 a 3 s) e na hora em que o producer pausa, porque pausado nada sai daqui. É
+     * assim que quem assiste separa a tela parada de quem transmite (nada chega aqui) do
+     * caminho até ele que morreu (chega aqui e não lá).
+     */
+    private watchArrival(producer: Producer, changed: (receiving: boolean) => void): void {
+        let counted = 0;
+        let silent = 0;
+        let polling = false;
+
+        const timer = setInterval(() => {
+            if (polling) {
+                return;
+            }
+
+            polling = true;
+            producer
+                .getStats()
+                .then((stats) => {
+                    const packets = stats.reduce((total, entry) => total + entry.packetCount, 0);
+
+                    silent = packets > counted ? 0 : silent + 1;
+                    counted = packets;
+
+                    const was = producer.appData.receiving === true;
+                    const now =
+                        !producer.closed &&
+                        !producer.paused &&
+                        (silent === 0 || (was && silent < ARRIVAL_SILENT_POLLS));
+
+                    if (now !== was) {
+                        producer.appData.receiving = now;
+                        changed(now);
+                    }
+                })
+                .catch(() => undefined)
+                .finally(() => (polling = false));
+        }, ARRIVAL_POLL_MS);
+
+        producer.observer.once('close', () => clearInterval(timer));
+    }
+
     public async pause(request: ProducerRequest): Promise<Payload> {
         const peer = request.peer();
 
-        await request.room().setProducerPaused(peer, peer.getProducer(request.producerId()), true);
+        await request
+            .room()
+            .setOwnProducerPaused(peer, peer.getProducer(request.producerId()), true);
 
         return { status: 'paused' };
     }
@@ -148,7 +204,9 @@ export class ProducerController {
     public async resume(request: ProducerRequest): Promise<Payload> {
         const peer = request.peer();
 
-        await request.room().setProducerPaused(peer, peer.getProducer(request.producerId()), false);
+        await request
+            .room()
+            .setOwnProducerPaused(peer, peer.getProducer(request.producerId()), false);
 
         return { status: 'resumed' };
     }

@@ -65,6 +65,8 @@ export class Room {
 
     private expanding: Promise<MediaRouter | null> | null = null;
 
+    private closed = false;
+
     public constructor(
         public readonly id: string,
         first: MediaRouter,
@@ -115,6 +117,8 @@ export class Room {
     }
 
     private async pickRouter(): Promise<MediaRouter> {
+        this.assertOpen();
+
         const load = (media: MediaRouter): number =>
             [...this.peers.values()].filter((peer) => peer.media === media).length;
         const roomy = this.routers.find((media) => load(media) < config.peersPerRouter);
@@ -125,6 +129,14 @@ export class Room {
 
         this.expanding ??= this.source(this.routers.map((media) => media.worker))
             .then((fresh) => {
+                // A última pessoa saiu enquanto o worker criava o router: a sala já fechou os
+                // dela, e este ficaria aberto no worker até o processo acabar.
+                if (fresh && this.closed) {
+                    fresh.router.close();
+
+                    return null;
+                }
+
                 if (fresh) {
                     this.routers.push(fresh);
                     console.log(
@@ -138,6 +150,8 @@ export class Room {
 
         const fresh = await this.expanding;
 
+        this.assertOpen();
+
         if (fresh) {
             return fresh;
         }
@@ -145,6 +159,12 @@ export class Room {
         return this.routers.reduce((smallest, media) =>
             load(media) < load(smallest) ? media : smallest,
         );
+    }
+
+    private assertOpen(): void {
+        if (this.closed) {
+            throw new NotFoundException('this room is already closed');
+        }
     }
 
     /**
@@ -218,6 +238,16 @@ export class Room {
                 [...previous.consumers.values()].map((consumer) => consumer.producerId),
             )) {
                 this.announceWatchers(producerId);
+            }
+
+            // O `watchers` que saiu enquanto o socket estava caído se perdeu: quem transmite
+            // volta sabendo quem o assiste agora, sem esperar alguém abrir ou fechar a tela.
+            for (const producerId of previous.producers.keys()) {
+                const watchers = this.watchersOf(producerId);
+
+                if (watchers) {
+                    previous.send('watchers', { producerId, watchers });
+                }
             }
 
             if (staleSocket) {
@@ -311,7 +341,9 @@ export class Room {
 
     /**
      * A marca do mudo do servidor, e o mic junto com ela: pausado enquanto durar, retomado
-     * quando o Laravel devolve a voz. Devolve quantos mics mexeu.
+     * quando o Laravel devolve a voz. O mic que a própria pessoa pausou fica pausado: o
+     * desmutar do moderador devolve a permissão de falar, não abre o microfone de ninguém.
+     * Devolve quantos mics mexeu.
      */
     public async applyServerMute(peer: Peer, muted: boolean): Promise<number> {
         let touched = 0;
@@ -319,14 +351,29 @@ export class Room {
         peer.serverMuted = muted;
         peer.send('serverMuted', { muted });
 
-        for (const producer of peer.producers.values()) {
-            if (producer.appData.source === 'mic') {
-                await this.setProducerPaused(peer, producer, muted);
-                touched += 1;
+        for (const producer of [...peer.producers.values()]) {
+            if (
+                producer.appData.source !== 'mic' ||
+                (!muted && producer.appData.selfPaused === true)
+            ) {
+                continue;
             }
+
+            await this.setProducerPaused(peer, producer, muted);
+            touched += 1;
         }
 
         return touched;
+    }
+
+    /** O pausar e o retomar da própria pessoa, que o mudo do servidor não desfaz. */
+    public async setOwnProducerPaused(
+        peer: Peer,
+        producer: Producer,
+        paused: boolean,
+    ): Promise<void> {
+        await this.setProducerPaused(peer, producer, paused);
+        producer.appData.selfPaused = paused;
     }
 
     public async setProducerPaused(peer: Peer, producer: Producer, paused: boolean): Promise<void> {
@@ -388,7 +435,10 @@ export class Room {
             peer.id,
         );
 
-        if (![...peer.producers.values()].some((other) => other.appData.plain === true)) {
+        if (
+            peer.producingPlain === 0 &&
+            ![...peer.producers.values()].some((other) => other.appData.plain === true)
+        ) {
             peer.closePlainTransports();
         }
     }
@@ -553,13 +603,34 @@ export class Room {
         return this.plainTransport(peer, srtpParameters, true);
     }
 
-    private async plainTransport(
+    /**
+     * Um por vez em cada sentido: o microfone e a tela abertos no mesmo instante esperam o mesmo
+     * transporte, em vez de abrir dois (o app manda tudo para a porta da última resposta, e o
+     * outro producer morria sem pacote). E chaves diferentes em rajada fecham uma a outra em
+     * vez de prender todas as portas de RTP puro do worker até a pessoa sair.
+     */
+    private plainTransport(
+        peer: Peer,
+        srtpParameters: SrtpParameters,
+        receive: boolean,
+    ): Promise<PlainTransport> {
+        const direction = receive ? 'receive' : 'send';
+        const opening = (peer.plainOpening.get(direction) ?? Promise.resolve())
+            .catch(() => undefined)
+            .then(() => this.openPlainTransport(peer, srtpParameters, receive));
+
+        peer.plainOpening.set(direction, opening);
+
+        return opening;
+    }
+
+    private async openPlainTransport(
         peer: Peer,
         srtpParameters: SrtpParameters,
         receive: boolean,
     ): Promise<PlainTransport> {
         const existing = [...peer.plainTransports.values()].find(
-            (transport) => Boolean(transport.appData.receive) === receive,
+            (transport) => Boolean(transport.appData.receive) === receive && !transport.closed,
         );
 
         if (existing?.appData.key === srtpParameters.keyBase64) {
@@ -596,7 +667,12 @@ export class Room {
                     : failure;
             });
 
-        await transport.connect({ srtpParameters });
+        try {
+            await transport.connect({ srtpParameters });
+        } catch (failure) {
+            transport.close();
+            throw failure;
+        }
 
         peer.addPlainTransport(transport);
 
@@ -604,13 +680,22 @@ export class Room {
     }
 
     public announceWatchers(producerId: string): void {
+        const watchers = this.watchersOf(producerId);
+
+        if (watchers) {
+            this.broadcast('watchers', { producerId, watchers });
+        }
+    }
+
+    /** Quem está olhando uma tela agora; `null` para o que não é tela, que não tem plateia. */
+    private watchersOf(producerId: string): { peerId: string; name: string }[] | null {
         const owner = [...this.peers.values()].find((peer) => peer.producers.has(producerId));
 
         if (String(owner?.producers.get(producerId)?.appData.source) !== 'screen') {
-            return;
+            return null;
         }
 
-        const watchers = [...this.peers.values()]
+        return [...this.peers.values()]
             .filter(
                 (peer) =>
                     !peer.isOrphaned() &&
@@ -619,8 +704,6 @@ export class Room {
                     ),
             )
             .map((peer) => ({ peerId: peer.id, name: peer.name }));
-
-        this.broadcast('watchers', { producerId, watchers });
     }
 
     public findProducerOwner(producerId: string): ProducerOwner {
@@ -672,6 +755,8 @@ export class Room {
     }
 
     public close(): void {
+        this.closed = true;
+
         for (const timer of this.evictions.values()) {
             clearTimeout(timer);
         }

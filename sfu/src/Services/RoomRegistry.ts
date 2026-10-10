@@ -4,7 +4,7 @@ import type { Router, WebRtcServer, Worker } from 'mediasoup/types';
 import type { Peer } from './Peer.js';
 import { Room, type MediaRouter } from './Room.js';
 import { config } from '../Config/index.js';
-import { ServiceUnavailableException } from '../Exceptions/ApiException.js';
+import { ForbiddenException, ServiceUnavailableException } from '../Exceptions/ApiException.js';
 
 type WorkerSlot = { worker: Worker; webRtcServer: WebRtcServer; routers: Set<Router> };
 
@@ -22,12 +22,18 @@ export type WorkerDump = {
 
 const RESPAWN_CEILING_MS = 30_000;
 
+const TOKEN_SECONDS = 60;
+
+const BARRIER_MS = (TOKEN_SECONDS + 60) * 1000;
+
 export class RoomRegistry {
     private readonly slots: WorkerSlot[] = [];
 
     private readonly rooms = new Map<string, Room>();
 
     private readonly creating = new Map<string, Promise<Room>>();
+
+    private readonly barred = new Map<string, number>();
 
     public async boot(): Promise<void> {
         for (let index = 0; index < config.workerCount; index += 1) {
@@ -144,6 +150,37 @@ export class RoomRegistry {
         router.observer.once('close', () => slot.routers.delete(router));
 
         return { router, webRtcServer: slot.webRtcServer, worker: slot.worker };
+    }
+
+    /**
+     * Expulso, banido ou movido de uma sala não volta nela com o token que já tinha: ele vale
+     * 60 s (mais a folga), e só um cliente modificado o guardaria. O token novo, que o Laravel
+     * só assina para quem ainda tem direito, nasce depois da expulsão e passa.
+     */
+    public bar(roomId: string, userId: string): void {
+        const now = Date.now();
+
+        for (const [key, at] of this.barred) {
+            if (now - at > BARRIER_MS) {
+                this.barred.delete(key);
+            }
+        }
+
+        this.barred.set(`${roomId}\n${userId}`, now);
+    }
+
+    /**
+     * O Laravel assina `exp` = a hora da assinatura + 60 s, em segundos. O token de antes da
+     * expulsão (ou do mesmo segundo) tem `exp` até a hora dela + 60.
+     */
+    public assertNotBarred(roomId: string, userId: string, expiresAt: number): void {
+        const at = this.barred.get(`${roomId}\n${userId}`);
+
+        if (at !== undefined && expiresAt <= Math.floor(at / 1000) + TOKEN_SECONDS) {
+            throw new ForbiddenException(
+                'this token was issued before you were removed from this room',
+            );
+        }
     }
 
     public find(roomId: string): Room | undefined {

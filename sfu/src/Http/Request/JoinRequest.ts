@@ -55,6 +55,11 @@ export class JoinRequest extends Request {
         return this.claims.can;
     }
 
+    /** `exp` do token; zero para quem entra sem conta, que não tem token. */
+    public expiresAt(): number {
+        return this.claims.exp;
+    }
+
     public muted(): boolean {
         return this.claims.muted === true;
     }

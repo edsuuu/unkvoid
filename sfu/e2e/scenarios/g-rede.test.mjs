@@ -156,6 +156,75 @@ test('g. quem transmite perde a rede por 10 s: a tela volta para quem assiste, e
     assert.deepEqual(cleanVideo(steady, SCREEN), []);
 });
 
+test('g. quem transmite para de mandar por 12 s: a sala ouve receiving false e ninguém refaz o caminho de chegada', async () => {
+    const room = 'e2e-rede-parou';
+    const ana = await new Participant({ name: 'ana', url: sfu.url, identity: guest(room, 'ana'), watch: false, gate: 'immediate' }).join();
+    const watchers = [];
+
+    people.push(ana);
+
+    for (const name of ['bia', 'caio']) {
+        watchers.push(await new Participant({ name, url: sfu.url, identity: guest(room, name), gate: 'immediate' }).join());
+    }
+
+    people.push(...watchers);
+
+    await ana.publish('screen', SCREEN);
+    await ana.publish('mic');
+
+    for (const watcher of watchers) {
+        await backAfter(watcher, 'ana', 0, 5000);
+    }
+
+    const screen = ana.producers.get('screen');
+    const mic = ana.producers.get('mic');
+    const [bia] = watchers;
+
+    await waitFor(() => bia.receiving.get(screen) === true, 5000, 'bia hearing that the screen arrives');
+
+    // A captura travou (ou a subida morreu): nada mais sai de quem transmite, e a sinalização segue de pé.
+    const stoppedAt = Date.now();
+
+    ana.stopLoop('screen');
+    ana.stopLoop('mic');
+
+    const flipped = await waitFor(
+        () => bia.events('producerReceiving').find(entry => entry.at >= stoppedAt && entry.data.producerId === screen && entry.data.receiving === false),
+        6000,
+        'producerReceiving false for the screen',
+    ).catch(() => null);
+
+    await sleep(Math.max(0, 12_000 - (Date.now() - stoppedAt)));
+
+    const rebuilt = watchers.flatMap(watcher => watcher.history.filter(entry => entry.at >= stoppedAt && ['arrivalDead', 'rewatch'].includes(entry.event)).map(entry => `${watcher.name}:${entry.event}`));
+    const restartedAt = Date.now();
+
+    ana.startLoop('screen', SCREEN);
+    ana.startLoop('mic', {});
+
+    const back = await backAfter(bia, 'ana', restartedAt, 8000);
+    const again = await waitFor(() => bia.receiving.get(screen) === true, 5000, 'receiving true again').then(() => Date.now() - restartedAt, () => null);
+
+    // Pausado, o producer não repassa nada: quem assiste ouve receiving false mesmo com o pacote chegando aqui.
+    const pausedAt = Date.now();
+
+    await ana.client.call('pauseProducer', { producerId: mic });
+
+    const micFlipped = await waitFor(
+        () => bia.events('producerReceiving').find(entry => entry.at >= pausedAt && entry.data.producerId === mic && entry.data.receiving === false),
+        4000,
+        'producerReceiving false for the paused mic',
+    ).then(entry => entry.at - pausedAt, () => null);
+
+    record('g-parou', { receivingFalseAfterMs: flipped ? flipped.at - stoppedAt : null, rebuilt, backAfterMs: back, receivingTrueAfterMs: again, pausedMicFalseAfterMs: micFlipped });
+
+    assert.ok(flipped && flipped.at - stoppedAt <= 4000, `receiving false da tela ${flipped ? `${flipped.at - stoppedAt} ms` : 'nunca chegou'} depois de parar`);
+    assert.deepEqual(rebuilt, [], 'ninguém refaz o caminho de chegada por causa de quem parou de mandar');
+    assert.ok(back <= 3000, `a tela voltou ${back} ms depois de voltar a mandar`);
+    assert.ok(again !== null, 'e o receiving volta a true');
+    assert.ok(micFlipped !== null && micFlipped <= 2500, `o mic pausado vira receiving false (${micFlipped} ms)`);
+});
+
 test(`g. ${CYCLES} ciclos de entrar, transmitir, assistir e sair: nada vaza e a memória fica estável`, async () => {
     const room = 'e2e-ciclos';
     const ana = await new Participant({ name: 'ana', url: sfu.url, identity: guest(room, 'ana'), watch: false, gate: 'immediate' }).join();
