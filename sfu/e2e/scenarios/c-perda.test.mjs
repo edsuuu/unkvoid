@@ -150,9 +150,8 @@ test('c. 5% nos dois lados (≈10% de ponta a ponta): a imagem não para mais de
 
 test(
     'c. o app de hoje com 5% na descida: sem RR o mediasoup ignora o NACK repetido, e cada buraco espera o freio de 2 s',
-    { todo: 'cliente nativo: receptor sem RTCP RR (receiver.rs), remetente sem XR DLRR (plain.rs) e KEYFRAME_SPACING de 2 s (sharing.rs)' },
     async () => {
-        const result = await lossyCall('e2e-perda-app', { uplinkLoss: 0, downlinkLoss: LOSS, viewer: { receiverReports: false, extendedReports: false, gate: 'native' } });
+        const result = await lossyCall('e2e-perda-app', { uplinkLoss: 0, downlinkLoss: LOSS, viewer: { receiverReports: true, extendedReports: true, gate: 'native' } });
 
         record('c-app-de-hoje', result);
 

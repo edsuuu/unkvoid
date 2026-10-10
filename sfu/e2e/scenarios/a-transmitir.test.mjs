@@ -82,9 +82,9 @@ test('a. tela 1080p60, câmera 360p30 e microfone chegam em ordem, sem buraco, n
     assert.deepEqual({ producers: totals.producers, consumers: totals.consumers }, { producers: 3, consumers: 6 });
 });
 
-test('a. tela e câmera juntas no ritmo do app: a câmera derruba o ritmo da tela e o quadro atrasa', { todo: 'cliente nativo: follow_bitrate no sharing.rs redefine o ritmo único com a taxa de cada origem' }, async () => {
+test('a. tela e câmera juntas no ritmo do app: a câmera derruba o ritmo da tela e o quadro atrasa', async () => {
     const room = 'e2e-ritmo';
-    const ana = await new Participant({ name: 'ana', url: sfu.url, identity: guest(room, 'ana'), watch: false, pacing: 'native' }).join();
+    const ana = await new Participant({ name: 'ana', url: sfu.url, identity: guest(room, 'ana'), watch: false, pacing: 'sum' }).join();
     const bia = await new Participant({ name: 'bia', url: sfu.url, identity: guest(room, 'bia') }).join();
 
     people.push(ana, bia);

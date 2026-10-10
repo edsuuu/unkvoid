@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
+import { Governor } from './Governor.mjs';
 import { MediaLibrary } from './MediaLibrary.mjs';
 import { PlainReceiver } from './PlainReceiver.mjs';
 import { PlainSender } from './PlainSender.mjs';
@@ -36,6 +37,7 @@ export class Participant {
         receiverReports = false,
         extendedReports = false,
         gate = 'native',
+        governor = false,
         watch = true,
         keepStreams = false,
         legacyMoved = false,
@@ -50,6 +52,7 @@ export class Participant {
         this.receiverReports = receiverReports;
         this.extendedReports = extendedReports;
         this.gate = gate;
+        this.governing = governor;
         this.watching = watch;
         this.keepStreams = keepStreams;
         this.legacyMoved = legacyMoved;
@@ -372,6 +375,11 @@ export class Participant {
 
             this.tracks.set(source, track);
 
+            if (this.governing) {
+                track.governor ??= new Governor(options.bitrate);
+                this.govern();
+            }
+
             const timer = setInterval(() => {
                 const due = Math.floor(((Date.now() - startedAt) * track.fps) / 1000) + 1 - sent;
 
@@ -407,6 +415,37 @@ export class Participant {
         }, 10);
 
         this.loops.set(source, timer);
+    }
+
+    /** A janela de 1 s do governador do app: perda pelos NACKs do servidor sobre os pacotes que saíram. */
+    govern() {
+        if (this.governorTimer) {
+            return;
+        }
+
+        this.governorTimer = setInterval(() => {
+            const sender = this.sender;
+
+            if (!sender) {
+                return;
+            }
+
+            const counted = this.governorCounted?.sender === sender ? this.governorCounted : { sender, packets: 0, nacked: 0 };
+            const packets = sender.stats.packets - counted.packets;
+            const nacked = sender.stats.nacked - counted.nacked;
+
+            this.governorCounted = { sender, packets: sender.stats.packets, nacked: sender.stats.nacked };
+
+            for (const track of this.tracks.values()) {
+                if (!track.governor) {
+                    continue;
+                }
+
+                track.governor.observe(packets, nacked);
+                track.bitrate = track.governor.target;
+                track.constrained = track.governor.constrained();
+            }
+        }, 1000);
     }
 
     stopLoop(source) {
@@ -675,6 +714,8 @@ export class Participant {
     }
 
     stopEverything(closeSocket = true) {
+        clearInterval(this.governorTimer);
+        this.governorTimer = null;
         clearInterval(this.beat);
         clearInterval(this.watchdog);
 

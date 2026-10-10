@@ -13,15 +13,22 @@ import { createSocket } from 'node:dgram';
  * fica estável enquanto o relé viver.
  */
 export class UdpProxy {
-    constructor({ loss = 0, delayMs = 0, jitterMs = 0, reorder = 0 } = {}) {
+    /**
+     * `rateBps` é o teto da subida (cliente → SFU), como o upload de uma casa: o pacote espera a
+     * vez numa fila que anda nessa taxa, e o que acharia mais de `bufferMs` de fila na frente é
+     * descartado (o roteador cheio). A descida não tem teto.
+     */
+    constructor({ loss = 0, delayMs = 0, jitterMs = 0, reorder = 0, rateBps = 0, bufferMs = 200 } = {}) {
         this.loss = loss;
         this.delayMs = delayMs;
         this.jitterMs = jitterMs;
         this.reorder = reorder;
+        this.rateBps = rateBps;
+        this.bufferMs = bufferMs;
         this.down = false;
         this.closed = false;
         this.relays = [];
-        this.stats = { forwarded: 0, dropped: 0 };
+        this.stats = { forwarded: 0, dropped: 0, queueDropped: 0, upBytes: 0, maxQueueMs: 0, queuedOver100Ms: 0, queuedOver50Ms: 0, queueSamples: [] };
     }
 
     configure({ loss = this.loss, delayMs = this.delayMs, jitterMs = this.jitterMs, reorder = this.reorder }) {
@@ -58,7 +65,7 @@ export class UdpProxy {
         front.on('error', () => {});
         back.on('error', () => {});
 
-        const up = { jitter: 0, last: 0 };
+        const up = { jitter: 0, last: 0, limited: true, busyUntil: 0 };
         const down = { jitter: 0, last: 0 };
 
         front.on('message', (datagram, from) => {
@@ -86,6 +93,35 @@ export class UdpProxy {
             return;
         }
 
+        const now = performance.now();
+        let departAt = now;
+
+        if (lane.limited && this.rateBps > 0) {
+            lane.busyUntil = Math.max(lane.busyUntil, now);
+
+            const waitMs = lane.busyUntil - now;
+
+            if (waitMs > this.bufferMs) {
+                this.stats.dropped += 1;
+                this.stats.queueDropped += 1;
+                this.stats.firstDropAt ??= now;
+
+                return;
+            }
+
+            lane.busyUntil += ((datagram.length + 28) * 8 * 1000) / this.rateBps;
+            departAt = lane.busyUntil;
+            this.stats.maxQueueMs = Math.max(this.stats.maxQueueMs, Math.round(waitMs));
+            this.stats.queuedOver50Ms += waitMs > 50 ? 1 : 0;
+            this.stats.queuedOver100Ms += waitMs > 100 ? 1 : 0;
+            this.stats.upBytes += datagram.length;
+            this.stats.queueSamples.push([Math.round(now), Math.round(waitMs)]);
+
+            if (this.stats.queueSamples.length > 200_000) {
+                this.stats.queueSamples.shift();
+            }
+        }
+
         this.stats.forwarded += 1;
 
         // O relé pode ter fechado enquanto o pacote esperava o atraso.
@@ -97,18 +133,16 @@ export class UdpProxy {
             }
         };
 
-        if (this.delayMs <= 0 && this.jitterMs <= 0 && this.reorder <= 0) {
+        if (this.delayMs <= 0 && this.jitterMs <= 0 && this.reorder <= 0 && departAt === now) {
             deliver();
 
             return;
         }
 
-        const now = performance.now();
-
         lane.jitter = Math.min(Math.max(lane.jitter + (Math.random() - 0.5) * this.jitterMs * 0.1, 0), this.jitterMs);
 
         if (this.reorder > 0 && Math.random() < this.reorder) {
-            setTimeout(deliver, this.delayMs + lane.jitter + 5 + Math.random() * 20);
+            setTimeout(deliver, departAt - now + this.delayMs + lane.jitter + 5 + Math.random() * 20);
 
             return;
         }
@@ -116,7 +150,7 @@ export class UdpProxy {
         // Uma fila por sentido e um relógio só: o `setTimeout` arredonda o milissegundo, e um
         // relógio por pacote trocava a ordem de quem saía junto.
         lane.queue ??= [];
-        lane.queue.push({ at: Math.max(now + this.delayMs + lane.jitter, lane.last), deliver });
+        lane.queue.push({ at: Math.max(departAt + this.delayMs + lane.jitter, lane.last), deliver });
         lane.last = lane.queue.at(-1).at;
         this.schedule(lane);
     }

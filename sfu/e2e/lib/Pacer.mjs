@@ -37,6 +37,12 @@ export class Pacer {
     }
 
     pushRepair(packet) {
+        // O `MOST_REPAIRS` do `pacer.rs`: cheio, o reparo mais velho sai.
+        if (this.repairs.length >= 1024) {
+            this.repairs.shift();
+            this.dropped += 1;
+        }
+
         this.repairs.push(packet);
         this.drain();
     }

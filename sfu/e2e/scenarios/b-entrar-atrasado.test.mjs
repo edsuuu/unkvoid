@@ -166,7 +166,7 @@ test('b. quem entra logo depois do quadro-chave de outro (dentro do freio do med
     assert.deepEqual(overLimit(pairs), []);
 });
 
-test('b. com o freio de quadro-chave do app (2 s), o segundo atrasado espera mais de 1 s', { todo: 'cliente nativo: KEYFRAME_SPACING de 2 s no sharing.rs' }, async () => {
+test('b. com o freio de quadro-chave do app (2 s), o segundo atrasado espera mais de 1 s', async () => {
     const room = 'e2e-atrasado-app';
 
     await broadcaster(room, { gate: 'native' });
@@ -182,11 +182,11 @@ test('b. com o freio de quadro-chave do app (2 s), o segundo atrasado espera mai
     assert.deepEqual(overLimit(joins), []);
 });
 
-test('b. com o pedido de quadro-chave dividido entre tela e câmera (o app de hoje), a câmera espera o GOP', { todo: 'cliente nativo: read_feedback do plain.rs não separa o PLI por SSRC' }, async () => {
+test('b. com o pedido de quadro-chave dividido entre tela e câmera (o app de hoje), a câmera espera o GOP', async () => {
     const room = 'e2e-atrasado-ssrc';
 
     // O GOP de 4 s do encoder do Windows: é ele que acaba trazendo a câmera.
-    await broadcaster(room, { gate: 'immediate', keyframeRouting: 'shared' }, 4000);
+    await broadcaster(room, { gate: 'native', keyframeRouting: 'ssrc' }, 4000);
 
     const joins = [await lateJoin(room, 's1')];
 
@@ -197,3 +197,57 @@ test('b. com o pedido de quadro-chave dividido entre tela e câmera (o app de ho
 
     assert.deepEqual(overLimit(joins), []);
 });
+
+for (const gate of (process.env.APP_GATES ?? 'native').split(',')) {
+    test(`b. app (${gate}): um por vez, dois a 300 ms e três juntos veem em até 1 s com o freio do app`, async () => {
+        const room = `e2e-app-seq-${gate}`;
+        const mark = people.length;
+        const ana = await broadcaster(room, { gate, governor: true });
+        const joins = [];
+
+        for (const name of ['l1', 'l2', 'l3']) {
+            joins.push(await lateJoin(room, name));
+            await sleep(1500);
+        }
+
+        const first = lateJoin(room, 'p1');
+
+        await sleep(300);
+        joins.push(await first, await lateJoin(room, 'p2'));
+        await sleep(1500);
+        joins.push(...(await Promise.all(['g1', 'g2', 'g3'].map(name => lateJoin(room, name)))));
+
+        record(`b-app-seq-${gate}`, { gate, joins, keyframes: ana.tracks.get('screen').keyframesSent });
+        console.log(JSON.stringify({ test: 'seq', gate, joins, keyframes: ana.tracks.get('screen').keyframesSent }));
+        people.splice(mark).forEach(person => person.crash());
+
+        assert.deepEqual(overLimit(joins), []);
+    });
+
+    test(`b. app (${gate}): cinco pares, o segundo logo depois do quadro-chave do primeiro, veem em até 1 s com o freio do app`, async () => {
+        const room = `e2e-app-pares-${gate}`;
+        const mark = people.length;
+        const network = new UdpProxy({ delayMs: 15 });
+
+        proxies.push(network);
+        const relay = { relay: (host, port) => network.relay(host, port) };
+
+        await broadcaster(room, { gate, governor: true, ...relay });
+
+        const pairs = [];
+
+        for (let pair = 0; pair < 5; pair += 1) {
+            const first = await lateJoin(room, `f${pair}`, relay);
+            const second = await lateJoin(room, `s${pair}`, relay);
+
+            pairs.push(first, second);
+            await sleep(1500);
+        }
+
+        record(`b-app-pares-${gate}`, { gate, pairs });
+        console.log(JSON.stringify({ test: 'pares', gate, pairs }));
+        people.splice(mark).forEach(person => person.crash());
+
+        assert.deepEqual(overLimit(pairs), []);
+    });
+}
