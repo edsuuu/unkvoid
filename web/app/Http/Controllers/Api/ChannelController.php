@@ -11,6 +11,7 @@ use App\Http\Resources\Api\ChannelResource;
 use App\Models\Channel;
 use App\Models\Server;
 use App\Models\User;
+use App\Services\Sfu\SfuClient;
 use Illuminate\Container\Attributes\CurrentUser;
 use Illuminate\Http\Response;
 use Throwable;
@@ -55,9 +56,9 @@ final class ChannelController
     /**
      * @throws Throwable
      */
-    public function destroy(Channel $channel, #[CurrentUser] User $user): Response
+    public function destroy(Channel $channel, #[CurrentUser] User $user, SfuClient $sfu): Response
     {
-        $channel->remove($user);
+        $channel->remove($user, $sfu);
 
         return response()->noContent();
     }

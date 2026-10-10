@@ -23,10 +23,7 @@ final class MemberController
      */
     public function update(UpdateMemberRequest $request, Server $server, User $user, #[CurrentUser] User $actor, SfuClient $sfu): MemberResource
     {
-        /** @var array{nickname?: ?string, role_ids?: array<int, int>, server_mute?: bool, server_deaf?: bool} $changes */
-        $changes = $request->validated();
-
-        return new MemberResource($server->updateMember($actor, $user, $changes, $sfu)->load(['user', 'roles']));
+        return new MemberResource($server->updateMember($actor, $user, $request->changes(), $sfu)->load(['user', 'roles']));
     }
 
     /**

@@ -284,9 +284,16 @@ avisar. O SFU troca `installId` fora de `[A-Za-z0-9-]{1,64}` por um UUID sortead
 `POST {SFU_LARAVEL_URL}/api/sfu/events` com os mesmos cabeçalhos assinados:
 
 ```json
-{ "event": "joined", "room": "01j7…", "sub": "user:12", "name": "Edsu", "ip": "203.0.113.9", "at": 1757640000 }
-{ "event": "left",   "room": "01j7…", "sub": "user:12", "name": "Edsu", "ip": "203.0.113.9", "at": 1757640090 }
+{ "event": "joined", "room": "01j7…", "sub": "user:12", "name": "Edsu", "ip": "203.0.113.9", "at": 1757640000, "nonce": "9f2c4e7a1b3d5c60" }
+{ "event": "left",   "room": "01j7…", "sub": "user:12", "name": "Edsu", "ip": "203.0.113.9", "at": 1757640090, "nonce": "04ab8d3e6f7c1a29" }
 ```
+
+O `nonce` (16 hex, desde 10/10/2026) é sorteado a cada aviso: o Laravel recusa a mesma assinatura
+duas vezes (a marca dura 600 s, as duas metades da janela de ±300 s), e sem ele entrar, sair e
+entrar no mesmo segundo davam dois `joined` idênticos — o segundo era tomado por repetição e a
+lista ficava sem a pessoa. O Laravel não lê o campo; o SFU antigo, sem ele, segue como antes.
+O `left` de um canal que já foi apagado responde 204 sem fazer nada, e o `joined` nele derruba a
+pessoa (`/kick` com a sala).
 
 `joined` dispara no `join` novo (não no `resume`); `left` dispara no `removePeer` real
 (saída, expulsão, ou o fim dos 30 s de graça). Env novo: `SFU_LARAVEL_URL`
@@ -411,7 +418,7 @@ Membros (`{user}` é id de usuário):
 
 | rota | corpo | regra |
 |---|---|---|
-| `PATCH /api/servers/{server}/members/{user}` | `{ nickname?, role_ids?, server_mute? }` | `MANAGE_ROLES` para cargos (só cargos abaixo do meu top, e só com permissões que eu tenho), `MUTE_MEMBERS` para o bool (chama o `POST /mute` do SFU com os canais de voz **deste** servidor, como o expulsar: sem depender da presença), apelido próprio sempre. `server_deaf` existe na tabela mas ainda não tem escrita |
+| `PATCH /api/servers/{server}/members/{user}` | `{ nickname?, role_ids?, server_mute? }` | `MANAGE_ROLES` para cargos (só cargos abaixo do meu top, e só com permissões que eu tenho), `MUTE_MEMBERS` para o bool (chama o `POST /mute` do SFU com os canais de voz **deste** servidor, como o expulsar: sem depender da presença), apelido próprio sempre. `server_mute` aceita `true`/`false`, `1`/`0` e `"1"`/`"0"`, e vira bool antes de gravar. `server_deaf` existe na tabela mas ainda não tem escrita |
 | `DELETE /api/servers/{server}/members/{user}` | — | `KICK_MEMBERS` + hierarquia; derruba da voz pelo `POST /kick` do SFU com os canais de voz **deste** servidor (o `mute` do servidor e o banimento idem): numa chamada só, sem depender da presença, e sem tocar a voz de outro servidor |
 | `GET /api/servers/{server}/bans` | — | `BAN_MEMBERS` |
 | `POST /api/servers/{server}/bans/{user}` | `{ reason? }` | `BAN_MEMBERS` + hierarquia; remove membro, derruba da voz |
@@ -431,7 +438,7 @@ Canais:
 |---|---|
 | `POST /api/servers/{server}/channels` | `{ name, type: text\|voice\|category, topic?, user_limit?, parent_id? }` (`MANAGE_CHANNELS`; `parent_id` tem de ser categoria do mesmo servidor, e categoria não leva `parent_id` nem `user_limit` → 422) |
 | `PATCH /api/channels/{channel}` | `{ name?, topic?, position?, user_limit?, parent_id? }` (`parent_id: null` tira da categoria) |
-| `DELETE /api/channels/{channel}` | — (último canal de texto → 422; categoria solta os canais dela) |
+| `DELETE /api/channels/{channel}` | — (último canal de texto → 422; categoria solta os canais dela; canal de voz tira da voz quem está nele, pela presença e pelos acessos abertos, com o `/kick` da sala) |
 | `PUT /api/channels/{channel}/overwrites/{type}/{id}` | `{ allow, deny }` (`MANAGE_ROLES`; `type` = `role`\|`member`; `id` = id do cargo ou id do usuário) |
 | `DELETE /api/channels/{channel}/overwrites/{type}/{id}` | — |
 
@@ -480,8 +487,8 @@ Voz:
 
 | rota | corpo | resposta |
 |---|---|---|
-| `POST /api/channels/{channel}/voice/token` | — | `{ token, url, expires_in: 60 }` (`CONNECT` no canal de voz; `user_limit` cheio → 403; grava `channel_accesses`). **Quem o SFU ainda conhece na sala** (presença fresca, com o socket de pé ou na carência, `reconnecting`) está reconectando: não passa de novo por `CONNECT` nem pelo limite, e não abre acesso novo — cair da rede num canal trancado ou cheio não tira ninguém de lá. A medida é o SFU, nunca o acesso em banco: um `left` perdido não vira lugar. Quem está na carência **conta no limite**: o lugar de quem caiu fica guardado até ele voltar ou a carência acabar. Quem acabou de ser **movido para cá** entra sem `CONNECT` e sem contar o limite durante 60 s; **mover alguém daqui revoga o passe** que ele tinha para cá. Quem acabou de ser **movido daqui** é recusado por 60 s (403 "Você acabou de ser movido para outro canal."), salvo se foi movido de volta para cá nesse meio-tempo |
-| `PATCH /api/channels/{channel}/voice/members/{user}` | `{ channel_id }` (o ULID do destino) | 204: **move** a pessoa para outra voz (regra do Discord). Quem move: `MOVE_MEMBERS` na origem **e** no destino, `CONNECT` no destino, e hierarquia sobre a pessoa. Quem é movido: **não** precisa de `CONNECT` e o `user_limit` do destino é ignorado; só tem de **ver** o destino (403); ela tem de estar na voz da origem agora (404); o destino tem de ser canal de voz do mesmo servidor e outro que a origem (422). O Laravel grava o passe de 60 s e chama o `kick` do SFU com `to` e `by`; o resto é o SFU avisar `moved` e o app do movido entrar sozinho (acima). `VoiceStateUpdated left/joined` saem pelos webhooks como sempre |
+| `POST /api/channels/{channel}/voice/token` | — | `{ token, url, expires_in: 60 }` (`CONNECT` no canal de voz; `user_limit` cheio → 403; grava `channel_accesses`). **Quem o SFU ainda conhece na sala** (presença fresca, com o socket de pé ou na carência, `reconnecting`) está reconectando: não passa de novo por `CONNECT` nem pelo limite, e não abre acesso novo — cair da rede num canal trancado ou cheio não tira ninguém de lá. A medida é o SFU, nunca o acesso em banco: um `left` perdido não vira lugar. Quem está na carência **conta no limite**: o lugar de quem caiu fica guardado até ele voltar ou a carência acabar. Quem acabou de ser **movido para cá** entra sem `CONNECT` e sem contar o limite durante 60 s; **mover alguém daqui revoga o passe** que ele tinha para cá. Quem acabou de ser **movido daqui** é recusado por 60 s (403 "Você acabou de ser movido para outro canal."), salvo se foi movido de volta para cá nesse meio-tempo. Canal **com limite** e o SFU sem responder à presença: 503 "O servidor de voz não respondeu. Tente de novo." (até 10/10/2026 a presença fora do ar contava como sala vazia e o limite passava); sem limite, ou com o passe, a falta da presença só faz o `CONNECT` valer |
+| `PATCH /api/channels/{channel}/voice/members/{user}` | `{ channel_id }` (o ULID do destino) | 204: **move** a pessoa para outra voz (regra do Discord). Quem move: `MOVE_MEMBERS` na origem **e** no destino, `CONNECT` no destino, e hierarquia sobre a pessoa. Quem é movido: **não** precisa de `CONNECT` e o `user_limit` do destino é ignorado; só tem de **ver** o destino (403); ela tem de estar na voz da origem agora (404); o destino tem de ser canal de voz do mesmo servidor e outro que a origem (422). O Laravel grava o passe de 60 s e chama o `kick` do SFU com `to` e `by`; o resto é o SFU avisar `moved` e o app do movido entrar sozinho (acima). `VoiceStateUpdated left/joined` saem pelos webhooks como sempre. Um mover por vez para a mesma pessoa (o segundo espera até 20 s; depois, 409 "Essa pessoa já está sendo movida. Tente de novo."), com a presença fresca de verdade (SFU sem responder → 503); o `kick` que não achou ninguém responde 404 e desfaz o passe e a tranca da origem que gravou |
 | `DELETE /api/channels/{channel}/voice/members/{user}` | — | 204 (`MOVE_MEMBERS` + hierarquia; `kick` no SFU) |
 
 Webhook (assinado, sem Sanctum): `POST /api/sfu/events` — corpo acima. `joined` fecha

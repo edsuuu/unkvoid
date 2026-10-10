@@ -57,7 +57,18 @@ final class SfuController
             return response()->noContent();
         }
 
-        $channel = Channel::query()->findOrFail($room);
+        $channel = Channel::query()->find($room);
+
+        // O canal foi apagado com gente dentro: o `left` dela não tem o que fechar (os acessos
+        // foram junto), e quem ainda entra com um token de antes sai na hora.
+        if (is_null($channel)) {
+            if ($event === 'joined') {
+                $sfu->kickIn([$room], $sub);
+            }
+
+            return response()->noContent();
+        }
+
         $user = User::query()->findOrFail(User::fromSubject($sub));
 
         // Expulso ou banido depois de pedir o token (ele vale 60 s): o SFU deixou entrar, e a

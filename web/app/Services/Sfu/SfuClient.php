@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use JsonException;
+use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Throwable;
 
 /**
@@ -156,6 +157,27 @@ final readonly class SfuClient
     }
 
     /**
+     * A presença fresca de um canal para quem decide com ela (o limite de pessoas, o mover):
+     * o SFU sem responder não pode virar "ninguém na sala", que deixava o limite passar.
+     *
+     * @return array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool, reconnecting?: bool}>
+     *
+     * @throws ServiceUnavailableHttpException
+     */
+    public function seats(Channel $channel): array
+    {
+        $response = $this->call('GET', '/presence');
+        $rooms = $response?->successful() === true ? $response->json('rooms') : null;
+
+        throw_unless(is_array($rooms), ServiceUnavailableHttpException::class, null, 'O servidor de voz não respondeu. Tente de novo.');
+
+        /** @var array<string, array<int, array{sub: string, name: string, sources: array<int, string>, muted?: bool, deafened?: bool, reconnecting?: bool}>> $rooms */
+        Cache::put(self::PRESENCE_CACHE_KEY, $rooms, self::PRESENCE_CACHE_SECONDS);
+
+        return $rooms[$channel->id] ?? [];
+    }
+
+    /**
      * @return array{sub: string, name: string, exp: int}
      */
     private function identity(User $user): array
@@ -220,7 +242,8 @@ final readonly class SfuClient
             $timestamp = (string) time();
             $headers = [
                 'X-Unkvoid-Timestamp' => $timestamp,
-                'X-Unkvoid-Signature' => hash_hmac('sha256', $timestamp.PHP_EOL.$method.PHP_EOL.$path.PHP_EOL.$body, $this->secret),
+                // "\n" e nunca o fim de linha do sistema: no PHP do Windows ele é "\r\n", e o SFU recusava tudo.
+                'X-Unkvoid-Signature' => hash_hmac('sha256', implode("\n", [$timestamp, $method, $path, $body]), $this->secret),
             ];
 
             $response = $this->request($method, $headers, $body)->send($method, $this->url.$path);

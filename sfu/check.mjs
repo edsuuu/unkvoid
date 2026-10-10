@@ -1449,7 +1449,10 @@ test('o webhook avisa o Laravel de quem entrou e saiu, assinado', async () => {
                 hmac(`${aviso.headers['x-unkvoid-timestamp']}\nPOST\n/api/sfu/events\n${aviso.body}`),
                 'assinado como o token, para o Laravel conferir',
             );
+            assert.match(String(aviso.corpo.nonce), /^[0-9a-f]{16}$/, 'com um nonce, para dois avisos iguais no mesmo segundo não serem tomados por repetição');
         }
+
+        assert.equal(new Set(avisos.map(aviso => aviso.corpo.nonce)).size, avisos.length, 'e cada aviso com o seu');
 
         cliente.close();
         anonimo.close();
