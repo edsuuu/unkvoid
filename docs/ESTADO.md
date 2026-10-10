@@ -16,6 +16,9 @@ perguntas que esperam o dono. O que já existe está no [README](../README.md) e
   depois de uma falha.
 - **Desktop Duplication no Windows 10** (a captura do monitor sem a borda amarela): falta a prova
   numa máquina com Windows 10 de verdade — ver [BORDA-AMARELA.md](BORDA-AMARELA.md).
+- **Clips pelo Desktop Duplication no Windows 11**: a duplicação grava o Minecraft 26.3 em janela
+  numa RTX 4060 Ti (60 fps, imagem certa). Ninguém salvou ainda um clipe com o Minecraft em tela
+  cheia, nem com o app aberto pelo login do Windows, que é onde o Graphics Capture ficou preto.
 - **Encoder que pendura ou que falha seguido**: a espera do MFT com prazo de 1 s, o
   `WAIT_TIMEOUT` do keyed mutex tratado como erro e a queda para o encoder de CPU depois de duas
   travadas foram escritos pela leitura; ninguém reproduziu um reset de driver (o caso suspeito é

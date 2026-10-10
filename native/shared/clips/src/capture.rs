@@ -1,4 +1,5 @@
-//! Captura do monitor pelo Windows Graphics Capture, com o encoder dentro do callback.
+//! Captura do monitor pelo Desktop Duplication (o Windows Graphics Capture fica de reserva), com
+//! o encoder dentro do callback.
 //!
 //! A textura do quadro só vale enquanto o callback roda, então a cópia para o encoder
 //! acontece ali — e é só trabalho de GPU: cópia, blit e entregar ao MFT. O que custa CPU de
@@ -39,8 +40,8 @@ pub struct VideoSettings {
     pub bitrate: u32,
 }
 
-/// O que está gravando: o Graphics Capture, ou o Desktop Duplication no Windows que não tira a
-/// borda amarela — a borda saía em todo clipe.
+/// O que está gravando: o Desktop Duplication, ou o Graphics Capture onde a duplicação não abre
+/// (notebook com duas placas, por exemplo).
 enum Running {
     Graphics(CaptureControl<Handler, anyhow::Error>),
     Duplication(Duplication),
@@ -66,24 +67,28 @@ impl ScreenCapture {
 
         let frame_size = Arc::new(AtomicU64::new(0));
 
-        if Duplication::needed() {
-            let mut handler = Handler::fresh(settings, sink.clone(), frame_size.clone());
-            let started = Duplication::start(monitor, settings.frame_rate, true, move |frame| {
-                match handler.frame(frame.texture, frame.context, (frame.width, frame.height), frame.timestamp_ns) {
-                    Ok(()) => ControlFlow::Continue(()),
-                    // Parar é o que faz o gravador religar a captura, como no Graphics Capture.
-                    Err(error) => {
-                        tracing::warn!(error = %error, "captura: o encoder recusou o quadro");
+        // A duplicação primeiro em todo Windows, e não só onde a borda amarela não sai: o replay
+        // fica aberto o dia inteiro, e uma sessão do Graphics Capture pode passar a entregar só
+        // preto com o cursor sem nunca fechar — o gravador só religa quando ela fecha, e o
+        // replay ficou assim por 8 horas, com o Minecraft em tela cheia na frente (medido em
+        // 10/10/2026). A duplicação não morre calada: cada troca de área de trabalho, de
+        // resolução ou de tela cheia volta como acesso perdido, e ela se reabre sozinha.
+        let mut handler = Handler::fresh(settings, sink.clone(), frame_size.clone());
+        let started = Duplication::start(monitor, settings.frame_rate, true, move |frame| {
+            match handler.frame(frame.texture, frame.context, (frame.width, frame.height), frame.timestamp_ns) {
+                Ok(()) => ControlFlow::Continue(()),
+                // Parar é o que faz o gravador religar a captura, como no Graphics Capture.
+                Err(error) => {
+                    tracing::warn!(error = %error, "captura: o encoder recusou o quadro");
 
-                        ControlFlow::Break(())
-                    }
+                    ControlFlow::Break(())
                 }
-            });
-
-            match started {
-                Ok(duplication) => return Ok(Self { control: Some(Running::Duplication(duplication)), frame_size }),
-                Err(failure) => tracing::warn!(%failure, "captura: o Desktop Duplication não abriu, o replay vai com a borda"),
             }
+        });
+
+        match started {
+            Ok(duplication) => return Ok(Self { control: Some(Running::Duplication(duplication)), frame_size }),
+            Err(failure) => tracing::warn!(%failure, "captura: o Desktop Duplication não abriu, o replay vai pelo Graphics Capture"),
         }
 
         let control = Handler::start_free_threaded(Settings::new(
@@ -283,8 +288,8 @@ fn cursor_settings() -> CursorCaptureSettings {
     }
 }
 
-/// A borda amarela só dá para tirar do Windows 11 em diante; no 10 o replay só passa por aqui
-/// quando o Desktop Duplication não abre.
+/// A borda amarela só dá para tirar do Windows 11 em diante; o replay só passa por aqui quando o
+/// Desktop Duplication não abre.
 fn border_settings() -> DrawBorderSettings {
     if GraphicsCaptureApi::is_border_settings_supported().unwrap_or(false) {
         DrawBorderSettings::WithoutBorder
@@ -311,8 +316,8 @@ mod tests {
     use super::*;
     use crate::replay::ReplayBuffer;
 
-    /// Na máquina de verdade, pelo Desktop Duplication — `UNKVOID_DUPLICATION=on` força o
-    /// caminho do Windows 10 num Windows 11: o encoder recebe os quadros e o vídeo ganha tamanho.
+    /// Na máquina de verdade, pelo Desktop Duplication em qualquer Windows: o encoder recebe os
+    /// quadros e o vídeo ganha tamanho.
     #[test]
     #[ignore = "precisa de um monitor e de um encoder de hardware"]
     fn the_replay_records_through_the_desktop_duplication() {
@@ -321,11 +326,7 @@ mod tests {
         let mut capture = ScreenCapture::start(VideoSettings { monitor: None, frame_rate: 30, bitrate: 5_000_000 }, buffer.sink())
             .expect("captura");
 
-        assert_eq!(
-            matches!(capture.control, Some(Running::Duplication(_))),
-            Duplication::needed(),
-            "o replay não foi pelo caminho deste Windows"
-        );
+        assert!(matches!(capture.control, Some(Running::Duplication(_))), "o replay foi pelo Graphics Capture");
 
         std::thread::sleep(Duration::from_secs(2));
 
