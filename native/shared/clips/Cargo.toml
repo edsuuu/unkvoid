@@ -12,8 +12,7 @@ tracing.workspace = true
 # Só o Windows grava replay: nos outros sistemas a crate compila vazia, com o buffer em disco
 # (`replay`), que é Rust puro.
 [target.'cfg(target_os = "windows")'.dependencies]
-# O Desktop Duplication do Windows 10, onde a borda amarela do Graphics Capture não sai: o
-# mesmo da transmissão.
+# O Desktop Duplication, por onde o replay grava o monitor: o mesmo da transmissão no Windows 10.
 capture = { path = "../capture" }
 mp4 = "0.14"
 # RNNoise em Rust puro: o filtro de ruído de código aberto que o Discord usava antes do Krisp.

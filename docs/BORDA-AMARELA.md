@@ -46,11 +46,15 @@ E não pede dependência nova: a `windows-capture` 2.0.1, que o app já compila,
 ## O que foi feito
 
 O módulo é `shared/capture/src/windows_duplication.rs`, e vale onde `Duplication::needed()` diz
-que a borda não sai (ou com `UNKVOID_DUPLICATION=on`):
+que a borda não sai (ou com `UNKVOID_DUPLICATION=on`) — e, nos clipes, em todo Windows:
 
 1. **Monitor inteiro sem borda**, na transmissão (`capture/src/windows.rs`), nos clipes
    (`clips/src/capture.rs`) e na prévia do seletor de tela — pelo Graphics Capture ela piscava
-   no monitor cada vez que o seletor abria. Janela, e todo o Windows 11, continuam como estavam.
+   no monitor cada vez que o seletor abria. Janela, e a transmissão no Windows 11, continuam como
+   estavam. Os clipes vão pela duplicação também no 11: o replay fica aberto o dia
+   inteiro, e em 10/10/2026 a sessão do Graphics Capture aberta no login passou 8 horas
+   entregando só preto com o cursor, sem fechar, enquanto uma sessão nova no mesmo monitor via o
+   Minecraft. A duplicação avisa quando cai (`DXGI_ERROR_ACCESS_LOST`) e se reabre.
    O teto de fps conta a partir do quadro devido, e não do último entregue: num monitor de
    240 Hz a média fica no fps pedido.
 2. **O cursor**, pelo GDI, respeitando a opção de mostrar o cursor que a transmissão já tem. Os
