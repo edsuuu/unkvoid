@@ -26,12 +26,13 @@ export class ProducerController {
             appData: { source: request.source() },
         });
 
-        this.announce(peer, room, producer, request.source());
+        await this.announce(peer, room, producer, request.source());
 
         return {
             producerId: producer.id,
             kind: producer.kind,
             source: String(producer.appData.source),
+            paused: producer.paused,
         };
     }
 
@@ -50,20 +51,31 @@ export class ProducerController {
             appData: { plain: true },
         });
 
-        this.announce(peer, room, producer, request.source());
+        await this.announce(peer, room, producer, request.source());
 
         return {
             producerId: producer.id,
             kind: producer.kind,
             source: request.source(),
+            paused: producer.paused,
             ip: transport.tuple.localAddress,
             port: transport.tuple.localPort,
             srtpParameters: transport.srtpParameters,
         };
     }
 
-    private announce(peer: Peer, room: Room, producer: Producer, source: SourceName): void {
+    private async announce(
+        peer: Peer,
+        room: Room,
+        producer: Producer,
+        source: SourceName,
+    ): Promise<void> {
         peer.addProducer(producer, source);
+
+        // Mutado pelo servidor: o mic sobe, mas calado, e o `/mute false` o retoma.
+        if (peer.serverMuted && source === 'mic') {
+            await producer.pause();
+        }
 
         let idleTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
             console.warn(

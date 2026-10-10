@@ -9,7 +9,9 @@
 //! `room.peers` a lista inteira, `room.tiles` o que dá para assistir, `room.mine` o que
 //! esta pessoa manda e pode mandar, `room.session` (`lost`, `rejoined`, `gone`, e `replaced`
 //! ou `kicked` quando o servidor tirou esta sessão de propósito),
-//! `room.failed` (`watch`, `share`, `mic`), `room.watchers` quem assiste a cada tela,
+//! `room.failed` (`watch`, `share`, `shareClosed`, `mic`, `serverMuted` e `camera` — a câmera
+//! que o servidor derrubou, ou que não voltou depois de uma queda),
+//! `room.watchers` quem assiste a cada tela,
 //! `room.ping` a ida e volta até o servidor e
 //! `room.level` o nível do microfone.
 
@@ -53,6 +55,9 @@ pub struct Room {
     watching: Mutex<Watching>,
     /// O consumer que o servidor abriu para cada producer assistido, para pausar e fechar.
     consumers: Mutex<HashMap<String, String>>,
+    /// Os producers com o `consumePlain` no ar: marcados antes do `await`, para duas chamadas
+    /// de `consume_all` ao mesmo tempo não abrirem dois consumers do mesmo producer.
+    opening: Mutex<HashSet<String>>,
     /// O que a pessoa fechou de propósito: não reabre sozinho, só pelo "Assistir".
     closed: Mutex<HashSet<String>>,
     paused: Mutex<HashSet<String>>,
@@ -73,13 +78,47 @@ pub struct Room {
     server_muted: std::sync::atomic::AtomicBool,
     /// "Ver o que a sala vê": assistir à própria tela, que custa um decodificador a mais.
     self_view: std::sync::atomic::AtomicBool,
+    /// O `resend` está refazendo o que sobe: o `room.mine` sai uma vez só, no fim. No meio a
+    /// tela já voltou e a câmera ainda não, e a interface do macOS fecharia a câmera que manda.
+    resending: std::sync::atomic::AtomicBool,
     /// A receita da tela que está subindo, para republicar depois de uma queda longa.
     shared: Mutex<Option<CaptureConfig>>,
+    /// A da câmera, pelo mesmo motivo: antes ela era a única que não voltava da queda.
+    filming: Mutex<Option<CameraRecipe>>,
     /// Os cartões do último aviso: a interface só redesenha o palco quando eles mudam.
     shown: Mutex<Value>,
     /// O elenco do último aviso, para saber o que mudou e qual toque tocar.
     cast: Mutex<Vec<crate::models::Peer>>,
     updates: Sender<String>,
+}
+
+/// Como a câmera que está subindo foi aberta, para abri-la de novo depois de uma queda.
+enum CameraRecipe {
+    /// Capturada pelo núcleo (a webcam do Linux).
+    Captured(CaptureConfig),
+    /// Entregue pela interface quadro a quadro (o macOS): o tamanho e o ritmo do encoder.
+    #[cfg(target_os = "macos")]
+    Fed((u32, u32), u32),
+}
+
+/// Um producer marcado como "abrindo" enquanto o `consumePlain` dele está no ar. A marca sai
+/// quando isto cai — deu certo, falhou ou a tarefa foi largada no meio —, senão o producer nunca
+/// mais seria assistido.
+struct Opening<'a> {
+    marks: &'a Mutex<HashSet<String>>,
+    producer_id: String,
+}
+
+impl<'a> Opening<'a> {
+    fn mark(marks: &'a Mutex<HashSet<String>>, producer_id: &str) -> Option<Self> {
+        lock(marks).insert(producer_id.to_owned()).then(|| Self { marks, producer_id: producer_id.to_owned() })
+    }
+}
+
+impl Drop for Opening<'_> {
+    fn drop(&mut self) {
+        lock(self.marks).remove(&self.producer_id);
+    }
 }
 
 impl Room {
@@ -103,6 +142,7 @@ impl Room {
             camera: Mutex::default(),
             watching: Mutex::new(watching),
             consumers: Mutex::default(),
+            opening: Mutex::default(),
             closed: Mutex::default(),
             paused: Mutex::default(),
             receiving: Mutex::default(),
@@ -113,7 +153,9 @@ impl Room {
             user_muted: std::sync::atomic::AtomicBool::new(false),
             server_muted: std::sync::atomic::AtomicBool::new(false),
             self_view: std::sync::atomic::AtomicBool::new(false),
+            resending: std::sync::atomic::AtomicBool::new(false),
             shared: Mutex::default(),
+            filming: Mutex::default(),
             shown: Mutex::default(),
             cast: Mutex::default(),
             updates,
@@ -405,7 +447,9 @@ impl Room {
             .collect();
 
         let chosen = lock(&self.chosen).clone();
-        let watched = |producer: &ProducerInfo| lock(&self.watching).is_watching(&producer.producer_id);
+        let watched = |producer: &ProducerInfo| {
+            lock(&self.watching).is_watching(&producer.producer_id) || lock(&self.opening).contains(&producer.producer_id)
+        };
         let mut screens = wanted.iter().filter(|producer| producer.source == "screen" && watched(producer)).count();
 
         for producer in &wanted {
@@ -432,6 +476,13 @@ impl Room {
             return Ok(());
         }
 
+        // Outra tarefa já está abrindo este: o segundo consumer ficaria órfão, com a banda dele
+        // correndo para sempre e pausar e fechar agindo no outro. E a sala que já saiu não abre
+        // nada: o `settle` da entrada corre ao lado de um `leave` logo em seguida.
+        let Some(_opening) = Opening::mark(&self.opening, &producer.producer_id).filter(|_| !self.session.has_left()) else {
+            return Ok(());
+        };
+
         let key = lock(&self.watching).key();
         let answer = self
             .session
@@ -448,6 +499,17 @@ impl Room {
         let consumer_id = text(&answer, "consumerId");
         let address = address_of(&answer);
 
+        // Fechada pela pessoa, ou a sala deixada, enquanto o pedido estava no ar.
+        if lock(&self.closed).contains(&producer.producer_id) || self.session.has_left() {
+            let _ = self
+                .session
+                .client()
+                .call(action::CLOSE_CONSUMER, json!({ "consumerId": consumer_id }))
+                .await;
+
+            return Ok(());
+        }
+
         lock(&self.receiving).insert(producer.producer_id.clone(), answer["receiving"].as_bool().unwrap_or(false));
         let server_key = decode(&answer["srtpParameters"]["keyBase64"])
             .ok_or_else(|| anyhow!("consumidor sem chave"))?;
@@ -457,6 +519,7 @@ impl Room {
             .unwrap_or(&producer.source)
             .to_owned();
 
+        let follows = (source == "screenAudio").then(|| self.screen_beside(&producer.producer_id)).flatten();
         let started = lock(&self.watching).start(Incoming {
             producer_id: producer.producer_id.clone(),
             kind: &kind,
@@ -466,6 +529,7 @@ impl Room {
             ssrc: answer["ssrc"].as_u64().map(|ssrc| ssrc as u32),
             always_muted: source == "screenAudio",
             rtx: crate::watching::rtx_of(&answer),
+            follows,
         });
 
         if let Err(failure) = started {
@@ -500,6 +564,13 @@ impl Room {
         lock(&self.consumers).insert(producer.producer_id.clone(), consumer_id);
 
         Ok(())
+    }
+
+    /// A tela da pessoa que manda este producer: é ela que o som da tela acompanha.
+    fn screen_beside(&self, producer_id: &str) -> Option<String> {
+        let peer = self.session.peers().into_iter().find(|peer| peer.producers.iter().any(|other| other.producer_id == producer_id))?;
+
+        peer.producers.into_iter().find(|other| other.source == "screen").map(|screen| screen.producer_id)
     }
 
     /// Para de receber uma transmissão sem sair da sala; ela continua ao vivo para os outros.
@@ -799,14 +870,19 @@ impl Room {
     }
 
     /// A câmera que a própria captura abre e codifica: no Linux o GStreamer lê a webcam e já
-    /// entrega H.264. No macOS a câmera vem pronta da interface, por `open_camera`.
-    #[cfg(target_os = "linux")]
+    /// entrega H.264 (`capture::captures_cameras`). No macOS a câmera vem pronta da interface,
+    /// por `open_camera`.
     pub async fn open_captured_camera(&self, config: CaptureConfig) -> Result<()> {
+        if !capture::captures_cameras() {
+            return Err(anyhow!("a captura deste sistema não abre câmera"));
+        }
+
         if lock(&self.sending).camera.is_some() {
             return Ok(());
         }
 
         let producers = self.open(&[Some(Source::Camera)]).await?;
+        let recipe = config.clone();
         let started = tokio::task::block_in_place(|| {
             let mut sending = lock(&self.sending);
             let broadcast = sending.start(config, Some(Source::Camera), None)?;
@@ -823,13 +899,15 @@ impl Room {
         }
 
         lock(&self.producers).insert(Source::Camera, producers);
+        *lock(&self.filming) = Some(CameraRecipe::Captured(recipe));
         self.announce_mine();
 
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
     pub async fn close_captured_camera(&self) {
+        *lock(&self.filming) = None;
+
         let broadcast = lock(&self.sending).camera.take();
 
         if let Some(mut broadcast) = broadcast {
@@ -974,6 +1052,7 @@ impl Room {
             }
         }
 
+        *lock(&self.filming) = Some(CameraRecipe::Fed(size, frame_rate));
         lock(&self.producers).insert(Source::Camera, producers);
         self.consume_all().await;
         self.announce_tiles();
@@ -985,6 +1064,7 @@ impl Room {
     #[cfg(target_os = "macos")]
     pub async fn close_camera(&self) {
         *lock(&self.camera) = None;
+        *lock(&self.filming) = None;
 
         self.retire(Source::Camera).await;
     }
@@ -1008,12 +1088,21 @@ impl Room {
         lock(&self.watching).set_muted(producer_id, muted);
     }
 
+    /// Se o som de uma transmissão está calado aqui agora. `None` enquanto ele não é assistido.
+    pub fn is_watched_muted(&self, producer_id: &str) -> Option<bool> {
+        lock(&self.watching).is_muted(producer_id)
+    }
+
     pub async fn leave(&self) {
         self.stop_sharing().await;
         self.close_microphone().await;
 
         #[cfg(target_os = "macos")]
         self.close_camera().await;
+
+        // A webcam do Linux é captura do núcleo: sem isto ela seguia filmando (e com a luz
+        // acesa) depois da saída, até a interface largar a sala.
+        self.close_captured_camera().await;
 
         lock(&self.watching).stop(None);
 
@@ -1220,13 +1309,14 @@ impl Room {
     async fn resend(&self) {
         let screen = lock(&self.shared).take();
         let microphone = lock(&self.microphone).take();
-        // A câmera do Linux não guarda receita para voltar: ela para, e a interface a vê
-        // desligada no `room.mine`.
+        let camera = lock(&self.filming).take();
         let broadcasts = {
             let mut sending = lock(&self.sending);
 
             [sending.screen.take(), sending.camera.take()]
         };
+
+        self.resending.store(true, std::sync::atomic::Ordering::Relaxed);
 
         for mut broadcast in broadcasts.into_iter().flatten() {
             let _ = tokio::task::block_in_place(|| broadcast.stop());
@@ -1264,6 +1354,21 @@ impl Room {
             }
         }
 
+        // A câmera volta como a tela. No macOS a interface segue entregando quadros por `show`,
+        // e eles passam a subir pelo remetente novo assim que ele abre.
+        let reopened = match camera {
+            Some(CameraRecipe::Captured(config)) => Some(self.open_captured_camera(config).await),
+            #[cfg(target_os = "macos")]
+            Some(CameraRecipe::Fed(size, frame_rate)) => Some(self.open_camera(size, frame_rate).await),
+            None => None,
+        };
+
+        if let Some(Err(failure)) = reopened {
+            tracing::warn!(%failure, "a câmera não voltou depois da queda");
+            self.tell("room.failed", json!({ "what": "camera" }));
+        }
+
+        self.resending.store(false, std::sync::atomic::Ordering::Relaxed);
         self.announce_mine();
     }
 
@@ -1315,20 +1420,32 @@ impl Room {
                 self.close_microphone().await;
                 self.tell("room.failed", json!({ "what": "mic" }));
             }
+            #[cfg(target_os = "linux")]
+            Some(Source::Camera) => {
+                tracing::warn!(reason = ?data["reason"].as_str(), "o servidor fechou a câmera");
+                self.close_captured_camera().await;
+                self.tell("room.failed", json!({ "what": "camera" }));
+            }
             _ => {}
         }
     }
 
-    /// Para tudo o que sobe e o que chega, sem falar com o servidor: o socket já se foi.
+    /// Para tudo o que sobe e o que chega, sem falar com o servidor: o socket já se foi. A
+    /// câmera do Linux também: expulsa, movida ou substituída, a pessoa não filma para ninguém.
     fn stop_everything(&self) {
-        let broadcast = lock(&self.sending).screen.take();
+        let broadcasts = {
+            let mut sending = lock(&self.sending);
 
-        if let Some(mut broadcast) = broadcast {
+            [sending.screen.take(), sending.camera.take()]
+        };
+
+        for mut broadcast in broadcasts.into_iter().flatten() {
             let _ = tokio::task::block_in_place(|| broadcast.stop());
         }
 
         *lock(&self.shared) = None;
         *lock(&self.microphone) = None;
+        *lock(&self.filming) = None;
 
         #[cfg(target_os = "macos")]
         {
@@ -1367,6 +1484,10 @@ impl Room {
     }
 
     fn announce_mine(&self) {
+        if self.resending.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+
         self.tell("room.mine", self.mine());
     }
 

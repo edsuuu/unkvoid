@@ -45,11 +45,11 @@ use ::windows::Win32::Media::MediaFoundation::{
     ICodecAPI, IMFActivate, IMFAsyncCallback, IMFAsyncCallback_Impl, IMFAsyncResult,
     IMFDXGIDeviceManager, IMFMediaBuffer, IMFMediaEvent, IMFMediaEventGenerator,
     IMFMediaType, IMFSample, IMFTransform, METransformHaveOutput, METransformNeedInput,
-    MF_E_MULTIPLE_BEGIN, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_EVENT_TYPE, MF_MT_ALL_SAMPLES_INDEPENDENT,
+    MF_E_MULTIPLE_BEGIN, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_EVENT_TYPE, MF_MT_ALL_SAMPLES_INDEPENDENT,
     MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
     MF_MT_SUBTYPE, MF_MT_TRANSFER_FUNCTION, MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_VIDEO_PRIMARIES,
     MF_MT_YUV_MATRIX, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION, MFCreateDXGIDeviceManager,
-    MFCreateDXGISurfaceBuffer, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
+    MFCreateDXGISurfaceBuffer, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFShutdownObject,
     MFMediaType_Video, MFSTARTUP_NOSOCKET, MFStartup, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG,
     MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT,
     MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
@@ -137,6 +137,23 @@ pub struct MediaFoundationEncoder {
 
     /// A imagem preta do `encode_again` antes do primeiro quadro, criada uma vez.
     black: Option<ID3D11Texture2D>,
+
+    /// A última imagem da ponte que caiu, até a próxima ponte ser montada.
+    last_image: Option<ID3D11Texture2D>,
+}
+
+/// Um MFT assíncrono só solta a sessão do encoder da placa e as threads dele no `Shutdown`.
+/// Largado sem ele, cada troca de qualidade, degrau ou refazer do vigia deixava uma sessão
+/// aberta — a NVIDIA limita quantas cabem, e na seguinte a transmissão caía para o encoder do
+/// processador em 720p30.
+impl Drop for MediaFoundationEncoder {
+    fn drop(&mut self) {
+        if matches!(self.backend, Backend::Gpu { .. })
+            && let Err(error) = unsafe { MFShutdownObject(&self.transform) }
+        {
+            tracing::warn!(error = %error, "encoder: o MFT da placa não desligou");
+        }
+    }
 }
 
 /// O encoder nasce na thread que liga a transmissão e passa a viver na thread da
@@ -281,6 +298,7 @@ impl MediaFoundationEncoder {
                 parameter_sets: None,
                 spare_output: None,
                 black: None,
+                last_image: None,
                 ready: VecDeque::new(),
                 credits: 0,
             })
@@ -342,21 +360,26 @@ impl MediaFoundationEncoder {
     }
 
     /// Codifica um quadro. `surface` vem da captura sem passar pela CPU.
+    ///
+    /// O quadro acima do teto de fps não é codificado. Vale para os dois caminhos, e não só para
+    /// o do processador: no Windows 10 a captura chega na frequência do monitor, e um monitor de
+    /// 144 Hz enchia a placa de quadros com o bitrate pensado para 60. Mas ele atravessa a ponte:
+    /// a captura só entrega o que mudou, e o último quadro de uma rajada largado aqui não voltava
+    /// — quem assistia ficava com a rolagem pela metade até a tela mudar de novo. Na ponte, o
+    /// `encode_again` da tela parada o manda.
     pub fn encode(
         &mut self,
         surface: &GpuSurface,
         timestamp_ns: u64,
     ) -> Result<EncodedFrame, EncoderError> {
-        // Antes da ponte: o quadro acima do teto não custa nem o blit. Vale para os dois
-        // caminhos, e não só para o do processador: no Windows 10 a captura chega na
-        // frequência do monitor, e um monitor de 144 Hz enchia a placa de quadros com o
-        // bitrate pensado para 60.
-        if !self.pacer.admit(timestamp_ns) {
-            return Err(EncoderError::NeedsMoreInput);
-        }
+        let admitted = self.pacer.admit(timestamp_ns);
 
         unsafe {
             self.cross_the_bridge(surface)?;
+
+            if !admitted {
+                return Err(EncoderError::NeedsMoreInput);
+            }
 
             let nv12 = self
                 .bridge
@@ -375,10 +398,11 @@ impl MediaFoundationEncoder {
     /// travada. A imagem repetida sai como um quadro P de poucos bytes.
     pub fn encode_again(&mut self, timestamp_ns: u64) -> Result<EncodedFrame, EncoderError> {
         unsafe {
-            let nv12 = match (&self.bridge, &self.black) {
-                (Some(bridge), _) => bridge.nv12.clone(),
-                (None, Some(black)) => black.clone(),
-                (None, None) => {
+            let nv12 = match (&self.bridge, &self.last_image, &self.black) {
+                (Some(bridge), ..) => bridge.nv12.clone(),
+                (None, Some(last), _) => last.clone(),
+                (None, None, Some(black)) => black.clone(),
+                (None, None, None) => {
                     let black = black_nv12(&self.device, self.width, self.height)?;
 
                     self.black = Some(black.clone());
@@ -445,9 +469,10 @@ impl MediaFoundationEncoder {
         let crossed = unsafe { cross(bridge, surface, &self.video_context) };
 
         // Uma chave que não veio deixa as duas desencontradas para sempre: a ponte é montada
-        // de novo no quadro seguinte, com as chaves do começo.
+        // de novo no quadro seguinte, com as chaves do começo. A imagem dela fica: com a tela
+        // parada, o `encode_again` repetiria uma tela preta no lugar da última que saiu.
         if crossed.is_err() {
-            self.bridge = None;
+            self.last_image = self.bridge.take().map(|bridge| bridge.nv12);
         }
 
         crossed
@@ -794,6 +819,12 @@ impl MediaFoundationEncoder {
 
     /// Pega uma saída do MFT, se houver. Devolve se pegou.
     unsafe fn collect_output(&mut self) -> Result<bool, EncoderError> {
+        unsafe { self.take_output(false) }
+    }
+
+    /// `changed` diz que o tipo da saída acabou de ser trocado nesta mesma busca: troca de novo
+    /// em seguida é defeito do MFT, e aí a saída espera o próximo evento.
+    unsafe fn take_output(&mut self, changed: bool) -> Result<bool, EncoderError> {
         unsafe {
             let mut output = [MFT_OUTPUT_DATA_BUFFER::default()];
             let mut status = 0_u32;
@@ -833,6 +864,23 @@ impl MediaFoundationEncoder {
                     }
 
                     return Ok(false);
+                }
+                // O MFT trocou o tipo da saída (o da Intel o faz no primeiro quadro, para pôr o
+                // SPS no tipo): ele espera o tipo novo de volta antes de entregar qualquer coisa.
+                // Tratado como erro, o encoder da placa parava ali e a transmissão caía para o
+                // do processador.
+                Err(error) if error.code() == MF_E_TRANSFORM_STREAM_CHANGE => {
+                    let available = self.transform.GetOutputAvailableType(0, 0).map_err(encode_error)?;
+
+                    self.transform.SetOutputType(0, Some(&available), 0).map_err(encode_error)?;
+                    self.spare_output = None;
+                    tracing::info!("encoder: o MFT trocou o tipo da saída, e o novo foi aceito");
+
+                    // O `METransformHaveOutput` desta saída já foi gasto, e o MFT assíncrono não
+                    // manda outro: esperando o próximo evento, cada um pegaria a saída anterior e
+                    // a imagem ficaria um quadro atrás para sempre — o último de uma tela parada
+                    // só sairia com o seguinte. A mesma saída é pedida de novo, agora.
+                    return if changed { Ok(false) } else { self.take_output(true) };
                 }
                 Err(error) => return Err(encode_error(error)),
             }
@@ -1017,7 +1065,13 @@ unsafe fn cross(bridge: &Bridge, surface: &GpuSurface, video_context: &ID3D11Vid
             ..Default::default()
         };
 
-        let blit = video_context.VideoProcessorBlt(&bridge.processor, &bridge.output, 0, &[stream]);
+        let blit = video_context.VideoProcessorBlt(&bridge.processor, &bridge.output, 0, std::slice::from_ref(&stream));
+
+        // O `clone` acima somou uma referência à vista de entrada, e o `ManuallyDrop` não a
+        // devolve sozinho: sem isto cada quadro deixava uma a mais, e a vista e a textura da
+        // ponte nunca saíam da placa — a cada ponte refeita (janela que muda de tamanho, troca
+        // de qualidade) a memória da placa crescia uma tela inteira.
+        drop(std::mem::ManuallyDrop::into_inner(stream.pInputSurface));
 
         // A trava volta antes do erro subir. Com o `?` no blit, um quadro recusado
         // saía daqui com a chave na mão e o quadro seguinte esperava por ela para

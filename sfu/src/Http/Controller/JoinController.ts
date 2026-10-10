@@ -25,7 +25,12 @@ export class JoinController {
         const { peer, resumed } = room.addPeer(
             request.name(),
             request.session.socket,
-            { userId: request.userId(), can: request.can(), ip: request.session.ip },
+            {
+                userId: request.userId(),
+                can: request.can(),
+                muted: request.muted(),
+                ip: request.session.ip,
+            },
             { resumeKey: request.resumeKey(), resume: request.wantsResume() },
         );
 
@@ -55,6 +60,7 @@ export class JoinController {
             peers: room.describePeers(peer.id, resumed),
             userId: peer.userId,
             can: peer.can,
+            serverMuted: peer.serverMuted,
             elapsedMs: Date.now() - room.createdAt,
         };
     }

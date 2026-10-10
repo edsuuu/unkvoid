@@ -178,7 +178,7 @@ export class Room {
     public addPeer(
         name: string,
         socket: WebSocket,
-        identity: { userId: string; can: string[]; ip: string },
+        identity: { userId: string; can: string[]; muted?: boolean; ip: string },
         options: { resumeKey?: string | null; resume?: boolean } = {},
     ): JoinOutcome {
         const previous = options.resumeKey ? this.findByResumeKey(options.resumeKey) : null;
@@ -199,6 +199,19 @@ export class Room {
 
             if (tokened) {
                 this.applyCan(previous, identity.can);
+
+                // O mudo do servidor vem no token da retomada como vinha no `can`: um `/mute`
+                // perdido se acerta na primeira oscilação.
+                if (previous.serverMuted !== (identity.muted === true)) {
+                    // Sem o catch, um producer ou worker já fechado derrubava o processo inteiro.
+                    this.applyServerMute(previous, identity.muted === true).catch(
+                        (failure: unknown) => {
+                            console.warn(
+                                `[WARN] serverMute room=${this.id} sub=${previous.userId} peer=${previous.id}: ${String(failure)}`,
+                            );
+                        },
+                    );
+                }
             }
 
             for (const producerId of new Set(
@@ -227,6 +240,10 @@ export class Room {
             identity.can,
             identity.ip,
         );
+
+        // Mutado pelo servidor já entra calado: o token leva `speak` (a permissão) e a marca
+        // separada, para o desmutar devolver a voz sem a pessoa sair e entrar.
+        peer.serverMuted = identity.muted === true;
 
         this.peers.set(peer.id, peer);
 
@@ -286,14 +303,26 @@ export class Room {
                 continue;
             }
 
-            peer.serverMuted = muted;
-            peer.send('serverMuted', { muted });
+            touched += await this.applyServerMute(peer, muted);
+        }
 
-            for (const producer of peer.producers.values()) {
-                if (producer.appData.source === 'mic') {
-                    await this.setProducerPaused(peer, producer, muted);
-                    touched += 1;
-                }
+        return touched;
+    }
+
+    /**
+     * A marca do mudo do servidor, e o mic junto com ela: pausado enquanto durar, retomado
+     * quando o Laravel devolve a voz. Devolve quantos mics mexeu.
+     */
+    public async applyServerMute(peer: Peer, muted: boolean): Promise<number> {
+        let touched = 0;
+
+        peer.serverMuted = muted;
+        peer.send('serverMuted', { muted });
+
+        for (const producer of peer.producers.values()) {
+            if (producer.appData.source === 'mic') {
+                await this.setProducerPaused(peer, producer, muted);
+                touched += 1;
             }
         }
 

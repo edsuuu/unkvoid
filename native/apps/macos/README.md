@@ -146,3 +146,38 @@ cartão existir fica guardado do último keyframe em diante (`MediaRouter`).
 
 **Não toque no `inputNode` à toa.** Só encostar nele já pede o aparelho ao sistema, e numa
 saída de sala isso custava 45 s. `Sound.mute()` só mexe nele se o microfone foi aberto.
+
+## O que só o aparelho prova (auditoria de 09/10/2026)
+
+Cada passo abaixo cobre uma correção que não tem como virar teste automático neste Mac:
+
+1. **Troca de saída no meio da voz (P0-5).** Duas contas na mesma voz, a outra falando. Conecte
+   um AirPods (ou troque a saída na setinha do fone) com a voz aberta, e depois abra o
+   microfone. Esperado: a voz da outra pessoa continua sem ninguém precisar entrar de novo. O
+   `Sound` ouve o `AVAudioEngineConfigurationChange`, religa o motor e volta a tocar cada pessoa.
+2. **Ligar a câmera, e sair da voz com ela ligada.** Esperado: ao ligar, nenhuma piscada e
+   nenhum "Não deu para ligar a câmera"; ao sair da voz com microfone e câmera ligados, a luz
+   verde apaga e fica apagada. (Quem liga a captura é só o `syncCamera`, uma vez; os `room.mine`
+   que chegam depois de fechar a sala são ignorados.)
+3. **Câmera depois de uma queda (P1-7).** Câmera ligada; derrube a rede por mais de 5 s
+   (desligar o Wi-Fi) e volte. Esperado: quem está na sala volta a ver a câmera sozinho, como a
+   tela, sem ninguém clicar. Pela ABI: o núcleo guarda o tamanho e o ritmo do `openCamera` e,
+   quando sobe tudo de novo por outro caminho, reabre a câmera com eles; o `room.mine` sai uma
+   vez só, no fim da volta, com `camera: true` (antes saía um no meio, depois do microfone e antes
+   da câmera, com `camera: false`, e o `syncCamera` parava a captura e a religava logo depois: a
+   luz verde piscava), e os quadros que o Swift
+   continua entregando por `unkvoid_show` passam a subir pelo caminho novo — no ritmo da saída e
+   com o mesmo freio de quadro-chave da tela. Se a câmera não reabrir, sai `room.failed {"what": "camera"}` (antes só no
+   Linux) e o `room.mine` vem com `camera: false`: o `roomFailure` do Swift ainda não conhece
+   `camera` e mostra a frase da tela — falta um `case "camera": "Não deu para ligar a câmera."`.
+4. **Atraso que não cresce (P1-8).** Na voz com alguém mutado por uns minutos, ou com a rede aos
+   trancos. Esperado: a boca não descola da voz; a fila de cada pessoa tem teto de 200 ms e
+   volta à folga de 40 ms aparando 5 ms por bloco.
+5. **Sala por código estando na voz (P1-9).** Na voz → Início → uma das "Últimas salas".
+   Esperado: a voz some da coluna, o chat da voz fecha, o microfone da voz não fica capturando.
+6. **Imagem travada no Windows (P1-10).** Alguém transmitindo do Windows; force o decodificador a
+   falhar (pausar e retomar a tela, ou perder pacotes). Esperado: a imagem volta em menos de um
+   segundo. O `VideoSink` pede `requestKeyframe {producerId}` ao núcleo a cada segundo até o
+   quadro-chave chegar. A ação é do `unkvoid_app`: entra `{"producerId": "<id>"}`, sai
+   `{"ok": true}` (ou `{"failed": "gone"}` sem sala), e o núcleo manda o PLI na hora pelo
+   caminho de chegada daquele producer.

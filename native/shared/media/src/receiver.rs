@@ -16,6 +16,7 @@
 //! inteiro. Só quando a espera passa do prazo o buraco é largado, e aí vai um PLI no lugar
 //! de esperar o keyframe periódico.
 
+use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -40,6 +41,9 @@ const KEEPALIVE: Duration = Duration::from_secs(5);
 /// De quanto em quanto tempo o laço acorda sem pacote nenhum, para pedir reenvio e largar
 /// buraco no prazo. Mais longo e o pedido de reenvio atrasaria mais que a própria rede.
 const TICK: Duration = Duration::from_millis(10);
+
+/// De quanto em quanto tempo sai o relatório de recepção (RR) de cada fluxo.
+const REPORT_EVERY: Duration = Duration::from_secs(1);
 
 /// O intervalo mínimo entre dois pedidos de keyframe do mesmo fluxo. Um keyframe custa o
 /// quadro mais caro do encoder, e pedir de novo antes de ele chegar só gera outro.
@@ -144,6 +148,8 @@ impl PlainReceiver {
             let ssrc: u32 = rand::random();
             let mut sequence: u16 = rand::random();
             let mut punched = Instant::now() - KEEPALIVE;
+            let mut reported = Instant::now();
+            let mut receptions: HashMap<u32, Reception> = HashMap::new();
             let mut buffer = [0_u8; 2048];
 
             while ! stop_thread.load(Ordering::Relaxed) {
@@ -157,19 +163,28 @@ impl PlainReceiver {
                 }
 
                 let now = Instant::now();
+                let size = socket.recv(&mut buffer).ok().filter(|&size| size >= 8);
 
-                if let Ok(size) = socket.recv(&mut buffer)
-                    // RTCP (relatórios do servidor) tem o segundo byte entre 200 e 207.
+                // RTCP (relatórios do servidor) tem o segundo byte entre 192 e 223: é dele que sai
+                // o LSR do relatório de recepção.
+                if let Some(size) = size.filter(|_| (192..=223).contains(&buffer[1]))
+                    && let Ok(plain) = incoming.decrypt_rtcp(&buffer[..size])
+                {
+                    for (media, middle) in sender_reports(&plain) {
+                        receptions.entry(media).or_default().sender_report = Some((middle, now));
+                    }
+                } else if let Some(size) = size
                     && size >= 12
-                    && !(192..=223).contains(&buffer[1])
                     && (loss <= 0.0 || rand::random::<f64>() * 100.0 >= loss)
                     && let Ok(plain) = incoming.decrypt_rtp(&buffer[..size])
                     && let Ok(mut routes) = routes_thread.lock()
                 {
                     let payload_type = plain[1] & 0x7f;
-                    let ssrc = u32::from_be_bytes([plain[8], plain[9], plain[10], plain[11]]);
+                    let media = u32::from_be_bytes([plain[8], plain[9], plain[10], plain[11]]);
 
-                    for (target, packet) in deliver(&mut routes, plain.to_vec(), ssrc, payload_type, now) {
+                    receptions.entry(media).or_default().arrived(u16::from_be_bytes([plain[2], plain[3]]));
+
+                    for (target, packet) in deliver(&mut routes, plain.to_vec(), media, payload_type, now) {
                         if relay.send_to(&packet, target).is_ok() {
                             packets_thread.fetch_add(1, Ordering::Relaxed);
                         }
@@ -179,6 +194,20 @@ impl PlainReceiver {
                 let Ok(mut routes) = routes_thread.lock() else {
                     continue;
                 };
+
+                if now.duration_since(reported) >= REPORT_EVERY {
+                    reported = now;
+
+                    let watched: Vec<u32> = routes.active.iter().filter_map(|route| route.ssrc).collect();
+
+                    receptions.retain(|media, _| watched.contains(media));
+
+                    for report in receiver_reports(ssrc, &mut receptions, now) {
+                        if let Ok(protected) = outgoing.encrypt_rtcp(&report) {
+                            let _ = socket.send(&protected);
+                        }
+                    }
+                }
 
                 for route in &mut routes.active {
                     let (Some(recovery), Some(media)) = (route.recovery.as_mut(), route.ssrc) else {
@@ -274,6 +303,11 @@ impl PlainReceiver {
         {
             route.muted = muted;
         }
+    }
+
+    /// Se o que chega de um producer está sendo calado aqui. `None` sem rota para ele.
+    pub fn is_muted(&self, id: &str) -> Option<bool> {
+        self.routes.lock().ok()?.active.iter().find(|route| route.id == id).map(|route| route.muted)
     }
 
     pub fn packets(&self) -> u64 {
@@ -419,6 +453,110 @@ fn punch(ssrc: u32, sequence: u16) -> Vec<u8> {
     packet.extend([0, 0, 0, 0]);
 
     packet
+}
+
+/// O que o relatório de recepção diz de um fluxo (RFC 3550, A.3): o maior número visto,
+/// estendido com as voltas, quantos chegaram, e o último relatório do remetente.
+///
+/// É por ele que o mediasoup mede a ida e volta até quem assiste. Sem ele ficava com 100 ms
+/// fixos e não reenviava o mesmo pacote duas vezes nesse tempo: o `recovery.rs` pede três vezes
+/// de 40 em 40 ms, e se o primeiro reenvio se perdia os outros pedidos eram ignorados — o buraco
+/// virava PLI e a imagem parava.
+#[derive(Debug, Default)]
+struct Reception {
+    first: Option<u32>,
+    highest: u32,
+    received: u32,
+    expected_before: u32,
+    received_before: u32,
+    /// O meio do relógio NTP do último SR deste fluxo, e quando ele chegou.
+    sender_report: Option<(u32, Instant)>,
+}
+
+impl Reception {
+    fn arrived(&mut self, sequence: u16) {
+        if self.first.is_none() {
+            self.first = Some(u32::from(sequence));
+            self.highest = u32::from(sequence);
+        }
+
+        let ahead = sequence.wrapping_sub(self.highest as u16);
+
+        if ahead != 0 && ahead < u16::MAX / 2 {
+            self.highest = self.highest.wrapping_add(u32::from(ahead));
+        }
+
+        self.received = self.received.wrapping_add(1);
+    }
+
+    /// O bloco de um relatório (24 bytes), e o começo do intervalo seguinte.
+    fn block(&mut self, media: u32, now: Instant) -> Option<[u8; 24]> {
+        let first = self.first?;
+        let expected = self.highest.wrapping_sub(first).wrapping_add(1);
+        let lost = i64::from(expected) - i64::from(self.received);
+        let (expected_now, received_now) = (expected.wrapping_sub(self.expected_before), self.received.wrapping_sub(self.received_before));
+        let lost_now = i64::from(expected_now) - i64::from(received_now);
+        let fraction = if expected_now == 0 || lost_now <= 0 { 0 } else { ((lost_now << 8) / i64::from(expected_now)).min(255) as u8 };
+        // Nunca zero com um SR visto: o mediasoup ignora a ida e volta com espera zero.
+        let (last, delay) = self.sender_report.map_or((0, 0), |(middle, at)| (middle, ((now.saturating_duration_since(at).as_secs_f64() * 65_536.0) as u32).max(1)));
+        let mut block = [0_u8; 24];
+
+        self.expected_before = expected;
+        self.received_before = self.received;
+
+        block[..4].copy_from_slice(&media.to_be_bytes());
+        // A perda acumulada tem 24 bits com sinal: repetido conta como negativo.
+        block[4..8].copy_from_slice(&((u32::from(fraction) << 24) | (lost.clamp(-0x80_0000, 0x7F_FFFF) as u32 & 0xFF_FFFF)).to_be_bytes());
+        block[8..12].copy_from_slice(&self.highest.to_be_bytes());
+        block[16..20].copy_from_slice(&last.to_be_bytes());
+        block[20..24].copy_from_slice(&delay.to_be_bytes());
+
+        Some(block)
+    }
+}
+
+/// Os relatórios de recepção (RR) de todos os fluxos, até 31 por pacote.
+fn receiver_reports(ssrc: u32, receptions: &mut HashMap<u32, Reception>, now: Instant) -> Vec<Vec<u8>> {
+    let blocks: Vec<[u8; 24]> = receptions.iter_mut().filter_map(|(&media, reception)| reception.block(media, now)).collect();
+
+    blocks
+        .chunks(31)
+        .map(|chunk| {
+            let mut report = vec![0x80 | chunk.len() as u8, 201];
+
+            report.extend_from_slice(&(1 + 6 * chunk.len() as u16).to_be_bytes());
+            report.extend_from_slice(&ssrc.to_be_bytes());
+            chunk.iter().for_each(|block| report.extend_from_slice(block));
+
+            report
+        })
+        .collect()
+}
+
+/// Os SR de um RTCP composto: o SSRC de cada um e o meio do relógio NTP, que é o `LSR` do RR.
+fn sender_reports(rtcp: &[u8]) -> Vec<(u32, u32)> {
+    const SR: u8 = 200;
+
+    let mut reports = Vec::new();
+    let mut rest = rtcp;
+
+    while rest.len() >= 4 {
+        let size = (usize::from(u16::from_be_bytes([rest[2], rest[3]])) + 1) * 4;
+
+        if size > rest.len() {
+            break;
+        }
+
+        if rest[1] == SR && size >= 28 {
+            let word = |offset: usize| u32::from_be_bytes([rest[offset], rest[offset + 1], rest[offset + 2], rest[offset + 3]]);
+
+            reports.push((word(4), (word(8) << 16) | (word(12) >> 16)));
+        }
+
+        rest = &rest[size..];
+    }
+
+    reports
 }
 
 #[cfg(test)]
@@ -567,6 +705,58 @@ mod tests {
         let counters = receiver.counters("tela").expect("o vídeo tem contagem");
 
         assert_eq!((counters.received, counters.recovered, counters.lost), (4, 1, 0));
+    }
+
+    /// Quem assiste manda o relatório de recepção (RR) de segundo em segundo, com o LSR e o DLSR
+    /// do último SR de cada fluxo: é por ele que o mediasoup mede a ida e volta e volta a reenviar
+    /// o pacote cujo reenvio se perdeu. Sem ele, 5% de perda na descida davam de 3,6 a 7,2 s de
+    /// imagem parada em 15 s (harness do SFU, bug 1).
+    #[test]
+    fn the_viewer_reports_what_arrived_with_the_last_sender_report() {
+        let (client_key, server_key) = ([3_u8; KEY_LEN + SALT_LEN], [4_u8; KEY_LEN + SALT_LEN]);
+        let server = UdpSocket::bind("127.0.0.1:0").expect("o servidor de mentira");
+        let decoder = UdpSocket::bind("127.0.0.1:0").expect("o decodificador de mentira");
+
+        server.set_read_timeout(Some(Duration::from_secs(3))).expect("prazo");
+
+        let receiver = PlainReceiver::start(server.local_addr().expect("porta"), &client_key, &server_key).expect("o receptor abriu");
+
+        receiver.route(Stream { id: "som".into(), payload_type: 111, to: decoder.local_addr().expect("porta"), ssrc: Some(0x3333), video: false, rtx: None });
+
+        let mut buffer = [0_u8; 1_500];
+        let (_, client) = server.recv_from(&mut buffer).expect("o pacote que abre o caminho");
+        let mut sending = context(&server_key).expect("contexto");
+        let mut feedback = context(&client_key).expect("contexto");
+
+        // 65 534 a 4, dando a volta, sem o 2: sete esperados, seis chegaram.
+        for sequence in (65_534..=65_535).chain(0..=4).filter(|&sequence| sequence != 2) {
+            server.send_to(&sending.encrypt_rtp(&rtp(sequence, 0x3333, 111, &[1])).expect("cifrou"), client).expect("mandou");
+        }
+
+        // SR do fluxo: NTP 0x0001_2345 segundos e 0x6789_ABCD de fração.
+        let mut report = vec![0x80, 200, 0x00, 0x06, 0x00, 0x00, 0x33, 0x33, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD];
+
+        report.extend_from_slice(&[0; 12]);
+        server.send_to(&sending.encrypt_rtcp(&report).expect("cifrou"), client).expect("mandou o SR");
+
+        let block = loop {
+            let size = server.recv(&mut buffer).expect("o RR chegou ao servidor");
+
+            if let Ok(plain) = feedback.decrypt_rtcp(&buffer[..size])
+                && plain[1] == 201
+                && plain[0] & 0x1F == 1
+            {
+                break plain[8..32].to_vec();
+            }
+        };
+        let word = |offset: usize| u32::from_be_bytes([block[offset], block[offset + 1], block[offset + 2], block[offset + 3]]);
+
+        assert_eq!(word(0), 0x3333, "o bloco é do fluxo");
+        assert_eq!(word(4) & 0xFF_FFFF, 1, "um perdido no total");
+        assert_eq!(word(4) >> 24, 256 / 7, "a fração perdida: 1 de 7 neste intervalo");
+        assert_eq!(word(8), 0x1_0004, "o maior número, estendido com a volta");
+        assert_eq!(word(16), 0x2345_6789, "o LSR é o meio do relógio NTP do SR");
+        assert!(word(20) > 0 && word(20) < 2 * 65_536, "o DLSR é a espera desde o SR, em 1/65536 s: {}", word(20));
     }
 
     /// Com o SSRC devolvido pelo servidor a rota casa exato, mesmo que outra do mesmo

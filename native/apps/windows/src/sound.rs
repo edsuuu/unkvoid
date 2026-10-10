@@ -48,6 +48,22 @@ const TICK: Duration = Duration::from_millis(10);
 #[cfg(target_os = "windows")]
 const BUFFER: i64 = 500_000;
 
+/// A maior espera que um som segue: a do `Playout`, que nunca passa de meio segundo.
+const MOST_HOLD: usize = 500 * PER_MILLISECOND;
+
+/// O quanto a espera do som pode ficar longe da espera da imagem antes de segui-la. Abaixo
+/// disto o descompasso não se percebe (a tolerância de lábio da ITU-R BT.1359 é de ~45 ms com
+/// o som adiantado); seguir cada milissegundo que o `Playout` desce cortava o som a cada 100 ms.
+const SYNC_SLACK: usize = 40 * PER_MILLISECOND;
+
+/// O maior pedaço que sai por bloco quando a espera desce, em partes iguais: uma descida de
+/// 250 ms vira uma dúzia de emendas, e não cinquenta cortes de 5 ms.
+const HOLD_STEP: usize = 25 * PER_MILLISECOND;
+
+/// A emenda de cada corte e de cada silêncio: o som se funde no que vem depois em vez de
+/// pular de uma amostra para outra, que é o estalo.
+const SPLICE: usize = 3 * PER_MILLISECOND;
+
 /// O que cada pessoa mandou e ainda não tocou.
 #[derive(Default)]
 struct Lane {
@@ -57,6 +73,95 @@ struct Lane {
     volume: f32,
     /// Passou do teto e ainda está voltando à folga.
     trimming: bool,
+    /// A espera desceu e o excesso ainda está saindo.
+    shrinking: bool,
+    /// A espera a mais que este som segue, em amostras: a da imagem que ele acompanha.
+    hold: usize,
+}
+
+impl Lane {
+    fn push(&mut self, samples: &[f32]) {
+        let target = CUSHION + self.hold;
+
+        self.samples.extend(samples);
+        self.trimming |= self.samples.len() > LONGEST + self.hold;
+
+        let excess = self.samples.len().saturating_sub(target);
+        let amount = if self.trimming {
+            excess.min(TRIM_STEP)
+        } else if self.shrinking {
+            excess / excess.div_ceil(HOLD_STEP).max(1)
+        } else {
+            return;
+        };
+
+        self.cut(amount);
+
+        let over = self.samples.len() > target;
+
+        self.trimming &= over;
+        self.shrinking &= over;
+    }
+
+    /// A espera cresceu: o que falta entra como silêncio na frente, e o som atrasa junto com a
+    /// imagem — é o mesmo trecho que a imagem fica parada. Diminuiu: o excesso sai em poucas
+    /// emendas. Dentro de `SYNC_SLACK` nada muda, porque a espera da imagem treme sem parar.
+    fn hold(&mut self, wanted: usize) {
+        let wanted = wanted.min(MOST_HOLD) & !(CHANNELS - 1);
+
+        if wanted.abs_diff(self.hold) <= SYNC_SLACK {
+            return;
+        }
+
+        if wanted > self.hold {
+            self.delay(wanted - self.hold);
+        } else {
+            self.shrinking = self.samples.len() > CUSHION + wanted;
+        }
+
+        self.hold = wanted;
+    }
+
+    /// Tira `amount` amostras da frente: o que ia tocar agora se funde, em `SPLICE`, no que vem
+    /// depois do trecho cortado.
+    fn cut(&mut self, amount: usize) {
+        let amount = amount & !(CHANNELS - 1);
+        let blend = SPLICE.min(self.samples.len().saturating_sub(amount));
+
+        for index in 0..blend {
+            let rise = ramp(index, blend);
+
+            self.samples[amount + index] = self.samples[index] * (1.0 - rise) + self.samples[amount + index] * rise;
+        }
+
+        self.samples.drain(..amount);
+    }
+
+    /// Põe `amount` amostras de silêncio na frente. O que ia tocar some aos poucos antes dele e
+    /// volta aos poucos depois (os primeiros milissegundos tocam duas vezes, o que não se ouve).
+    fn delay(&mut self, amount: usize) {
+        let blend = SPLICE.min(self.samples.len()).min(amount) & !(CHANNELS - 1);
+        let fading: Vec<f32> = (0..blend).map(|index| self.samples[index] * (1.0 - ramp(index, blend))).collect();
+
+        for index in 0..blend {
+            self.samples[index] *= ramp(index, blend);
+        }
+
+        for _ in 0..amount - blend {
+            self.samples.push_front(0.0);
+        }
+
+        for &sample in fading.iter().rev() {
+            self.samples.push_front(sample);
+        }
+    }
+}
+
+/// De 0 a 1 ao longo de uma emenda de `length` amostras, igual nos dois canais de cada par.
+fn ramp(index: usize, length: usize) -> f32 {
+    let frames = (length / CHANNELS).max(1);
+
+    (index / CHANNELS + 1) as f32 / (frames + 1) as f32
 }
 
 type Mix = Arc<Mutex<HashMap<String, Lane>>>;
@@ -96,21 +201,16 @@ impl Speaker {
 
     /// Um bloco de PCM de um producer, estéreo intercalado.
     pub fn play(&self, producer: &str, samples: &[f32]) {
-        let mut mix = lock(&self.mix);
-        let lane = mix.entry(producer.to_owned()).or_insert_with(|| Lane {
-            volume: 1.0,
-            ..Lane::default()
-        });
+        lock(&self.mix).entry(producer.to_owned()).or_insert_with(|| Lane { volume: 1.0, ..Lane::default() }).push(samples);
+    }
 
-        lane.samples.extend(samples);
-        lane.trimming |= lane.samples.len() > LONGEST;
+    /// Quanto o som de um producer espera a mais: a espera da imagem que ele acompanha (o som
+    /// da tela segue a tela). Sem isto, numa rede com perda a imagem esperava o `Playout` e o
+    /// som dela não, e saíam até meio segundo fora de sincronia.
+    pub fn hold(&self, producer: &str, delay: Duration) {
+        let wanted = usize::try_from(delay.as_millis()).unwrap_or(usize::MAX).saturating_mul(PER_MILLISECOND);
 
-        if lane.trimming {
-            let late = lane.samples.len().saturating_sub(CUSHION).min(TRIM_STEP);
-
-            lane.samples.drain(..late);
-            lane.trimming = lane.samples.len() > CUSHION;
-        }
+        lock(&self.mix).entry(producer.to_owned()).or_insert_with(|| Lane { volume: 1.0, ..Lane::default() }).hold(wanted);
     }
 
     pub fn set_volume(&self, producer: &str, volume: f32) {
@@ -135,7 +235,7 @@ pub fn chime(device: Option<String>, samples: Vec<f32>) {
                 samples: samples.into(),
                 primed: true,
                 volume: 1.0,
-                trimming: false,
+                ..Lane::default()
             },
         );
 
@@ -705,8 +805,127 @@ mod tests {
             samples: std::iter::repeat_n(0.25, samples).collect(),
             primed,
             volume: 1.0,
-            trimming: false,
+            ..Lane::default()
         }
+    }
+
+    /// A imagem passou a esperar 100 ms a mais: o som da tela atrasa os mesmos 100 ms, com
+    /// silêncio na frente do que já esperava. Quando a espera desce, o excesso sai em emendas.
+    #[test]
+    fn the_sound_follows_the_wait_of_the_picture_it_goes_with() {
+        let mut lane = lane(CUSHION, true);
+
+        lane.hold(100 * PER_MILLISECOND);
+
+        assert_eq!(lane.samples.len(), CUSHION + 100 * PER_MILLISECOND);
+        assert!(lane.samples.range(SPLICE..100 * PER_MILLISECOND).all(|&sample| sample == 0.0), "o silêncio entra na frente");
+        assert_eq!(lane.samples[100 * PER_MILLISECOND + SPLICE], 0.25, "o som que esperava vem depois do silêncio");
+
+        lane.push(&[0.25; 4]);
+
+        assert!(!lane.trimming && !lane.shrinking, "dentro da espera nova nada é cortado");
+
+        lane.hold(20 * PER_MILLISECOND);
+        lane.push(&[0.25; 4]);
+
+        let cut = CUSHION + 100 * PER_MILLISECOND + 8 - lane.samples.len();
+
+        assert!(lane.shrinking);
+        assert!(cut > 0 && cut <= HOLD_STEP, "um passo por bloco, e não de uma vez: {cut}");
+
+        while lane.shrinking {
+            lane.push(&[]);
+        }
+
+        assert_eq!(lane.samples.len(), CUSHION + 20 * PER_MILLISECOND);
+    }
+
+    /// Um lá contínuo, estéreo, a partir da amostra `from` (contando os dois canais).
+    fn tone(from: usize, length: usize) -> Vec<f32> {
+        (from..from + length).map(|index| ((index / CHANNELS) as f32 * 2.0 * std::f32::consts::PI * 440.0 / SAMPLE_RATE as f32).sin() * 0.5).collect()
+    }
+
+    /// O maior salto entre duas amostras seguidas do mesmo canal.
+    fn largest_step(samples: &[f32]) -> f32 {
+        samples.windows(CHANNELS + 1).map(|pair| (pair[CHANNELS] - pair[0]).abs()).fold(0.0, f32::max)
+    }
+
+    /// O `Playout` desce 50 ms por segundo: 1 ms a cada bloco de 20 ms. Seguir cada degrau
+    /// cortava 5 ms a cada ~100 ms — cinquenta cortes para ir de 300 a 50 ms.
+    #[test]
+    fn a_wait_that_falls_a_millisecond_per_block_is_not_cut_every_block() {
+        let block = 20 * PER_MILLISECOND;
+        let mut lane = Lane { samples: tone(0, CUSHION + 300 * PER_MILLISECOND).into(), primed: true, volume: 1.0, hold: 300 * PER_MILLISECOND, ..Lane::default() };
+        let mut written = lane.samples.len();
+        let mut cuts = 0;
+
+        for index in 0..250 {
+            lane.hold((300 - index.min(250)) * PER_MILLISECOND);
+
+            let before = lane.samples.len();
+
+            lane.push(&tone(written, block));
+            written += block;
+            cuts += usize::from(lane.samples.len() < before + block);
+            lane.samples.drain(..block);
+        }
+
+        for _ in 0..20 {
+            lane.push(&tone(written, block));
+            written += block;
+            lane.samples.drain(..block);
+        }
+
+        assert!(cuts <= 15, "{cuts} cortes para descer 250 ms");
+        assert!(lane.hold <= 50 * PER_MILLISECOND + SYNC_SLACK, "a espera não desceu: {} ms", lane.hold / PER_MILLISECOND);
+        assert_eq!(lane.samples.len(), CUSHION + lane.hold - block, "o excesso saiu todo");
+    }
+
+    /// A espera da imagem treme alguns milissegundos a cada quadro: o som não se mexe.
+    #[test]
+    fn a_wait_that_trembles_inside_the_slack_leaves_the_sound_alone() {
+        let mut lane = Lane { samples: tone(0, CUSHION + 100 * PER_MILLISECOND).into(), primed: true, volume: 1.0, hold: 100 * PER_MILLISECOND, ..Lane::default() };
+        let length = lane.samples.len();
+
+        for wanted in [70, 130, 95, 135, 65, 100, 120, 80] {
+            lane.hold(wanted * PER_MILLISECOND);
+            lane.push(&[]);
+        }
+
+        assert_eq!(lane.samples.len(), length, "nem silêncio nem corte");
+        assert_eq!(lane.hold, 100 * PER_MILLISECOND);
+    }
+
+    /// Cortar e pôr silêncio emendam: nenhum salto maior que o do próprio som, que é o estalo.
+    #[test]
+    fn a_cut_and_a_silence_are_spliced_without_a_click() {
+        let natural = largest_step(&tone(0, SAMPLE_RATE as usize * CHANNELS / 100));
+        let mut lane = Lane { samples: tone(0, CUSHION + 200 * PER_MILLISECOND).into(), primed: true, volume: 1.0, hold: 200 * PER_MILLISECOND, ..Lane::default() };
+        let mut heard = tone(0, 1_000).split_off(1_000 - CHANNELS);
+
+        lane.samples.drain(..1_000 - CHANNELS);
+        lane.cut(HOLD_STEP + 6);
+        heard.extend(lane.samples.range(..SPLICE * 4));
+
+        assert!(largest_step(&heard) <= natural * 1.5, "a emenda do corte saltou {} (o som salta {natural})", largest_step(&heard));
+
+        let mut heard: Vec<f32> = heard.split_off(heard.len() - CHANNELS);
+
+        lane.samples.drain(..SPLICE * 4 - CHANNELS);
+        lane.delay(60 * PER_MILLISECOND);
+        heard.extend(lane.samples.range(..70 * PER_MILLISECOND));
+
+        assert!(largest_step(&heard) <= natural * 1.5, "a emenda do silêncio saltou {} (o som salta {natural})", largest_step(&heard));
+    }
+
+    #[test]
+    fn the_wait_never_passes_half_a_second_nor_splits_a_stereo_pair() {
+        let mut lane = lane(0, false);
+
+        lane.hold(10 * MOST_HOLD + 1);
+
+        assert_eq!(lane.hold, MOST_HOLD);
+        assert_eq!(lane.samples.len() % CHANNELS, 0);
     }
 
     #[test]
@@ -732,7 +951,7 @@ mod tests {
 
         assert!(out.iter().all(|&sample| (sample - 0.5).abs() < 1e-6), "{out:?}");
 
-        let loud = Lane { samples: std::iter::repeat_n(0.9, CUSHION).collect(), primed: true, volume: 1.0, trimming: false };
+        let loud = Lane { samples: std::iter::repeat_n(0.9, CUSHION).collect(), primed: true, volume: 1.0, ..Lane::default() };
         let mut mix = HashMap::from([("ada".to_owned(), loud), ("bia".to_owned(), lane(CUSHION, true))]);
 
         mix_into(&mut mix, &mut out);

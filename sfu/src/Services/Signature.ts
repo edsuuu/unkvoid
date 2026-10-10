@@ -10,6 +10,8 @@ export type JoinClaims = {
     exp: number;
 
     can: string[];
+
+    muted?: boolean;
 };
 
 const HEADER_WINDOW_S = 300;

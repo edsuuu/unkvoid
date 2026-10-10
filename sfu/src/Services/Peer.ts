@@ -122,12 +122,14 @@ export class Peer {
         return this.can.includes(PERMISSION_BY_SOURCE[source]);
     }
 
+    /**
+     * O mudo do servidor não recusa o mic: ele nasce pausado (`ProducerController`), e o
+     * desmutar o retoma sem a pessoa clicar em nada. Só `resumeProducer` é recusado.
+     */
     public assertCanProduce(source: SourceName): void {
         if (!this.allows(source)) {
             throw new ForbiddenException(`this participant cannot produce ${source}`);
         }
-
-        this.assertNotServerMuted(source);
     }
 
     public assertNotServerMuted(source: string): void {

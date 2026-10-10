@@ -50,8 +50,21 @@ Cálculo efetivo para um membro num canal (igual ao Discord):
 
 ```json
 { "room": "01j7q0abcdefghijklmnopqrst", "sub": "user:12", "name": "Edsu", "exp": 1757640000,
-  "can": ["speak", "stream", "video"] }
+  "can": ["speak", "stream", "video"], "muted": true }
 ```
+
+`muted` só vai quando a pessoa está mutada pelo servidor (`server_mute`): o SFU a faz entrar
+já calada (`serverMuted`), **na entrada nova e na retomada** (um `/mute` perdido se acerta na
+primeira oscilação), e o `can` continua levando `speak` pela permissão `SPEAK`. É o que deixa o
+`/mute false` devolver a voz a quem entrou mutado, sem token novo nem outra entrada; tirar o
+`speak` do token, como era até 09/10/2026, prendia a pessoa calada até sair e voltar. O webhook
+`joined` também chama `/mute true` para quem está mutado: é por esse `serverMuted` que o app
+fica sabendo. O `join` devolve `serverMuted: boolean`.
+
+Mutado pelo servidor, o `produce`/`producePlain` do `mic` **não** é recusado: o producer nasce
+pausado (a resposta traz `paused: true`), e o `/mute false` o retoma — assim o app liga o mic como
+sempre, sem erro, e a voz volta sem clique. Só `resumeProducer` do mic continua sendo 403
+enquanto durar.
 
 - `room` é o ULID do canal **em minúsculas** (26 chars de `a-z0-9`; passa no regex atual).
 - `sub` é `user:<id>`. A sala anônima continua entrando sem token como `guest:<installId>`
@@ -133,9 +146,10 @@ ser da **mesma conta** da sessão caída: com `sub` diferente o `join` não reto
 nova (senão uma conta herdaria o `can` de outra pela `resumeKey`).
 
 `JoinResource` devolve `can: string[]` no lugar de `owner`. O app usa esse `can` (e não só
-os bits do canal) para decidir se liga o mic, a câmera e a tela: mutado pelo servidor
-chega sem `speak`. O SFU também manda `serverMuted { muted }` para a própria pessoa
-quando o Laravel chama `/mute`, e recusa `resumeProducer` do mic enquanto durar.
+os bits do canal) para decidir se liga o mic, a câmera e a tela. Mutado pelo servidor chega
+**com** `speak` e com a marca `muted` do token: o SFU recusa `produce`/`resumeProducer` do mic
+enquanto durar, manda `serverMuted { muted }` para a própria pessoa quando o Laravel chama
+`/mute` (também na chegada de quem já estava mutado), e é por esse evento que o app sabe.
 
 **Uma conta, uma sessão no SFU inteiro.** O `join` com token (`sub` que não começa com
 `guest:`) derruba qualquer outra sessão daquela conta, na mesma sala ou em outra, e ela
@@ -189,8 +203,13 @@ sobre `ts\nMÉTODO\ncaminho\ncorpo`, janela de 300 s — como o `kick` de hoje):
 | `POST /rooms/:code/kick` (já existe) | `{ "userId": "user:12", "to"?: "<ulid do destino>", "by"?: "Edsu" }` — com `to`, é mover (acima); `to` fora de `[a-z0-9]{26}` ou `by` que não é string de até 64 → 422 | `{ kicked: n }` |
 | `POST /broadcast` | `{ channel, event, data }` — o tempo real do Laravel | `{ delivered: n }` (quantos sockets inscritos receberam) |
 | `POST /rooms/:code/mute` | `{ "userId": "user:12", "muted": true }` — pausa/retoma o producer `mic` daquela conta | `{ muted: n }` |
-| `GET /presence` | corpo vazio | `{ rooms: { "<room>": [ { sub, name, sources: ["mic","screen"], muted, deafened } ] } }` |
-| `GET /stats` | corpo vazio | `{ rooms, peers, workers: [ { index, pid, closed, routers, transports, producers, consumers, maxRssKb, cpuMs } ], node: { rssKb, heapUsedKb, cpuMs } }` — o que o mediasoup segura de verdade (contado nos `dump()` dele, pipes incluídos), a memória e a CPU de cada worker. Ninguém do produto chama: é o que a prova ponta a ponta (`sfu/e2e`) e o diagnóstico na VPS leem para achar vazamento |
+| `POST /kick`, `POST /mute` | o mesmo corpo mais `rooms: ["<ulid>", …]`, as salas em que agir (obrigatória, não vazia; cada uma no formato de sala, senão 422). É o que expulsar, banir e mutar no servidor usam, com os canais de voz **daquele servidor**: o Laravel não precisa saber em qual a pessoa está (a presença esconde quem está na carência e some quando o SFU demora), sai numa chamada só, e nunca alcança a voz de outro servidor — a conta tem uma sessão no SFU inteiro, e ela pode estar lá | `{ kicked: n }`, `{ muted: n }` |
+| `GET /presence` | corpo vazio | `{ rooms: { "<room>": [ { sub, name, sources: ["mic","screen"], muted, deafened, reconnecting } ] } }` — quem está na carência de reconexão **vem junto**, com `reconnecting: true`: o lugar dele ainda é dele |
+| `GET /stats` | corpo vazio | `{ rooms, peers, workers: [ { index, pid, closed, routers, transports, producers, consumers, maxRssKb, cpuMs } ], node: { rssKb, heapUsedKb, cpuMs } }` — o que o mediasoup segura de verdade (contado nos `dump()` dele, pipes incluídos), a memória e a CPU de cada worker. Ninguém do produto chama: é o que a prova ponta a ponta (`sfu/e2e`) e o diagnóstico na VPS leem para achar vazamento. Cada chamada faz um `dump()` de cada router por IPC: um monitor chama a cada minuto ou mais, nunca a cada segundo |
+
+**Ordem de deploy: o SFU sobe antes do web, sem exceção** (desde o PR #52, 09/10/2026). Com o web
+na frente, o `/kick` e o `/mute` com salas dão 404 no SFU antigo e banir não derruba ninguém da
+voz; a presença antiga não traz quem está na carência; e a claim `muted` do token é ignorada.
 
 `consumePlain` devolve também `ssrc` do consumer: o receptor nativo (`PlainReceiver`) separa os
 producers de uma mesma porta por SSRC, sem adivinhar pelo primeiro pacote.
@@ -357,8 +376,8 @@ Membros (`{user}` é id de usuário):
 
 | rota | corpo | regra |
 |---|---|---|
-| `PATCH /api/servers/{server}/members/{user}` | `{ nickname?, role_ids?, server_mute? }` | `MANAGE_ROLES` para cargos (só cargos abaixo do meu top, e só com permissões que eu tenho), `MUTE_MEMBERS` para o bool (chama `POST /rooms/:code/mute` no SFU se a pessoa estiver em voz), apelido próprio sempre. `server_deaf` existe na tabela mas ainda não tem escrita |
-| `DELETE /api/servers/{server}/members/{user}` | — | `KICK_MEMBERS` + hierarquia; derruba da voz via `kick` |
+| `PATCH /api/servers/{server}/members/{user}` | `{ nickname?, role_ids?, server_mute? }` | `MANAGE_ROLES` para cargos (só cargos abaixo do meu top, e só com permissões que eu tenho), `MUTE_MEMBERS` para o bool (chama o `POST /mute` do SFU com os canais de voz **deste** servidor, como o expulsar: sem depender da presença), apelido próprio sempre. `server_deaf` existe na tabela mas ainda não tem escrita |
+| `DELETE /api/servers/{server}/members/{user}` | — | `KICK_MEMBERS` + hierarquia; derruba da voz pelo `POST /kick` do SFU com os canais de voz **deste** servidor (o `mute` do servidor e o banimento idem): numa chamada só, sem depender da presença, e sem tocar a voz de outro servidor |
 | `GET /api/servers/{server}/bans` | — | `BAN_MEMBERS` |
 | `POST /api/servers/{server}/bans/{user}` | `{ reason? }` | `BAN_MEMBERS` + hierarquia; remove membro, derruba da voz |
 | `DELETE /api/servers/{server}/bans/{user}` | — | `BAN_MEMBERS` |
@@ -426,7 +445,7 @@ Voz:
 
 | rota | corpo | resposta |
 |---|---|---|
-| `POST /api/channels/{channel}/voice/token` | — | `{ token, url, expires_in: 60 }` (`CONNECT` no canal de voz; `user_limit` cheio → 403; grava `channel_accesses`). Quem acabou de ser **movido para cá** entra sem `CONNECT` e sem contar o limite, uma vez, por 60 s; quem acabou de ser **movido daqui** é recusado por 60 s (403 "Você acabou de ser movido para outro canal.") |
+| `POST /api/channels/{channel}/voice/token` | — | `{ token, url, expires_in: 60 }` (`CONNECT` no canal de voz; `user_limit` cheio → 403; grava `channel_accesses`). **Quem o SFU ainda conhece na sala** (presença fresca, com o socket de pé ou na carência, `reconnecting`) está reconectando: não passa de novo por `CONNECT` nem pelo limite, e não abre acesso novo — cair da rede num canal trancado ou cheio não tira ninguém de lá. A medida é o SFU, nunca o acesso em banco: um `left` perdido não vira lugar. Quem está na carência **conta no limite**: o lugar de quem caiu fica guardado até ele voltar ou a carência acabar. Quem acabou de ser **movido para cá** entra sem `CONNECT` e sem contar o limite durante 60 s; **mover alguém daqui revoga o passe** que ele tinha para cá. Quem acabou de ser **movido daqui** é recusado por 60 s (403 "Você acabou de ser movido para outro canal."), salvo se foi movido de volta para cá nesse meio-tempo |
 | `PATCH /api/channels/{channel}/voice/members/{user}` | `{ channel_id }` (o ULID do destino) | 204: **move** a pessoa para outra voz (regra do Discord). Quem move: `MOVE_MEMBERS` na origem **e** no destino, `CONNECT` no destino, e hierarquia sobre a pessoa. Quem é movido: **não** precisa de `CONNECT` e o `user_limit` do destino é ignorado; só tem de **ver** o destino (403); ela tem de estar na voz da origem agora (404); o destino tem de ser canal de voz do mesmo servidor e outro que a origem (422). O Laravel grava o passe de 60 s e chama o `kick` do SFU com `to` e `by`; o resto é o SFU avisar `moved` e o app do movido entrar sozinho (acima). `VoiceStateUpdated left/joined` saem pelos webhooks como sempre |
 | `DELETE /api/channels/{channel}/voice/members/{user}` | — | 204 (`MOVE_MEMBERS` + hierarquia; `kick` no SFU) |
 

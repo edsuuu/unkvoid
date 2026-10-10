@@ -485,12 +485,8 @@ final class Server extends Model implements Auditable
             }
         }, ['server_id' => $this->id, 'user_id' => $target->id]);
 
-        if (isset($changes['server_mute'])) {
-            $channel = $this->voiceChannelOf($target, $sfu);
-
-            if (! is_null($channel)) {
-                $sfu->mute($channel, $target->subject(), $changes['server_mute']);
-            }
+        if (isset($changes['server_mute']) && $this->voiceRoomIds() !== []) {
+            $sfu->muteIn($this->voiceRoomIds(), $target->subject(), $changes['server_mute']);
         }
 
         self::publish(new ServerUpdated($this->id));
@@ -549,24 +545,6 @@ final class Server extends Model implements Auditable
         self::publish(new ServerUpdated($this->id));
 
         return $channel;
-    }
-
-    public function voiceChannelOf(User $user, SfuClient $sfu): ?Channel
-    {
-        foreach ($this->channels as $channel) {
-            if ($channel->type !== ChannelTypeEnum::Voice) {
-                continue;
-            }
-
-            // Fresca: com a presença de 3 s em cache, quem acabou de entrar escapava do kick e do ban.
-            foreach ($sfu->peers($channel, fresh: true) as $peer) {
-                if ($peer['sub'] === $user->subject()) {
-                    return $channel;
-                }
-            }
-        }
-
-        return null;
     }
 
     private static function newInviteCode(): string
@@ -640,14 +618,25 @@ final class Server extends Model implements Auditable
             ->delete();
     }
 
+    /**
+     * Sem perguntar à presença onde a pessoa está: ela esconde quem está na carência e some
+     * quando o SFU demora, e nos dois casos o banido continuava transmitindo. Só nas salas
+     * deste servidor: a moderação daqui não alcança a voz de outro.
+     */
     private function dropFromVoice(User $user, SfuClient $sfu): void
     {
-        $channel = $this->voiceChannelOf($user, $sfu);
-
-        if (is_null($channel)) {
+        if ($this->voiceRoomIds() === []) {
             return;
         }
 
-        $sfu->kick($channel, $user->subject());
+        $sfu->kickIn($this->voiceRoomIds(), $user->subject());
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function voiceRoomIds(): array
+    {
+        return $this->channels->where('type', ChannelTypeEnum::Voice)->map(fn (Channel $channel): string => $channel->id)->values()->all();
     }
 }

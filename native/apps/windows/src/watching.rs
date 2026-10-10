@@ -43,6 +43,11 @@ const MOST_WAITING: usize = 30;
 /// pede o quadro-chave.
 const SCREEN_IDLE: Duration = Duration::from_secs(20);
 
+/// Tela sem quadro por isto não segura mais o som dela: foi pausada, saiu da vista ou fechou, e
+/// a espera do `Playout` que ficou é de uma imagem que não anda. A tela parada de quem
+/// transmite repete a imagem de segundo em segundo, bem dentro disto.
+const PICTURE_STILL: Duration = Duration::from_secs(3);
+
 /// O quadro mais novo de cada tela que a janela ainda não desenhou.
 type Fresh = Arc<Mutex<HashMap<String, SharedPixelBuffer<Rgba8Pixel>>>>;
 
@@ -51,6 +56,9 @@ type Drawn = Arc<Mutex<HashMap<String, (u32, u32)>>>;
 
 /// O aviso de quadro novo, dividido entre as threads das telas.
 type OnFrame = Arc<Mutex<Box<dyn Fn() + Send>>>;
+
+/// A espera em vigor no `Playout` de cada tela, que o som dela segue.
+type Delays = Arc<Mutex<HashMap<String, Duration>>>;
 
 /// O pedido de keyframe ao servidor, para a tela que quebrou do lado de cá.
 type AskKeyframe = Arc<dyn Fn(&str) + Send + Sync>;
@@ -77,6 +85,7 @@ impl Watch {
         ask_keyframe: impl Fn(&str) + Send + Sync + 'static,
     ) -> Self {
         let (fresh, drawn, stop) = (Fresh::default(), Drawn::default(), Arc::new(AtomicBool::new(false)));
+        let delays = Delays::default();
         let on_frame: OnFrame = Arc::new(Mutex::new(Box::new(on_frame)));
         let ask_keyframe: AskKeyframe = Arc::new(ask_keyframe);
         let thread = std::thread::Builder::new()
@@ -84,7 +93,7 @@ impl Watch {
             .spawn({
                 let (fresh, drawn, speaker, stop) = (fresh.clone(), drawn.clone(), speaker.clone(), stop.clone());
 
-                move || route(&queue, (&fresh, &drawn), &speaker, &stop, (&on_speaking, &on_frame, &ask_keyframe))
+                move || route(&queue, (&fresh, &drawn, &delays), &speaker, &stop, (&on_speaking, &on_frame, &ask_keyframe))
             })
             .ok();
 
@@ -120,7 +129,7 @@ impl Drop for Watch {
 
 fn route(
     queue: &Receiver<Media>,
-    (fresh, drawn): (&Fresh, &Drawn),
+    (fresh, drawn, delays): (&Fresh, &Drawn, &Delays),
     speaker: &Speaker,
     stop: &Arc<AtomicBool>,
     (on_speaking, on_frame, ask_keyframe): (&impl Fn(&str, bool), &OnFrame, &AskKeyframe),
@@ -134,7 +143,7 @@ fn route(
                 MediaKind::Video { keyframe, .. } => {
                     let screen = match screens.entry(item.producer_id.clone()) {
                         Entry::Occupied(entry) => entry.into_mut(),
-                        Entry::Vacant(entry) => match Screen::start(entry.key(), (fresh, drawn), stop, (on_frame, ask_keyframe)) {
+                        Entry::Vacant(entry) => match Screen::start(entry.key(), (fresh, drawn, delays), stop, (on_frame, ask_keyframe)) {
                             Some(screen) => entry.insert(screen),
                             None => continue,
                         },
@@ -144,6 +153,10 @@ fn route(
                 }
                 MediaKind::Audio => {
                     let samples = pcm(&item.data);
+
+                    if let Some(screen) = &item.follows {
+                        speaker.hold(&item.producer_id, picture_wait(screen, &screens, delays));
+                    }
 
                     speaker.play(&item.producer_id, &samples);
 
@@ -166,10 +179,21 @@ fn route(
             if !keep {
                 lock(fresh).remove(producer);
                 lock(drawn).remove(producer);
+                lock(delays).remove(producer);
             }
 
             keep
         });
+    }
+}
+
+/// A espera que o som de uma tela segue: a da imagem dela, enquanto ela anda. Imagem pausada,
+/// fechada ou que ainda não chegou não segura o som; antes ele seguia a espera velha por até
+/// 20 s, atrasado à toa.
+fn picture_wait(screen: &str, screens: &HashMap<String, Screen>, delays: &Delays) -> Duration {
+    match screens.get(screen) {
+        Some(moving) if moving.frames.is_some() && moving.last.elapsed() < PICTURE_STILL => lock(delays).get(screen).copied().unwrap_or_default(),
+        _ => Duration::ZERO,
     }
 }
 
@@ -191,13 +215,13 @@ struct Screen {
 }
 
 impl Screen {
-    fn start(producer: &str, (fresh, drawn): (&Fresh, &Drawn), stop: &Arc<AtomicBool>, (on_frame, ask_keyframe): (&OnFrame, &AskKeyframe)) -> Option<Self> {
+    fn start(producer: &str, (fresh, drawn, delays): (&Fresh, &Drawn, &Delays), stop: &Arc<AtomicBool>, (on_frame, ask_keyframe): (&OnFrame, &AskKeyframe)) -> Option<Self> {
         let (frames, queue) = sync_channel(SCREEN_QUEUE);
         let thread = std::thread::Builder::new().name("unkvoid-tela".into()).spawn({
-            let (producer, fresh, drawn, stop, on_frame, ask_keyframe) =
-                (producer.to_owned(), fresh.clone(), drawn.clone(), stop.clone(), on_frame.clone(), ask_keyframe.clone());
+            let (producer, fresh, drawn, delays, stop, on_frame, ask_keyframe) =
+                (producer.to_owned(), fresh.clone(), drawn.clone(), delays.clone(), stop.clone(), on_frame.clone(), ask_keyframe.clone());
 
-            move || decode_screen(&producer, &queue, (&fresh, &drawn), &stop, (&on_frame, &ask_keyframe))
+            move || decode_screen(&producer, &queue, (&fresh, &drawn, &delays), &stop, (&on_frame, &ask_keyframe))
         });
 
         match thread {
@@ -280,7 +304,7 @@ struct Pending {
 /// um reenvio sai espaçado, e não de uma vez. Na hora, os que venceram passam pelo
 /// decodificador na ordem e só o último vira imagem: é assim que quem ficou para trás alcança o
 /// presente.
-fn decode_screen(producer: &str, queue: &Receiver<Media>, (fresh, drawn): (&Fresh, &Drawn), stop: &AtomicBool, (on_frame, ask_keyframe): (&OnFrame, &AskKeyframe)) {
+fn decode_screen(producer: &str, queue: &Receiver<Media>, (fresh, drawn, delays): (&Fresh, &Drawn, &Delays), stop: &AtomicBool, (on_frame, ask_keyframe): (&OnFrame, &AskKeyframe)) {
     let _timer = FineTimer::start();
     let mut decoder = None;
     let mut playout = media::Playout::default();
@@ -307,6 +331,10 @@ fn decode_screen(producer: &str, queue: &Receiver<Media>, (fresh, drawn): (&Fres
 
             arrived = true;
             waiting.push_back(Pending { due: playout.due(timestamp, item.arrived), keyframe, timestamp, data: item.data });
+        }
+
+        if arrived {
+            lock(delays).insert(producer.to_owned(), playout.delay());
         }
 
         // Atrás demais: os mais velhos passam pelo decodificador sem virar imagem, porque todo
@@ -452,6 +480,37 @@ mod tests {
         bytes.push(7);
 
         assert_eq!(pcm(&bytes), [0.5]);
+    }
+
+    /// O som da tela segue a espera da imagem só enquanto ela anda: pausada, fora da vista ou
+    /// fechada, a espera velha não atrasa mais o som.
+    #[test]
+    fn the_sound_lets_go_of_a_picture_that_stopped() {
+        let delays = Delays::default();
+        let (frames, _queue) = sync_channel(1);
+        let screen = |last: Instant| Screen {
+            producer: "tela".into(),
+            frames: Some(frames.clone()),
+            thread: None,
+            broken: false,
+            stalled: Stalled::default(),
+            dropped: 0,
+            last,
+            ask_keyframe: Arc::new(|_: &str| {}),
+        };
+        let mut screens = HashMap::from([("tela".to_owned(), screen(Instant::now()))]);
+
+        lock(&delays).insert("tela".into(), Duration::from_millis(300));
+
+        assert_eq!(picture_wait("tela", &screens, &delays), Duration::from_millis(300));
+
+        screens.insert("tela".into(), screen(Instant::now() - PICTURE_STILL));
+
+        assert_eq!(picture_wait("tela", &screens, &delays), Duration::ZERO, "a imagem parou");
+
+        screens.clear();
+
+        assert_eq!(picture_wait("tela", &screens, &delays), Duration::ZERO, "a tela fechou");
     }
 
     /// Contra a pilha no ar e alguém transmitindo na sala: prova que o Windows assiste — o

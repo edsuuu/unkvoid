@@ -152,10 +152,16 @@ fn open(monitor: Monitor) -> Result<DxgiDuplicationApi, String> {
 /// O que a volta do laço deu.
 enum Turn {
     Waited,
+    /// A duplicação esperou o prazo e a tela não mudou.
+    Idle,
     Lost(String),
     Stopped,
 }
 
+/// O laço da duplicação. Todo quadro é copiado para o `canvas`, mesmo o que chega antes da vez
+/// (`due`): a duplicação só entrega o que mudou, e o último quadro de uma rajada largado não
+/// volta. Quando a tela para com uma imagem esperando a vez, ela sai na vez dela — num segundo
+/// `match`, porque o quadro emprestado da duplicação só é devolvido no fim do primeiro.
 fn run<F>(monitor: Monitor, frame_rate: u32, show_cursor: bool, mut on_frame: F, stop: &AtomicBool, opened: &SyncSender<Result<(), String>>)
 where
     F: FnMut(&DuplicatedFrame<'_>) -> ControlFlow<()>,
@@ -175,38 +181,37 @@ where
 
     tracing::info!("captura: monitor pelo Desktop Duplication, sem a borda amarela");
 
-    let origin = desktop_origin(&duplication);
+    let mut origin = desktop_origin(&duplication);
     let interval = Duration::from_secs_f64(1.0 / f64::from(frame_rate.max(1)));
     let mut next_due = Instant::now();
     let mut canvas: Option<Canvas> = None;
     let mut cursor = Cursor::default();
+    let mut unsent = false;
 
     while !stop.load(Ordering::Relaxed) {
-        let turn = match duplication.acquire_next_frame(WAIT_MS) {
+        let wait = if unsent { next_due.saturating_duration_since(Instant::now()).as_millis().clamp(1, u128::from(WAIT_MS)) as u32 } else { WAIT_MS };
+        let turn = match duplication.acquire_next_frame(wait) {
             Ok(frame) => {
-                let now = Instant::now();
+                let (width, height) = (frame.width(), frame.height());
 
-                // O monitor manda na frequência dele (240 Hz, num monitor de jogo), e o teto
-                // é o do encoder. Contar de `next_due`, e não de agora, mantém a média no fps
-                // pedido em vez de arredondar para baixo a cada quadro do monitor.
-                if now < next_due {
-                    Turn::Waited
-                } else {
-                    next_due = if now.duration_since(next_due) > interval { now + interval } else { next_due + interval };
+                if !canvas.as_ref().is_some_and(|canvas| canvas.fits(width, height)) {
+                    canvas = Canvas::new(frame.device(), width, height)
+                        .inspect_err(|failure| tracing::warn!(%failure, "captura: a cópia do quadro não foi criada"))
+                        .ok();
+                }
 
-                    let (width, height) = (frame.width(), frame.height());
+                match canvas.as_ref() {
+                    Some(painted) => {
+                        // A cópia sai mesmo do quadro que não é a vez: a duplicação só entrega o que
+                        // mudou, e o último quadro de uma rajada (a rolagem que parou, a última
+                        // tecla) jogado fora não volta — quem assistia ficava com a imagem do meio
+                        // da rajada até a tela mudar de novo.
+                        // SAFETY: as duas texturas são do mesmo device e do mesmo tamanho, e a
+                        // da duplicação vale até o próximo `acquire_next_frame`.
+                        unsafe { frame.device_context().CopyResource(&painted.texture, frame.texture()) };
 
-                    if !canvas.as_ref().is_some_and(|canvas| canvas.fits(width, height)) {
-                        canvas = Canvas::new(frame.device(), width, height)
-                            .inspect_err(|failure| tracing::warn!(%failure, "captura: a cópia do quadro não foi criada"))
-                            .ok();
-                    }
-
-                    match canvas.as_ref() {
-                        Some(painted) => {
-                            // SAFETY: as duas texturas são do mesmo device e do mesmo tamanho, e a
-                            // da duplicação vale até o próximo `acquire_next_frame`.
-                            unsafe { frame.device_context().CopyResource(&painted.texture, frame.texture()) };
+                        if due(Instant::now(), &mut next_due, interval) {
+                            unsent = false;
 
                             if show_cursor {
                                 cursor.draw(&painted.surface, origin);
@@ -222,29 +227,76 @@ where
                             });
 
                             if delivered.is_break() { Turn::Stopped } else { Turn::Waited }
+                        } else {
+                            unsent = true;
+
+                            Turn::Waited
                         }
-                        None => Turn::Lost("a cópia do quadro não foi criada".into()),
                     }
+                    None => Turn::Lost("a cópia do quadro não foi criada".into()),
                 }
             }
-            Err(DuplicationError::Timeout) => Turn::Waited,
+            Err(DuplicationError::Timeout) => Turn::Idle,
             Err(failure) => Turn::Lost(failure.to_string()),
         };
 
+        let turn = match (turn, canvas.as_ref()) {
+            (Turn::Idle, Some(painted)) if unsent && due(Instant::now(), &mut next_due, interval) => {
+                unsent = false;
+
+                if show_cursor {
+                    cursor.draw(&painted.surface, origin);
+                }
+
+                let delivered = on_frame(&DuplicatedFrame {
+                    texture: &painted.texture,
+                    device: duplication.device(),
+                    context: duplication.device_context(),
+                    width: painted.width,
+                    height: painted.height,
+                    timestamp_ns: present_ns(0),
+                });
+
+                if delivered.is_break() { Turn::Stopped } else { Turn::Waited }
+            }
+            (turn, _) => turn,
+        };
+
         match turn {
-            Turn::Waited => {}
+            Turn::Waited | Turn::Idle => {}
             Turn::Stopped => return,
             Turn::Lost(failure) => {
                 tracing::info!(%failure, "captura: a duplicação caiu, retomando");
                 canvas = None;
+                unsent = false;
 
                 match reopen(monitor, stop) {
-                    Some(fresh) => duplication = fresh,
+                    // A troca de resolução que derrubou a duplicação pode ter mudado onde o
+                    // monitor fica na área de trabalho, e o cursor seria desenhado fora do lugar.
+                    Some(fresh) => {
+                        duplication = fresh;
+                        origin = desktop_origin(&duplication);
+                    }
                     None => return,
                 }
             }
         }
     }
+}
+
+/// Se é a vez de um quadro sair, e marca a próxima. O monitor manda na frequência dele (240 Hz,
+/// num monitor de jogo), e o teto é o do encoder: contar de `next_due`, e não de agora, mantém a
+/// média no fps pedido. Um quarto de quadro de folga, como o `FramePacer` do `media`: a 60 Hz o
+/// quadro não chega a cada 16 666 µs exatos, e sem folga o que chegava um tico adiantado ficava
+/// de fora — a transmissão caía para uns 40 fps aos trancos.
+fn due(now: Instant, next_due: &mut Instant, interval: Duration) -> bool {
+    if now + interval / 4 < *next_due {
+        return false;
+    }
+
+    *next_due = if now.saturating_duration_since(*next_due) > interval { now + interval } else { *next_due + interval };
+
+    true
 }
 
 /// Insiste até a área de trabalho voltar, ou até pedirem para parar.
@@ -414,6 +466,35 @@ mod tests {
 
         assert!(changed(8, 24, 8, 30) > 20, "a seta não apareceu");
         assert_eq!(changed(40, 64, 40, 64), 0, "o resto do quadro mudou");
+    }
+
+    /// Um monitor de 60 Hz com o encoder em 60 fps: o quadro que chega um tico adiantado passa.
+    /// Sem a folga, mais de um terço caía, aos trancos.
+    #[test]
+    fn a_jittery_60_hz_monitor_keeps_60_fps() {
+        let interval = Duration::from_secs_f64(1.0 / 60.0);
+        let start = Instant::now();
+        let mut next_due = start;
+        let admitted = (0..600_u32)
+            .filter(|frame| {
+                let jitter = if frame % 2 == 0 { Duration::from_micros(400) } else { Duration::ZERO };
+
+                due(start + interval * *frame + Duration::from_millis(1) - jitter, &mut next_due, interval)
+            })
+            .count();
+
+        assert_eq!(admitted, 600);
+    }
+
+    /// Um monitor de 144 Hz com o encoder em 60 fps: a média fica em 60, sem rajada.
+    #[test]
+    fn a_144_hz_monitor_is_held_to_60_fps() {
+        let interval = Duration::from_secs_f64(1.0 / 60.0);
+        let start = Instant::now();
+        let mut next_due = start;
+        let admitted = (0..1_440_u32).filter(|frame| due(start + Duration::from_secs_f64(f64::from(*frame) / 144.0), &mut next_due, interval)).count();
+
+        assert!((590..=610).contains(&admitted), "{admitted} quadros em 10 s");
     }
 
     /// Na máquina de verdade: o monitor principal duplicado por um segundo, e o primeiro quadro,

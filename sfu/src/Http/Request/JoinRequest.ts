@@ -55,6 +55,10 @@ export class JoinRequest extends Request {
         return this.claims.can;
     }
 
+    public muted(): boolean {
+        return this.claims.muted === true;
+    }
+
     public resumeKey(): string | null {
         return typeof this.data.resumeKey === 'string' ? this.data.resumeKey : null;
     }

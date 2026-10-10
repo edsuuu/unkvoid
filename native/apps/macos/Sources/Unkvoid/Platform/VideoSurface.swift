@@ -16,13 +16,19 @@ final class VideoSink: @unchecked Sendable {
     private let renderer: AVSampleBufferVideoRenderer
     private let gate = NSLock()
     private var format: CMVideoFormatDescription?
+    /// Pede a quem transmite um quadro-chave agora, em vez de esperar o periódico (até 4 s
+    /// no Windows). O pedido vai por UDP e pode se perder: enquanto o quadro-chave não chega,
+    /// pede de novo a cada segundo.
+    private let requestKeyframe: @Sendable () -> Void
+    private var asking = KeyframeAsking()
 
     @MainActor
-    init() {
+    init(requestKeyframe: @escaping @Sendable () -> Void = {}) {
         layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspect
         layer.backgroundColor = NSColor.black.cgColor
         renderer = layer.sampleBufferRenderer
+        self.requestKeyframe = requestKeyframe
     }
 
     /// Chamado da thread da mídia, fora da main.
@@ -37,11 +43,19 @@ final class VideoSink: @unchecked Sendable {
             format = described
         }
 
+        if keyframe {
+            asking.arrived()
+        }
+
         // Layer que falhou só volta com `flush`, e depois dele só um keyframe desenha.
         if renderer.status == .failed {
             renderer.flush()
 
             guard keyframe else {
+                if asking.shouldAsk(now: Date()) {
+                    requestKeyframe()
+                }
+
                 return
             }
         }
@@ -239,5 +253,27 @@ struct VideoSurface: NSViewRepresentable {
         sink.layer.frame = view.bounds
         sink.layer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         view.layer?.addSublayer(sink.layer)
+    }
+}
+
+/// Quando pedir o quadro-chave de novo: na primeira falha, e daí a cada segundo enquanto ele
+/// não chega. Um quadro-chave que chegou zera a conta.
+struct KeyframeAsking {
+    var lastAsked: Date?
+
+    static let again: TimeInterval = 1
+
+    mutating func shouldAsk(now: Date) -> Bool {
+        if let lastAsked, now.timeIntervalSince(lastAsked) < Self.again {
+            return false
+        }
+
+        lastAsked = now
+
+        return true
+    }
+
+    mutating func arrived() {
+        lastAsked = nil
     }
 }

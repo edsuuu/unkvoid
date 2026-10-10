@@ -136,11 +136,12 @@ export component Call inherits Rectangle {
                 spacing: 16px;
                 padding-top: 8px;
 
-                // ponytail: a câmera ainda não abre fora do macOS; o botão fica apagado.
+                // ponytail: a câmera ainda não abre no Windows; lá o botão fica apagado.
                 RoundButton {
-                    commands: Icons.camera-off;
-                    hint: "A câmera ainda não está ligada nesta versão";
-                    enabled: false;
+                    commands: Ui.camera-on ? Icons.camera : Icons.camera-off;
+                    hint: !Ui.camera-available ? "A câmera ainda não está ligada nesta versão" : (Ui.camera-on ? "Desligar a câmera" : "Ligar a câmera");
+                    enabled: Ui.camera-available;
+                    on: Ui.camera-on;
                     clicked => { Ui.toggle-camera(); }
                 }
 

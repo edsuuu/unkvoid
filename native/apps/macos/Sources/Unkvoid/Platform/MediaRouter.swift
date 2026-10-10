@@ -36,7 +36,8 @@ final class MediaRouter: @unchecked Sendable {
             return sink
         }
 
-        let sink = VideoSink()
+        let core = core
+        let sink = VideoSink { _ = try? core.app("requestKeyframe", ["producerId": producer]) }
 
         for waiting in backlog.removeValue(forKey: producer) ?? [] {
             sink.show(waiting.frame, keyframe: waiting.keyframe)

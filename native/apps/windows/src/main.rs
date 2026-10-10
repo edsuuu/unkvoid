@@ -35,9 +35,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     #[cfg(not(target_os = "windows"))]
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    start_logbook();
 
     #[cfg(target_os = "windows")]
     allow_borderless_capture();
@@ -134,6 +132,35 @@ fn allow_borderless_capture() {
 
 /// O log num arquivo (sem console atrás da janela, é onde o que aconteceu fica) e a instância
 /// única. `None` quando o app já está aberto: ele recebe o pedido de mostrar a janela.
+/// Fora do Windows o log vai para a pasta de estado do XDG (`~/.local/state/unkvoid/
+/// unkvoid-AAAA-MM-DD.log`), e o terminal recebe as mesmas linhas. Antes só o terminal via, e
+/// só os erros: quem relatava um problema de transmissão no Linux não tinha log para mandar.
+#[cfg(not(target_os = "windows"))]
+fn start_logbook() {
+    use tracing_subscriber::fmt::writer::MakeWriterExt;
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    let Some(folder) = log_folder() else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+
+        return;
+    };
+    let log = std::sync::Mutex::new(core_app::logbook::DailyLog::open(&folder));
+
+    tracing_subscriber::fmt().with_env_filter(filter).with_writer(log.and(std::io::stderr)).with_ansi(false).init();
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), folder = %folder.display(), "Unkvoid abrindo");
+}
+
+/// A pasta do log do dia fora do Windows: a de estado do XDG.
+#[cfg(not(target_os = "windows"))]
+pub fn log_folder() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|state| state.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".local/state")))
+        .map(|state| state.join("unkvoid"))
+}
+
 #[cfg(target_os = "windows")]
 fn start_windows() -> anyhow::Result<Option<windows::Win32::Foundation::HANDLE>> {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());

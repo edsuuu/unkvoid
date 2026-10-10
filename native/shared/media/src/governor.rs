@@ -110,6 +110,12 @@ impl BitrateGovernor {
         self.target
     }
 
+    /// A subida já mostrou que não leva o teto: houve uma janela congestionada, e a taxa ainda
+    /// não voltou até ele. É o upload fraco, onde cada quadro-chave a mais entope a saída.
+    pub fn constrained(&self) -> bool {
+        self.target < self.ceiling
+    }
+
     /// A perda da última janela que teve pacotes o bastante para medir, em ‰.
     pub fn loss_permille(&self) -> u32 {
         self.loss_permille
@@ -226,6 +232,28 @@ mod tests {
 
         assert_eq!(governor.target(), 7_000_000);
         assert_eq!(window(&mut governor, 200), Some(4_900_000), "passada a carência, a queda vale");
+    }
+
+    /// O freio de quadro-chave só faz rajada com a subida folgada: abaixo do teto ela já
+    /// congestionou, e conta como apertada até a taxa voltar inteira.
+    #[test]
+    fn the_uplink_is_constrained_from_the_first_congestion_until_the_ceiling_is_back() {
+        let mut governor = BitrateGovernor::new(CEILING, true);
+
+        window(&mut governor, 5);
+
+        assert!(!governor.constrained(), "perda leve no teto não aperta");
+
+        window(&mut governor, 200);
+
+        assert!(governor.constrained());
+
+        while governor.target() < CEILING {
+            window(&mut governor, 0);
+        }
+
+        assert!(!governor.constrained(), "de volta ao teto, a rajada volta");
+        assert!(!BitrateGovernor::new(CEILING, false).constrained(), "com a taxa fixa nunca aperta");
     }
 
     #[test]

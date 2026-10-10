@@ -7,6 +7,13 @@ extension AppModel {
     /// sem esperar o primeiro aviso.
     func openedRoom() async {
         media?.start()
+        roomOpen = true
+
+        if let failure = failuresWhileJoining.last {
+            complain(failure)
+        }
+
+        failuresWhileJoining = []
 
         let now = await ask("room")
 
@@ -99,6 +106,8 @@ extension AppModel {
     }
 
     func closeRoom() {
+        roomOpen = false
+        failuresWhileJoining = []
         media?.stop()
 
         roomError = nil
@@ -131,6 +140,18 @@ extension AppModel {
     /// Um aviso da fila do núcleo. Os da sala redesenham a sala; os do chat vão para o chat.
     func heard(_ event: [String: Any]) {
         let data = event["data"] as? [String: Any] ?? [:]
+        let name = event["event"] as? String ?? ""
+
+        // Sair da sala ainda faz o núcleo anunciar `room.mine` (a câmera "ligada" enquanto ele
+        // recolhe o que subia): com a sala fechada deste lado, isso é da sala que morreu. A
+        // falha anunciada enquanto se entra é diferente: é da sala que está nascendo.
+        if name.hasPrefix("room."), !roomOpen {
+            if name == "room.failed", voiceJoining || busy != nil {
+                failuresWhileJoining.append(Self.roomFailure(data["what"] as? String))
+            }
+
+            return
+        }
 
         switch event["event"] as? String {
         case "room.peers":
@@ -157,6 +178,7 @@ extension AppModel {
             }
         case "room.mine":
             mine = decode(data) ?? mine
+            syncCamera()
         case "room.level":
             micLevel = (data["level"] as? NSNumber)?.floatValue ?? 0
             micPercent = data["percent"] as? Int ?? 0
@@ -503,33 +525,50 @@ extension AppModel {
         _ = await ask("muteMicrophone", ["muted": !mine.micMuted])
     }
 
+    /// O botão só pede ao núcleo; quem liga e desliga a captura é o `syncCamera`, quando o
+    /// `room.mine` responder. Um dono só: o núcleo anuncia a câmera ligada antes de responder ao
+    /// `openCamera`, e dois caminhos ligando a mesma `AVCaptureSession` em threads diferentes
+    /// era a câmera partindo duas vezes.
     func toggleCamera() async {
-        guard let core, let media else {
-            return
-        }
-
         if mine.camera {
-            media.camera.stop()
-
             _ = await ask("closeCamera")
 
             return
         }
 
-        let opened = await ask("openCamera", ["width": Camera.size.width, "height": Camera.size.height, "fps": Camera.frameRate])
-
-        guard opened["ok"] as? Bool == true else {
+        if await ask("openCamera", ["width": Camera.size.width, "height": Camera.size.height, "fps": Camera.frameRate])["ok"] as? Bool != true {
             complain("Não deu para ligar a câmera.")
+        }
+    }
 
+    /// A captura segue o que o núcleo diz da câmera: `mine.camera` ligada é a sessão rodando,
+    /// desligada é a luz verde apagada. É isto que deixa as duas metades do religar depois de
+    /// uma queda baterem — se o núcleo soltar a câmera, a captura para; se ele a reabrir sozinho
+    /// (a receita dela, como a da tela), a captura volta sem ninguém clicar.
+    private func syncCamera() {
+        guard let media else {
             return
         }
 
-        media.camera.blurBackground(voicePreferences.blurBackground)
+        switch cameraSync.decide(wanted: mine.camera, running: media.camera.isRunning) {
+        case .start: Task { await startCapture() }
+        case .stop: media.camera.stop()
+        case nil: break
+        }
+    }
+
+    private func startCapture() async {
+        // Por qualquer saída daqui — ligou, falhou, não tinha núcleo — o "ligando" é solto;
+        // senão a câmera ficava presa nele até reabrir o app. E, enquanto ligava, ela pode ter
+        // sido desligada (ou a sala fechada): a luz verde não fica acesa fora de uma chamada.
+        defer {
+            if cameraSync.finishedStarting(wanted: mine.camera && roomOpen) == .stop {
+                media?.camera.stop()
+            }
+        }
 
         do {
-            try await media.camera.start { surface, time in
-                core.show(surface, at: time)
-            }
+            try await (cameraStarter ?? captureFromDevice)()
         } catch {
             _ = await ask("closeCamera")
 
@@ -539,9 +578,58 @@ extension AppModel {
         }
     }
 
+    private func captureFromDevice() async throws {
+        guard let core, let media else {
+            throw Camera.Failure.noCamera
+        }
+
+        media.camera.blurBackground(voicePreferences.blurBackground)
+
+        try await media.camera.start { surface, time in
+            core.show(surface, at: time)
+        }
+    }
+
     func toggleDeafen() async {
         deafened.toggle()
 
         _ = await ask("deafen", ["deafened": deafened])
+    }
+}
+
+/// O estado "ligando" da câmera, que a `AVCaptureSession` não mostra: entre o pedido e o
+/// `startRunning()` ela diz que não roda, e sem isto um segundo `start` entrava na mesma sessão
+/// de outra thread. Uma decisão por aviso do núcleo; o `start` termina e confere de novo.
+struct CameraSync {
+    enum Action {
+        case start
+        case stop
+    }
+
+    var starting = false
+
+    mutating func decide(wanted: Bool, running: Bool) -> Action? {
+        if starting {
+            return nil
+        }
+
+        if wanted, !running {
+            starting = true
+
+            return .start
+        }
+
+        if !wanted, running {
+            return .stop
+        }
+
+        return nil
+    }
+
+    /// O `start` acabou: se no meio a câmera deixou de ser querida, ela para agora.
+    mutating func finishedStarting(wanted: Bool) -> Action? {
+        starting = false
+
+        return wanted ? nil : .stop
     }
 }
