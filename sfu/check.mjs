@@ -1034,37 +1034,6 @@ test('a retomada obedece a claim `muted` do token novo, como obedece o `can`', a
     volta.close();
 });
 
-test('o desmutar do servidor não abre o microfone que a própria pessoa pausou', async () => {
-    const sala = 'checkroom008';
-    const falante = await abrir();
-    await entrar(falante, { token: token({ room: sala, sub: '93', name: 'Calada', can: TUDO }) });
-
-    const mic = await falante.call('producePlain', audioPuro('mic', 0x931));
-    assert.equal(mic.ok, true, JSON.stringify(mic));
-    assert.equal((await falante.call('pauseProducer', { producerId: mic.data.producerId })).ok, true, 'a pessoa se cala');
-
-    const mutePath = `/rooms/${sala}/mute`;
-    const mute = async muted => {
-        const body = JSON.stringify({ userId: '93', muted });
-        const http = await fetch(`${URL_HTTP}${mutePath}`, { method: 'POST', body, headers: signed('POST', mutePath, body) });
-
-        return http.json();
-    };
-
-    assert.deepEqual(await mute(true), { muted: 1 }, 'o moderador muta');
-    assert.deepEqual(await mute(false), { muted: 0 }, 'e desmuta sem mexer no microfone que ela mesma calou');
-
-    const olha = await abrir();
-    const vista = await entrar(olha, { token: token({ room: sala, sub: '94', name: 'Olha', can: TUDO }) });
-    assert.equal(vista.peers.find(pessoa => pessoa.userId === '93')?.producers[0]?.paused, true, 'o microfone continua pausado');
-
-    assert.equal((await falante.call('resumeProducer', { producerId: mic.data.producerId })).ok, true, 'e ela o abre quando quiser');
-
-    falante.close();
-    olha.close();
-});
-
-
 test('o /presence assinado lista quem está na sala e o que cada um produz', async () => {
     // Quem está em cada sala, para o site desenhar a lista de voz.
     let http = await fetch(`${URL_HTTP}/presence`);

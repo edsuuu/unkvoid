@@ -64,9 +64,10 @@ fica sabendo. O `join` devolve `serverMuted: boolean`.
 Mutado pelo servidor, o `produce`/`producePlain` do `mic` **não** é recusado: o producer nasce
 pausado (a resposta traz `paused: true`), e o `/mute false` o retoma — assim o app liga o mic como
 sempre, sem erro, e a voz volta sem clique. Só `resumeProducer` do mic continua sendo 403
-enquanto durar. O `/mute false` **não** retoma o mic que a própria pessoa pausou
-(`pauseProducer`): o desmutar do moderador devolve a permissão de falar, não abre o microfone de
-ninguém, e a resposta conta só os mics que mexeu.
+enquanto durar. O `/mute false` retoma **todos** os mics da pessoa, também o que ela mesma tinha
+pausado: o app não chama `resumeProducer` enquanto está mutado pelo servidor (desmutar ali só
+muda a tela dele) e conta com esse retomar; quem continua mutado por conta própria segue mandando
+silêncio, porque o app cala o microfone na captura.
 
 - `room` é o ULID do canal **em minúsculas** (26 chars de `a-z0-9`; passa no regex atual).
 - `sub` é `user:<id>`. A sala anônima continua entrando sem token como `guest:<installId>`

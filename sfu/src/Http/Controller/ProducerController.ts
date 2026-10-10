@@ -194,9 +194,7 @@ export class ProducerController {
     public async pause(request: ProducerRequest): Promise<Payload> {
         const peer = request.peer();
 
-        await request
-            .room()
-            .setOwnProducerPaused(peer, peer.getProducer(request.producerId()), true);
+        await request.room().setProducerPaused(peer, peer.getProducer(request.producerId()), true);
 
         return { status: 'paused' };
     }
@@ -204,9 +202,7 @@ export class ProducerController {
     public async resume(request: ProducerRequest): Promise<Payload> {
         const peer = request.peer();
 
-        await request
-            .room()
-            .setOwnProducerPaused(peer, peer.getProducer(request.producerId()), false);
+        await request.room().setProducerPaused(peer, peer.getProducer(request.producerId()), false);
 
         return { status: 'resumed' };
     }

@@ -341,9 +341,13 @@ export class Room {
 
     /**
      * A marca do mudo do servidor, e o mic junto com ela: pausado enquanto durar, retomado
-     * quando o Laravel devolve a voz. O mic que a própria pessoa pausou fica pausado: o
-     * desmutar do moderador devolve a permissão de falar, não abre o microfone de ninguém.
-     * Devolve quantos mics mexeu.
+     * quando o Laravel devolve a voz. Devolve quantos mics mexeu.
+     *
+     * Retoma também o mic que a própria pessoa tinha pausado, de propósito: o app instalado não
+     * chama `resumeProducer` enquanto está mutado pelo servidor (desmutar ali só muda a tela dele)
+     * e conta com este retomar; e quem continua mutado por conta própria segue mandando silêncio,
+     * porque o app cala o microfone na captura. Respeitar a pausa aqui deixava calado quem
+     * desmutou durante o mudo do moderador.
      */
     public async applyServerMute(peer: Peer, muted: boolean): Promise<number> {
         let touched = 0;
@@ -351,29 +355,14 @@ export class Room {
         peer.serverMuted = muted;
         peer.send('serverMuted', { muted });
 
-        for (const producer of [...peer.producers.values()]) {
-            if (
-                producer.appData.source !== 'mic' ||
-                (!muted && producer.appData.selfPaused === true)
-            ) {
-                continue;
+        for (const producer of peer.producers.values()) {
+            if (producer.appData.source === 'mic') {
+                await this.setProducerPaused(peer, producer, muted);
+                touched += 1;
             }
-
-            await this.setProducerPaused(peer, producer, muted);
-            touched += 1;
         }
 
         return touched;
-    }
-
-    /** O pausar e o retomar da própria pessoa, que o mudo do servidor não desfaz. */
-    public async setOwnProducerPaused(
-        peer: Peer,
-        producer: Producer,
-        paused: boolean,
-    ): Promise<void> {
-        await this.setProducerPaused(peer, producer, paused);
-        producer.appData.selfPaused = paused;
     }
 
     public async setProducerPaused(peer: Peer, producer: Producer, paused: boolean): Promise<void> {
