@@ -78,6 +78,9 @@ pub struct Room {
     server_muted: std::sync::atomic::AtomicBool,
     /// "Ver o que a sala vê": assistir à própria tela, que custa um decodificador a mais.
     self_view: std::sync::atomic::AtomicBool,
+    /// O `resend` está refazendo o que sobe: o `room.mine` sai uma vez só, no fim. No meio a
+    /// tela já voltou e a câmera ainda não, e a interface do macOS fecharia a câmera que manda.
+    resending: std::sync::atomic::AtomicBool,
     /// A receita da tela que está subindo, para republicar depois de uma queda longa.
     shared: Mutex<Option<CaptureConfig>>,
     /// A da câmera, pelo mesmo motivo: antes ela era a única que não voltava da queda.
@@ -150,6 +153,7 @@ impl Room {
             user_muted: std::sync::atomic::AtomicBool::new(false),
             server_muted: std::sync::atomic::AtomicBool::new(false),
             self_view: std::sync::atomic::AtomicBool::new(false),
+            resending: std::sync::atomic::AtomicBool::new(false),
             shared: Mutex::default(),
             filming: Mutex::default(),
             shown: Mutex::default(),
@@ -1312,6 +1316,8 @@ impl Room {
             [sending.screen.take(), sending.camera.take()]
         };
 
+        self.resending.store(true, std::sync::atomic::Ordering::Relaxed);
+
         for mut broadcast in broadcasts.into_iter().flatten() {
             let _ = tokio::task::block_in_place(|| broadcast.stop());
         }
@@ -1362,6 +1368,7 @@ impl Room {
             self.tell("room.failed", json!({ "what": "camera" }));
         }
 
+        self.resending.store(false, std::sync::atomic::Ordering::Relaxed);
         self.announce_mine();
     }
 
@@ -1477,6 +1484,10 @@ impl Room {
     }
 
     fn announce_mine(&self) {
+        if self.resending.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+
         self.tell("room.mine", self.mine());
     }
 

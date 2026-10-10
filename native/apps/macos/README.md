@@ -162,9 +162,12 @@ Cada passo abaixo cobre uma correção que não tem como virar teste automático
 3. **Câmera depois de uma queda (P1-7).** Câmera ligada; derrube a rede por mais de 5 s
    (desligar o Wi-Fi) e volte. Esperado: quem está na sala volta a ver a câmera sozinho, como a
    tela, sem ninguém clicar. Pela ABI: o núcleo guarda o tamanho e o ritmo do `openCamera` e,
-   quando sobe tudo de novo por outro caminho, reabre a câmera com eles; o `room.mine` segue com
-   `camera: true` e os quadros que o Swift continua entregando por `unkvoid_show` passam a subir
-   pelo caminho novo. Se a câmera não reabrir, sai `room.failed {"what": "camera"}` (antes só no
+   quando sobe tudo de novo por outro caminho, reabre a câmera com eles; o `room.mine` sai uma
+   vez só, no fim da volta, com `camera: true` (antes saía um no meio, depois do microfone e antes
+   da câmera, com `camera: false`, e o `syncCamera` parava a captura e a religava logo depois: a
+   luz verde piscava), e os quadros que o Swift
+   continua entregando por `unkvoid_show` passam a subir pelo caminho novo — no ritmo da saída e
+   com o mesmo freio de quadro-chave da tela. Se a câmera não reabrir, sai `room.failed {"what": "camera"}` (antes só no
    Linux) e o `room.mine` vem com `camera: false`: o `roomFailure` do Swift ainda não conhece
    `camera` e mostra a frase da tela — falta um `case "camera": "Não deu para ligar a câmera."`.
 4. **Atraso que não cresce (P1-8).** Na voz com alguém mutado por uns minutos, ou com a rede aos

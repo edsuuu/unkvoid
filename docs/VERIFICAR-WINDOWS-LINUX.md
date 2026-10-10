@@ -91,7 +91,8 @@ cd "$(git rev-parse --show-toplevel)/native"
 # GStreamer de verdade: encoder, keyframe por PLI, taxa no ar, relógio da captura, decodificador.
 # Os do som ficam de fora aqui: são os do comando seguinte, um de cada vez.
 cargo test -p capture -p media -- --ignored --skip linux_audio
-# A sala contra um SFU de mentira: a câmera que volta depois de uma queda
+# A sala contra um SFU de mentira: a câmera e o microfone que voltam depois de uma queda, sem
+# a interface ouvir "câmera desligada" no meio
 cargo test -p core-app --test room -- --ignored
 ```
 

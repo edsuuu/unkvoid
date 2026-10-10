@@ -222,7 +222,9 @@ async fn a_screen_closed_while_it_opens_stays_closed() {
 
 /// A queda longa (o servidor perdeu esta pessoa e ela volta como entrada nova) sobe de novo a
 /// tela e o microfone; a câmera era a única que ficava para trás: parava, e quem estava na sala
-/// deixava de ver a pessoa até ela religar à mão (auditoria P1-7).
+/// deixava de ver a pessoa até ela religar à mão (auditoria P1-7). E a volta avisa a interface
+/// uma vez só: o microfone voltava antes da câmera e o `room.mine` do meio dizia "câmera
+/// desligada" — o app do macOS fechava a câmera que manda os quadros.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "precisa do GStreamer com o videotestsrc e o x264enc (o `UNKVOID_CAMERA_SOURCE` do build de depuração)"]
 async fn the_camera_comes_back_after_a_long_drop() {
@@ -230,12 +232,15 @@ async fn the_camera_comes_back_after_a_long_drop() {
     unsafe { std::env::set_var("UNKVOID_CAMERA_SOURCE", "videotestsrc is-live=true pattern=ball") };
 
     let (url, seen) = fake_sfu(Script::DropAfterCamera).await;
-    let (updates, _ui) = std::sync::mpsc::channel();
+    let (updates, ui) = std::sync::mpsc::channel::<String>();
     let (room, _media) = Room::enter(&url, "salateste01", guest(), updates).await.expect("entrou");
     let camera = capture::cameras().first().cloned().expect("a câmera de teste");
     let config = capture::CaptureConfig { source: capture::CaptureSource::Camera(camera.index), capture_audio: false, ..capture::CaptureConfig::default() };
 
+    room.open_microphone().await.expect("o microfone abriu");
     room.open_captured_camera(config).await.expect("a câmera abriu");
+
+    while ui.try_recv().is_ok() {}
 
     let deadline = Instant::now() + Duration::from_secs(20);
     let cameras = || asked(&seen, "producePlain").iter().filter(|request| request["data"]["source"] == "camera").count();
@@ -244,8 +249,21 @@ async fn the_camera_comes_back_after_a_long_drop() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
     assert_eq!(cameras(), 2, "a câmera não subiu de novo depois da queda: {:?}", asked(&seen, "producePlain"));
+    assert_eq!(asked(&seen, "producePlain").iter().filter(|request| request["data"]["source"] == "mic").count(), 2, "o microfone não subiu de novo");
     assert_eq!(room.mine()["camera"], true, "a sala mostra a câmera desligada: {}", room.mine());
+
+    let mine: Vec<Value> = ui
+        .try_iter()
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .filter(|update| update["event"] == "room.mine")
+        .map(|update| update["data"].clone())
+        .collect();
+
+    assert!(mine.iter().all(|data| data["camera"] == true && data["mic"] == true), "a volta avisou a câmera ou o microfone desligados no meio: {mine:?}");
+    assert!(!mine.is_empty(), "a volta não avisou a interface");
 
     let again = seen.lock().expect("seen").ports.iter().rev().find(|(source, _)| source == "camera").map(|(_, socket)| Arc::clone(socket)).expect("porta");
     let mut datagram = [0_u8; 2_048];
