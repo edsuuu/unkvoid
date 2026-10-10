@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, before, test } from 'node:test';
+import { after, afterEach, before, test } from 'node:test';
 
 import { Participant } from '../lib/Participant.mjs';
 import { guest, ports, record, sleep, waitFor } from '../lib/scenario.mjs';
@@ -31,6 +31,18 @@ after(async () => {
     }
 
     await sfu?.stop();
+});
+
+// Cada teste solta quem abriu: quem transmitia 1080p num teste anterior seguia mandando para quem
+// assistia, no mesmo processo do harness, e os últimos testes mediam a fila do harness, não o SFU.
+afterEach(() => {
+    for (const person of people.splice(0)) {
+        person.crash();
+    }
+
+    for (const proxy of proxies.splice(0)) {
+        proxy.close();
+    }
 });
 
 /** Quem transmite: tela, câmera e microfone, com o freio de quadro-chave pedido. */
