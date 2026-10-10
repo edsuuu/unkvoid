@@ -11,8 +11,10 @@ use App\Models\GuestAccess;
 use App\Models\Server;
 use App\Models\User;
 use GuzzleHttp\Promise\PromiseInterface;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
 
 it('emite o token com o mesmo HMAC do SFU e o que a pessoa pode fazer', function (): void {
     $owner = User::factory()->create();
@@ -548,4 +550,229 @@ it('banir, expulsar e mutar chegam ao SFU numa chamada só com as salas deste se
 
     Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/mute') && ! str_contains((string) $request->url(), '/rooms/') && $request['userId'] === "user:{$muted->id}" && $request['muted'] === true && $sorted($request) === $rooms);
     Http::assertNotSent(fn ($request): bool => str_contains((string) $request->url(), '/rooms/'));
+});
+
+it('mover cujo kick não acha ninguém responde 404 e não deixa passe nem a origem trancada', function (): void {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+    $origin = $server->channels()->where('type', 'voice')->firstOrFail();
+    $locked = $server->createChannel($owner, 'Trancado', ChannelTypeEnum::Voice, null, null);
+    $locked->overwrites()->create(['target_type' => 'role', 'target_id' => $server->everyoneRole()->id, 'allow' => 0, 'deny' => PermissionEnum::Connect->value]);
+
+    // A presença ainda lista a pessoa, mas ela saiu antes do kick (ou o SFU não respondeu a ele).
+    Http::fake([
+        '*/presence' => Http::response(['rooms' => [$origin->id => [['sub' => "user:{$member->id}", 'name' => $member->name, 'sources' => ['mic']]]]]),
+        '*' => Http::response(['kicked' => 0]),
+    ]);
+
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$origin->id}/voice/members/{$member->id}", ['channel_id' => $locked->id])
+        ->assertNotFound()
+        ->assertJsonPath('message', 'Essa pessoa não está neste canal de voz.');
+
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$locked->id}/voice/token")->assertForbidden();
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$origin->id}/voice/token")->assertOk();
+});
+
+it('dois moderadores movendo a mesma pessoa: o segundo kick não acha ninguém, e o passe dele não fica valendo', function (): void {
+    $owner = User::factory()->create();
+    $mod = User::factory()->create();
+    $member = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $mod);
+    joinServer($server, $member);
+    $modRole = giveRole($server, $mod, PermissionEnum::MoveMembers->value, 5);
+    $origin = $server->channels()->where('type', 'voice')->firstOrFail();
+    $first = $server->createChannel($owner, 'B', ChannelTypeEnum::Voice, null, null);
+    $second = $server->createChannel($owner, 'C', ChannelTypeEnum::Voice, null, null);
+    $second->overwrites()->create(['target_type' => 'role', 'target_id' => $server->everyoneRole()->id, 'allow' => 0, 'deny' => PermissionEnum::Connect->value]);
+    $second->overwrites()->create(['target_type' => 'role', 'target_id' => $modRole->id, 'allow' => PermissionEnum::Connect->value, 'deny' => 0]);
+
+    // Os dois leram a presença antes de qualquer kick: o primeiro move, o segundo já não acha ninguém.
+    Http::fake([
+        '*/presence' => Http::response(['rooms' => [$origin->id => [['sub' => "user:{$member->id}", 'name' => $member->name, 'sources' => ['mic']]]]]),
+        '*/kick' => Http::sequence()->push(['kicked' => 1])->push(['kicked' => 0]),
+    ]);
+
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$origin->id}/voice/members/{$member->id}", ['channel_id' => $first->id])->assertNoContent();
+    $this->actingAs($mod, 'sanctum')->patchJson("/api/channels/{$origin->id}/voice/members/{$member->id}", ['channel_id' => $second->id])->assertNotFound();
+
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$first->id}/voice/token")->assertOk();
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$second->id}/voice/token")->assertForbidden();
+    // A origem continua fechada pelo mover que deu certo: o app antigo não volta para lá.
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$origin->id}/voice/token")->assertForbidden()->assertJsonPath('message', 'Você acabou de ser movido para outro canal.');
+});
+
+it('o mover espera o outro mover da mesma pessoa terminar', function (): void {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+    $origin = $server->channels()->where('type', 'voice')->firstOrFail();
+    $destination = $server->createChannel($owner, 'B', ChannelTypeEnum::Voice, null, null);
+    fakeSfu($origin->id, $member);
+
+    // Outro mover da mesma pessoa em andamento; o relógio anda junto com a espera.
+    $lock = Cache::lock("voice-move:{$member->id}", 20);
+    Sleep::fake(syncWithCarbon: true);
+
+    expect($lock->get())->toBeTrue();
+
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$origin->id}/voice/members/{$member->id}", ['channel_id' => $destination->id])
+        ->assertConflict()
+        ->assertJsonPath('message', 'Essa pessoa já está sendo movida. Tente de novo.');
+
+    Http::assertNotSent(fn ($request): bool => str_ends_with((string) $request->url(), '/kick'));
+
+    $lock->release();
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$origin->id}/voice/members/{$member->id}", ['channel_id' => $destination->id])->assertNoContent();
+});
+
+it('o server_mute como 1 ou "1" vira bool, grava e avisa o SFU', function (): void {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+    $voice = $server->channels()->where('type', 'voice')->firstOrFail();
+    fakeSfu($voice->id, $member);
+
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/servers/{$server->id}/members/{$member->id}", ['server_mute' => 1])->assertOk();
+
+    expect($server->memberOf($member)->server_mute)->toBeTrue();
+    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/mute') && $request['muted'] === true && $request['userId'] === "user:{$member->id}");
+
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/servers/{$server->id}/members/{$member->id}", ['server_mute' => '0'])->assertOk();
+
+    expect($server->memberOf($member)->server_mute)->toBeFalse();
+    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/mute') && $request['muted'] === false);
+
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/servers/{$server->id}/members/{$member->id}", ['server_mute' => 'talvez'])->assertUnprocessable();
+});
+
+it('com o SFU sem responder, o canal com limite recusa o token em vez de deixar passar, e o sem limite continua entrando', function (): void {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+    $limited = $server->channels()->where('type', 'voice')->firstOrFail();
+    $limited->update(['user_limit' => 1]);
+
+    $open = $server->createChannel($owner, 'Livre', ChannelTypeEnum::Voice, null, null);
+
+    Http::fake(['*/presence' => Http::response('upstream timeout', 504), '*' => Http::response([])]);
+
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$limited->id}/voice/token")
+        ->assertServiceUnavailable()
+        ->assertJsonPath('message', 'O servidor de voz não respondeu. Tente de novo.');
+    $this->actingAs($member, 'sanctum')->postJson("/api/channels/{$open->id}/voice/token")->assertOk();
+
+    // E o mover não confunde o SFU fora do ar com a pessoa fora da voz.
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/channels/{$limited->id}/voice/members/{$member->id}", ['channel_id' => $open->id])->assertServiceUnavailable();
+});
+
+it('entrar, sair e entrar no mesmo segundo chegam os três: o nonce do SFU separa um aviso do outro', function (): void {
+    Event::fake([VoiceStateUpdated::class]);
+
+    $owner = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    $voice = $server->channels()->where('type', 'voice')->firstOrFail();
+    fakeSfu($voice->id);
+
+    $joined = sfuJoined($voice, $owner);
+    $events = [[...$joined, 'nonce' => 'a1a1a1a1a1a1a1a1'], [...$joined, 'event' => 'left', 'nonce' => 'b2b2b2b2b2b2b2b2'], [...$joined, 'nonce' => 'c3c3c3c3c3c3c3c3']];
+
+    foreach ($events as $event) {
+        $this->withHeaders(sfuHeaders($event))->postJson('/api/sfu/events', $event)->assertNoContent();
+    }
+
+    $dispatched = [];
+    Event::assertDispatched(VoiceStateUpdated::class, function (VoiceStateUpdated $event) use (&$dispatched): bool {
+        $dispatched[] = $event->event;
+
+        return true;
+    });
+
+    expect($dispatched)->toBe(['joined', 'left', 'joined']);
+
+    // O mesmo aviso, com o mesmo nonce, continua sendo repetição.
+    $this->withHeaders(sfuHeaders($events[2]))->postJson('/api/sfu/events', $events[2])->assertUnauthorized();
+});
+
+it('o aviso assinado com hora no futuro não volta a valer quando a marca de repetição venceria', function (): void {
+    Event::fake([VoiceStateUpdated::class]);
+
+    $owner = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    $voice = $server->channels()->where('type', 'voice')->firstOrFail();
+    fakeSfu($voice->id);
+
+    $left = sfuJoined($voice, $owner, 'left');
+    $json = json_encode($left, JSON_THROW_ON_ERROR);
+    $timestamp = (string) (time() + 290);
+    $headers = ['X-Unkvoid-Timestamp' => $timestamp, 'X-Unkvoid-Signature' => hash_hmac('sha256', "{$timestamp}\nPOST\n/api/sfu/events\n{$json}", (string) config('services.sfu.secret'))];
+
+    $this->withHeaders($headers)->postJson('/api/sfu/events', $left)->assertNoContent();
+
+    // 301 s depois a hora ainda está na janela (11 s de diferença), e a marca tem de estar viva.
+    $this->travel(301)->seconds();
+
+    $this->withHeaders($headers)->postJson('/api/sfu/events', $left)->assertUnauthorized();
+});
+
+it('apagar um canal de voz tira da voz quem está nele, e o `left` que chega depois não é erro', function (): void {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $dropped = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+    joinServer($server, $dropped);
+    $voice = $server->createChannel($owner, 'Extra', ChannelTypeEnum::Voice, null, null);
+    fakeSfu($voice->id, $member);
+
+    // O `dropped` está na voz pelo acesso aberto, mesmo sem aparecer na presença.
+    foreach ([$member, $dropped] as $user) {
+        $joined = sfuJoined($voice, $user);
+        $this->withHeaders(sfuHeaders($joined))->postJson('/api/sfu/events', $joined)->assertNoContent();
+    }
+
+    $this->actingAs($owner, 'sanctum')->deleteJson("/api/channels/{$voice->id}")->assertNoContent();
+
+    foreach ([$member, $dropped] as $user) {
+        Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/kick') && $request['userId'] === "user:{$user->id}" && $request['rooms'] === [$voice->id]);
+    }
+
+    $left = sfuJoined($voice, $member, 'left', time() + 5);
+    $this->withHeaders(sfuHeaders($left))->postJson('/api/sfu/events', $left)->assertNoContent();
+
+    // Quem ainda entra com um token de antes sai na hora.
+    $late = sfuJoined($voice, $owner, 'joined', time() + 6);
+    $this->withHeaders(sfuHeaders($late))->postJson('/api/sfu/events', $late)->assertNoContent();
+
+    Http::assertSent(fn ($request): bool => str_ends_with((string) $request->url(), '/kick') && $request['userId'] === "user:{$owner->id}" && $request['rooms'] === [$voice->id]);
+});
+
+it('a assinatura das chamadas ao SFU separa os campos com \n em qualquer sistema, nunca com PHP_EOL', function (): void {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+    $voice = $server->channels()->where('type', 'voice')->firstOrFail();
+    fakeSfu($voice->id, $member);
+
+    $this->actingAs($owner, 'sanctum')->deleteJson("/api/channels/{$voice->id}/voice/members/{$member->id}")->assertNoContent();
+
+    Http::assertSent(function ($request): bool {
+        if (! str_ends_with((string) $request->url(), '/kick')) {
+            return false;
+        }
+
+        $timestamp = $request->header('X-Unkvoid-Timestamp')[0];
+        $path = (string) parse_url((string) $request->url(), PHP_URL_PATH);
+
+        return $request->header('X-Unkvoid-Signature')[0] === hash_hmac('sha256', "{$timestamp}\nPOST\n{$path}\n{$request->body()}", (string) config('services.sfu.secret'));
+    });
+
+    // O PHP do Windows tem PHP_EOL = "\r\n": no Linux o teste acima passa com ele, então o código não pode usá-lo.
+    expect(file_get_contents(app_path('Services/Sfu/SfuClient.php')))->not->toContain('PHP_EOL');
 });

@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 import type { Peer } from './Peer.js';
 import { Signature } from './Signature.js';
 import { config } from '../Config/index.js';
@@ -19,7 +21,10 @@ export class Webhook {
         }
 
         const at = Math.floor(Date.now() / 1000);
-        const body = JSON.stringify({ event, ...data, at });
+        // O Laravel recusa a mesma assinatura duas vezes. Sem o `nonce`, entrar, sair e entrar
+        // no mesmo segundo davam dois `joined` idênticos, e o segundo era tomado por repetição.
+        const nonce = randomBytes(8).toString('hex');
+        const body = JSON.stringify({ event, ...data, at, nonce });
 
         void (async () => {
             try {

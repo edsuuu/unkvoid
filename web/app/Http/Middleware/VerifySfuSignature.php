@@ -13,7 +13,8 @@ use Symfony\Component\HttpFoundation\Response;
 /**
  * O SFU avisa quem entrou e saiu da voz assinando hora, método, caminho e corpo com o
  * SFU_SECRET, o mesmo que assina o token de entrada. Sem segredo configurado, nega tudo;
- * a mesma assinatura só vale uma vez dentro da janela.
+ * a mesma assinatura só vale uma vez dentro da janela. O SFU põe um `nonce` em cada aviso:
+ * dois avisos iguais no mesmo segundo (entrou, saiu, entrou) não são a repetição de um.
  *
  * `signed.sfu:repeatable` desliga só essa última parte, para rota que não muda nada. A
  * mesma conta com o app aberto em duas máquinas se inscreve no mesmo canal no mesmo
@@ -41,8 +42,10 @@ final class VerifySfuSignature
 
         abort_unless(hash_equals($expected, $signature), 401, 'assinatura inválida');
 
+        // A marca dura as duas metades da janela: a hora aceita vai de 300 s atrás a 300 s à
+        // frente, e com 300 s a partir do primeiro uso o pedido com hora no futuro voltava a valer.
         if ($mode !== 'repeatable') {
-            abort_unless(Cache::add('sfu:signature:'.$signature, true, self::WINDOW_SECONDS), 401, 'assinatura repetida');
+            abort_unless(Cache::add('sfu:signature:'.$signature, true, self::WINDOW_SECONDS * 2), 401, 'assinatura repetida');
         }
 
         return $next($request);

@@ -12,6 +12,14 @@ export class JoinController {
             throw new ValidationException('this socket has already joined a room');
         }
 
+        if (request.expiresAt() > 0) {
+            this.registry.assertNotBarred(
+                request.roomCode(),
+                request.userId(),
+                request.expiresAt(),
+            );
+        }
+
         const room = await this.registry.findOrCreate(request.roomCode());
 
         // O socket pode ter caído enquanto o router nascia, e o `close` já passou: quem

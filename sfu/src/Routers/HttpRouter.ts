@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { BroadcastController } from '../Http/Controller/BroadcastController.js';
 import { HealthController } from '../Http/Controller/HealthController.js';
 import { RoomController } from '../Http/Controller/RoomController.js';
+import { StatsController } from '../Http/Controller/StatsController.js';
 import { verifySignature } from '../Http/Middleware/VerifySignature.js';
 import type { Broadcaster } from '../Services/Broadcaster.js';
 import type { RoomRegistry } from '../Services/RoomRegistry.js';
@@ -12,6 +13,7 @@ export class HttpRouter {
         const health = new HealthController(registry);
         const rooms = new RoomController(registry);
         const broadcasts = new BroadcastController(broadcaster);
+        const stats = new StatsController(registry);
         const router = Router();
 
         router.get('/health', (request, response) => health.show(request, response));
@@ -39,6 +41,10 @@ export class HttpRouter {
         router.get('/presence', verifySignature, (request, response) =>
             rooms.presence(request, response),
         );
+
+        router.get('/stats', verifySignature, (request, response, next) => {
+            stats.show(request, response).catch(next);
+        });
 
         return router;
     }

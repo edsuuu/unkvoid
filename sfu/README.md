@@ -25,13 +25,14 @@ SFU  --webhook---------> Laravel       avisa quem entrou e saiu
 | `src/app.ts` | monta o Express e o WebSocketServer no mesmo servidor HTTP; o heartbeat e o teto de conexões por IP |
 | `src/server.ts` | sobe os workers e faz o `listen` |
 | `src/Config/` | tudo que vem do ambiente, os codecs e as portas |
-| `src/Routers/` | `HttpRouter` (as 5 rotas HTTP) e `WebSocketRouter` (as 19 ações do WebSocket) |
-| `src/Http/Controller/` | um por recurso, mais `HealthController` e `RoomController` para o HTTP |
+| `src/Routers/` | `HttpRouter` (as 6 rotas HTTP) e `WebSocketRouter` (as 20 ações do WebSocket) |
+| `src/Http/Controller/` | um por recurso, mais `HealthController`, `RoomController` e `StatsController` para o HTTP |
 | `src/Http/Request/` | valida a entrada de cada ação, no molde do FormRequest do Laravel |
 | `src/Services/` | o coração: `Room`, `Peer`, `RoomRegistry`, `Kernel`, `Signature`, `Webhook` |
 | `src/Http/Middleware/` | `VerifySignature` (a assinatura HMAC das chamadas do Laravel) e `Cors` |
 | `src/Exceptions/` | `ApiException` e filhas; o status HTTP mora na exceção |
 | `src/Enums/` | `Action` (as ações do WebSocket) e `Source` (mic, tela, câmera) |
+| `e2e/` | a prova ponta a ponta (`pnpm run e2e`): clientes sem tela no protocolo do app nativo, ver abaixo |
 
 ### Os Services, um por um
 
@@ -52,6 +53,7 @@ SFU  --webhook---------> Laravel       avisa quem entrou e saiu
 |---|---|---|
 | `GET /health` | o app, antes de entrar | não |
 | `GET /presence` | o Laravel | sim |
+| `GET /stats` | a prova ponta a ponta e o diagnóstico | sim |
 | `POST /rooms/:room/kick` | o Laravel | sim |
 | `POST /rooms/:room/mute` | o Laravel | sim |
 | `POST /broadcast` | o Laravel, para o tempo real | sim |
@@ -130,10 +132,69 @@ quem chama as rotas assinadas é o Laravel, de servidor para servidor.
 pnpm run build        # tsc
 pnpm run check        # eslint + check.mjs: o contrato contra um SFU no ar (SFU_SECRET e SFU_CHECK_URL)
 SFU_SECRET=<o do servidor> node --test check-realtime.mjs   # o tempo real contra um SFU no ar
+pnpm run e2e          # a mídia de ponta a ponta, com SFUs próprios (ver abaixo)
 ```
 
 O `check.mjs` sobe SFUs próprios nas portas 3197-3199 para os cenários que precisam de outra
 configuração (webhook, heartbeat, worker morto), e nunca mexe no que já está no ar.
+
+## Prova ponta a ponta (`pnpm run e2e`)
+
+O `check.mjs` confere o contrato; o `e2e/` confere a mídia. Cada cenário sobe o seu SFU (o
+`dist/` de verdade, num processo próprio) e põe na sala pessoas sem tela que falam **o mesmo
+protocolo do app nativo**: o `join` com `resumeKey`, o `ping` de 5 s, o `producePlain` e o
+`consumePlain` com SRTP `AES_CM_128_HMAC_SHA1_80`, um SSRC por origem, o `H264Payloader`
+(STAP-A, FU-A, MTU 1200), o relatório do remetente, o reenvio por NACK, o furo de 5 s, a
+recuperação do `recovery.rs` (NACK em até 3 pedidos, buraco largado em 250 ms, PLI) e a volta
+depois da queda (`resume`, senão republicar com chave nova). Quem assiste monta os quadros, conta
+o que um decodificador mostraria, e o ffmpeg decodifica de verdade o que chegou.
+
+```bash
+pnpm run e2e            # todos os cenários (uns 8 minutos)
+pnpm run e2e a c        # só os das letras pedidas
+E2E_PHP=php8.4 pnpm run e2e e   # o cenário de mover precisa do Laravel (PHP 8.4 e web/vendor)
+```
+
+Precisa de `ffmpeg` e `ffprobe` no PATH. O cenário `e` sobe o `web/` num sqlite descartável; sem
+PHP 8.4 ou sem `web/vendor` ele é pulado e diz por quê. Os números ficam em
+`e2e/out/report.json` (o `run.mjs` resume no fim) e o vídeo que chegou em `e2e/out/*.h264`.
+
+### A mídia
+
+Sem encoder: o quadro-chave é um IDR do ffmpeg (perfil baseline, o `42e01f` do app) por
+resolução, guardado em `e2e/.cache`; os quadros P são fatias `P_Skip` montadas à mão, com o
+`frame_num` certo, cheias de NAL de enchimento até a taxa pedida (o número de pacotes é o de uma
+transmissão de verdade). Cada quadro leva um SEI com o contador e a hora de envio: é por ele que
+se prova ordem, buraco e atraso. O som é Opus de verdade (ruído rosa, 20 ms), reconhecido pacote
+a pacote pelo conteúdo. O quadro-chave sai quando o servidor pede, com o freio do app (2 s,
+dobrando até 4 s) ou na hora (`gate: 'immediate'`, para medir o SFU sozinho), e o GOP de 4 s do
+encoder do Windows.
+
+### Os cenários
+
+| Arquivo | O que prova |
+|---|---|
+| `a-transmitir` | tela 1080p60, câmera 360p30 e microfone chegam a duas pessoas em ordem, sem quadro pulado, sem parada acima de 500 ms, no tamanho e no fps pedidos; o ffmpeg decodifica tudo sem erro |
+| `b-entrar-atrasado` | quem entra numa transmissão em curso vê o primeiro quadro em até 1 s só pelo PLI (sem GOP), um por vez, dois a 300 ms, três juntos e logo depois do quadro-chave de outra pessoa (o pior caso do freio); e cada atrasado custa **um** quadro-chave por vídeo a quem transmite |
+| `c-perda` | com 5% de perda e jitter na subida e na descida, o NACK/RTX recupera e a imagem não para mais de 1 s (1,5 s com 5% nos dois lados, ≈10% de ponta a ponta) |
+| `d-trocas` | trocar a resolução no meio, trocar de tela, parar tudo e recomeçar (o transporte é solto e refeito), duas telas na mesma sala, oito pessoas assistindo, e pausar e retomar (quem assiste e quem transmite) com um quadro-chave só |
+| `e-mover` | o `PATCH .../voice/members/{user}` do Laravel no meio da transmissão: `moved` chega, a origem para de receber (nenhum pacote fantasma), o destino vê a tela, o `/stats` não guarda nada da origem, a origem recusa o token por 60 s, e o tempo real manda `left`/`joined` |
+| `f-worker` | o worker que morre leva só a sala dele (1012), quem estava nela volta a ver sozinho; a sala espalhada em dois workers (`pipeToRouter`) publica e assiste; e a sala que encolhe devolve o router do outro worker |
+| `g-rede` | quem assiste e quem transmite perdem a rede (TCP e UDP) por 10 s e voltam sem reiniciar o app, com o servidor no mesmo número de objetos; 200 ciclos de entrar, transmitir, assistir e sair (um em quatro sem `leave`) voltam ao estado de base, e a memória fica estável |
+| `h-carga` | 10 pessoas, 2 telas 1080p30 e 10 câmeras 360p30, todo mundo assistindo tudo: a CPU do SFU (Node e cada worker) num router só e espalhada em dois. Cada pessoa roda numa thread (`ThreadedParticipant`): numa thread só, o próprio harness passava de um núcleo e perdia pacote no socket |
+
+Os testes marcados `# TODO` no relatório reproduzem um defeito do **app nativo** (o SFU não tem
+como corrigir); cada um diz o arquivo do app no título. O cliente do harness tem as chaves para
+isso: `keyframeRouting: 'shared'` (o pedido de quadro-chave dividido entre tela e câmera),
+`pacing: 'native'` (a câmera derrubando o ritmo da tela), `receiverReports` e `extendedReports`
+(o RR e o XR DLRR que o app não manda), `gate` e `legacyMoved` (o app que não conhece `moved`).
+
+### Sem `tc netem`
+
+A rede ruim é um proxy UDP (`UdpProxy`) entre cada pessoa e o SFU: perda e atraso nos dois
+sentidos, jitter que anda devagar sem embaralhar a fila (como na internet) e uma fração
+embaralhada à parte. O cabo puxado é o `cut` dele junto com o do `TcpProxy`, que segura o
+WebSocket sem fechar (o socket meio aberto, que não manda FIN nem RST).
 
 ## Publicar
 
@@ -156,7 +217,7 @@ Reiniciar derruba quem está em chamada por alguns segundos: o SFU novo não tem
 antigas, então o app reconecta sozinho, com espera sorteada, entra de novo e republica o que
 transmitia.
 
-## Duas coisas que não são óbvias
+## Coisas que não são óbvias
 
 **O heartbeat não é enfeite.** Um socket meio aberto — tampa do notebook fechada, Wi-Fi
 trocado por 4G — nunca manda FIN nem RST. Sem o ping de 15 s, o `close` não dispara, a pessoa
@@ -169,6 +230,13 @@ fechar os workers, e um listener basta para o Node não sair mais no sinal: o pr
 de pé sem worker nenhum, o `/health` dizia ok e todo `join` dava 500 (`Channel closed`). Hoje o
 `server.ts` sai no sinal, o `/health` dá 503 sem worker vivo, e o worker que morre renasce
 sozinho: as salas dele fecham com 1012 e cada app reconecta num worker vivo.
+
+**O freio de quadro-chave é de meio segundo** (`KEYFRAME_REQUEST_DELAY_MS` no
+`ProducerController`, o `keyFrameRequestDelay` do mediasoup). Pedido que chega dentro do freio
+espera ele acabar, junto com os outros. Com 1 s, quem entrava logo depois do quadro-chave de outra
+pessoa esperava o segundo inteiro mais a viagem do quadro, e passava de 1 s até a primeira imagem
+(cenário `b` do `e2e`). Quem protege o encoder de pedido demais é o próprio app (`KeyframeGate`,
+2 s); o SFU só junta os pedidos da sala.
 
 **Cair não é sair.** Quem perde a sinalização entra numa carência de 30 s com a mídia viva, e
 pode reconectar sem cair da chamada. A sala vê `peerConnectionLost` na hora e o `peerLeft` só

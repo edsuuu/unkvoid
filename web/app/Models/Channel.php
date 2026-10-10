@@ -14,6 +14,7 @@ use App\Exceptions\ForbiddenException;
 use App\Models\Concerns\LogsFailedWrites;
 use App\Services\Sfu\SfuClient;
 use App\Services\Storage\BucketService;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
@@ -26,6 +27,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Override;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 
@@ -56,6 +58,8 @@ final class Channel extends Model
      * num canal cheio.
      */
     private const int MOVE_PASS_SECONDS = 60;
+
+    private const int MOVE_LOCK_SECONDS = 20;
 
     /**
      * Só categoria agrupa, e só canal de texto ou de voz entra nela; categoria dentro de
@@ -146,9 +150,13 @@ final class Channel extends Model
     }
 
     /**
+     * Apagar um canal de voz tira da voz quem está nele: senão a pessoa seguia transmitindo
+     * numa sala sem canal. Quem está lá vem da presença e dos acessos abertos (o SFU pode
+     * não responder), e o `kick` de quem já saiu não faz nada.
+     *
      * @throws Throwable
      */
-    public function remove(User $actor): void
+    public function remove(User $actor, SfuClient $sfu): void
     {
         $this->memberOrFail($actor)->authorize(PermissionEnum::ManageChannels);
 
@@ -156,12 +164,23 @@ final class Channel extends Model
             throw ValidationException::withMessages(['channel' => 'O servidor precisa de pelo menos um canal de texto.']);
         }
 
+        $inVoice = $this->type === ChannelTypeEnum::Voice
+            ? array_values(array_unique([
+                ...array_column($sfu->peers($this, fresh: true), 'sub'),
+                ...User::query()->whereIn('id', ChannelAccess::query()->select('user_id')->where('channel_id', $this->id)->whereNull('left_at'))->get()->map(fn (User $user): string => $user->subject())->all(),
+            ]))
+            : [];
+
         // Os canais da categoria apagada voltam para a raiz. A chave estrangeira já faz
         // isso no MySQL, mas o SQLite dos testes ignora chave criada em `alter table`.
         self::write('falha ao apagar o canal', function (): void {
             $this->children()->update(['parent_id' => null]);
             $this->delete();
         }, ['channel_id' => $this->id]);
+
+        foreach ($inVoice as $subject) {
+            $sfu->kickIn([$this->id], $subject);
+        }
 
         self::publish(new ServerUpdated($this->server_id));
     }
@@ -364,7 +383,10 @@ final class Channel extends Model
         // está pedindo token para reconectar: cair da rede não passa de novo por CONNECT nem
         // pelo limite. A medida é a presença fresca, nunca o acesso em banco: um `left` perdido
         // (SFU reiniciado, Laravel fora do ar) deixaria a linha aberta por horas.
-        $peers = $sfu->peers($this, fresh: true);
+        // Canal com limite conta com a presença de verdade: o SFU sem responder recusa o token
+        // em vez de deixar entrar como se a sala estivesse vazia. Sem limite (ou com o passe), a
+        // presença só livra quem reconecta do CONNECT, e sem ela o CONNECT vale.
+        $peers = is_null($this->user_limit) || $moved ? $sfu->peers($this, fresh: true) : $sfu->seats($this);
         $seated = array_any($peers, fn (array $peer): bool => $peer['sub'] === $user->subject());
 
         if (! $moved && ! $seated) {
@@ -423,20 +445,14 @@ final class Channel extends Model
 
         throw_unless($other->can(PermissionEnum::ViewChannel, $destination), ForbiddenException::class, 'Essa pessoa não vê o canal de destino.');
 
-        $inVoice = array_any($sfu->peers($this, fresh: true), fn (array $peer): bool => $peer['sub'] === $target->subject());
-
-        throw_unless($inVoice, NotFoundHttpException::class, 'Essa pessoa não está neste canal de voz.');
-
-        Cache::put($destination->movePassKey($target), true, self::MOVE_PASS_SECONDS);
-        Cache::put($this->moveOutKey($target), true, self::MOVE_PASS_SECONDS);
-
-        // Mover de volta (A → B → A) em menos de 60 s: a marca de saída de A não pode barrar
-        // quem o moderador acabou de mandar para lá. E tirar alguém daqui revoga o passe que
-        // ele tinha para cá: senão o app antigo, que volta à origem, voltava para B.
-        Cache::forget($destination->moveOutKey($target));
-        Cache::forget($this->movePassKey($target));
-
-        $sfu->move($this, $destination, $target->subject(), $actor->name);
+        // Dois moderadores movendo a mesma pessoa ao mesmo tempo: um de cada vez, e o segundo já
+        // não a acha aqui. Sem isso os dois liam a presença antes de qualquer kick, os dois
+        // gravavam passe, e o do destino que perdeu ficava valendo.
+        try {
+            Cache::lock("voice-move:{$target->id}", self::MOVE_LOCK_SECONDS)->block(self::MOVE_LOCK_SECONDS, fn () => $this->moveNow($actor, $target, $destination, $sfu));
+        } catch (LockTimeoutException) {
+            throw new ConflictHttpException('Essa pessoa já está sendo movida. Tente de novo.');
+        }
     }
 
     /**
@@ -473,6 +489,43 @@ final class Channel extends Model
             'position' => 'integer',
             'user_limit' => 'integer',
         ];
+    }
+
+    /**
+     * @throws Throwable
+     */
+    private function moveNow(User $actor, User $target, self $destination, SfuClient $sfu): void
+    {
+        $inVoice = array_any($sfu->seats($this), fn (array $peer): bool => $peer['sub'] === $target->subject());
+
+        throw_unless($inVoice, NotFoundHttpException::class, 'Essa pessoa não está neste canal de voz.');
+
+        $hadPass = Cache::has($destination->movePassKey($target));
+        $hadOut = Cache::has($this->moveOutKey($target));
+
+        Cache::put($destination->movePassKey($target), true, self::MOVE_PASS_SECONDS);
+        Cache::put($this->moveOutKey($target), true, self::MOVE_PASS_SECONDS);
+
+        // Mover de volta (A → B → A) em menos de 60 s: a marca de saída de A não pode barrar
+        // quem o moderador acabou de mandar para lá. E tirar alguém daqui revoga o passe que
+        // ele tinha para cá: senão o app antigo, que volta à origem, voltava para B.
+        Cache::forget($destination->moveOutKey($target));
+        Cache::forget($this->movePassKey($target));
+
+        // O kick que não achou ninguém (a pessoa saiu entre a presença e ele, ou o SFU não
+        // respondeu) não moveu nada: o passe sem CONNECT e a origem trancada por 60 s que este
+        // pedido gravou saem; os de um mover anterior ficam.
+        if ($sfu->move($this, $destination, $target->subject(), $actor->name) === 0) {
+            if (! $hadPass) {
+                Cache::forget($destination->movePassKey($target));
+            }
+
+            if (! $hadOut) {
+                Cache::forget($this->moveOutKey($target));
+            }
+
+            throw new NotFoundHttpException('Essa pessoa não está neste canal de voz.');
+        }
     }
 
     private function movePassKey(User $user): string

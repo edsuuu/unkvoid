@@ -1,4 +1,4 @@
-import { ValidationException } from '../../Exceptions/ApiException.js';
+import { ForbiddenException, ValidationException } from '../../Exceptions/ApiException.js';
 import type { Payload } from '../../Routers/WebSocketRouter.js';
 import type { Broadcaster } from '../../Services/Broadcaster.js';
 import type { RemovePeerRequest } from '../Request/RemovePeerRequest.js';
@@ -11,6 +11,12 @@ const ACCOUNT = /^user:(\d+)$/;
 export class PeerController {
     public constructor(private readonly broadcaster: Broadcaster) {}
 
+    /**
+     * Só a própria sessão que caiu (a mesma conta, ou a mesma instalação sem conta): a carência
+     * guarda o lugar de quem está reconectando, e qualquer um da sala tirando essa pessoa fazia
+     * a volta dela virar entrada nova — com a tela e o microfone de novo do zero, e o lugar
+     * do canal cheio solto para outro.
+     */
     public remove(request: RemovePeerRequest): Payload {
         const room = request.room();
         const target = request.target(room);
@@ -19,6 +25,10 @@ export class PeerController {
             throw new ValidationException(
                 'para expulsar alguém use o site: aqui só se remove quem já caiu',
             );
+        }
+
+        if (target.userId !== request.peer().userId) {
+            throw new ForbiddenException('only your own dropped session can be removed');
         }
 
         room.removePeer(target);
