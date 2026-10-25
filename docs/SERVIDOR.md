@@ -277,7 +277,7 @@ existe:
 | Outros sites | nginx: `files`, `ia.unkvoid.com`, `retro` | 443, 8443 | Não — os três devolvem 404 ou apontam para um root que não existe |
 
 O ganho de desligar cada um está na tabela da seção 4. O Unkvoid em si é o nginx,
-o php8.4-fpm, o `sfu` no pm2, e os contêineres `unkvoid-mysql`,
+o php8.5-fpm, o `sfu` no pm2, e os contêineres `unkvoid-mysql`,
 `unkvoid-minio` e `unkvoid-mail`.
 
 ## 6. Quando alguma coisa não responde
