@@ -15,7 +15,7 @@ set -euo pipefail
 SOURCE="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../web" && pwd)}"
 PROJECT_DIR="${UNKVOID_WEB_DIR:-/var/www/projects/unkvoid-web}"
 KEEP_RELEASES=3
-PHP="${PHP_BINARY:-/usr/bin/php8.4}"
+PHP="${PHP_BINARY:-/usr/bin/php8.5}"
 
 if [ ! -d "$PROJECT_DIR/releases" ] || [ ! -f "$PROJECT_DIR/shared/.env" ]; then
     echo "[ERRO] falta a estrutura em $PROJECT_DIR (releases/, shared/.env) — veja docs/SERVIDOR.md" >&2
@@ -52,7 +52,7 @@ sudo chmod -R 2775 bootstrap/cache
 ln -sfn "$RELEASE_DIR" "$PROJECT_DIR/current"
 echo "[INFO] release $RELEASE ativa em $PROJECT_DIR/current"
 
-sudo systemctl reload php8.4-fpm
+sudo systemctl reload php8.5-fpm
 
 # Pela data de modificação, e não pelo nome.
 #

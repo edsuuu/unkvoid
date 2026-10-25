@@ -12,9 +12,9 @@ quem quer as portas e o motivo de cada faixa, o [UDP.md](UDP.md).
 
 | | |
 |---|---|
-| Máquina | Contabo **Cloud VPS 8**: 8 vCPU, 24 GB de RAM, 300 GB de SSD, porta de 600 Mbit/s, tráfego ilimitado (uso justo), 3 snapshots, Ubuntu 24.04 |
+| Máquina | Contabo **Cloud VPS 8**: 8 vCPU, 24 GB de RAM, 300 GB de SSD, porta de 600 Mbit/s, tráfego ilimitado (uso justo), 3 snapshots, Ubuntu 26.04 |
 | Região | **Estados Unidos (Leste)** — leia a seção 1.4 antes de confirmar: é a decisão de qualidade de voz mais importante do projeto |
-| O que roda | nginx, php8.4-fpm, pm2 (`sfu`), docker (`unkvoid-mysql` e `unkvoid-minio` em `/opt/unkvoid`, `unkvoid-mail` em `/opt/unkvoid-mail`), runner do GitHub |
+| O que roda | nginx, php8.5-fpm, pm2 (`sfu`), docker (`unkvoid-mysql` e `unkvoid-minio` em `/opt/unkvoid`, `unkvoid-mail` em `/opt/unkvoid-mail`), runner do GitHub |
 | O que **não** roda | TeamSpeak, filebrowser, php8.3, MySQL do sistema, os sites `files`/`ia`/`retro`/`tarkas`, o projeto `discord` |
 
 ## A ordem, e por que ela é essa
@@ -233,7 +233,7 @@ echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/ubuntu
 ```
 
 `NOPASSWD` não é preguiça: o `deploy-web.sh` chama `sudo chgrp`, `sudo chmod` e
-`sudo systemctl reload php8.4-fpm` rodando pelo runner, sem terminal para digitar
+`sudo systemctl reload php8.5-fpm` rodando pelo runner, sem terminal para digitar
 senha. (O grupo `docker` entra na seção 5, quando ele passar a existir.)
 
 A chave pública, **do seu notebook** (é o que permite fechar a senha depois):
@@ -389,7 +389,7 @@ vence, montada pelo Laravel.
 ```bash
 sudo apt install -y build-essential curl wget file pkg-config git python3 rsync \
   gnupg dpkg-dev apt-utils nginx certbot python3-certbot-nginx swaks \
-  php8.4-fpm php8.4-{cli,mbstring,xml,curl,zip,mysql,bcmath,intl,gd}
+  php8.5-fpm php8.5-{cli,mbstring,xml,curl,zip,mysql,bcmath,intl,gd}
 ```
 
 **Não instale `libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`,
@@ -450,7 +450,7 @@ max_execution_time = 120
 ```
 
 ```bash
-sudo systemctl restart php8.4-fpm
+sudo systemctl restart php8.5-fpm
 ```
 
 O runner do GitHub Actions é quem faz o deploy do site, do SFU e o build do
