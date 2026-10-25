@@ -24,7 +24,7 @@ final class DirectMessageResource extends JsonResource
             'created_at' => $this->created_at->toIso8601String(),
             'edited_at' => $this->edited_at?->toIso8601String(),
             'mine' => $this->sender_id === $request->user()?->id,
-            'sender' => ['id' => $this->sender->id, 'name' => $this->sender->name, 'avatar_url' => $this->sender->avatar_url],
+            'sender' => ['id' => $this->sender->id, 'name' => $this->sender->name, 'avatar_url' => $this->sender->avatar_url, 'status' => $this->sender->publicStatus(), 'created_at' => $this->sender->created_at?->toIso8601String(), 'banner_color' => $this->sender->banner_color],
         ];
     }
 }

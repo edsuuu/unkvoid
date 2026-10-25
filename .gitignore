@@ -7,6 +7,7 @@ node_modules/
 *.env
 
 native/target/
+native/target-codex/
 native/apps/desktop/node_modules/
 native/apps/desktop/dist/
 

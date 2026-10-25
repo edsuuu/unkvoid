@@ -91,6 +91,7 @@ final class ServerTreeResource extends JsonResource
             'owner_id' => $this->server->owner_id,
             'icon_url' => $this->server->iconUrl(),
             'invite_code' => $canInvite ? $this->server->invite_code : null,
+            'invites_paused' => ! is_null($this->server->invites_paused_at),
             'me' => [
                 'user_id' => $this->me->user_id,
                 'permissions' => $this->me->permissions(),

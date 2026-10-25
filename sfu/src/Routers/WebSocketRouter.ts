@@ -1,5 +1,6 @@
 import { Action, type ActionName } from '../Enums/Action.js';
 import type { ConsumerController } from '../Http/Controller/ConsumerController.js';
+import type { E2eeController } from '../Http/Controller/E2eeController.js';
 import type { JoinController } from '../Http/Controller/JoinController.js';
 import type { LeaveController } from '../Http/Controller/LeaveController.js';
 import type { PeerController } from '../Http/Controller/PeerController.js';
@@ -9,6 +10,9 @@ import type { TransportController } from '../Http/Controller/TransportController
 import { ConsumePlainRequest } from '../Http/Request/ConsumePlainRequest.js';
 import { ConsumeRequest } from '../Http/Request/ConsumeRequest.js';
 import { ConsumerRequest } from '../Http/Request/ConsumerRequest.js';
+import { E2eeCommitRequest } from '../Http/Request/E2eeCommitRequest.js';
+import { E2eeJoinRequest } from '../Http/Request/E2eeJoinRequest.js';
+import { E2eeWelcomeRequest } from '../Http/Request/E2eeWelcomeRequest.js';
 import { IdentifyRequest } from '../Http/Request/IdentifyRequest.js';
 import { JoinRequest } from '../Http/Request/JoinRequest.js';
 import { ProducePlainRequest } from '../Http/Request/ProducePlainRequest.js';
@@ -30,11 +34,12 @@ export type Controllers = {
     producer: ProducerController;
     peer: PeerController;
     consumer: ConsumerController;
+    e2ee: E2eeController;
     subscription: SubscriptionController;
 };
 
 type Route = {
-    guest?: boolean;
+    requiresPeer?: boolean;
     build: (data: Record<string, unknown> | undefined, session: Session) => Request;
     handle: (request: never) => Payload | Promise<Payload>;
 };
@@ -43,7 +48,7 @@ export class WebSocketRouter {
     public static routes(controllers: Controllers): Record<ActionName, Route> {
         return {
             [Action.Join]: {
-                guest: true,
+                requiresPeer: false,
                 build: (data, session) => new JoinRequest(data, session),
                 handle: (request) => controllers.join.handle(request),
             },
@@ -56,22 +61,22 @@ export class WebSocketRouter {
                 handle: (request) => controllers.peer.remove(request),
             },
             [Action.Ping]: {
-                guest: true,
+                requiresPeer: false,
                 build: (data, session) => new Request(data, session),
                 handle: () => controllers.peer.ping(),
             },
             [Action.Identify]: {
-                guest: true,
+                requiresPeer: false,
                 build: (data, session) => new IdentifyRequest(data, session),
                 handle: (request) => controllers.subscription.identify(request),
             },
             [Action.Subscribe]: {
-                guest: true,
+                requiresPeer: false,
                 build: (data, session) => new SubscribeRequest(data, session),
                 handle: (request) => controllers.subscription.subscribe(request),
             },
             [Action.Unsubscribe]: {
-                guest: true,
+                requiresPeer: false,
                 build: (data, session) => new SubscribeRequest(data, session),
                 handle: (request) => controllers.subscription.unsubscribe(request),
             },
@@ -126,6 +131,18 @@ export class WebSocketRouter {
             [Action.VoiceState]: {
                 build: (data, session) => new VoiceStateRequest(data, session),
                 handle: (request) => controllers.peer.update(request),
+            },
+            [Action.E2eeJoin]: {
+                build: (data, session) => new E2eeJoinRequest(data, session),
+                handle: (request) => controllers.e2ee.join(request),
+            },
+            [Action.E2eeCommit]: {
+                build: (data, session) => new E2eeCommitRequest(data, session),
+                handle: (request) => controllers.e2ee.commit(request),
+            },
+            [Action.E2eeWelcome]: {
+                build: (data, session) => new E2eeWelcomeRequest(data, session),
+                handle: (request) => controllers.e2ee.welcome(request),
             },
         };
     }

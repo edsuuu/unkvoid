@@ -1,6 +1,6 @@
 # Verificar o app nativo numa máquina Windows e numa Linux de verdade
 
-Para o próximo agente (ou pessoa) que vai compilar e provar o app Slint (`native/apps/windows`, o
+Para o próximo agente (ou pessoa) que vai compilar e provar o app Slint (`native/apps/unkvoid`, o
 mesmo crate nos dois sistemas) e o núcleo (`native/shared`) em hardware de verdade. Escrito em
 09/10/2026 depois de duas rodadas num contêiner Ubuntu 24.04 sem placa de vídeo, sem webcam e
 sem Windows; o relatório de cada rodada está na descrição do PR #53.
@@ -45,7 +45,6 @@ O que está aqui:
 | Rust | 1.97.0 + `clippy` | edição 2024 e `let`-chains |
 | GStreamer | 1.24.2 (os pacotes do `apt` abaixo) | captura e encoder (dentro do processo), decodificador, som |
 | Janela | `libfontconfig1-dev`, `libxkbcommon-dev`, `libxkbcommon-x11-dev`, `libwayland-dev`, `libegl1`, `libgles2`, `libgl1-mesa-dri` | Slint (winit + femtovg) |
-| GTK 4 | `libgtk-4-dev` | o `unkvoid-linux`, aposentado mas ainda no workspace: sem ele o `--workspace` não compila |
 | Chaveiro | `libdbus-1-dev` | `shared/storage` (Secret Service) |
 | Opus | `cmake` 3.28 (e `libopus-dev`) | o `opusic-sys` morre sem `cmake` com uma mensagem que não diz isso |
 | Som | `pulseaudio-utils` (`pactl`, `paplay`); servidor PulseAudio 16.1 ou PipeWire (`pipewire-pulse`) | filtro do som da tela, saída e microfone |
@@ -58,7 +57,7 @@ sudo apt-get install -y --no-install-recommends \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev \
   gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
   gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-x gstreamer1.0-pulseaudio gstreamer1.0-pipewire \
-  libdbus-1-dev libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libgtk-4-dev \
+  libdbus-1-dev libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
   libegl1 libgles2 libgl1-mesa-dri build-essential cmake pkg-config libopus-dev pulseaudio-utils \
   xvfb x11-utils xdotool imagemagick ffmpeg pulseaudio iptables curl ca-certificates fonts-dejavu-core
 # Rust, se ainda não houver
@@ -73,16 +72,12 @@ command -v pnpm || sudo npm install -g pnpm@10
 
 ```bash
 cd "$(git rev-parse --show-toplevel)/native"
-cargo build --workspace --exclude unkvoid-desktop --all-targets
-cargo clippy --workspace --exclude unkvoid-desktop --all-targets -- -D warnings
-cargo test --workspace --exclude unkvoid-desktop
+cargo build --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
-`unkvoid-desktop` é o Tauri legado: fora daqui de propósito. O `unkvoid-linux` (GTK) foi
-aposentado pelo dono, mas ainda compila e entra no workspace; quem não instalou o `libgtk-4-dev`
-acrescenta `--exclude unkvoid-linux` aos três. Os dois apps geram um binário com o mesmo nome
-(o `cargo` avisa `output filename collision`): o `target/debug/unkvoid` é o do último que
-compilou, então rode o app sempre por `cargo run -p unkvoid-windows`.
+O workspace só tem o app único; rode-o sempre por `cargo run -p unkvoid`.
 
 Os testes que pedem GStreamer com plugins, servidor de som ou SFU no ar ficam `#[ignore]`:
 
@@ -214,14 +209,13 @@ cargo run -p core-app --example room -- ws://127.0.0.1:3300/sfu sala-de-teste wa
 
 ```bash
 cd "$(git rev-parse --show-toplevel)/native"
-UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid-windows                       # femtovg (OpenGL)
-UNKVOID_SERVER=http://127.0.0.1:8000 SLINT_BACKEND=winit-software cargo run -p unkvoid-windows   # sem OpenGL
+UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid                       # femtovg (OpenGL)
+UNKVOID_SERVER=http://127.0.0.1:8000 SLINT_BACKEND=winit-software cargo run -p unkvoid   # sem OpenGL
 ```
 
-Sem o Laravel local, o app precisa de `/health` (o SFU) e `/api/config` (`{"sfu": "ws://…"}`)
-no `UNKVOID_SERVER`: um servidorzinho que responda os dois basta para a sala por código. Num
-Linux de verdade, prove também: `SLINT_BACKEND=winit-x11` numa sessão Wayland, e o portal
-(`UNKVOID_CAPTURE=portal`).
+O app usa o Laravel em `UNKVOID_SERVER` para obter a configuração, autenticar a conta e pedir o
+token de voz. Num Linux de verdade, prove também: `SLINT_BACKEND=winit-x11` numa sessão Wayland,
+e o portal (`UNKVOID_CAPTURE=portal`).
 
 Variáveis úteis: `UNKVOID_ENCODER=cpu` (pula o encoder da placa), `UNKVOID_CAPTURE=x11|portal`,
 `UNKVOID_LOSS=<%>` (perda de propósito na chegada), `RUST_LOG=debug` (mais detalhe no log). Só
@@ -259,7 +253,7 @@ No contêiner o que se provou foi a compilação (comprovado):
 
 ```bash
 sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 && rustup target add x86_64-pc-windows-gnu
-cd "$(git rev-parse --show-toplevel)/native" && cargo clippy --target x86_64-pc-windows-gnu -p media -p capture -p core-app -p clips -p storage -p unkvoid-windows --all-targets -- -D warnings
+cd "$(git rev-parse --show-toplevel)/native" && cargo clippy --target x86_64-pc-windows-gnu -p media -p capture -p core-app -p clips -p storage -p unkvoid --all-targets -- -D warnings
 ```
 
 O alvo `gnu` confere todo `cfg(windows)`, mas não linka nem roda; o alvo MSVC precisa do SDK da
@@ -277,8 +271,8 @@ Escrito pela leitura do código, compilado, **nunca rodado**:
 | O quadro acima do teto de fps atravessa a ponte (sem codificar), e a imagem parada se repete ~100 ms depois que a tela para | `media/src/windows.rs`, `core/src/sharing.rs` | rolar uma página e parar: quem assiste vê a página parada no lugar certo em < 0,5 s |
 | A ponte que caiu guarda a última imagem (a repetição da tela parada não fica preta) | `media/src/windows.rs` | difícil de forçar; olhar no log por "WAIT_TIMEOUT" do keyed mutex durante um jogo pesado |
 | Desktop Duplication: ¼ de quadro de folga no ritmo, a imagem mais nova guardada mesmo quando é cedo, o cursor reposicionado depois de reabrir, e o carimbo do QPC | `capture/src/windows_duplication.rs`, `capture/src/windows.rs` | Windows 10, monitor de 60 Hz, 60 fps: a barra mostra ~60 fps (antes ~40); trocar a resolução do monitor no meio: o cursor continua no lugar |
-| O som da tela segue a espera da imagem só fora de 40 ms de folga, desce em emendas de até 25 ms e larga a espera da imagem pausada ou fechada | `apps/windows/src/sound.rs`, `apps/windows/src/watching.rs` | passo 3 e 5 do roteiro, com fone: nenhum estalo nem picote no som do vídeo enquanto a rede oscila |
-| A câmera continua sem existir no Windows: quem diz é a captura (`capture::captures_cameras`), não a tela | `apps/windows/src/bridge.rs` | o botão fica apagado, com o porquê no balão; nas configurações não aparece a seção de câmera |
+| O som da tela segue a espera da imagem só fora de 40 ms de folga, desce em emendas de até 25 ms e larga a espera da imagem pausada ou fechada | `apps/unkvoid/src/sound.rs`, `apps/unkvoid/src/watching.rs` | passo 3 e 5 do roteiro, com fone: nenhum estalo nem picote no som do vídeo enquanto a rede oscila |
+| A câmera continua sem existir no Windows: quem diz é a captura (`capture::captures_cameras`), não a tela | `apps/unkvoid/src/bridge.rs` | o botão fica apagado, com o porquê no balão; nas configurações não aparece a seção de câmera |
 
 ### 3.4 Executar (PowerShell)
 
@@ -288,18 +282,18 @@ uma antes de pôr a outra.
 ```powershell
 Set-Location "$(git rev-parse --show-toplevel)/native"
 $env:UNKVOID_SERVER = "http://127.0.0.1:8000"
-cargo run -p unkvoid-windows
+cargo run -p unkvoid
 # o encoder do processador, para comparar
-$env:UNKVOID_ENCODER = "cpu"; cargo run -p unkvoid-windows; Remove-Item Env:UNKVOID_ENCODER
+$env:UNKVOID_ENCODER = "cpu"; cargo run -p unkvoid; Remove-Item Env:UNKVOID_ENCODER
 # o decodificador do processador
-$env:UNKVOID_DECODER = "cpu"; cargo run -p unkvoid-windows; Remove-Item Env:UNKVOID_DECODER
+$env:UNKVOID_DECODER = "cpu"; cargo run -p unkvoid; Remove-Item Env:UNKVOID_DECODER
 ```
 
 O teste vivo do decodificador, com alguém transmitindo numa sala:
 
 ```powershell
 Set-Location "$(git rev-parse --show-toplevel)/native"
-$env:UNKVOID_ROOM = "<código>"; cargo test -p unkvoid-windows a_live_screen -- --ignored --nocapture; Remove-Item Env:UNKVOID_ROOM
+$env:UNKVOID_ROOM = "<código>"; cargo test -p unkvoid a_live_screen -- --ignored --nocapture; Remove-Item Env:UNKVOID_ROOM
 ```
 
 O mesmo `live_room.rs` roda no Windows (menos os da câmera e os do GOP, que são do Linux): a tela

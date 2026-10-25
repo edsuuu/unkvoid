@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
+mod common;
+
 /// Responde na ordem inversa da que recebeu, e manda um evento no meio. É o cenário que
 /// pega correlação errada: quem espera pela ordem de chegada recebe a resposta do outro.
 async fn server_out_of_order() -> String {
@@ -402,10 +404,8 @@ async fn a_replaced_session_never_comes_back_on_its_own() {
 
     let identity: core_app::Identity = std::sync::Arc::new(|| {
         Box::pin(async {
-            Ok(core_app::models::RoomIdentity::Guest {
-                room: "sala".into(),
-                name: "Ada".into(),
-                install_id: "x".into(),
+            Ok(core_app::models::RoomIdentity::Account {
+                token: common::join_token("01jabcdefghjkmnpqrstvwxyz0", "user:1", "Ada"),
             })
         })
     });

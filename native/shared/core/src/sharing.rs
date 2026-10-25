@@ -12,6 +12,7 @@
 //! Windows ela entrega a textura e o encoder da placa é um passo à parte. As duas formas
 //! passam por aqui.
 
+use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex, OnceLock, PoisonError,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -19,7 +20,9 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use capture::{CaptureConfig, CaptureEvent, CaptureSource, PlatformCapturer};
-use media::{AudioEncoder, BitrateGovernor, EncoderConfig, PlainSender, PlatformEncoder, Source};
+use media::{AudioEncoder, BitrateGovernor, EncoderConfig, MediaSender, PlainSender, PlatformEncoder, Source};
+
+use crate::voice::{self, AudioQueue, FrameAssembler, NoiseFilter, VoiceFilterConfig};
 
 /// De quanto em quanto tempo o governador da taxa recebe os números. Um segundo junta uns
 /// mil pacotes em 1080p60, amostra em que 5% de perda quer dizer alguma coisa. O encoder
@@ -144,7 +147,10 @@ impl StallWatch {
             return Some(Stall::Encoder);
         }
 
-        if fresh(self.encoded_at) && now.duration_since(self.sent_at) >= ENCODER_WAIT && !self.transport_told {
+        if fresh(self.encoded_at)
+            && now.duration_since(self.sent_at) >= ENCODER_WAIT
+            && !self.transport_told
+        {
             self.transport_told = true;
 
             return Some(Stall::Transport);
@@ -205,7 +211,10 @@ impl KeyframeGate {
     /// é a subida que já congestionou (`BitrateGovernor::constrained`): sem rajada.
     fn due(&mut self, asked: bool, constrained: bool, now: Instant) -> bool {
         if asked {
-            if self.asked_at.is_some_and(|at| now.saturating_duration_since(at) >= KEYFRAME_QUIET) {
+            if self
+                .asked_at
+                .is_some_and(|at| now.saturating_duration_since(at) >= KEYFRAME_QUIET)
+            {
                 self.streak = 0;
             }
 
@@ -214,7 +223,11 @@ impl KeyframeGate {
 
         self.asked |= asked;
 
-        if !self.asked || self.last.is_some_and(|last| now.saturating_duration_since(last) < self.spacing(constrained)) {
+        if !self.asked
+            || self
+                .last
+                .is_some_and(|last| now.saturating_duration_since(last) < self.spacing(constrained))
+        {
             return false;
         }
 
@@ -230,7 +243,9 @@ impl KeyframeGate {
             return KEYFRAME_SPACING;
         }
 
-        let past = self.streak.saturating_sub(if constrained { 1 } else { KEYFRAME_BURST });
+        let past = self
+            .streak
+            .saturating_sub(if constrained { 1 } else { KEYFRAME_BURST });
 
         (BACKOFF_KEYFRAME_SPACING * 2_u32.pow(past.min(2))).min(MOST_KEYFRAME_SPACING)
     }
@@ -448,6 +463,10 @@ pub struct Session {
     /// A base dos SSRC desta transmissão. Sorteada por sessão porque o `RtpListener` do
     /// mediasoup é por sala: dois SSRC iguais nela e o segundo a pedir não transmite.
     ssrc_base: u32,
+    /// MLS senders survive a PlainTransport reconnect. Recreating them with the same exporter
+    /// key would restart their counters and reuse AEAD nonces.
+    e2ee: HashMap<Source, Arc<Mutex<MediaSender>>>,
+    e2ee_required: bool,
     pub screen: Option<Broadcast>,
     pub voice: Option<Broadcast>,
     pub camera: Option<Broadcast>,
@@ -459,6 +478,10 @@ impl Default for Session {
             sender: Arc::default(),
             key: PlainSender::generate_key(),
             ssrc_base: PlainSender::random_ssrc_base(),
+            e2ee: HashMap::new(),
+            // Toda chamada é cifrada: quem entra numa sala com gente fica sem chaves até o
+            // Welcome, e o que transmitisse nesse meio-tempo chegava aberto ao servidor.
+            e2ee_required: true,
             screen: None,
             voice: None,
             camera: None,
@@ -504,14 +527,38 @@ impl Session {
             return Ok(());
         }
 
-        *sender = Some(PlainSender::connect(
+        let mut plain = PlainSender::connect(
             server,
             &self.key,
             server_key.as_deref(),
             self.ssrc_base,
-        )?);
+        )?;
+
+        for (&source, crypto) in &self.e2ee {
+            plain.set_e2ee_sender(source, Arc::clone(crypto));
+        }
+        plain.set_e2ee_required(self.e2ee_required);
+
+        *sender = Some(plain);
 
         Ok(())
+    }
+
+    /// Replaces the senders at an MLS epoch boundary. The old handles remain only in in-flight
+    /// callbacks; packets sent afterward take a new exporter key and counter space.
+    pub fn set_e2ee_senders(&mut self, senders: HashMap<Source, MediaSender>) {
+        self.e2ee_required = true;
+        self.e2ee = senders
+            .into_iter()
+            .map(|(source, sender)| (source, Arc::new(Mutex::new(sender))))
+            .collect();
+
+        if let Some(plain) = target(&self.sender).as_mut() {
+            plain.set_e2ee_required(true);
+            for (&source, crypto) in &self.e2ee {
+                plain.set_e2ee_sender(source, Arc::clone(crypto));
+            }
+        }
     }
 
     /// O servidor parou de responder com algo subindo — ver `PlainSender::lost_the_server`.
@@ -523,7 +570,10 @@ impl Session {
 
     /// O mesmo `start`, para chamar sem o cadeado da sessão na mão: captura e encoder levam até
     /// segundos para abrir.
-    pub fn launcher(&self) -> impl FnOnce(CaptureConfig, Option<Source>, Option<Source>) -> anyhow::Result<Broadcast> + use<> {
+    pub fn launcher(
+        &self,
+    ) -> impl FnOnce(CaptureConfig, Option<Source>, Option<Source>) -> anyhow::Result<Broadcast> + use<>
+    {
         let sender = Arc::clone(&self.sender);
 
         move |config, video, audio| Broadcast::start(sender, config, video, audio, false)
@@ -568,7 +618,10 @@ impl Session {
 fn rungs(chosen: (capture::Quality, u32)) -> Vec<(capture::Quality, u32)> {
     let mut rungs = vec![chosen];
 
-    for rung in [(capture::Quality::Hd720, chosen.1), (capture::Quality::Hd720, chosen.1.min(30))] {
+    for rung in [
+        (capture::Quality::Hd720, chosen.1),
+        (capture::Quality::Hd720, chosen.1.min(30)),
+    ] {
         if rungs.last() != Some(&rung) {
             rungs.push(rung);
         }
@@ -592,7 +645,12 @@ const SETTLED: Duration = Duration::from_millis(100);
 /// Se é hora de repetir a última imagem: `quiet` desde o último quadro de verdade, e se já houve
 /// repetição depois dele (`since_still`, desde ela).
 #[cfg(any(target_os = "windows", test))]
-fn repeat_due(quiet: Duration, since_still: Option<Duration>, settled: Duration, every: Duration) -> bool {
+fn repeat_due(
+    quiet: Duration,
+    since_still: Option<Duration>,
+    settled: Duration,
+    every: Duration,
+) -> bool {
     match since_still {
         None => quiet >= settled,
         Some(since_still) => quiet >= settled && since_still >= every,
@@ -631,7 +689,8 @@ impl StillFrames {
                     while !stop.load(Ordering::Relaxed) {
                         std::thread::sleep(SETTLED / 2);
 
-                        let (real_ns, real_at) = *last_frame.lock().unwrap_or_else(PoisonError::into_inner);
+                        let (real_ns, real_at) =
+                            *last_frame.lock().unwrap_or_else(PoisonError::into_inner);
                         let now = Instant::now();
                         let quiet = now.duration_since(real_at);
 
@@ -639,7 +698,10 @@ impl StillFrames {
                             continue;
                         }
 
-                        let feedback = target(&sfu).as_mut().map(|sender| sender.read_feedback(video)).unwrap_or_default();
+                        let feedback = target(&sfu)
+                            .as_mut()
+                            .map(|sender| sender.read_feedback(video))
+                            .unwrap_or_default();
                         let Ok(mut encoding) = encoding.lock() else {
                             continue;
                         };
@@ -648,7 +710,8 @@ impl StillFrames {
 
                         encoding.nacked += u64::from(feedback.lost);
 
-                        let since_still = (still_at > real_at).then(|| now.duration_since(still_at));
+                        let since_still =
+                            (still_at > real_at).then(|| now.duration_since(still_at));
 
                         if !asked && !repeat_due(quiet, since_still, SETTLED, STILL_EVERY) {
                             continue;
@@ -660,7 +723,9 @@ impl StillFrames {
 
                         still_at = now;
 
-                        let encoded = encoding.encoder.encode_again(real_ns + now.duration_since(real_at).as_nanos() as u64);
+                        let encoded = encoding
+                            .encoder
+                            .encode_again(real_ns + now.duration_since(real_at).as_nanos() as u64);
 
                         if let Ok(frame) = &encoded
                             && frame.keyframe
@@ -678,7 +743,10 @@ impl StillFrames {
             })
             .ok()?;
 
-        Some(Self { stop, thread: Some(thread) })
+        Some(Self {
+            stop,
+            thread: Some(thread),
+        })
     }
 }
 
@@ -761,7 +829,11 @@ impl Broadcast {
     ) -> anyhow::Result<Self> {
         let encoder_config = EncoderConfig {
             software,
-            ..EncoderConfig::new(config.quality, config.frame_rate, PlatformCapturer::source_size(config.source)?)
+            ..EncoderConfig::new(
+                config.quality,
+                config.frame_rate,
+                PlatformCapturer::source_size(config.source)?,
+            )
         };
 
         let frame_rate = encoder_config.frame_rate;
@@ -955,7 +1027,10 @@ impl Broadcast {
 
                     let constrained = encoding.governor.constrained();
 
-                    if encoding.keyframes.due(feedback.keyframe, constrained, started) {
+                    if encoding
+                        .keyframes
+                        .due(feedback.keyframe, constrained, started)
+                    {
                         encoding.encoder.request_keyframe();
                     }
 
@@ -978,7 +1053,10 @@ impl Broadcast {
                     match encoding.encoder.encode(surface, frame.timestamp_ns) {
                         Ok(encoded) => {
                             encoded_callback.fetch_add(1, Ordering::Relaxed);
-                            *last_frame_callback.lock().unwrap_or_else(PoisonError::into_inner) = (frame.timestamp_ns, started);
+                            *last_frame_callback
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner) =
+                                (frame.timestamp_ns, started);
 
                             if encoded.keyframe {
                                 encoding.keyframes.served(started);
@@ -1004,7 +1082,10 @@ impl Broadcast {
                 };
 
                 if let Some(sender) = target(&capture_target).as_mut() {
-                    sender.follow_bitrate(video_source, target_bitrate_callback.load(Ordering::Relaxed));
+                    sender.follow_bitrate(
+                        video_source,
+                        target_bitrate_callback.load(Ordering::Relaxed),
+                    );
 
                     match sender.send_frame(video_source, encoded, frame_rate) {
                         Ok(packets) => {
@@ -1090,7 +1171,13 @@ impl Broadcast {
 
         self.stop()?;
 
-        match Self::start(Arc::clone(&self.sfu), wanted, self.video, self.audio_source, self.software) {
+        match Self::start(
+            Arc::clone(&self.sfu),
+            wanted,
+            self.video,
+            self.audio_source,
+            self.software,
+        ) {
             Ok(fresh) => {
                 *self = fresh;
 
@@ -1148,12 +1235,20 @@ impl Broadcast {
     /// e só um degrau de resolução resolve — o que o WebRTC faz no navegador.
     /// Falso no último degrau: abaixo dele não há o que fazer.
     pub fn starved(&self) -> bool {
-        rungs(self.chosen).len() > self.steps + 1 && self.encoding.lock().is_ok_and(|encoding| encoding.governor.starved())
+        rungs(self.chosen).len() > self.steps + 1
+            && self
+                .encoding
+                .lock()
+                .is_ok_and(|encoding| encoding.governor.starved())
     }
 
     /// Um minuto limpo no teto de uma qualidade abaixo da escolhida: o degrau de cima cabe.
     pub fn roomy(&self) -> bool {
-        self.steps > 0 && self.encoding.lock().is_ok_and(|encoding| encoding.governor.roomy())
+        self.steps > 0
+            && self
+                .encoding
+                .lock()
+                .is_ok_and(|encoding| encoding.governor.roomy())
     }
 
     /// Um degrau abaixo: 720p, depois 720p30. Já no último, nada.
@@ -1168,11 +1263,16 @@ impl Broadcast {
 
     fn step_to(&mut self, steps: usize) -> anyhow::Result<()> {
         let chosen = self.chosen;
-        let Some(&(quality, frame_rate)) = rungs(chosen).get(steps).filter(|_| steps != self.steps) else {
+        let Some(&(quality, frame_rate)) = rungs(chosen).get(steps).filter(|_| steps != self.steps)
+        else {
             return Ok(());
         };
 
-        tracing::warn!(?quality, frame_rate, "transmissão: a rede pediu outro degrau de qualidade");
+        tracing::warn!(
+            ?quality,
+            frame_rate,
+            "transmissão: a rede pediu outro degrau de qualidade"
+        );
         self.restart(quality, frame_rate, None)?;
         self.chosen = chosen;
         self.steps = steps;
@@ -1252,12 +1352,19 @@ impl Broadcast {
 /// `capture` não o abre e o `AVAudioEngine` traz o cancelamento de eco do sistema. Faz o
 /// resto do caminho de um `Broadcast` de áudio: mede, cala, codifica e manda.
 pub struct AudioFeed {
+    queue: Arc<AudioQueue>,
+    state: Arc<AudioState>,
+}
+
+struct AudioState {
     sender: Target,
     source: Source,
     encoder: Mutex<AudioEncoder>,
     muted: AtomicBool,
+    input_volume: std::sync::atomic::AtomicU16,
     level: LevelMeter,
     gate: Mutex<Gate>,
+    injection: Mutex<std::collections::VecDeque<f32>>,
 }
 
 /// Como o microfone abre: sozinho quando a pessoa fala, só com a tecla apertada, ou sempre.
@@ -1324,29 +1431,116 @@ pub fn level_percent(samples: &[f32]) -> u8 {
 }
 
 impl AudioFeed {
-    /// PCM `f32` estéreo intercalado a 48 kHz, em pedaços de qualquer tamanho.
+    /// A captura só copia para a fila; filtros e encoder rodam no worker do núcleo.
     pub fn push(&self, samples: &[f32]) {
-        // Medido antes do mudo, pelo mesmo motivo do `Broadcast`: é o nível que reabre o
-        // microfone na detecção de voz.
-        self.level.push(samples);
+        self.queue.push(samples);
+    }
 
-        let mut block = capture::AudioChunk {
-            sample_rate: 48_000,
-            channels: 2,
-            samples: samples.to_vec(),
-        };
+    pub fn inject(&self, samples: &[f32]) -> bool {
+        if samples.is_empty()
+            || self.is_muted()
+            || samples.len() > voice::SAMPLE_RATE as usize * voice::CHANNELS * 5
+        {
+            return false;
+        }
+        let mut injection = self
+            .state
+            .injection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !injection.is_empty() {
+            return false;
+        }
+        injection.extend(samples.iter().copied());
+        true
+    }
+
+    pub fn set_muted(&self, muted: bool) {
+        self.state.muted.store(muted, Ordering::Relaxed);
+        if muted {
+            self.state
+                .injection
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clear();
+        }
+    }
+
+    pub fn set_input_volume(&self, volume: u16) {
+        self.state
+            .input_volume
+            .store(volume.clamp(0, 200), Ordering::Relaxed);
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.state.muted.load(Ordering::Relaxed)
+    }
+
+    pub fn set_input_mode(&self, mode: InputMode) {
+        let mut gate = self
+            .state
+            .gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+
+        gate.mode = mode;
+        gate.spoke_at = None;
+    }
+
+    /// A tecla de apertar para falar desceu ou subiu.
+    pub fn talk(&self, talking: bool) {
+        self.state
+            .gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .talking = talking;
+    }
+
+    pub fn on_level(&self, sink: impl Fn(f32) + Send + Sync + 'static) {
+        let _ = self.state.level.sink.set(Box::new(sink));
+    }
+}
+
+impl Drop for AudioFeed {
+    fn drop(&mut self) {
+        self.queue.close();
+    }
+}
+
+impl AudioState {
+    fn process_frame(&self, samples: &mut [f32], filter: &mut NoiseFilter) {
+        // A sensibilidade usa o nível cru; o filtro não deve esconder uma fala baixa do gate.
+        let level = level_percent(samples);
+        voice::apply_input_gain(samples, self.input_volume.load(Ordering::Relaxed));
+        filter.process(samples);
 
         let open = self
             .gate
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .is_open(level_percent(samples), Instant::now());
+            .is_open(level, Instant::now());
 
         // Fechado ou mutado sobe silêncio, não nada: sem pacote o servidor mata o producer em 30 s.
-        if !open || self.muted.load(Ordering::Relaxed) {
-            block.samples.fill(0.0);
-        }
+        let muted = self.muted.load(Ordering::Relaxed);
+        let injected = if muted {
+            vec![0.0; samples.len()]
+        } else {
+            take_injected(
+                &mut self
+                    .injection
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+                samples.len(),
+            )
+        };
+        // O efeito entra depois do gate para não exigir fala detectada e não ocupar a captura.
+        mix_injected(samples, &injected, open, muted);
 
+        let block = capture::AudioChunk {
+            sample_rate: voice::SAMPLE_RATE,
+            channels: voice::CHANNELS as u16,
+            samples: samples.to_vec(),
+        };
         let packets = match self
             .encoder
             .lock()
@@ -1367,36 +1561,63 @@ impl AudioFeed {
             }
         }
     }
+}
 
-    pub fn set_muted(&self, muted: bool) {
-        self.muted.store(muted, Ordering::Relaxed);
+/// O pedaço do efeito que entra neste quadro, completado com silêncio. A fila quase sempre está
+/// vazia — só tem algo com um som do painel tocando —, e pedir o quadro inteiro a ela derrubava a
+/// thread do microfone na primeira fala.
+fn take_injected(queue: &mut std::collections::VecDeque<f32>, length: usize) -> Vec<f32> {
+    let mut injected: Vec<f32> = queue.drain(..length.min(queue.len())).collect();
+
+    injected.resize(length, 0.0);
+
+    injected
+}
+
+fn mix_injected(microphone: &mut [f32], injected: &[f32], gate_open: bool, muted: bool) {
+    if muted {
+        microphone.fill(0.0);
+        return;
     }
-
-    pub fn is_muted(&self) -> bool {
-        self.muted.load(Ordering::Relaxed)
+    if !gate_open {
+        microphone.fill(0.0);
     }
-
-    pub fn set_input_mode(&self, mode: InputMode) {
-        let mut gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner);
-
-        gate.mode = mode;
-        gate.spoke_at = None;
-    }
-
-    /// A tecla de apertar para falar desceu ou subiu.
-    pub fn talk(&self, talking: bool) {
-        self.gate
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .talking = talking;
-    }
-
-    pub fn on_level(&self, sink: impl Fn(f32) + Send + Sync + 'static) {
-        let _ = self.level.sink.set(Box::new(sink));
+    for (sample, effect) in microphone.iter_mut().zip(injected) {
+        *sample = (*sample + *effect).clamp(-1.0, 1.0);
     }
 }
 
-/// O vídeo que a própria interface captura — a câmera no macOS, pelo `AVCaptureSession`. O
+fn run_microphone_worker(
+    queue: Arc<AudioQueue>,
+    state: Arc<AudioState>,
+    filters: VoiceFilterConfig,
+) {
+    let mut assembler = FrameAssembler::default();
+    let mut filter = NoiseFilter::new(filters);
+    let mut level_window = Vec::with_capacity(voice::FRAME_SAMPLES * voice::CHANNELS * 2);
+    let mut next_drop_log = 100;
+
+    while let Some(block) = queue.pop() {
+        let dropped = queue.dropped_blocks();
+        if dropped >= next_drop_log {
+            tracing::warn!(dropped, "voz: a fila da captura descartou blocos antigos");
+            next_drop_log = dropped.saturating_add(100);
+        }
+
+        for mut frame in assembler.push(&block) {
+            // O medidor mantém janelas de 20 ms mesmo com o processamento em quadros de 10 ms.
+            level_window.extend_from_slice(&frame);
+            if level_window.len() == voice::FRAME_SAMPLES * voice::CHANNELS * 2 {
+                state.level.push(&level_window);
+                level_window.clear();
+            }
+
+            state.process_frame(&mut frame, &mut filter);
+        }
+    }
+}
+
+/// O vídeo que a própria interface captura — a câmera do macOS ou do Windows. O
 /// quadro chega como o buffer de GPU que o sistema entregou e vai direto para o encoder da
 /// placa, sem cópia: o mesmo caminho da tela.
 ///
@@ -1405,7 +1626,7 @@ impl AudioFeed {
 ///
 /// ponytail: bitrate fixo, sem o governador da tela. A câmera é um cartão de 720p; se a
 /// rede apertar, entra o `BitrateGovernor` aqui como no `Broadcast`.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub struct VideoFeed {
     sender: Target,
     source: Source,
@@ -1413,13 +1634,13 @@ pub struct VideoFeed {
     frame_rate: f64,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 struct FedEncoding {
     encoder: PlatformEncoder,
     keyframes: KeyframeGate,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl VideoFeed {
     pub fn push(&self, surface: &capture::GpuSurface, timestamp_ns: u64) {
         let now = Instant::now();
@@ -1461,7 +1682,7 @@ impl VideoFeed {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl Drop for VideoFeed {
     fn drop(&mut self) {
         if let Some(sender) = target(&self.sender).as_mut() {
@@ -1472,7 +1693,7 @@ impl Drop for VideoFeed {
 
 impl Session {
     /// Abre um `VideoFeed` no remetente desta sessão, para quadros do tamanho dado.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub fn video_feed(
         &self,
         source: Source,
@@ -1485,20 +1706,38 @@ impl Session {
             sender: Arc::clone(&self.sender),
             source,
             frame_rate: config.frame_rate,
-            encoding: Mutex::new(FedEncoding { encoder: PlatformEncoder::new(&config)?, keyframes: KeyframeGate::default() }),
+            encoding: Mutex::new(FedEncoding {
+                encoder: PlatformEncoder::new(&config)?,
+                keyframes: KeyframeGate::default(),
+            }),
         })
     }
 
     /// Abre um `AudioFeed` no remetente desta sessão. Chamar depois do `use_sfu`.
-    pub fn feed(&self, source: Source) -> anyhow::Result<AudioFeed> {
-        Ok(AudioFeed {
+    pub fn feed(&self, source: Source, filters: VoiceFilterConfig) -> anyhow::Result<AudioFeed> {
+        let state = Arc::new(AudioState {
             sender: Arc::clone(&self.sender),
             source,
-            encoder: Mutex::new(if source == Source::Mic { AudioEncoder::for_voice(48_000) } else { AudioEncoder::new(48_000) }?),
+            encoder: Mutex::new(if source == Source::Mic {
+                AudioEncoder::for_voice(48_000)
+            } else {
+                AudioEncoder::new(48_000)
+            }?),
             muted: AtomicBool::new(false),
+            input_volume: std::sync::atomic::AtomicU16::new(filters.input_volume()),
             level: LevelMeter::default(),
             gate: Mutex::default(),
-        })
+            injection: Mutex::default(),
+        });
+        let queue = Arc::new(voice::microphone_queue());
+        let worker_queue = Arc::clone(&queue);
+        let worker_state = Arc::clone(&state);
+
+        std::thread::Builder::new()
+            .name("unkvoid-microphone".into())
+            .spawn(move || run_microphone_worker(worker_queue, worker_state, filters))?;
+
+        Ok(AudioFeed { queue, state })
     }
 }
 
@@ -1547,7 +1786,13 @@ mod tests {
     use super::*;
 
     /// Um segundo de vigia: os contadores andaram `captured`, `encoded` e `sent` quadros.
-    fn second(watch: &mut StallWatch, counts: &mut Counts, start: Instant, at: u64, (captured, encoded, sent): (u64, u64, u64)) -> Option<Stall> {
+    fn second(
+        watch: &mut StallWatch,
+        counts: &mut Counts,
+        start: Instant,
+        at: u64,
+        (captured, encoded, sent): (u64, u64, u64),
+    ) -> Option<Stall> {
         counts.captured += captured;
         counts.encoded += encoded;
         counts.sent += sent;
@@ -1556,12 +1801,28 @@ mod tests {
     }
 
     #[test]
+    fn nothing_leaves_in_the_clear_before_the_group_gives_keys() {
+        let session = Session::default();
+        session.use_sfu("127.0.0.1:9", None).expect("sender");
+        let frame = media::EncodedFrame { data: vec![0, 0, 0, 1, 0x65, 0xab], keyframe: true, timestamp_ns: 0 };
+        let mut sender = target(&session.sender);
+        let sender = sender.as_mut().expect("sender");
+
+        assert!(sender.send_frame(Source::Screen, frame, 60.0).is_err(), "a tela saiu sem cifra");
+        assert!(sender.send_audio(Source::Mic, &[0x7f; 40]).is_err(), "o microfone saiu sem cifra");
+    }
+
+    #[test]
     fn a_flowing_broadcast_is_left_alone() {
         let (start, mut counts) = (Instant::now(), Counts::default());
         let mut watch = StallWatch::new(start);
 
         for at in 1..=30 {
-            assert_eq!(second(&mut watch, &mut counts, start, at, (60, 60, 60)), None, "no segundo {at}");
+            assert_eq!(
+                second(&mut watch, &mut counts, start, at, (60, 60, 60)),
+                None,
+                "no segundo {at}"
+            );
         }
     }
 
@@ -1575,7 +1836,10 @@ mod tests {
         }
 
         assert_eq!(second(&mut watch, &mut counts, start, 5, (60, 0, 0)), None);
-        assert_eq!(second(&mut watch, &mut counts, start, 6, (60, 0, 0)), Some(Stall::Encoder));
+        assert_eq!(
+            second(&mut watch, &mut counts, start, 6, (60, 0, 0)),
+            Some(Stall::Encoder)
+        );
     }
 
     /// Duas paradas seguidas do encoder sem ele provar que voltou levam ao do processador; um
@@ -1587,15 +1851,26 @@ mod tests {
 
         second(&mut watch, &mut counts, start, 1, (60, 60, 60));
 
-        assert_eq!(second(&mut watch, &mut counts, start, 3, (60, 0, 0)), Some(Stall::Encoder));
-        assert!(!watch.encoder_keeps_failing(), "uma parada é refazer na placa");
+        assert_eq!(
+            second(&mut watch, &mut counts, start, 3, (60, 0, 0)),
+            Some(Stall::Encoder)
+        );
+        assert!(
+            !watch.encoder_keeps_failing(),
+            "uma parada é refazer na placa"
+        );
 
         watch.restarted(start + Duration::from_secs(3));
         counts = Counts::default();
 
-        let stalled = (4..=10).find(|&at| second(&mut watch, &mut counts, start, at, (60, 0, 0)) == Some(Stall::Encoder));
+        let stalled = (4..=10).find(|&at| {
+            second(&mut watch, &mut counts, start, at, (60, 0, 0)) == Some(Stall::Encoder)
+        });
 
-        assert!(stalled.is_some() && watch.encoder_keeps_failing(), "a segunda seguida vai para o processador");
+        assert!(
+            stalled.is_some() && watch.encoder_keeps_failing(),
+            "a segunda seguida vai para o processador"
+        );
 
         watch.restarted(start + Duration::from_secs(20));
         counts = Counts::default();
@@ -1611,9 +1886,18 @@ mod tests {
         let (settled, every) = (Duration::from_millis(100), Duration::from_secs(1));
         let at = Duration::from_millis;
 
-        assert!(!repeat_due(at(50), None, settled, every), "a captura ainda está mexendo");
-        assert!(repeat_due(at(100), None, settled, every), "a primeira repetição não espera o segundo");
-        assert!(!repeat_due(at(600), Some(at(500)), settled, every), "depois da primeira, uma por segundo");
+        assert!(
+            !repeat_due(at(50), None, settled, every),
+            "a captura ainda está mexendo"
+        );
+        assert!(
+            repeat_due(at(100), None, settled, every),
+            "a primeira repetição não espera o segundo"
+        );
+        assert!(
+            !repeat_due(at(600), Some(at(500)), settled, every),
+            "depois da primeira, uma por segundo"
+        );
         assert!(repeat_due(at(1_100), Some(at(1_000)), settled, every));
     }
 
@@ -1621,10 +1905,17 @@ mod tests {
     fn the_ladder_only_has_rungs_that_go_down() {
         use capture::Quality::{Hd720, Hd1080};
 
-        assert_eq!(rungs((Hd1080, 60)), [(Hd1080, 60), (Hd720, 60), (Hd720, 30)]);
+        assert_eq!(
+            rungs((Hd1080, 60)),
+            [(Hd1080, 60), (Hd720, 60), (Hd720, 30)]
+        );
         assert_eq!(rungs((Hd1080, 30)), [(Hd1080, 30), (Hd720, 30)]);
         assert_eq!(rungs((Hd720, 60)), [(Hd720, 60), (Hd720, 30)]);
-        assert_eq!(rungs((Hd720, 30)), [(Hd720, 30)], "já no fundo, nenhum degrau");
+        assert_eq!(
+            rungs((Hd720, 30)),
+            [(Hd720, 30)],
+            "já no fundo, nenhum degrau"
+        );
     }
 
     #[test]
@@ -1653,7 +1944,10 @@ mod tests {
 
         second(&mut watch, &mut counts, start, 1, (60, 60, 60));
 
-        assert_eq!(second(&mut watch, &mut counts, start, 4, (0, 0, 0)), Some(Stall::Capture));
+        assert_eq!(
+            second(&mut watch, &mut counts, start, 4, (0, 0, 0)),
+            Some(Stall::Capture)
+        );
 
         watch.restarted(start + Duration::from_secs(4));
         counts = Counts::default();
@@ -1662,7 +1956,11 @@ mod tests {
             second(&mut watch, &mut counts, start, at, (60, 60, 60));
         }
 
-        assert_eq!(second(&mut watch, &mut counts, start, 11, (0, 0, 0)), Some(Stall::Capture), "voltou aos 3 s");
+        assert_eq!(
+            second(&mut watch, &mut counts, start, 11, (0, 0, 0)),
+            Some(Stall::Capture),
+            "voltou aos 3 s"
+        );
     }
 
     #[test]
@@ -1672,7 +1970,9 @@ mod tests {
 
         second(&mut watch, &mut counts, start, 1, (60, 60, 60));
 
-        let told: Vec<_> = (2..=8).filter_map(|at| second(&mut watch, &mut counts, start, at, (60, 60, 0))).collect();
+        let told: Vec<_> = (2..=8)
+            .filter_map(|at| second(&mut watch, &mut counts, start, at, (60, 60, 0)))
+            .collect();
 
         assert_eq!(told, [Stall::Transport]);
     }
@@ -1684,16 +1984,34 @@ mod tests {
         let at = |millis: u64| start + Duration::from_millis(millis);
 
         assert!(!gate.due(false, false, at(0)), "sem pedido, nada sai");
-        assert!(gate.due(true, false, at(0)), "o primeiro pedido sai na hora");
-        assert!(!gate.due(true, false, at(300)), "outro logo depois espera o freio do SFU");
+        assert!(
+            gate.due(true, false, at(0)),
+            "o primeiro pedido sai na hora"
+        );
+        assert!(
+            !gate.due(true, false, at(300)),
+            "outro logo depois espera o freio do SFU"
+        );
         assert!(!gate.due(false, false, at(400)), "e continua esperando");
-        assert!(gate.due(false, false, at(500)), "mas sai quando o freio acaba");
-        assert!(!gate.due(false, false, at(1_000)), "e não sai de novo sem pedido");
+        assert!(
+            gate.due(false, false, at(500)),
+            "mas sai quando o freio acaba"
+        );
+        assert!(
+            !gate.due(false, false, at(1_000)),
+            "e não sai de novo sem pedido"
+        );
 
         gate.served(at(1_200));
 
-        assert!(!gate.due(true, false, at(1_300)), "o do GOP que acabou de sair conta como o último");
-        assert!(!gate.due(false, false, at(3_100)), "e passada a rajada o espaço é o da 0.1.7: 2 s");
+        assert!(
+            !gate.due(true, false, at(1_300)),
+            "o do GOP que acabou de sair conta como o último"
+        );
+        assert!(
+            !gate.due(false, false, at(3_100)),
+            "e passada a rajada o espaço é o da 0.1.7: 2 s"
+        );
         assert!(gate.due(false, false, at(3_200)));
     }
 
@@ -1706,8 +2024,14 @@ mod tests {
         let start = Instant::now();
 
         assert!(gate.due(true, false, start));
-        assert!(gate.due(true, false, start + Duration::from_millis(500)), "o segundo atrasado espera mais que o SFU");
-        assert!(!gate.due(true, false, start + Duration::from_millis(1_000)), "o terceiro seguido já espera o recuo");
+        assert!(
+            gate.due(true, false, start + Duration::from_millis(500)),
+            "o segundo atrasado espera mais que o SFU"
+        );
+        assert!(
+            !gate.due(true, false, start + Duration::from_millis(1_000)),
+            "o terceiro seguido já espera o recuo"
+        );
     }
 
     /// Pedidos que não param (alguém com perda constante): os dois primeiros no freio do SFU, e daí
@@ -1717,16 +2041,32 @@ mod tests {
     fn keyframe_requests_that_never_stop_back_off_like_0_1_7() {
         let mut gate = KeyframeGate::default();
         let start = Instant::now();
-        let served: Vec<u64> = (0..200_u64).map(|tenth| tenth * 100).filter(|&millis| gate.due(true, false, start + Duration::from_millis(millis))).collect();
+        let served: Vec<u64> = (0..200_u64)
+            .map(|tenth| tenth * 100)
+            .filter(|&millis| gate.due(true, false, start + Duration::from_millis(millis)))
+            .collect();
 
-        assert_eq!(served, [0, 500, 2_500, 6_500, 10_500, 14_500, 18_500], "rajada de 2, depois 2 e 4 s");
-        assert!(gate.due(false, false, start + Duration::from_millis(22_500)), "o último pedido esperou o recuo e saiu, sem se perder");
+        assert_eq!(
+            served,
+            [0, 500, 2_500, 6_500, 10_500, 14_500, 18_500],
+            "rajada de 2, depois 2 e 4 s"
+        );
+        assert!(
+            gate.due(false, false, start + Duration::from_millis(22_500)),
+            "o último pedido esperou o recuo e saiu, sem se perder"
+        );
 
         let quiet = start + Duration::from_millis(19_900 + 3_500);
 
         assert!(!gate.due(false, false, quiet), "sem pedido nada sai");
-        assert!(gate.due(true, false, quiet), "quietos e o pedido sai no freio do SFU");
-        assert!(gate.due(true, false, quiet + Duration::from_millis(500)), "com a rajada de volta");
+        assert!(
+            gate.due(true, false, quiet),
+            "quietos e o pedido sai no freio do SFU"
+        );
+        assert!(
+            gate.due(true, false, quiet + Duration::from_millis(500)),
+            "com a rajada de volta"
+        );
         assert!(!gate.due(true, false, quiet + Duration::from_millis(1_000)));
     }
 
@@ -1739,7 +2079,11 @@ mod tests {
         let start = Instant::now();
 
         for viewer in 0..6_u64 {
-            assert!(gate.due(true, false, start + Duration::from_millis(viewer * 1_900)), "o {}º esperou o recuo", viewer + 1);
+            assert!(
+                gate.due(true, false, start + Duration::from_millis(viewer * 1_900)),
+                "o {}º esperou o recuo",
+                viewer + 1
+            );
         }
     }
 
@@ -1751,7 +2095,10 @@ mod tests {
     fn on_an_uplink_that_already_congested_there_is_no_burst() {
         let mut gate = KeyframeGate::default();
         let start = Instant::now();
-        let served: Vec<u64> = (0..120_u64).map(|tenth| tenth * 100).filter(|&millis| gate.due(true, true, start + Duration::from_millis(millis))).collect();
+        let served: Vec<u64> = (0..120_u64)
+            .map(|tenth| tenth * 100)
+            .filter(|&millis| gate.due(true, true, start + Duration::from_millis(millis)))
+            .collect();
 
         assert_eq!(served, [0, 2_000, 6_000, 10_000], "um, depois 2 e 4 s");
 
@@ -1759,7 +2106,10 @@ mod tests {
 
         gate.served(quiet);
 
-        assert!(!gate.due(true, true, quiet + Duration::from_millis(500)), "a sequência nova também espera os 2 s");
+        assert!(
+            !gate.due(true, true, quiet + Duration::from_millis(500)),
+            "a sequência nova também espera os 2 s"
+        );
         assert!(gate.due(false, true, quiet + Duration::from_millis(2_000)));
     }
 
@@ -1782,7 +2132,10 @@ mod tests {
 
             assert_eq!(format!("{:?}", back.source), format!("{:?}", sent.source));
             assert_eq!(format!("{:?}", back.quality), format!("{:?}", sent.quality));
-            assert_eq!((back.frame_rate, back.capture_audio, back.mute_listed_apps), (30, false, false));
+            assert_eq!(
+                (back.frame_rate, back.capture_audio, back.mute_listed_apps),
+                (30, false, false)
+            );
         }
     }
 
@@ -1804,6 +2157,42 @@ mod tests {
             !gate.is_open(5, started + Duration::from_millis(600)),
             "o silêncio fecha"
         );
+    }
+
+    #[test]
+    fn the_effect_queue_fills_what_it_has_and_silence_completes_the_frame() {
+        let mut queue = std::collections::VecDeque::new();
+
+        assert_eq!(take_injected(&mut queue, 4), [0.0; 4], "fila vazia é silêncio, sem pânico");
+
+        queue.extend([0.1, 0.2]);
+
+        assert_eq!(take_injected(&mut queue, 4), [0.1, 0.2, 0.0, 0.0]);
+        assert!(queue.is_empty());
+
+        queue.extend([0.3; 6]);
+
+        assert_eq!(take_injected(&mut queue, 4), [0.3; 4]);
+        assert_eq!(queue.len(), 2, "o resto fica para o próximo quadro");
+    }
+
+    #[test]
+    fn injected_audio_passes_a_closed_gate_clamps_and_is_suppressed_when_muted() {
+        let mut microphone = [0.8, -0.8, 0.2, -0.2];
+        mix_injected(&mut microphone, &[0.5, -0.5, 0.1, -0.1], false, false);
+        assert_eq!(
+            microphone,
+            [0.5, -0.5, 0.1, -0.1],
+            "o efeito passa mesmo com o gate fechado"
+        );
+
+        let mut microphone = [0.8, -0.8];
+        mix_injected(&mut microphone, &[0.5, -0.5], true, false);
+        assert_eq!(microphone, [1.0, -1.0], "a soma nunca estoura");
+
+        let mut microphone = [0.8, -0.8];
+        mix_injected(&mut microphone, &[0.5, -0.5], true, true);
+        assert_eq!(microphone, [0.0, 0.0], "mudo não deixa o efeito subir");
     }
 
     #[test]

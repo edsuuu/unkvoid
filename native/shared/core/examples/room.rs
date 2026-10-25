@@ -1,19 +1,22 @@
 //! A sala viva de ponta a ponta, sem interface: um lado compartilha, o outro conta o que chega.
 //!
 //! ```bash
-//! cargo run -p core-app --example room -- ws://127.0.0.1:3000/sfu sala-de-teste share
-//! cargo run -p core-app --example room -- ws://127.0.0.1:3000/sfu sala-de-teste watch
+//! SFU_SECRET=... cargo run -p core-app --example room -- ws://127.0.0.1:3000/sfu 01jabcdefghjkmnpqrstvwxyz0 share
+//! SFU_SECRET=... cargo run -p core-app --example room -- ws://127.0.0.1:3000/sfu 01jabcdefghjkmnpqrstvwxyz0 watch
 //! ```
 //!
 //! Depois dos segundos, `share` aceita a origem como o seletor a manda: `window:<id>` (no X11
 //! é o `xid` da janela — no XWayland do WSLg a tela inteira sai preta) ou `display:<n>`.
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
+use hmac::{Hmac, Mac};
 use core_app::models::RoomIdentity;
 use core_app::room::Room;
 use core_app::watching::MediaKind;
+use serde_json::json;
+use sha2::Sha256;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
     let url = arguments
         .next()
         .unwrap_or_else(|| "ws://127.0.0.1:3000/sfu".into());
-    let code = arguments.next().unwrap_or_else(|| "sala-de-teste".into());
+    let channel = arguments.next().unwrap_or_else(|| "01jabcdefghjkmnpqrstvwxyz0".into());
     let sharing = arguments.next().as_deref() == Some("share");
     let seconds: u64 = arguments
         .next()
@@ -31,29 +34,35 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(10);
     let source = arguments.next();
 
-    let identity = {
-        let (room, name) = (
-            code.clone(),
-            if sharing {
-                "quem-mostra"
-            } else {
-                "quem-assiste"
-            },
-        );
+    let name = if sharing { "quem-mostra" } else { "quem-assiste" };
+    let subject = if sharing { "user:9101" } else { "user:9102" };
+    let secret = std::env::var("SFU_SECRET").expect("defina SFU_SECRET igual ao do SFU");
+    let claims = json!({
+        "room": channel,
+        "sub": subject,
+        "name": name,
+        "exp": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() + 300,
+        "can": ["speak", "stream", "video"]
+    });
+    let body = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string());
+    let mut signer = Hmac::<Sha256>::new_from_slice(secret.as_bytes())?;
 
-        Arc::new(move || {
-            let identity = RoomIdentity::Guest {
-                room: room.clone(),
-                name: name.into(),
-                install_id: format!("example-{name}"),
-            };
+    signer.update(body.as_bytes());
 
-            Box::pin(async move { Ok(identity) }) as _
-        })
-    };
+    let signature = signer
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let identity = RoomIdentity::Account { token: format!("{body}.{signature}") };
+    let identity = std::sync::Arc::new(move || {
+        let identity = identity.clone();
+        Box::pin(async move { Ok(identity) }) as _
+    });
 
     let (updates, heard) = std::sync::mpsc::channel();
-    let (room, media) = Room::enter(&url, &code, identity, updates).await?;
+    let (room, media) = Room::enter(&url, &channel, identity, updates).await?;
 
     std::thread::spawn(move || {
         for update in heard {

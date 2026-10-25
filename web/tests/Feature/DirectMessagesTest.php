@@ -170,6 +170,37 @@ it('gente do mesmo servidor conversa sem ser amiga, e bloquear fecha mesmo assim
         ->assertForbidden();
 });
 
+it('mostra amizades e servidores em comum somente para contatos de conversa', function (): void {
+    Http::fake();
+    $viewer = User::factory()->create();
+    $target = User::factory()->create();
+    $mutualFriend = User::factory()->create();
+    befriend($viewer, $mutualFriend);
+    befriend($target, $mutualFriend);
+    $owner = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa compartilhada');
+    joinServer($server, $viewer);
+    joinServer($server, $target);
+
+    $this->actingAs($viewer, 'sanctum')->getJson("/api/friends/{$target->id}/mutuals")
+        ->assertOk()
+        ->assertJsonPath('mutual_friends', 1)
+        ->assertJsonPath('mutual_servers.0.name', 'Casa compartilhada');
+
+    $stranger = User::factory()->create();
+    $this->actingAs($viewer, 'sanctum')->getJson("/api/friends/{$stranger->id}/mutuals")->assertNotFound();
+});
+
+it('pede amizade a uma pessoa pelo id autenticado sem expor o e-mail', function (): void {
+    $viewer = User::factory()->create();
+    $target = User::factory()->create();
+
+    $this->actingAs($viewer, 'sanctum')->postJson("/api/friends/{$target->id}")
+        ->assertCreated()
+        ->assertJsonPath('data.status', 'pending')
+        ->assertJsonPath('data.addressee.id', $target->id);
+});
+
 it('quem foi bloqueado nao desfaz o proprio bloqueio', function (): void {
     $alice = User::factory()->create();
     $bob = User::factory()->create();

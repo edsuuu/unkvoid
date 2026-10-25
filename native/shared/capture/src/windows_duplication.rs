@@ -187,11 +187,16 @@ where
     let mut canvas: Option<Canvas> = None;
     let mut cursor = Cursor::default();
     let mut unsent = false;
+    let mut outage = Outage::default();
 
     while !stop.load(Ordering::Relaxed) {
         let wait = if unsent { next_due.saturating_duration_since(Instant::now()).as_millis().clamp(1, u128::from(WAIT_MS)) as u32 } else { WAIT_MS };
         let turn = match duplication.acquire_next_frame(wait) {
             Ok(frame) => {
+                if let Some(lasted) = outage.over(Instant::now()) {
+                    tracing::info!(seconds = lasted.as_secs_f32(), "captura: a duplicação voltou");
+                }
+
                 let (width, height) = (frame.width(), frame.height());
 
                 if !canvas.as_ref().is_some_and(|canvas| canvas.fits(width, height)) {
@@ -266,7 +271,15 @@ where
             Turn::Waited | Turn::Idle => {}
             Turn::Stopped => return,
             Turn::Lost(failure) => {
-                tracing::info!(%failure, "captura: a duplicação caiu, retomando");
+                // A tela de bloqueio deixa reabrir a duplicação e a derruba no primeiro quadro: sem
+                // espera na queda seguida, o laço girava a 60 voltas por segundo, cada uma com uma
+                // linha no log — 38 mil linhas em dez minutos de tela bloqueada.
+                if outage.lost(Instant::now()) {
+                    tracing::info!(%failure, "captura: a duplicação caiu, retomando");
+                } else {
+                    std::thread::sleep(RETRY);
+                }
+
                 canvas = None;
                 unsent = false;
 
@@ -297,6 +310,31 @@ fn due(now: Instant, next_due: &mut Instant, interval: Duration) -> bool {
     *next_due = if now.saturating_duration_since(*next_due) > interval { now + interval } else { *next_due + interval };
 
     true
+}
+
+/// Uma queda da duplicação que ainda não voltou: a primeira queda avisa e reabre na hora (a troca
+/// de resolução volta logo); as seguintes, sem quadro no meio, esperam.
+#[derive(Default)]
+struct Outage {
+    since: Option<Instant>,
+}
+
+impl Outage {
+    /// `true` na primeira queda da sequência.
+    fn lost(&mut self, now: Instant) -> bool {
+        if self.since.is_some() {
+            return false;
+        }
+
+        self.since = Some(now);
+
+        true
+    }
+
+    /// Chegou quadro: a queda acabou. Devolve quanto ela durou, se havia uma.
+    fn over(&mut self, now: Instant) -> Option<Duration> {
+        self.since.take().map(|since| now.saturating_duration_since(since))
+    }
 }
 
 /// Insiste até a área de trabalho voltar, ou até pedirem para parar.
@@ -446,6 +484,21 @@ mod tests {
 
     use ::windows::Win32::Graphics::Direct3D11::{D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_USAGE_STAGING};
     use ::windows::Win32::UI::WindowsAndMessaging::{IDC_ARROW, LoadCursorW};
+
+    /// A tela bloqueada derruba a duplicação a cada reabertura: só a primeira queda avisa e
+    /// reabre na hora; as seguintes esperam, até um quadro chegar e encerrar a queda.
+    #[test]
+    fn a_streak_of_losses_warns_once_and_then_waits() {
+        let mut outage = Outage::default();
+        let start = Instant::now();
+
+        assert!(outage.lost(start), "a primeira queda avisa");
+        assert!(!outage.lost(start + Duration::from_millis(16)), "a seguinte, sem quadro no meio, espera");
+        assert!(!outage.lost(start + Duration::from_millis(32)));
+        assert_eq!(outage.over(start + Duration::from_secs(5)), Some(Duration::from_secs(5)), "o quadro que chega encerra a queda");
+        assert_eq!(outage.over(start + Duration::from_secs(6)), None, "sem queda aberta não há o que encerrar");
+        assert!(outage.lost(start + Duration::from_secs(7)), "a queda depois da volta avisa de novo");
+    }
 
     /// A seta do Windows desenhada na cópia: os pixels debaixo dela mudam, e os longe dela não.
     /// É o caminho do cursor sem depender da tela de quem roda — um jogo esconde o cursor.

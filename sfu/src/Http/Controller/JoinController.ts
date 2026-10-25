@@ -59,6 +59,7 @@ export class JoinController {
             routerRtpCapabilities: room.rtpCapabilities(),
             peers: room.describePeers(peer.id, resumed),
             userId: peer.userId,
+            e2eeSessionId: room.e2eeSessionId,
             can: peer.can,
             serverMuted: peer.serverMuted,
             elapsedMs: Date.now() - room.createdAt,

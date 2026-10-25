@@ -12,10 +12,6 @@ do outro lado não chegava nada. Era porta fechada.
 | Faixa | Protocolo | Quem usa | Quantas portas |
 |---|---|---|---|
 | 41000-42000 | UDP | o app nativo, por RTP puro: quem transmite e quem assiste | até duas por pessoa: uma de envio e uma de chegada |
-| 40000 até 40000 + workers − 1 (hoje 40000-40002) | UDP **e** TCP | o WebRTC do app Tauri de antes | uma por worker |
-
-São faixas separadas de propósito: o WebRtcServer do mediasoup não divide porta com o transporte
-plain.
 
 ### O app nativo: uma porta por sentido
 
@@ -24,13 +20,6 @@ juntos, cada um com o seu SSRC, e o `rtcpMux` junta até o RTCP na mesma porta �
 chegada, por onde vem tudo o que ela assiste e ouve. Quem está na voz gasta duas portas.
 
 O tamanho da faixa é o teto de transportes simultâneos.
-
-### O WebRTC de antes: uma porta por worker
-
-O WebRtcServer **multiplexa**: um worker atende muitos espectadores na mesma porta,
-distinguindo um do outro pelo ICE. A faixa cresce com `SFU_WORKERS` (núcleos menos um; o que
-sobra é do nginx, do php-fpm, do MySQL, do MinIO e do e-mail), não com as pessoas. O TCP na
-mesma faixa era o caminho reserva de quem está numa rede que bloqueia UDP.
 
 ## A conta
 
@@ -108,20 +97,14 @@ portas 80 e 443 não transmite nem assiste pelo app nativo.
 De dentro da máquina não dá para saber. O `ss` mostra o processo escutando
 mesmo quando o firewall descarta tudo antes.
 
-TCP responde a sondagem:
-
-```bash
-nc -z -w 4 unkvoid.com 40000 && echo aberta || echo fechada   # a faixa do WebRTC tem TCP
-```
-
 UDP não responde nada, então o teste precisa de captura do outro lado:
 
 ```bash
 # na VPS, deixe rodando
-sudo tcpdump -nn -i any 'udp and (dst portrange 40000-40002 or dst portrange 41000-42000)'
+sudo tcpdump -nn -i any 'udp and dst portrange 41000-42000'
 
 # da sua máquina
-for p in 40000 40002 41000 41191 42000; do printf teste | nc -u -w0 unkvoid.com $p; done
+for p in 41000 41191 42000; do printf teste | nc -u -w0 unkvoid.com $p; done
 ```
 
 Toda porta enviada tem de aparecer no tcpdump. A que não aparecer está

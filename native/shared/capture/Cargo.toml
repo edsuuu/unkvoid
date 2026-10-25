@@ -18,6 +18,7 @@ apple-cf = { version = "0.9", features = ["cv"] }
 windows-capture = "2"
 windows = { version = "0.62", features = [
     "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D",
     # O Windows 10 não tira a borda amarela do Graphics Capture: lá o monitor sai pelo
     # Desktop Duplication, e o cursor é desenhado pelo GDI numa cópia do quadro.
     "Win32_Graphics_Dxgi",
@@ -30,6 +31,7 @@ windows = { version = "0.62", features = [
     "Win32_Media_Audio",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_Media_MediaFoundation",
     # A tela inteira sem o Discord: quem é pai de quem, para achar a árvore dele.
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Variant",

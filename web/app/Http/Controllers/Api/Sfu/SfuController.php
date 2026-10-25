@@ -98,7 +98,7 @@ final class SfuController
             return new SfuAuthorizationResource(false, '');
         }
 
-        return new SfuAuthorizationResource($user->canSubscribe($request->string('channel')->toString()), $user->name);
+        return new SfuAuthorizationResource($user->canSubscribe($request->string('channel')->toString()), $user->name, $user->publicStatus());
     }
 
     /**

@@ -9,6 +9,7 @@ use serde_json::Value;
 /// `(nome, método, caminho)`. O que está entre chaves vem de `params`.
 const ROUTES: &[(&str, &str, &str)] = &[
     ("updateMe", "PATCH", "/api/me"),
+    ("setActivity", "PUT", "/api/me/activity"),
     ("uploadAvatar", "POST", "/api/me/avatar"),
     ("deleteAvatar", "DELETE", "/api/me/avatar"),
     ("signOut", "POST", "/api/auth/logout"),
@@ -20,8 +21,16 @@ const ROUTES: &[(&str, &str, &str)] = &[
     ("deleteServerIcon", "DELETE", "/api/servers/{server}/icon"),
     ("renewInvite", "POST", "/api/servers/{server}/invite"),
     ("acceptInvite", "POST", "/api/invites/{code}"),
+    ("invites", "GET", "/api/servers/{server}/invites"),
+    ("createInvite", "POST", "/api/servers/{server}/invites"),
+    ("deleteInvite", "DELETE", "/api/invites/{invite}"),
+    ("pauseInvites", "POST", "/api/servers/{server}/invites/pause"),
+    ("resumeInvites", "DELETE", "/api/servers/{server}/invites/pause"),
     ("audits", "GET", "/api/servers/{server}/audits"),
     ("bans", "GET", "/api/servers/{server}/bans"),
+    ("serverSounds", "GET", "/api/servers/{server}/sounds"),
+    ("storeServerSound", "POST", "/api/servers/{server}/sounds"),
+    ("deleteServerSound", "DELETE", "/api/sounds/{sound}"),
     ("ban", "POST", "/api/servers/{server}/bans/{user}"),
     ("unban", "DELETE", "/api/servers/{server}/bans/{user}"),
     (

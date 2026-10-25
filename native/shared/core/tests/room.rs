@@ -6,7 +6,6 @@
 //! cd native && cargo test -p core-app --test room -- --ignored   # os que pedem GStreamer
 //! ```
 
-use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +20,8 @@ use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
+
+mod common;
 
 /// O que fazer depois de responder: nada, ou derrubar o socket logo depois de a câmera subir, e
 /// na volta responder como entrada nova (a carência do servidor tinha expirado).
@@ -90,7 +91,7 @@ async fn fake_sfu(script: Script) -> (String, Arc<Mutex<Seen>>) {
                         match action.as_str() {
                             "join" => {
                                 let _ = outgoing.send(reply(json!({
-                                    "peerId": "me", "name": "Eu", "resumeKey": "k", "resumed": false,
+                                    "peerId": "me", "userId": "user:1", "e2eeSessionId": "test-room-session", "name": "Eu", "resumeKey": "k", "resumed": false,
                                     "can": ["speak", "stream", "video"], "elapsedMs": 0,
                                     "peers": [{ "peerId": "ana", "name": "Ana", "producers": [
                                         { "producerId": "tela-ana", "kind": "video", "source": "screen", "paused": false }
@@ -155,53 +156,41 @@ async fn fake_sfu(script: Script) -> (String, Arc<Mutex<Seen>>) {
     (format!("ws://127.0.0.1:{port}"), seen)
 }
 
-fn guest() -> Identity {
-    Arc::new(|| Box::pin(async { Ok(RoomIdentity::Guest { room: "salateste01".into(), name: "Eu".into(), install_id: "teste".into() }) }))
+fn account() -> Identity {
+    let token = common::join_token("01jabcdefghjkmnpqrstvwxyz0", "user:1", "Eu");
+
+    Arc::new(move || {
+        let token = token.clone();
+        Box::pin(async move { Ok(RoomIdentity::Account { token }) })
+    })
 }
 
 fn asked(seen: &Mutex<Seen>, action: &str) -> Vec<Value> {
     seen.lock().expect("seen").requests.iter().filter(|request| request["action"] == action).cloned().collect()
 }
 
-/// O `settle` da entrada, o `newProducer`, o "Assistir" e o vigia do caminho de chegada chamam
-/// `consume_all` por tarefas diferentes. Duas ao mesmo tempo pediam dois `consumePlain` do mesmo
-/// producer; o id do segundo sobrescrevia o do primeiro, e o consumer que de fato chegava ficava
-/// órfão: pausar e fechar agiam no outro, e a banda dele não parava nunca (auditoria P1-2).
+/// Um producer sem MemberId MLS autenticado é da geração antiga ou uma tentativa de downgrade:
+/// nem `settle` nem o clique em "Assistir" podem abrir um consumer em claro.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn one_producer_is_consumed_once_even_when_asked_twice_at_once() {
+async fn a_clear_producer_is_never_consumed_without_an_mls_member() {
     let (url, seen) = fake_sfu(Script::Stay).await;
     let (updates, _ui) = std::sync::mpsc::channel();
-    let (room, _media) = Room::enter(&url, "salateste01", guest(), updates).await.expect("entrou");
+    let (room, _media) = Room::enter(&url, "01jabcdefghjkmnpqrstvwxyz0", account(), updates).await.expect("entrou");
 
-    // O "Assistir" clicado enquanto a entrada ainda abre o que já estava no ar.
+    // Mesmo pedido duas vezes, o producer não autenticado não abre RTP em claro.
     room.watch(None).await;
     tokio::time::sleep(Duration::from_millis(800)).await;
-
-    // A pessoa fecha a tela: tudo o que foi retomado para ela tem de fechar.
-    room.close_watched("tela-ana").await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let mut count: HashMap<String, usize> = HashMap::new();
-
-    for request in asked(&seen, "consumePlain") {
-        *count.entry(request["data"]["producerId"].as_str().unwrap_or_default().to_owned()).or_default() += 1;
-    }
-
-    let ids = |action: &str| -> Vec<String> { asked(&seen, action).iter().filter_map(|request| request["data"]["consumerId"].as_str().map(str::to_owned)).collect() };
-    let (resumed, closed) = (ids("resumeConsumer"), ids("closeConsumer"));
-    let orphans: Vec<&String> = resumed.iter().filter(|consumer| !closed.contains(consumer)).collect();
-
-    assert!(orphans.is_empty(), "consumer retomado e nunca fechado: {orphans:?} (consumePlain por producer: {count:?}, retomados {resumed:?}, fechados {closed:?})");
-    assert_eq!(count.get("tela-ana"), Some(&1), "consumePlain por producer: {count:?}");
+    assert!(asked(&seen, "consumePlain").is_empty(), "producer sem MemberId MLS abriu consumer em claro");
+    room.leave().await;
 }
 
-/// Fechar a tela enquanto o `consumePlain` dela está no ar: o consumer que chega depois fecha,
-/// em vez de retomar uma tela que a pessoa acabou de fechar.
+/// Um producer legado sem membro MLS nunca chega à etapa de `consumePlain`, ainda que a tela
+/// seja fechada enquanto a entrada da sala está terminando.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_screen_closed_while_it_opens_stays_closed() {
     let (url, seen) = fake_sfu(Script::Stay).await;
     let (updates, _ui) = std::sync::mpsc::channel();
-    let entering = tokio::spawn(async move { Room::enter(&url, "salateste01", guest(), updates).await.expect("entrou") });
+    let entering = tokio::spawn(async move { Room::enter(&url, "01jabcdefghjkmnpqrstvwxyz0", account(), updates).await.expect("entrou") });
     let deadline = Instant::now() + Duration::from_secs(3);
 
     while asked(&seen, "consumePlain").is_empty() && Instant::now() < deadline {
@@ -216,7 +205,7 @@ async fn a_screen_closed_while_it_opens_stays_closed() {
     let consumers: Vec<String> = asked(&seen, "resumeConsumer").iter().filter_map(|request| request["data"]["consumerId"].as_str().map(str::to_owned)).collect();
     let closed: Vec<String> = asked(&seen, "closeConsumer").iter().filter_map(|request| request["data"]["consumerId"].as_str().map(str::to_owned)).collect();
 
-    assert!(consumers.iter().all(|consumer| closed.contains(consumer)), "retomados {consumers:?}, fechados {closed:?}");
+    assert!(consumers.is_empty() && closed.is_empty(), "um consumer sem chave MLS foi aberto: retomados {consumers:?}, fechados {closed:?}");
     assert_eq!(room.tiles()["tiles"].as_array().map(Vec::len), Some(0), "a tela fechada voltou a ser assistida: {}", room.tiles());
 }
 
@@ -233,11 +222,11 @@ async fn the_camera_comes_back_after_a_long_drop() {
 
     let (url, seen) = fake_sfu(Script::DropAfterCamera).await;
     let (updates, ui) = std::sync::mpsc::channel::<String>();
-    let (room, _media) = Room::enter(&url, "salateste01", guest(), updates).await.expect("entrou");
+    let (room, _media) = Room::enter(&url, "01jabcdefghjkmnpqrstvwxyz0", account(), updates).await.expect("entrou");
     let camera = capture::cameras().first().cloned().expect("a câmera de teste");
     let config = capture::CaptureConfig { source: capture::CaptureSource::Camera(camera.index), capture_audio: false, ..capture::CaptureConfig::default() };
 
-    room.open_microphone().await.expect("o microfone abriu");
+    room.open_microphone(core_app::VoiceFilterConfig::default()).await.expect("o microfone abriu");
     room.open_captured_camera(config).await.expect("a câmera abriu");
 
     while ui.try_recv().is_ok() {}
@@ -282,7 +271,7 @@ async fn the_camera_comes_back_after_a_long_drop() {
 async fn leaving_the_room_closes_its_socket_and_stops_talking_to_the_ui() {
     let (url, seen) = fake_sfu(Script::Stay).await;
     let (updates, ui) = std::sync::mpsc::channel::<String>();
-    let (room, media) = Room::enter(&url, "salateste01", guest(), updates).await.expect("entrou");
+    let (room, media) = Room::enter(&url, "01jabcdefghjkmnpqrstvwxyz0", account(), updates).await.expect("entrou");
 
     room.leave().await;
     drop(room);

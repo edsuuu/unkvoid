@@ -22,12 +22,7 @@ nativa — captura na GPU, encoder por hardware, RTP+SRTP em `plain.rs`, recepç
 desenhar tela.
 
 **O que segura o desenho:** nada de regra de negócio em pasta de sistema. O `shared/core`
-decide; `apps/macos`, `apps/windows` e `apps/linux` desenham. Sem isso, três interfaces
-viram três produtos que divergem no primeiro ajuste.
-
-**ABI C escrita à mão, e não `uniffi`:** são seis funções que mudam devagar. Um header que
-se lê de cima a baixo custa menos que mais um gerador no caminho do build. O Linux e o Windows não passam
-por ela — são Rust e usam o `core` direto.
+decide e o app único desenha. Assim, um alvo futuro não precisa reimplementar o que já é regra.
 
 ## Em que linguagem o SFU deve ser escrito
 
@@ -196,9 +191,8 @@ Descartado: aumentar a carência (o app levou minutos para notar, carência nenh
 manter a sessão viva enquanto chega mídia (muda o que "presente na sala" quer dizer, e o app
 continuaria sem sinalização, clicando no vazio).
 
-No app Tauri de antes, quem não tinha WebRTC no motor da janela (Linux) entrava sem `resume`;
-nos apps nativos a retomada vale nos três sistemas, e o caminho de chegada é refeito na volta,
-porque o endereço da pessoa pode ter mudado.
+A retomada vale no app único, e o caminho de chegada é refeito na volta, porque o endereço da
+pessoa pode ter mudado.
 
 ## Microfone aberto ao entrar, e nenhuma bind engole tecla no Windows
 
@@ -229,7 +223,7 @@ ainda não leva imagem: não há pivô para ela, e criar é migration.
 
 **Decidido pelo dono em 26 e 27/09/2026.** O UnkvoidClips, que era um app separado, virou a aba
 Clips do app nativo do Windows: um app e um repositório só. O motor mora em `shared/clips`, com
-o que é do Windows atrás de `cfg`; a interface, em `apps/windows/src/clips` e `ui/clips.slint`.
+o que é do Windows atrás de `cfg`; a interface, em `apps/unkvoid/src/clips` e `ui/clips.slint`.
 
 - **O app inteiro roda com o nível mais alto da conta** (`highestAvailable`, no build de
   release): numa conta de administrador, elevado; numa conta comum, sem elevação, e o app abre

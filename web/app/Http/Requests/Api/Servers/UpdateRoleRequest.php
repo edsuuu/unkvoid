@@ -19,6 +19,8 @@ final class UpdateRoleRequest extends FormRequest
             'color' => ['sometimes', 'nullable', 'string', 'regex:/^#[0-9a-fA-F]{6}$/'],
             'permissions' => ['sometimes', 'integer', 'min:0', 'max:'.PermissionEnum::all()],
             'position' => ['sometimes', 'integer', 'min:1', 'max:4294967295'],
+            'hoist' => ['sometimes', 'boolean'],
+            'mentionable' => ['sometimes', 'boolean'],
         ];
     }
 }

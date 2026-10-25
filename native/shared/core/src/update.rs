@@ -28,10 +28,9 @@ pub const PLATFORM: &str = if cfg!(target_os = "macos") {
     "linux-x86_64-deb"
 };
 
-/// A pública do atualizador, a mesma de `plugins.updater.pubkey` no `tauri.conf.json` (par
-/// `9a18c9243ef59b08`): é por ela que quem ainda tem o app do Tauri aceita o nativo. Trocar
-/// uma sem a outra deixa alguém sem atualização — ver `docs/AUTO-UPDATE.md`.
-const PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg5QkY1M0UyNEM5MTg5QQpSV1NhR01ra1B2V2JDSzhaSUJRR3Ezak1nYlNBWEh0NWZkWXRBTlJqdUQyaVNoVXh0b2RBeTVwOAo=";
+/// A pública do atualizador só tem uma cópia, para o publicador e o aplicativo não aceitarem
+/// pares diferentes por acidente — ver `docs/AUTO-UPDATE.md`.
+const PUBLIC_KEY: &str = include_str!("../../../release/update-public-key.pub").trim_ascii();
 
 /// Uma versão mais nova que esta, publicada para esta plataforma.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +77,7 @@ pub fn announced(app: &App) -> Option<String> {
 }
 
 /// Os bytes são os que a nossa chave assinou? A assinatura do manifesto é o arquivo do
-/// minisign inteiro em base64, do jeito que o Tauri escreve.
+/// minisign inteiro em base64, para o manifesto transportar uma string só.
 pub fn signed(installer: &[u8], signature: &str) -> bool {
     let text = |encoded: &str| {
         STANDARD
@@ -159,7 +158,8 @@ mod tests {
         assert_eq!(newer_in(&serde_json::json!({ "platform": PLATFORM })), None);
     }
 
-    /// `printf unkvoid | tauri signer sign` com a privada do par `9a18c9243ef59b08`.
+    /// A amostra foi feita por `tauri signer sign` com a privada do par `9a18c9243ef59b08`.
+    /// `minisign -S` produz o mesmo formato, por isso ela continua validando a compatibilidade.
     const SAMPLE_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTYUdNa2tQdldiQ0hGSW5yRjYxbXFhTG1iV2M1YUVyY0xjTzBQSjBUNmpaQVVjMEhMUldScTQyelhxcmhmaS9waTExdFdFcXc4VWRLVGY2UzhFRlJvOTY1TlVJb1p5MVF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNDM1OTM0CWZpbGU6YW1vc3RyYQpscGFIaFNVdVlIbERYcUZodDJaVDlGcENqd0IzK2VGL3A5UVZzdGJnYUoxOEZqbHh2MjdvSmJ0TTFXWWdPd1d4MXM0VGFkQ09CZXcwd2FQNElmSjBDdz09Cg==";
 
     #[test]

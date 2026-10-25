@@ -1,13 +1,11 @@
-# As interfaces
+# A interface
 
-Uma pasta por sistema. Cada uma desenha; nenhuma decide.
+O app único está provisoriamente em `windows/` e será renomeado para `unkvoid/`. Ele desenha e
+traduz ações; não decide regra de negócio.
 
 | Pasta | Linguagem | Como fala com o núcleo |
 |---|---|---|
-| `windows/` | Rust + Slint | direto, como crate |
-| `linux/` | Rust + GTK4 | direto, como crate |
-| `macos/` | Swift + SwiftUI | ABI C (`shared/core/src/ffi.rs`) |
-| `desktop/` | React + Tauri | o app de antes: referência de comportamento, não é mais publicado |
+| `windows/` | Rust, em transição para egui | direto, como crate |
 
 ## A regra
 
@@ -24,16 +22,8 @@ O que pertence a cada pasta de sistema:
 - o que só aquele sistema tem: bandeja, notificação, atalho global, permissão de captura, os
   aparelhos de som.
 
-## A ponte do macOS
-
-As funções da ABI C e o que cada uma faz estão em
-[docs/ARQUITETURA.md](../../docs/ARQUITETURA.md#a-ponte-para-o-swift). Comandos e avisos falam
-JSON. `unkvoid_call` e `unkvoid_app` bloqueiam — nunca na thread que desenha — e toda string
-devolvida volta em `unkvoid_string_free`, uma vez só.
-
 ## Por onde começar uma tela nova
 
-1. Veja o que o React faz em `desktop/ui/components/` — é a referência de comportamento, não
-   de código. As medidas exatas estão em `desktop/ui/style.css`.
-2. Se ele chama algo de `desktop/ui/core/`, esse algo vira (ou já é) função do `shared/core`.
-3. Desenhe. Se precisar de uma decisão que não é visual, pare: ela é do `core`.
+1. Veja se a intenção já existe no `shared/core`.
+2. Desenhe a partir do estado que o núcleo entrega.
+3. Se precisar de uma decisão que não é visual, pare: ela é do `core`.

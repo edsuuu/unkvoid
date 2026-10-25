@@ -17,6 +17,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
@@ -31,7 +33,7 @@ use rtc::srtp::context::Context as SrtpContext;
 use rtc::srtp::protection_profile::ProtectionProfile;
 
 use crate::pacer::Pacer;
-use crate::{audio::CHANNELS, audio::SAMPLE_RATE, EncodedFrame, FRAME_MS};
+use crate::{audio::CHANNELS, audio::SAMPLE_RATE, EncodedFrame, FRAME_MS, MediaSender, Origin};
 
 /// Tipos de payload. 96+ é a faixa dinâmica, e o servidor devolve o que for declarado.
 pub const PAYLOAD_VIDEO: u8 = 96;
@@ -88,6 +90,16 @@ impl Source {
         matches!(self, Self::Screen | Self::Camera)
     }
 
+    /// Domain-separated origin used by the MLS media exporter and AEAD nonce prefix.
+    pub fn e2ee_origin(self) -> Origin {
+        match self {
+            Self::Screen => *b"scrn",
+            Self::ScreenAudio => *b"scra",
+            Self::Camera => *b"camr",
+            Self::Mic => *b"micr",
+        }
+    }
+
     fn stream(self, base: u32) -> Stream {
         let (payload, payloader, clock): (u8, Box<dyn Payloader>, u32) = if self.is_video() {
             (PAYLOAD_VIDEO, Box::<H264Payloader>::default(), VIDEO_CLOCK)
@@ -133,6 +145,14 @@ struct Stream {
 
 /// 90 kHz é o relógio RTP do vídeo, fixado pelo formato de payload do H.264.
 const VIDEO_CLOCK: u32 = 90_000;
+static E2EE_FRAME_NANOS: AtomicU64 = AtomicU64::new(0);
+static E2EE_FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Process-local diagnostic for encryption work performed on the actual post-encoder RTP path.
+/// Returns `(encrypted_frames, elapsed_nanoseconds)`; it never includes clear/legacy frames.
+pub fn e2ee_frame_cost_snapshot() -> (u64, u64) {
+    (E2EE_FRAME_COUNT.load(Ordering::Relaxed), E2EE_FRAME_NANOS.load(Ordering::Relaxed))
+}
 
 /// Abaixo da MTU de 1500 bytes da Ethernet, com folga para IP, UDP e a etiqueta do
 /// SRTP. Passar disso significa fragmentação de IP, e um só fragmento perdido custa o
@@ -205,6 +225,10 @@ pub struct PlainSender {
     /// O último RTCP que abriu com a chave do servidor, e o último pacote que saiu.
     heard_at: Option<Instant>,
     sent_at: Option<Instant>,
+    /// A sender per source, kept outside the SRTP socket lifetime so reconnecting the transport
+    /// never resets an AEAD counter under the same MLS exporter key.
+    e2ee: HashMap<Source, Arc<Mutex<MediaSender>>>,
+    e2ee_required: bool,
 }
 
 /// O que o servidor devolveu desde a última leitura.
@@ -315,6 +339,8 @@ impl PlainSender {
             rates: HashMap::new(),
             heard_at: None,
             sent_at: None,
+            e2ee: HashMap::new(),
+            e2ee_required: false,
         })
     }
 
@@ -344,6 +370,14 @@ impl PlainSender {
     pub fn server(&self) -> SocketAddr {
         self.server
     }
+
+    /// Installs the MLS-derived sender for one source. `Arc` deliberately survives a PlainTransport
+    /// rebuild, preserving the nonce counter through a network reconnect.
+    pub fn set_e2ee_sender(&mut self, source: Source, sender: Arc<Mutex<MediaSender>>) {
+        self.e2ee.insert(source, sender);
+    }
+
+    pub fn set_e2ee_required(&mut self, required: bool) { self.e2ee_required = required; }
 
     /**
      * O que o servidor precisa saber antes do primeiro pacote: qual codec, qual tipo de
@@ -420,7 +454,18 @@ impl PlainSender {
         stream.last_video_ns = Some(frame.timestamp_ns);
         stream.packetizer.skip_samples(advance);
 
-        let sent = Self::protect(&mut self.srtp, stream, Bytes::from(frame.data), 0)?;
+        let payload = match self.e2ee.get(&source) {
+            Some(sender) => {
+                let started = Instant::now();
+                let encrypted = sender.lock().map_err(|_| anyhow!("E2EE sender lock was poisoned"))?
+                    .encrypt_h264(&frame.data).map_err(|error| anyhow!("could not encrypt H.264 frame: {error}"))?;
+                record_e2ee_cost(started.elapsed());
+                encrypted
+            }
+            None if self.e2ee_required => return Err(anyhow!("E2EE sender missing; refusing clear H.264 frame")),
+            None => frame.data,
+        };
+        let sent = Self::protect(&mut self.srtp, stream, Bytes::from(payload), 0)?;
         let packets = sent.len();
 
         stream.packets = stream.packets.wrapping_add(packets as u32);
@@ -599,7 +644,18 @@ impl PlainSender {
         let base = self.ssrc_base;
         let stream = self.streams.entry(source).or_insert_with(|| source.stream(base));
 
-        let sent = Self::protect(&mut self.srtp, stream, Bytes::copy_from_slice(opus), samples)?;
+        let payload = match self.e2ee.get(&source) {
+            Some(sender) => {
+                let started = Instant::now();
+                let encrypted = sender.lock().map_err(|_| anyhow!("E2EE sender lock was poisoned"))?
+                    .encrypt_opus(opus).map_err(|error| anyhow!("could not encrypt Opus frame: {error}"))?;
+                record_e2ee_cost(started.elapsed());
+                encrypted
+            }
+            None if self.e2ee_required => return Err(anyhow!("E2EE sender missing; refusing clear Opus frame")),
+            None => opus.to_vec(),
+        };
+        let sent = Self::protect(&mut self.srtp, stream, Bytes::from(payload), samples)?;
 
         stream.packets = stream.packets.wrapping_add(sent.len() as u32);
 
@@ -650,6 +706,11 @@ impl PlainSender {
 
         Ok(sent)
     }
+}
+
+fn record_e2ee_cost(elapsed: Duration) {
+    E2EE_FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+    E2EE_FRAME_NANOS.fetch_add(elapsed.as_nanos().min(u128::from(u64::MAX)) as u64, Ordering::Relaxed);
 }
 
 /// Quanto o socket pode ter em voo antes de recusar. Um quadro a 1080p60 sai em umas dez

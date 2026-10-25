@@ -4,6 +4,8 @@ import { Request } from './Request.js';
 import { ValidationException } from '../../Exceptions/ApiException.js';
 import { Signature, type JoinClaims } from '../../Services/Signature.js';
 
+const CHANNEL_ID = /^[0-9a-z]{26}$/;
+
 const LEGACY_CODE = /^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/;
 
 const INSTALL_ID = /^[A-Za-z0-9-]{1,64}$/;
@@ -14,6 +16,12 @@ export class JoinRequest extends Request {
     protected override validate(): void {
         if (typeof this.data.token === 'string') {
             this.claims = Signature.claims(this.data.token);
+
+            // O token só aponta a um canal que o Laravel autorizou ou a uma sala por código
+            // (`POST /api/rooms/{code}/token`); outro id abriria uma sala fora dos dois.
+            if (!CHANNEL_ID.test(this.claims.room) && !LEGACY_CODE.test(this.claims.room)) {
+                throw new ValidationException('token has invalid room');
+            }
 
             return;
         }

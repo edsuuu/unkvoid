@@ -25,6 +25,8 @@ final class RoleResource extends JsonResource
             'position' => $this->position,
             'permissions' => $this->permissions,
             'is_everyone' => $this->is_everyone,
+            'hoist' => $this->hoist,
+            'mentionable' => $this->mentionable,
         ];
     }
 }

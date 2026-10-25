@@ -2,18 +2,23 @@
 
 declare(strict_types=1);
 
+use App\Enums\FriendshipStatusEnum;
 use App\Livewire\Auth\ForgotPassword;
 use App\Livewire\Auth\Login;
 use App\Livewire\Auth\Register;
 use App\Livewire\Auth\ResetPassword;
 use App\Models\File;
+use App\Models\Friendship;
+use App\Models\Server;
 use App\Models\User;
 use App\Notifications\NewLoginNotification;
 use App\Notifications\ResetPasswordNotification;
 use App\Notifications\WelcomeNotification;
 use Database\Seeders\Seeder001Roles;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
@@ -43,7 +48,7 @@ it('recusa credenciais erradas na API com 401', function (): void {
 
     $this->postJson('/api/auth/login', ['email' => 'ada@unkvoid.test', 'password' => 'x', 'device' => 'd'])
         ->assertStatus(401)
-        ->assertJsonPath('message', 'E-mail ou senha não conferem.');
+        ->assertJsonPath('message', 'E-mail, apelido ou senha não conferem.');
 });
 
 it('conta só do Google não entra por senha', function (): void {
@@ -66,6 +71,57 @@ it('cria a conta pela API e revoga o token no logout', function (): void {
 
     $this->withToken($token)->postJson('/api/auth/logout')->assertNoContent();
     $this->assertDatabaseCount('personal_access_tokens', 0);
+});
+
+it('entra com o nome e a senha: o apelido sai do nome, o e-mail é de mentira e nada é enviado', function (): void {
+    Notification::fake();
+    User::factory()->create(['name' => 'joaosilva']);
+
+    $this->postJson('/api/auth/start', ['name' => 'João Silva', 'device' => 'd'])
+        ->assertJsonValidationErrors(['password']);
+
+    $response = $this->postJson('/api/auth/start', ['name' => 'João Silva', 'password' => 'senha-forte-123', 'device' => 'desktop-windows', 'refresh' => true])
+        ->assertCreated()
+        ->assertJsonPath('data.user.name', 'joaosilva2')
+        ->assertJsonPath('data.user.nickname_confirmed', true)
+        ->assertJsonPath('data.user.name_only', true);
+
+    $user = User::query()->where('name', 'joaosilva2')->sole();
+
+    expect($user->email)->toMatch('/^joaosilva2@[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\.unkvoid\.com$/')
+        ->and($response->json('data.refresh_token'))->toBeString()
+        // O canal de e-mail pula quem não tem endereço: boas-vindas, aviso de login e troca
+        // de senha não saem para o de mentira. O fake não olha o endereço; o canal olha.
+        ->and($user->routeNotificationFor('mail'))->toBeNull()
+        ->and(User::query()->where('name', 'joaosilva')->sole()->routeNotificationFor('mail'))->toBeString();
+
+    Notification::assertNothingSent();
+});
+
+it('a conta com o nome entra pelo apelido e a senha, e põe o e-mail uma vez', function (): void {
+    $token = $this->postJson('/api/auth/start', ['name' => 'Ada', 'password' => 'senha-forte-123', 'device' => 'd'])->json('data.token');
+
+    $this->postJson('/api/auth/login', ['email' => ' Ada ', 'password' => 'senha-forte-123', 'device' => 'd'])->assertOk();
+    $this->postJson('/api/auth/login', ['email' => 'ada', 'password' => 'errada-123', 'device' => 'd'])->assertStatus(401);
+
+    $this->withToken($token)->postJson('/api/me/email', ['email' => 'Ada@Unkvoid.test'])
+        ->assertOk()
+        ->assertJsonPath('data.email', 'ada@unkvoid.test')
+        ->assertJsonPath('data.name_only', false);
+
+    $this->withToken($token)->postJson('/api/me/email', ['email' => 'outro@unkvoid.test'])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['email' => 'Esta conta já tem e-mail.']);
+
+    $this->postJson('/api/auth/login', ['email' => 'ada@unkvoid.test', 'password' => 'senha-forte-123', 'device' => 'd'])->assertOk();
+});
+
+it('o e-mail que a conta com o nome escolhe não pode ser de outra', function (): void {
+    User::factory()->create(['email' => 'ada@unkvoid.test']);
+    $token = $this->postJson('/api/auth/start', ['name' => 'Ada', 'password' => 'senha-forte-123', 'device' => 'd'])->json('data.token');
+
+    $this->withToken($token)->postJson('/api/me/email', ['email' => 'ada@unkvoid.test'])
+        ->assertJsonValidationErrors(['email' => 'Esse e-mail já é de outra conta.']);
 });
 
 it('o app que sabe renovar recebe o par, e o de renovação só serve para trocar o par', function (): void {
@@ -188,8 +244,130 @@ it('quem já confirmou troca o apelido de novo, e a data da escolha fica', funct
         ->and($user->fresh()?->nickname_confirmed_at?->toDateTimeString())->toBe($chosen);
 });
 
+it('o PATCH /api/me troca o perfil sem mexer no apelido, e null limpa', function (): void {
+    $user = User::factory()->create(['name' => 'ada']);
+
+    $this->actingAs($user)->patchJson('/api/me', ['bio' => 'Escrevo código', 'pronouns' => 'ela/dela', 'banner_color' => '#5865f2', 'custom_status' => 'jogando'])
+        ->assertOk()
+        ->assertJsonPath('data.name', 'ada')
+        ->assertJsonPath('data.bio', 'Escrevo código')
+        ->assertJsonPath('data.pronouns', 'ela/dela')
+        ->assertJsonPath('data.banner_color', '#5865f2')
+        ->assertJsonPath('data.custom_status', 'jogando');
+
+    $this->actingAs($user)->patchJson('/api/me', ['bio' => null])
+        ->assertOk()
+        ->assertJsonPath('data.bio', null)
+        ->assertJsonPath('data.pronouns', 'ela/dela');
+
+    $this->actingAs($user)->patchJson('/api/me', ['banner_color' => 'azul'])->assertUnprocessable()->assertJsonValidationErrors(['banner_color']);
+    $this->actingAs($user)->patchJson('/api/me', ['bio' => str_repeat('a', 191)])->assertUnprocessable()->assertJsonValidationErrors(['bio']);
+});
+
 it('o PATCH /api/me exige token', function (): void {
     $this->patchJson('/api/me', ['name' => 'ada'])->assertUnauthorized();
+});
+
+it('salva status e prazo pelo PATCH /api/me e o status vencido volta a disponível', function (): void {
+    $user = User::factory()->create();
+
+    $this->actingAs($user, 'sanctum')->patchJson('/api/me', ['status' => 'idle', 'status_minutes' => 15])
+        ->assertOk()
+        ->assertJsonPath('data.status', 'idle');
+
+    expect($user->fresh()->status_until)->not->toBeNull();
+
+    $this->travel(16)->minutes();
+
+    $this->actingAs($user, 'sanctum')->getJson('/api/me')->assertOk()->assertJsonPath('data.status', 'online');
+
+    $this->actingAs($user, 'sanctum')->patchJson('/api/me', ['status' => 'dnd', 'status_minutes' => null])
+        ->assertOk()
+        ->assertJsonPath('data.status', 'dnd');
+
+    expect($user->fresh()->status_until)->toBeNull();
+});
+
+it('mostra como offline para outra pessoa quem escolheu invisível', function (): void {
+    fakeSfu();
+    $invisible = User::factory()->create(['status' => 'invisible']);
+    $viewer = User::factory()->create();
+    $server = Server::createFor($viewer, 'Casa');
+    joinServer($server, $invisible);
+    $friendship = Friendship::query()->create([
+        'requester_id' => $invisible->id,
+        'addressee_id' => $viewer->id,
+        'status' => FriendshipStatusEnum::Accepted,
+        'responded_at' => now(),
+    ]);
+
+    $this->actingAs($viewer, 'sanctum')->getJson('/api/friends')
+        ->assertOk()
+        ->assertJsonPath('data.0.requester.status', 'offline')
+        ->assertJsonPath('data.0.addressee.status', 'online');
+
+    $this->actingAs($viewer, 'sanctum')->getJson("/api/servers/{$server->id}")
+        ->assertOk()
+        ->assertJsonFragment(['user_id' => $invisible->id, 'status' => 'offline']);
+
+    expect($friendship->requester->effectiveStatus())->toBe('invisible');
+});
+
+it('compartilha atividade efêmera só com amizades aceitas e limpa ao receber nulo', function (): void {
+    Http::fake();
+    $owner = User::factory()->create();
+    $friend = User::factory()->create();
+    $pending = User::factory()->create();
+    Friendship::query()->create([
+        'requester_id' => $owner->id,
+        'addressee_id' => $friend->id,
+        'status' => FriendshipStatusEnum::Accepted,
+        'responded_at' => now(),
+    ]);
+    Friendship::query()->create([
+        'requester_id' => $owner->id,
+        'addressee_id' => $pending->id,
+        'status' => FriendshipStatusEnum::Pending,
+    ]);
+
+    $this->actingAs($owner, 'sanctum')->putJson('/api/me/activity', [
+        'activity' => ['name' => 'Arena Breakout: Infinite', 'started_at' => now()->toIso8601String()],
+    ])->assertNoContent();
+
+    $this->actingAs($friend, 'sanctum')->getJson('/api/friends')
+        ->assertOk()
+        ->assertJsonPath('data.0.requester.activity.name', 'Arena Breakout: Infinite');
+
+    $this->actingAs($pending, 'sanctum')->getJson('/api/friends')
+        ->assertOk()
+        ->assertJsonPath('data.0.requester.activity', null);
+
+    $this->actingAs($owner, 'sanctum')->putJson('/api/me/activity', ['activity' => null])->assertNoContent();
+
+    $this->actingAs($friend, 'sanctum')->getJson('/api/friends')
+        ->assertOk()
+        ->assertJsonPath('data.0.requester.activity', null);
+});
+
+it('não expõe atividade para quem escolheu invisível', function (): void {
+    Http::fake();
+    $invisible = User::factory()->create(['status' => 'invisible']);
+    $friend = User::factory()->create();
+    Friendship::query()->create([
+        'requester_id' => $invisible->id,
+        'addressee_id' => $friend->id,
+        'status' => FriendshipStatusEnum::Accepted,
+        'responded_at' => now(),
+    ]);
+
+    $this->actingAs($invisible, 'sanctum')->putJson('/api/me/activity', [
+        'activity' => ['name' => 'Jogo secreto', 'started_at' => now()->toIso8601String()],
+    ])->assertNoContent();
+
+    $this->actingAs($friend, 'sanctum')->getJson('/api/friends')
+        ->assertOk()
+        ->assertJsonPath('data.0.requester.status', 'offline')
+        ->assertJsonPath('data.0.requester.activity', null);
 });
 
 it('abre as telas de entrar e de criar conta', function (): void {
@@ -325,6 +503,65 @@ it('o login do Google entrega o par ao app que sabe renovar', function (): void 
 
     expect($location)->toContain('&refresh_token=')->toEndWith('&state=c0ffee42');
     $this->assertDatabaseCount('personal_access_tokens', 2);
+});
+
+it('troca o código PKCE do Google uma única vez sem expor tokens na URL', function (): void {
+    Socialite::shouldReceive('driver->user')->andReturn(googleUser('g-pkce', 'pkce@unkvoid.test', 'App'));
+    $verifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+    $challenge = mb_rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
+
+    $this->get(route('oauth2.app', [
+        'port' => 43123,
+        'state' => 'c0ffee42',
+        'refresh' => 1,
+        'code_challenge' => $challenge,
+        'code_challenge_method' => 'S256',
+    ]))->assertRedirect(route('oauth2.google'));
+
+    $response = $this->get(route('oauth2.google.callback'));
+    $location = $response->headers->get('Location');
+
+    expect($location)->toStartWith('http://127.0.0.1:43123/?code=')->toContain('&state=c0ffee42')->not->toContain('token=');
+    parse_str((string) parse_url((string) $location, PHP_URL_QUERY), $query);
+
+    $exchange = $this->postJson('/api/auth/app/exchange', ['code' => $query['code'], 'code_verifier' => $verifier])
+        ->assertOk()
+        ->assertJsonStructure(['data' => ['token', 'refresh_token']]);
+
+    $this->postJson('/api/auth/app/exchange', ['code' => $query['code'], 'code_verifier' => $verifier])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['code']);
+
+    expect($exchange->json('data.token'))->not->toBeEmpty();
+});
+
+it('consome o código PKCE quando o verifier está errado ou o prazo venceu', function (): void {
+    $user = User::factory()->create();
+    $verifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+    $challenge = mb_rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
+    $code = 'a'.str_repeat('b', 63);
+    Cache::put('app-login-exchange:'.hash('sha256', $code), [
+        'user_id' => $user->id,
+        'challenge' => $challenge,
+        'refresh' => false,
+    ], now()->addSeconds(60));
+
+    $this->postJson('/api/auth/app/exchange', ['code' => $code, 'code_verifier' => str_repeat('x', 43)])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['code']);
+    $this->postJson('/api/auth/app/exchange', ['code' => $code, 'code_verifier' => $verifier])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['code']);
+
+    Cache::put('app-login-exchange:'.hash('sha256', $code), [
+        'user_id' => $user->id,
+        'challenge' => $challenge,
+        'refresh' => false,
+    ], now()->addSeconds(60));
+    $this->travel(61)->seconds();
+    $this->postJson('/api/auth/app/exchange', ['code' => $code, 'code_verifier' => $verifier])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['code']);
 });
 
 it('quem entra com o e-mail do dono vira administrador', function (): void {

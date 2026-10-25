@@ -4,8 +4,6 @@ import { ValidationException } from '../../Exceptions/ApiException.js';
 import type { Move } from '../../Services/Room.js';
 import type { RoomRegistry } from '../../Services/RoomRegistry.js';
 
-const ROOM_ID = /^[a-z0-9-]+$/;
-
 const CHANNEL_ID = /^[a-z0-9]{26}$/;
 
 const MAX_NAME = 64;
@@ -65,7 +63,7 @@ export class RoomController {
         if (
             !Array.isArray(rooms) ||
             rooms.length === 0 ||
-            !rooms.every((room) => typeof room === 'string' && ROOM_ID.test(room))
+            !rooms.every((room) => typeof room === 'string' && CHANNEL_ID.test(room))
         ) {
             throw new ValidationException('field rooms must be a list of room ids');
         }
@@ -86,8 +84,8 @@ export class RoomController {
     private roomId(request: Request): string {
         const room = String(request.params.room ?? '');
 
-        if (!ROOM_ID.test(room)) {
-            throw new ValidationException('field room is malformed');
+        if (!CHANNEL_ID.test(room)) {
+            throw new ValidationException('field room must be a channel id');
         }
 
         return room;

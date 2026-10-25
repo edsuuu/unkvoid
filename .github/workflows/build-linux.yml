@@ -1,10 +1,7 @@
-# O .deb do Linux, gerado na VPS dentro de um Debian 12 (Dockerfile.linux) e publicado
-# no repositório APT. O cache do cargo mora em /var/www/projects/unkvoid/native — por
-# isso o build roda naquela pasta e não no checkout do runner.
+# O `.deb` nasce na VPS, dentro do Debian 12 do app único, e entra no APT dali. O fluxo
+# continua pausado: uma atualização automática no Linux não pode começar sem decisão do dono.
 name: build-linux
 
-# PAUSADO junto com o release.yml: um push na main com `native/**` mandaria o .deb para o
-# APT, e quem tem Linux atualizaria no meio do trabalho. Descomente o `push` quando acabar.
 on:
   # push:
   #   branches: [main]
@@ -27,9 +24,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-
       - run: |
           rsync -a --delete --exclude target --exclude target-deb12 --exclude .cargo-home --exclude .home \
             --exclude node_modules --exclude dist \
             ./native/ /var/www/projects/unkvoid/native/
-      - run: /var/www/projects/unkvoid/native/apps/desktop/build-vps.sh
+      - run: /var/www/projects/unkvoid/native/release/build-vps.sh

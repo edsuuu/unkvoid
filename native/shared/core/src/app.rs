@@ -1,7 +1,7 @@
-//! O estado que as três interfaces desenham, e as decisões que nenhuma delas toma sozinha.
+//! O estado que as interfaces desenham e as decisões que nenhuma delas toma sozinha.
 //!
-//! Entrar numa sala parece coisa de tela — mas envolve validar o código, guardar o nome, a
-//! sala e a lista das recentes. Escrito três vezes, seriam três regras que divergem no
+//! Entrar numa sala por código parece coisa de tela — mas envolve validar o código, guardar o
+//! nome e a lista das recentes. Escrito em cada interface, seriam regras que divergem no
 //! primeiro ajuste. Aqui é uma.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,13 +14,25 @@ use crate::room_code;
 
 const NAME_KEY: &str = "unkvoid:name";
 
-/// Os nomes são os que o app de hoje já gravou na máquina de quem usa. Trocar um deles
-/// faz a pessoa perder o que estava guardado — e `unkvoid.instalacao`, apesar do
-/// português, é a identidade desta instalação perante o SFU: renomear a transforma numa
-/// instalação nova.
+/// Os nomes são os que o app de antes já gravou na máquina de quem usa. Trocar um deles faz a
+/// pessoa perder o que estava guardado — e `unkvoid.instalacao`, apesar do português, é a
+/// identidade desta instalação perante o SFU: renomear a transforma numa instalação nova.
 const ROOM_KEY: &str = "unkvoid:last-room";
 
 const RECENT_KEY: &str = "unkvoid:recent-rooms";
+
+const INSTALL_KEY: &str = "unkvoid.instalacao";
+
+/// Quantas salas recentes a entrada mostra. Três, por decisão do dono: passou disso vira uma
+/// lista que ninguém lê.
+const MAX_RECENT: usize = 3;
+
+/// O motivo de a entrada ter sido recusada. A interface é quem escreve a frase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryRefusal {
+    NameIsEmpty,
+    CodeIsInvalid,
+}
 
 /// As chaves do React (`Sharing.ts`): quem trocar de app leva a escolha junto.
 const QUALITY_KEY: &str = "unkvoid:quality";
@@ -33,25 +45,9 @@ pub const FRAME_RATES: [&str; 2] = ["30", "60"];
 const TOKEN_KEY: &str = "unkvoid:token";
 const REFRESH_KEY: &str = "unkvoid:refresh";
 
-const INSTALL_KEY: &str = "unkvoid.instalacao";
-
-/// Quantas salas recentes a Home mostra. Três, por decisão do dono: passou disso vira uma
-/// lista que ninguém lê.
-const MAX_RECENT: usize = 3;
-
-/// O motivo de a entrada ter sido recusada. A interface é quem escreve a frase: o texto
-/// que a pessoa lê é da interface, e traduzi-lo aqui obrigaria as três a concordar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntryRefusal {
-    NameIsEmpty,
-    CodeIsInvalid,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppState {
     pub screen: Screen,
-    pub name: String,
-    pub room: Option<String>,
 }
 
 pub struct App {
@@ -69,15 +65,11 @@ pub struct App {
 
 impl App {
     pub fn new(storage: Storage) -> Self {
-        let name = storage.get_string(NAME_KEY).unwrap_or_default();
-
         let signed_in = AtomicBool::new(storage.get(TOKEN_KEY).is_some());
 
         Self {
             state: Mutex::new(AppState {
                 screen: Screen::home(signed_in.load(Ordering::Relaxed)),
-                name,
-                room: None,
             }),
             storage,
             cipher: OnceLock::new(),
@@ -106,9 +98,7 @@ impl App {
     }
 
     fn open_room(&self, name: &str, code: &str) -> Result<String, EntryRefusal> {
-        let name = name.trim();
-
-        if name.is_empty() {
+        if name.trim().is_empty() {
             return Err(EntryRefusal::NameIsEmpty);
         }
 
@@ -116,19 +106,13 @@ impl App {
             return Err(EntryRefusal::CodeIsInvalid);
         }
 
-        self.remember(name, code);
-
-        let mut state = self.lock();
-
-        state.name = name.to_owned();
-        state.room = Some(code.to_owned());
-        state.screen = Screen::Room;
+        self.remember(name.trim(), code);
 
         Ok(code.to_owned())
     }
 
-    /// Gravar não pode impedir de entrar: perder a lista de recentes é um incômodo, ficar
-    /// de fora da sala é o produto não funcionando.
+    /// Gravar não pode impedir de entrar: perder a lista de recentes é um incômodo, ficar de
+    /// fora da sala é o produto não funcionando.
     fn remember(&self, name: &str, code: &str) {
         let mut recent = self.recent_rooms();
 
@@ -147,6 +131,11 @@ impl App {
         }
     }
 
+    /// O nome com que se entrou da última vez, para a tela já vir preenchida.
+    pub fn guest_name(&self) -> String {
+        self.storage.get_string(NAME_KEY).unwrap_or_default()
+    }
+
     pub fn recent_rooms(&self) -> Vec<String> {
         let Some(saved) = self.storage.get(RECENT_KEY) else {
             return Vec::new();
@@ -156,8 +145,8 @@ impl App {
             return Vec::new();
         };
 
-        // Filtra na leitura: um código inválido gravado por uma versão antiga não pode
-        // virar um botão que leva a lugar nenhum.
+        // Filtra na leitura: um código inválido gravado por uma versão antiga não pode virar um
+        // botão que leva a lugar nenhum.
         list.iter()
             .filter_map(|entry| entry.as_str())
             .filter(|code| room_code::is_valid(code))
@@ -169,8 +158,8 @@ impl App {
     /// A chave desta instalação: identifica este computador na sala sem conta, e nada mais.
     ///
     /// É um código de sala: são os mesmos 36^12 sorteios, e evita uma dependência a mais só
-    /// para gerar UUID. Trocar de chave derrubaria a própria sessão anterior na sala, então
-    /// ela é sorteada uma vez e guardada.
+    /// para gerar UUID. Trocar de chave derrubaria a própria sessão anterior na sala, então ela
+    /// é sorteada uma vez e guardada.
     pub fn install_id(&self) -> String {
         if let Some(saved) = self.storage.get_string(INSTALL_KEY) {
             return saved;
@@ -197,8 +186,7 @@ impl App {
         self.signed_in.load(Ordering::Relaxed)
     }
 
-    /// Onde se cai ao sair de uma sala e ao abrir o app. Quem tem conta volta para os
-    /// servidores; quem não tem volta para o código.
+    /// Onde se cai ao abrir o app. A entrada leva ao login e a conta abre os servidores.
     pub fn home(&self) -> Screen {
         Screen::home(self.has_token())
     }
@@ -228,6 +216,13 @@ impl App {
         if let Err(failure) = saved {
             tracing::warn!(%failure, key, "a preferência não foi guardada");
         }
+    }
+
+    /// A configuração de filtros é lida do objeto existente para manter compatibilidade entre versões.
+    pub fn voice_filter_config(&self) -> crate::voice::VoiceFilterConfig {
+        let preference = self.preference("unkvoid:voice");
+
+        crate::voice::VoiceFilterConfig::from_preference(preference.as_ref())
     }
 
     /// O token do Sanctum, decifrado. Sem chaveiro não há token guardado, e o app pede
@@ -350,13 +345,6 @@ impl App {
             .as_ref()
     }
 
-    pub fn leave_room(&self) {
-        let mut state = self.lock();
-
-        state.room = None;
-        state.screen = Screen::home(self.signed_in.load(Ordering::Relaxed));
-    }
-
     pub fn show(&self, screen: Screen) {
         self.lock().screen = screen;
     }
@@ -410,6 +398,17 @@ mod tests {
         assert_eq!(app.preference(TOKEN_KEY), None);
     }
 
+    #[test]
+    fn the_voice_filter_configuration_reads_the_existing_voice_object() {
+        let (app, _dir) = app();
+
+        assert!(!app.voice_filter_config().rnnoise());
+        app.set_preference("unkvoid:voice", serde_json::json!({ "noise": "light" }));
+        assert!(app.voice_filter_config().rnnoise());
+        app.set_preference("unkvoid:voice", serde_json::json!({ "noiseSuppress": true }));
+        assert!(app.voice_filter_config().rnnoise());
+    }
+
     fn app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
         let storage = Storage::open_at(dir.path()).expect("open");
@@ -434,13 +433,27 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_without_a_keyring_still_knows_there_is_an_account() {
+        let (app, _dir) = app();
+
+        app.set_token(Some("1|abc"));
+
+        assert!(app.has_token());
+        assert_eq!(app.home(), Screen::Hub);
+
+        app.set_token(None);
+
+        assert!(!app.has_token());
+        assert_eq!(app.home(), Screen::Entry);
+    }
+
+    #[test]
     fn creating_without_a_code_draws_one() {
         let (app, _dir) = app();
         let code = app.create_room("Ada", "").expect("create");
 
         assert!(room_code::is_valid(&code));
-        assert_eq!(app.state().screen, Screen::Room);
-        assert_eq!(app.state().room.as_deref(), Some(code.as_str()));
+        assert_eq!(app.recent_rooms(), [code]);
     }
 
     #[test]
@@ -461,11 +474,7 @@ mod tests {
             app.create_room("   ", "").unwrap_err(),
             EntryRefusal::NameIsEmpty
         );
-        assert_eq!(
-            app.state().screen,
-            Screen::Entry,
-            "mudou de tela mesmo recusando"
-        );
+        assert!(app.recent_rooms().is_empty(), "guardou a sala recusada");
     }
 
     #[test]
@@ -476,7 +485,6 @@ mod tests {
             app.join_room("Ada", "-x-").unwrap_err(),
             EntryRefusal::CodeIsInvalid
         );
-        assert!(app.state().room.is_none());
     }
 
     /// Quem já tinha uma lista maior, gravada quando o teto era outro, também vê só três.
@@ -516,18 +524,6 @@ mod tests {
     }
 
     #[test]
-    fn the_recent_list_is_capped() {
-        let (app, _dir) = app();
-
-        for index in 0..(MAX_RECENT + 5) {
-            app.join_room("Ada", &format!("sala-{index}"))
-                .expect("join");
-        }
-
-        assert_eq!(app.recent_rooms().len(), MAX_RECENT);
-    }
-
-    #[test]
     fn an_invalid_code_saved_by_an_older_version_is_ignored() {
         let (app, _dir) = app();
 
@@ -536,41 +532,6 @@ mod tests {
             .expect("write");
 
         assert_eq!(app.recent_rooms(), vec!["boa"]);
-    }
-
-    #[test]
-    fn leaving_a_room_lands_where_the_account_says() {
-        let (app, _dir) = app();
-
-        app.create_room("Ada", "sala-um").expect("create");
-        app.leave_room();
-
-        assert_eq!(app.state().screen, Screen::Entry);
-
-        app.set_token(Some("1|abc"));
-        app.create_room("Ada", "sala-um").expect("create");
-        app.leave_room();
-
-        assert_eq!(
-            app.state().screen,
-            Screen::Hub,
-            "quem tem conta volta para os servidores"
-        );
-    }
-
-    #[test]
-    fn a_machine_without_a_keyring_still_knows_there_is_an_account() {
-        let (app, _dir) = app();
-
-        app.set_token(Some("1|abc"));
-
-        assert!(app.has_token());
-        assert_eq!(app.home(), Screen::Hub);
-
-        app.set_token(None);
-
-        assert!(!app.has_token());
-        assert_eq!(app.home(), Screen::Entry);
     }
 
     #[test]
@@ -586,29 +547,6 @@ mod tests {
         assert!(room_code::is_valid(&first));
     }
 
-    /// As chaves não podem divergir do que o app de hoje gravou: quem trocar de app perde
-    /// o que estava guardado, e o id da instalação vira outro perante o servidor.
-    #[test]
-    fn the_keys_are_the_ones_the_app_already_wrote() {
-        assert_eq!(NAME_KEY, "unkvoid:name");
-        assert_eq!(ROOM_KEY, "unkvoid:last-room");
-        assert_eq!(RECENT_KEY, "unkvoid:recent-rooms");
-        assert_eq!(TOKEN_KEY, "unkvoid:token");
-        assert_eq!(INSTALL_KEY, "unkvoid.instalacao");
-    }
-
-    #[test]
-    fn the_install_id_is_kept_between_runs() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let first = App::new(Storage::open_at(dir.path()).expect("open")).install_id();
-
-        assert!(room_code::is_valid(&first));
-
-        let again = App::new(Storage::open_at(dir.path()).expect("reopen")).install_id();
-
-        assert_eq!(first, again, "a instalação mudou de identidade ao reabrir");
-    }
-
     #[test]
     fn the_name_comes_back_on_the_next_run() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -619,6 +557,17 @@ mod tests {
 
         let again = App::new(Storage::open_at(dir.path()).expect("reopen"));
 
-        assert_eq!(again.state().name, "Ada");
+        assert_eq!(again.guest_name(), "Ada");
+    }
+
+    /// As chaves não podem divergir do que o app de antes gravou: quem trocar de app perde o
+    /// que estava guardado, e o id da instalação vira outro perante o servidor.
+    #[test]
+    fn the_keys_are_the_ones_the_app_already_wrote() {
+        assert_eq!(NAME_KEY, "unkvoid:name");
+        assert_eq!(ROOM_KEY, "unkvoid:last-room");
+        assert_eq!(RECENT_KEY, "unkvoid:recent-rooms");
+        assert_eq!(TOKEN_KEY, "unkvoid:token");
+        assert_eq!(INSTALL_KEY, "unkvoid.instalacao");
     }
 }

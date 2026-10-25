@@ -53,6 +53,8 @@ const CAPACIDADES = {
 
 const TUDO = ['speak', 'stream', 'video'];
 
+const channelId = number => `01j${String(number).padStart(23, '0')}`;
+
 const espera = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Chave SRTP e parâmetros de um `producePlain` de áudio, para não repetir o bloco. */
@@ -160,7 +162,10 @@ const abrir = async () => {
     return cliente;
 };
 
-const room = 'checkroom001';
+const room = channelId(1);
+
+/** A sala por código, sem canal: o visitante entra sem token, e a conta com o de `/api/rooms`. */
+const salaPorCodigo = 'checkroom001';
 
 /** O que um cenário deixa para o seguinte: a ordem dos testes é a da chamada de verdade. */
 let visitante;
@@ -190,7 +195,7 @@ const retomar = async (cliente, data) => {
     return { volta, retomada: await entrar(volta, { ...data, resume: true }) };
 };
 
-const salaRetomada = 'checkroom003';
+const salaRetomada = channelId(3);
 const tokenRetomada = can => token({ room: salaRetomada, sub: '81', name: 'Volta', can });
 
 before(async () => {
@@ -219,6 +224,9 @@ test('o join só aceita token bem formado, assinado e no prazo', async () => {
     reply = await visitante.call('join', { token: token({ room, sub: '1', name: 'X' }) });
     assert.equal(reply.status, 422, 'token sem `can` está incompleto');
 
+    reply = await visitante.call('join', { token: token({ room: 'Sala Fora Do Formato', sub: '1', name: 'X', can: TUDO }) });
+    assert.equal(reply.status, 422, 'token de sala que não é canal nem código é recusado');
+
     reply = await visitante.call('createTransport', {});
     assert.equal(reply.status, 401, 'ação sem sessão deve dar 401');
 });
@@ -227,12 +235,25 @@ test('o join antigo entra sem token, mas recusa sala de 26 caracteres', async ()
     const reply = await visitante.call('join', { room: '01ARZ3NDEKTSV4RRFFQ69G5FAV', name: 'Intruso' });
     assert.equal(reply.status, 422, 'canal de servidor (ULID) sem token tem de ser recusado, mesmo no join antigo');
 
-    // O app de hoje ainda entra sem token, como visitante. Some quando todos souberem pedir um.
+    // A sala por código entra sem token, como visitante: a identidade é a instalação.
     const antigo = await abrir();
-    const legado = await entrar(antigo, { room, name: 'Legado', installId: 'inst-1' });
+    const legado = await entrar(antigo, { room: salaPorCodigo, name: 'Legado', installId: 'inst-1' });
     assert.deepEqual(legado.can, TUDO, 'sem token entra com tudo liberado');
     assert.equal(legado.userId, 'guest:inst-1', 'e a identidade é a instalação');
+    assert.ok(legado.e2eeSessionId, 'e recebe a sessão E2EE como quem entra com conta');
+
+    // Logado, o app pede o token da sala pelo código e entra com a conta.
+    const logado = await abrir();
+    const comConta = await entrar(logado, { token: token({ room: salaPorCodigo, sub: 'user:707', name: 'Logado', can: TUDO }) });
+    assert.equal(comConta.userId, 'user:707', 'o token da sala por código leva a conta');
+    assert.equal(comConta.e2eeSessionId, legado.e2eeSessionId, 'na mesma sala, a mesma sessão E2EE');
+
+    const group = Buffer.from(`grupo-mls-sala-por-codigo-${Date.now()}`).toString('base64url');
+    const pedido = await antigo.call('e2eeJoin', { version: 1, group, payload: Buffer.from('KeyPackage opaco').toString('base64url') });
+    assert.deepEqual(pedido.data, { status: 'forwarded', delivered: 1 }, 'o visitante também negocia o E2EE');
+
     antigo.close();
+    logado.close();
 });
 
 test('a identidade nasce no servidor e o mesmo socket não entra duas vezes', async () => {
@@ -257,6 +278,115 @@ test('a identidade nasce no servidor e o mesmo socket não entra duas vezes', as
 
     reply = await dono.call('acaoQueNaoExiste', {});
     assert.equal(reply.status, 404, 'ação desconhecida deve dar 404');
+});
+
+test('E2EE: o SFU ordena Commit opaco, libera Welcome só depois e limita sinalização', async () => {
+    const channel = channelId(99);
+    const author = await abrir();
+    const entrant = await abrir();
+    const rival = await abrir();
+    // A sala fica na carência de reconexão por 30 s depois de um cenário. Grupo novo evita que
+    // uma repetição do check herde a época do teste anterior enquanto o SFU ainda a conserva.
+    const group = Buffer.from(`grupo-mls-de-teste-4a-${Date.now()}`).toString('base64url');
+    const keyPackage = Buffer.from('KeyPackage opaco').toString('base64url');
+    const commitA = Buffer.from('Commit A opaco').toString('base64url');
+    const commitB = Buffer.from('Commit B opaco').toString('base64url');
+    const welcome = Buffer.from('Welcome opaco').toString('base64url');
+
+    const authorJoin = await entrar(author, { token: token({ room: channel, sub: '901', name: 'Autor', can: TUDO }) });
+    const entrantJoin = await entrar(entrant, { token: token({ room: channel, sub: '902', name: 'Entra', can: TUDO }) });
+    await entrar(rival, { token: token({ room: channel, sub: '903', name: 'Concorrente', can: TUDO }) });
+
+    let reply = await entrant.call('e2eeJoin', { version: 1, group, payload: keyPackage });
+    assert.deepEqual(reply.data, { status: 'forwarded', delivered: 2 }, 'o pedido leva o KeyPackage opaco aos peers da sala');
+    await espera(50);
+    const joinRequest = author.events.find(evento => evento.event === 'e2eeJoinRequested');
+    assert.deepEqual(
+        joinRequest?.data,
+        {
+            version: 1,
+            group,
+            kind: 'key_package',
+            senderPeerId: entrantJoin.peerId,
+            senderUserId: '902',
+            payload: keyPackage,
+        },
+        'o remetente vem da sessão autenticada, não dos dados que o cliente escolheu',
+    );
+
+    reply = await rival.call('e2eeWelcome', {
+        version: 1,
+        group,
+        epoch: 0,
+        targetPeerId: entrantJoin.peerId,
+        payload: welcome,
+    });
+    assert.equal(reply.status, 409, 'Welcome antes de um Commit aceito é recusado');
+
+    reply = await author.call('e2eeCommit', { version: 1, group, epoch: 0, payload: commitA });
+    assert.deepEqual(reply.data, { accepted: true, epoch: 0, currentEpoch: 1 }, 'o primeiro Commit da época é aceito');
+    await espera(50);
+    assert.deepEqual(
+        entrant.events.find(evento => evento.event === 'e2eeCommit')?.data,
+        {
+            version: 1,
+            group,
+            epoch: 0,
+            kind: 'commit',
+            senderPeerId: authorJoin.peerId,
+            senderUserId: '901',
+            payload: commitA,
+        },
+        'o Commit aceito chega intacto aos outros peers',
+    );
+
+    reply = await rival.call('e2eeCommit', { version: 1, group, epoch: 0, payload: commitB });
+    assert.deepEqual(
+        reply.data,
+        { accepted: false, reason: 'different_commit_already_accepted', epoch: 0, currentEpoch: 1 },
+        'o Commit concorrente recebe recusa explícita sem avançar outra época',
+    );
+
+    reply = await author.call('e2eeWelcome', {
+        version: 1,
+        group,
+        epoch: 0,
+        targetPeerId: entrantJoin.peerId,
+        payload: welcome,
+    });
+    assert.deepEqual(reply.data, { status: 'forwarded' }, 'só o autor do Commit aceito libera o Welcome');
+    await espera(50);
+    assert.deepEqual(
+        entrant.events.find(evento => evento.event === 'e2eeWelcome')?.data,
+        {
+            version: 1,
+            group,
+            epoch: 0,
+            kind: 'welcome',
+            senderPeerId: authorJoin.peerId,
+            senderUserId: '901',
+            payload: welcome,
+        },
+        'o Welcome chega intacto e só ao peer que pediu entrada',
+    );
+
+    const overSize = Buffer.alloc(64 * 1024 + 1, 1).toString('base64url');
+    reply = await entrant.call('e2eeJoin', { version: 1, group, payload: overSize });
+    assert.equal(reply.status, 422, 'bloco MLS acima de 64 KiB é recusado antes de ser repassado');
+
+    // O rival já gastou dois blocos nesta janela. Mais 18 chegam ao teto de 20 e o seguinte é
+    // 429: o SFU não precisa reter qualquer payload para aplicar essa proteção.
+    for (let index = 0; index < 18; index += 1) {
+        reply = await rival.call('e2eeJoin', { version: 1, group, payload: keyPackage });
+        assert.equal(reply.ok, true, 'bloco dentro da janela passa');
+    }
+
+    reply = await rival.call('e2eeJoin', { version: 1, group, payload: keyPackage });
+    assert.equal(reply.status, 429, 'mais de 20 blocos E2EE em 10 s é limitado por peer');
+
+    author.close();
+    entrant.close();
+    rival.close();
 });
 
 test('o ping responde antes do join e depois dele', async () => {
@@ -386,7 +516,7 @@ test('sem resume:true a sessão volta limpa, porque o cliente não tem transport
 test('quem retoma recebe também quem está na carência, e quem chega não', async () => {
     // O app que retoma compara esta lista com a que já tinha: sem quem caiu junto, não
     // saberia dizer se a pessoa saiu da sala ou só está voltando também.
-    const sala = 'checkroom002';
+    const sala = channelId(2);
     const quemFica = await abrir();
     const ficou = await entrar(quemFica, { token: token({ room: sala, sub: '70', name: 'Fica', can: TUDO }) });
 
@@ -516,23 +646,26 @@ test('o mic revogado na retomada fecha para a sala, e o dono não recebe `produc
 test('o visitante retoma sem token e nada muda', async () => {
     // Sem `installId` o `sub` do visitante é sorteado a cada entrada: a retomada dele não
     // pode depender de a identidade bater, que é o que vale para quem vem com token.
+    const vizinho = await abrir();
+    await entrar(vizinho, { room: salaPorCodigo, name: 'Vizinho' });
     const convidado = await abrir();
-    const chegada = await entrar(convidado, { room: salaRetomada, name: 'Convidado' });
+    const chegada = await entrar(convidado, { room: salaPorCodigo, name: 'Convidado' });
     const camera = await convidado.call('producePlain', videoPuro('camera', 0x821));
     assert.equal(camera.ok, true, `a câmera do visitante deveria subir: ${JSON.stringify(camera)}`);
 
-    plateia.events.length = 0;
-    const { volta, retomada } = await retomar(convidado, { room: salaRetomada, name: 'Convidado', resumeKey: chegada.resumeKey });
+    vizinho.events.length = 0;
+    const { volta, retomada } = await retomar(convidado, { room: salaPorCodigo, name: 'Convidado', resumeKey: chegada.resumeKey });
     await espera(300);
 
     assert.equal(retomada.resumed, true, 'o visitante retoma só com a chave');
     assert.equal(retomada.peerId, chegada.peerId, 'e é a mesma pessoa');
     assert.deepEqual(retomada.can, TUDO, 'com tudo liberado, como na entrada');
-    assert.ok(!plateia.events.some(evento => evento.event === 'producerClosed'), 'a sala não vê nada fechar');
+    assert.ok(!vizinho.events.some(evento => evento.event === 'producerClosed'), 'a sala não vê nada fechar');
 
     const reply = await volta.call('pauseProducer', { producerId: camera.data.producerId });
     assert.equal(reply.ok, true, 'e a câmera de antes da queda segue de pé');
     volta.close();
+    vizinho.close();
 });
 
 test('o token de outra conta não retoma a sessão, mesmo com a chave', async () => {
@@ -552,7 +685,7 @@ test('o token de outra conta não retoma a sessão, mesmo com a chave', async ()
 test('a retomada com a sessão ainda de pé troca o socket e a mídia sobrevive', async () => {
     // O app percebe a queda antes do heartbeat do servidor e volta com o socket velho ainda
     // aberto do lado de cá. Isso virava entrada nova, que derrubava a antiga e a mídia junto.
-    const sala = 'checkroom004';
+    const sala = channelId(4);
     const tokenDaConta = () => token({ room: sala, sub: '91', name: 'Transmite', can: TUDO });
 
     const espectador = await abrir();
@@ -635,7 +768,7 @@ test('a mesma conta entrando de novo derruba a sessão antiga, nesta sala ou em 
     assert.equal(presenca.length, 1, 'a conta aparece uma vez só');
 
     const outraSala = await abrir();
-    await entrar(outraSala, { token: token({ room: 'checkroom002', sub: '60', name: 'Duplicada', can: TUDO }) });
+    await entrar(outraSala, { token: token({ room: channelId(2), sub: '60', name: 'Duplicada', can: TUDO }) });
     await espera(300);
 
     assert.equal(nova.closeCode, 4002, 'entrar em outra sala também derruba a sessão anterior');
@@ -646,8 +779,8 @@ test('a mesma conta entrando de novo derruba a sessão antiga, nesta sala ou em 
 
     const visitanteA = await abrir();
     const visitanteB = await abrir();
-    await entrar(visitanteA, { room, name: 'Visitante', installId: 'inst-duplo' });
-    await entrar(visitanteB, { room, name: 'Visitante', installId: 'inst-duplo' });
+    await entrar(visitanteA, { room: salaPorCodigo, name: 'Visitante', installId: 'inst-duplo' });
+    await entrar(visitanteB, { room: salaPorCodigo, name: 'Visitante', installId: 'inst-duplo' });
     await espera(300);
 
     assert.equal(visitanteA.closeCode, null, 'visitante não derruba ninguém: o installId é escolhido pelo próprio app');
@@ -1006,7 +1139,8 @@ test('o kick assinado derruba a sessão da conta, e a assinatura errada não der
     assert.equal(assistindo.closeCode, 4001, 'e perde o socket: a sessão expulsa não pode seguir alocando');
     assert.ok(dono.events.some(evento => evento.event === 'peerKicked'), 'e a sala também');
 
-    http = await fetch(`${URL_HTTP}/rooms/sala-que-nao-existe/kick`, { method: 'POST', body: kickBody, headers: signed('POST', '/rooms/sala-que-nao-existe/kick', kickBody) });
+    const offlineChannel = channelId(10);
+    http = await fetch(`${URL_HTTP}/rooms/${offlineChannel}/kick`, { method: 'POST', body: kickBody, headers: signed('POST', `/rooms/${offlineChannel}/kick`, kickBody) });
     assert.deepEqual(await http.json(), { kicked: 0 }, 'sala fora do ar não tem quem expulsar, e não é erro');
 });
 
@@ -1023,23 +1157,23 @@ test('o kick e o mute com a lista de salas só alcançam essas salas: a moderaç
     assert.equal(http.status, 422, 'mute sem a lista de salas é erro de validação');
 
     // As salas de outro servidor: a pessoa não está nelas, e nada muda para ela.
-    const foraDoEscopo = JSON.stringify({ userId: '20', muted: true, rooms: ['outro-servidor-a', 'outro-servidor-b'] });
+    const foraDoEscopo = JSON.stringify({ userId: '20', muted: true, rooms: [channelId(8), channelId(9)] });
     http = await fetch(`${URL_HTTP}/mute`, { method: 'POST', body: foraDoEscopo, headers: signed('POST', '/mute', foraDoEscopo) });
     assert.deepEqual(await http.json(), { muted: 0 }, 'mutar nas salas de outro servidor não acha a pessoa');
     let reply = await banido.call('producePlain', audioPuro('mic', 0x22345695));
     assert.equal(reply.data.paused, false, 'e ela continua sem o mudo: outro mic nasce aberto');
 
-    const noEscopo = JSON.stringify({ userId: '20', muted: true, rooms: ['outro-servidor-a', room] });
+    const noEscopo = JSON.stringify({ userId: '20', muted: true, rooms: [channelId(8), room] });
     http = await fetch(`${URL_HTTP}/mute`, { method: 'POST', body: noEscopo, headers: signed('POST', '/mute', noEscopo) });
     assert.deepEqual(await http.json(), { muted: 2 }, 'com a sala certa na lista, os dois mics param');
 
-    const kickFora = JSON.stringify({ userId: '20', rooms: ['outro-servidor-a'] });
+    const kickFora = JSON.stringify({ userId: '20', rooms: [channelId(8)] });
     http = await fetch(`${URL_HTTP}/kick`, { method: 'POST', body: kickFora, headers: signed('POST', '/kick', kickFora) });
     assert.deepEqual(await http.json(), { kicked: 0 }, 'banir em outro servidor não derruba a pessoa daqui');
     reply = await banido.call('ping', {});
     assert.equal(reply.ok, true, 'e o socket dela segue de pé');
 
-    const kickDentro = JSON.stringify({ userId: '20', rooms: [room, 'outro-servidor-a'] });
+    const kickDentro = JSON.stringify({ userId: '20', rooms: [room, channelId(8)] });
     http = await fetch(`${URL_HTTP}/kick`, { method: 'POST', body: kickDentro, headers: { 'content-type': 'application/json' } });
     assert.equal(http.status, 401, 'kick sem assinatura é recusado');
     http = await fetch(`${URL_HTTP}/kick`, { method: 'POST', body: kickDentro, headers: signed('POST', '/kick', kickDentro) });
@@ -1065,7 +1199,7 @@ test('o mudo da retomada que falha no mediasoup não derruba o processo', async 
     process.on('unhandledRejection', guarda);
 
     const socketFalso = () => ({ readyState: 1, OPEN: 1, send() {}, close() {}, terminate() {} });
-    const sala = new Room('sala-unitaria', { router: {}, webRtcServer: {}, worker: {} }, async () => null);
+    const sala = new Room(channelId(11), { router: {}, webRtcServer: {}, worker: {} }, async () => null);
     const antes = new Peer('peer-1', 'Falante', socketFalso(), 'chave-1', 'user:1', TUDO, '127.0.0.1');
     antes.addProducer({ id: 'mic-1', kind: 'audio', paused: false, appData: {}, async pause() { throw new Error('producer closed'); }, async resume() {} }, 'mic');
     sala.peers.set(antes.id, antes);
@@ -1078,6 +1212,33 @@ test('o mudo da retomada que falha no mediasoup não derruba o processo', async 
     await espera(50);
     process.off('unhandledRejection', guarda);
     assert.deepEqual(soltas, [], 'a rejeição do pause foi tratada, não subiu solta');
+});
+
+test('quem entra numa sala só com quem caiu ganha um grupo E2EE novo', async () => {
+    // Sem rede, como o teste acima. Todos caíram e ainda estão na carência: o app de quem entra
+    // se vê sozinho e cria um grupo do zero, que o servidor tem de aceitar desde a época 0.
+    process.env.SFU_SECRET ??= SECRET;
+    const { Room } = await import('./dist/Services/Room.js');
+
+    const socketFalso = () => ({ readyState: 1, OPEN: 1, send() {}, close() {}, terminate() {} });
+    const sala = new Room(channelId(12), { router: {}, webRtcServer: {}, worker: {} }, async () => null);
+    const identidade = sub => ({ userId: `guest:${sub}`, can: TUDO, ip: '127.0.0.1' });
+    const commit = (group, epoch) => ({ version: 1, group, epoch, payload: `commit-${epoch}`, payloadBytes: 8 });
+
+    const primeiro = sala.addPeer('A', socketFalso(), identidade('a')).peer;
+    const sessaoAntiga = sala.e2eeSessionId;
+    assert.equal(sala.acceptE2eeCommit(primeiro, commit('grupo-velho', 0)).accepted, true, 'o grupo velho anda para a época 1');
+
+    const segundo = sala.addPeer('B', socketFalso(), identidade('b')).peer;
+    assert.equal(sala.e2eeSessionId, sessaoAntiga, 'com alguém ativo, quem entra vai para o mesmo grupo');
+
+    primeiro.orphanedAt = Date.now();
+    segundo.orphanedAt = Date.now();
+    const novo = sala.addPeer('C', socketFalso(), identidade('c')).peer;
+
+    assert.notEqual(sala.e2eeSessionId, sessaoAntiga, 'só com quem caiu, a sessão E2EE é outra');
+    assert.equal(sala.acceptE2eeCommit(novo, commit('grupo-novo', 0)).accepted, true, 'e o grupo novo começa da época 0');
+    assert.equal(sala.acceptE2eeCommit(primeiro, commit('grupo-velho', 1)).accepted, false, 'o commit do grupo morto não passa');
 });
 
 test('remover alguém ao vivo pelo socket é recusado', async () => {
@@ -1093,7 +1254,16 @@ test('remover alguém ao vivo pelo socket é recusado', async () => {
  */
 const startSfu = async (port, env) => {
     const server = spawn('node', ['dist/server.js'], {
-        env: { ...process.env, SFU_PORT: String(port), SFU_SECRET: SECRET, SFU_WORKERS: '1', ...env },
+        env: {
+            ...process.env,
+            SFU_HOST: '127.0.0.1',
+            SFU_MEDIA_HOST: '127.0.0.1',
+            SFU_ANNOUNCED_ADDRESS: '127.0.0.1',
+            SFU_PORT: String(port),
+            SFU_SECRET: SECRET,
+            SFU_WORKERS: '1',
+            ...env,
+        },
         stdio: ['ignore', 'pipe', 'inherit'],
     });
 
@@ -1104,6 +1274,25 @@ const startSfu = async (port, env) => {
     });
 
     return server;
+};
+
+/** `pgrep -P` é direto no Unix; no Windows, a mesma relação vem do sistema. */
+const childPids = (parentPid) => {
+    const output =
+        process.platform === 'win32'
+            ? execFileSync(
+                  'powershell.exe',
+                  [
+                      '-NoProfile',
+                      '-NonInteractive',
+                      '-Command',
+                      `(Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${parentPid}').ProcessId`,
+                  ],
+                  { encoding: 'utf8' },
+              )
+        : execFileSync('pgrep', ['-P', String(parentPid)], { encoding: 'utf8' });
+
+    return output.split(/\r?\n/).filter(Boolean).map(Number);
 };
 
 /** O aviso ao Laravel de quem entrou e saiu. */
@@ -1136,7 +1325,7 @@ test('o webhook avisa o Laravel de quem entrou e saiu, assinado', async () => {
         await entrar(anonimo, { room: 'webhookroom', name: 'Anônimo', installId: 'inst-webhook' });
         await espera(300);
 
-        await entrar(cliente, { token: token({ room: 'webhookroom', sub: 'user:12', name: 'Edsu', can: TUDO }) });
+        await entrar(cliente, { token: token({ room: channelId(6), sub: 'user:12', name: 'Edsu', can: TUDO }) });
         await cliente.call('leave');
         await espera(500);
 
@@ -1150,6 +1339,7 @@ test('o webhook avisa o Laravel de quem entrou e saiu, assinado', async () => {
 
         assert.equal(visitante?.corpo.event, 'joined', 'o visitante avisa a entrada');
         assert.equal(visitante.corpo.name, 'Anônimo', 'com o nome que digitou');
+        assert.equal(visitante.corpo.room, 'webhookroom', 'e de qual sala por código');
 
         for (const evento of ['joined', 'left']) {
             const aviso = avisos.find(item => item.corpo.sub === 'user:12' && item.corpo.event === evento);
@@ -1157,7 +1347,7 @@ test('o webhook avisa o Laravel de quem entrou e saiu, assinado', async () => {
             assert.ok(aviso, `falta o aviso de ${evento} da conta: ${JSON.stringify(recebidos)}`);
             assert.equal(aviso.path, '/api/sfu/events', 'bate na rota do Laravel');
             assert.equal(aviso.corpo.name, 'Edsu', 'com o nome, que é o que a auditoria mostra');
-            assert.equal(aviso.corpo.room, 'webhookroom', 'e de qual sala');
+            assert.equal(aviso.corpo.room, channelId(6), 'e de qual canal');
             assert.equal(aviso.corpo.ip, '127.0.0.1', 'e de onde a pessoa veio');
             assert.equal(
                 aviso.headers['x-unkvoid-signature'],
@@ -1228,8 +1418,8 @@ test('o heartbeat derruba o socket mudo, e o socket vivo fica', async () => {
 test('duas entradas ao mesmo tempo numa sala nova caem na mesma sala', async () => {
     const [ada, grace] = await Promise.all([abrir(), abrir()]);
     const [first, second] = await Promise.all([
-        entrar(ada, { room: 'checkroom005', name: 'Ada' }),
-        entrar(grace, { room: 'checkroom005', name: 'Grace' }),
+        entrar(ada, { token: token({ room: channelId(5), sub: 'user:101', name: 'Ada', can: TUDO }) }),
+        entrar(grace, { token: token({ room: channelId(5), sub: 'user:102', name: 'Grace', can: TUDO }) }),
     ]);
 
     assert.equal(
@@ -1261,14 +1451,13 @@ test('worker morto renasce, a sala dele fecha com 1012, e o SIGTERM encerra o pr
 
         return { status: response.status, ...(await response.json()) };
     };
-    const workerPids = () =>
-        execFileSync('pgrep', ['-P', String(server.pid)], { encoding: 'utf8' }).split('\n').filter(Boolean).map(Number);
+    const workerPids = () => childPids(server.pid);
 
     try {
         const caller = new Client(url);
 
         await caller.open();
-        await entrar(caller, { room: 'workerroom', name: 'Ada' });
+        await entrar(caller, { token: token({ room: channelId(6), sub: 'user:103', name: 'Ada', can: TUDO }) });
 
         const dead = workerPids();
 
@@ -1298,17 +1487,25 @@ test('worker morto renasce, a sala dele fecha com 1012, e o SIGTERM encerra o pr
         const again = new Client(url);
 
         await again.open();
-        await entrar(again, { room: 'workerroom', name: 'Ada' });
+        await entrar(again, { token: token({ room: channelId(6), sub: 'user:104', name: 'Ada', can: TUDO }) });
         again.close();
 
-        const exited = new Promise(resolve => server.once('exit', resolve));
+        const exited = new Promise((resolve) =>
+            server.once('exit', (code, signal) => resolve({ code, signal })),
+        );
 
         server.kill('SIGTERM');
 
-        assert.equal(
-            await Promise.race([exited, espera(3000).then(() => 'vivo')]),
-            0,
+        const outcome = await Promise.race([exited, espera(3000).then(() => 'vivo')]);
+
+        assert.notEqual(
+            outcome,
+            'vivo',
             'o SIGTERM tem de encerrar o processo: de pé, ele dizia ok sem worker nenhum',
+        );
+        assert.ok(
+            outcome.code === 0 || process.platform === 'win32',
+            `o SIGTERM encerra com ${JSON.stringify(outcome)} em vez de sair normalmente`,
         );
     } finally {
         server.kill('SIGKILL');
@@ -1458,7 +1655,7 @@ test('uma sala espalhada em dois workers: consome pelo pipe, fecha junto, e o wo
     try {
         const streamer = await connect();
 
-        await entrar(streamer, { room: 'spreadroom', name: 'Transmite' });
+        await entrar(streamer, { token: token({ room: channelId(7), sub: 'user:105', name: 'Transmite', can: TUDO }) });
 
         const video = await streamer.call('producePlain', videoPuro('screen', 0x3234567a));
         const audio = await streamer.call('producePlain', audioPuro('screenAudio', 0x3234567b));
@@ -1469,7 +1666,7 @@ test('uma sala espalhada em dois workers: consome pelo pipe, fecha junto, e o wo
 
         const viewer = await connect();
 
-        await entrar(viewer, { room: 'spreadroom', name: 'Assiste' });
+        await entrar(viewer, { token: token({ room: channelId(7), sub: 'user:106', name: 'Assiste', can: TUDO }) });
 
         const transport = await viewer.call('createTransport');
 
@@ -1498,24 +1695,31 @@ test('uma sala espalhada em dois workers: consome pelo pipe, fecha junto, e o wo
             'fechar na origem fecha o espelho, e quem assistia fica sabendo',
         );
 
-        const workers = execFileSync('pgrep', ['-P', String(server.pid)], { encoding: 'utf8' })
-            .split('\n')
-            .filter(Boolean)
-            .map(Number)
-            .sort((left, right) => left - right);
+        const workers = childPids(server.pid).sort((left, right) => left - right);
 
         streamer.events.length = 0;
+        viewer.events.length = 0;
         process.kill(workers[1], 'SIGKILL');
 
-        for (let waited = 0; viewer.closeCode === null && waited < 3000; waited += 50) {
+        for (
+            let waited = 0;
+            viewer.closeCode === null && streamer.closeCode === null && waited < 3000;
+            waited += 50
+        ) {
             await espera(50);
         }
 
-        assert.equal(viewer.closeCode, 1012, 'quem estava no worker morto reconecta');
-        assert.equal(streamer.closeCode, null, 'quem estava no outro continua na sala');
+        const caiu = [streamer, viewer].find((client) => client.closeCode === 1012);
+        const ficou = caiu === streamer ? viewer : streamer;
+
+        assert.ok(caiu, 'quem estava no worker morto reconecta');
+        assert.equal(ficou.closeCode, null, 'quem estava no outro worker continua na sala');
 
         await espera(300);
-        assert.ok(streamer.events.some(evento => evento.event === 'peerLeft'), 'e vê a saída de quem caiu');
+        assert.ok(
+            ficou.events.some((evento) => evento.event === 'peerLeft'),
+            'e vê a saída de quem caiu',
+        );
 
         streamer.close();
     } finally {

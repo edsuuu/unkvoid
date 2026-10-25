@@ -14,7 +14,8 @@ final class LoginRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'email' => ['required', 'string', 'email', 'max:255'],
+            // O e-mail ou o apelido (`User::loginColumn`).
+            'email' => ['required', 'string', 'max:255'],
             'password' => ['required', 'string'],
             'device' => ['required', 'string', 'max:60'],
             // O app que sabe renovar pede o par de tokens; o antigo não manda nada e fica

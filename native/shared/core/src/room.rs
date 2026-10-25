@@ -28,6 +28,8 @@ use media::Source;
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use crate::e2ee_call::{CallCipherState, E2eeCall};
+use crate::e2ee_group::{CommitDisposition, E2eeGroupError, SignalKind};
 use crate::models::ProducerInfo;
 use crate::protocol::{Event, action, local};
 use crate::session::{Identity, Session};
@@ -44,13 +46,16 @@ const CRYPTO_SUITE: &str = "AES_CM_128_HMAC_SHA1_80";
 
 pub struct Room {
     session: Arc<Session>,
+    e2ee: Mutex<E2eeCall>,
     sending: Mutex<sharing::Session>,
     /// O que o servidor abriu para cada origem que sobe, para fechar na saída.
     producers: Mutex<HashMap<Source, Vec<String>>>,
     microphone: Mutex<Option<Arc<AudioFeed>>>,
     /// Como o microfone abre. Guardado aqui para valer também no microfone que abrir depois.
     input_mode: Mutex<sharing::InputMode>,
-    #[cfg(target_os = "macos")]
+    /// Filtros escolhidos pela conta, reutilizados se o producer for reaberto após uma queda.
+    voice_filters: Mutex<crate::voice::VoiceFilterConfig>,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     camera: Mutex<Option<Arc<sharing::VideoFeed>>>,
     watching: Mutex<Watching>,
     /// O consumer que o servidor abriu para cada producer assistido, para pausar e fechar.
@@ -79,8 +84,9 @@ pub struct Room {
     /// "Ver o que a sala vê": assistir à própria tela, que custa um decodificador a mais.
     self_view: std::sync::atomic::AtomicBool,
     /// O `resend` está refazendo o que sobe: o `room.mine` sai uma vez só, no fim. No meio a
-    /// tela já voltou e a câmera ainda não, e a interface do macOS fecharia a câmera que manda.
+    /// tela já voltou e a câmera ainda não, e a interface fecharia a câmera que manda.
     resending: std::sync::atomic::AtomicBool,
+    needs_e2ee_republish: std::sync::atomic::AtomicBool,
     /// A receita da tela que está subindo, para republicar depois de uma queda longa.
     shared: Mutex<Option<CaptureConfig>>,
     /// A da câmera, pelo mesmo motivo: antes ela era a única que não voltava da queda.
@@ -96,8 +102,8 @@ pub struct Room {
 enum CameraRecipe {
     /// Capturada pelo núcleo (a webcam do Linux).
     Captured(CaptureConfig),
-    /// Entregue pela interface quadro a quadro (o macOS): o tamanho e o ritmo do encoder.
-    #[cfg(target_os = "macos")]
+    /// Entregue pela interface quadro a quadro: o tamanho e o ritmo do encoder.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     Fed((u32, u32), u32),
 }
 
@@ -111,7 +117,10 @@ struct Opening<'a> {
 
 impl<'a> Opening<'a> {
     fn mark(marks: &'a Mutex<HashSet<String>>, producer_id: &str) -> Option<Self> {
-        lock(marks).insert(producer_id.to_owned()).then(|| Self { marks, producer_id: producer_id.to_owned() })
+        lock(marks).insert(producer_id.to_owned()).then(|| Self {
+            marks,
+            producer_id: producer_id.to_owned(),
+        })
     }
 }
 
@@ -130,15 +139,25 @@ impl Room {
         updates: Sender<String>,
     ) -> Result<(Arc<Self>, Receiver<Media>)> {
         let (session, events) = Session::join(url, room, identity).await?;
+        let (e2ee, join_signal) = E2eeCall::start(
+            &session.user_id(),
+            room,
+            &session.e2ee_session_id(),
+            session.own_peer_id().unwrap_or_default(),
+            session.peers().len() == 1,
+        )
+        .map_err(|error| anyhow!("could not start required call encryption: {error}"))?;
         let (watching, media) = Watching::new();
 
         let room = Arc::new(Self {
             session,
+            e2ee: Mutex::new(e2ee),
             sending: Mutex::default(),
             producers: Mutex::default(),
             microphone: Mutex::default(),
             input_mode: Mutex::default(),
-            #[cfg(target_os = "macos")]
+            voice_filters: Mutex::default(),
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             camera: Mutex::default(),
             watching: Mutex::new(watching),
             consumers: Mutex::default(),
@@ -154,12 +173,25 @@ impl Room {
             server_muted: std::sync::atomic::AtomicBool::new(false),
             self_view: std::sync::atomic::AtomicBool::new(false),
             resending: std::sync::atomic::AtomicBool::new(false),
+            needs_e2ee_republish: std::sync::atomic::AtomicBool::new(false),
             shared: Mutex::default(),
             filming: Mutex::default(),
             shown: Mutex::default(),
             cast: Mutex::default(),
             updates,
         });
+
+        if let Some(signal) = join_signal {
+            let wire = lock(&room.e2ee).wire(&signal);
+            room.session.client().call(action::E2EE_JOIN, wire).await?;
+        } else {
+            lock(&room.sending).set_e2ee_senders(
+                lock(&room.e2ee)
+                    .sender_set()
+                    .map_err(|e| anyhow!("could not derive E2EE send keys: {e}"))?,
+            );
+        }
+        room.announce_encryption();
 
         tokio::spawn({
             let room = Arc::clone(&room);
@@ -201,7 +233,9 @@ impl Room {
                 .collect();
 
             if arrival.tick(&screens, Instant::now()) {
-                tracing::error!("assistir: o servidor recebe a tela e nada chega aqui há 5 s, refazendo o caminho de chegada");
+                tracing::error!(
+                    "assistir: o servidor recebe a tela e nada chega aqui há 5 s, refazendo o caminho de chegada"
+                );
                 room.rewatch();
                 room.settle().await;
             }
@@ -228,14 +262,20 @@ impl Room {
             let stall = {
                 let sending = lock(&room.sending);
 
-                match sending.screen.as_ref().filter(|broadcast| !broadcast.is_muted()) {
+                match sending
+                    .screen
+                    .as_ref()
+                    .filter(|broadcast| !broadcast.is_muted())
+                {
                     Some(broadcast) => {
                         if now.duration_since(numbers_at) >= NUMBERS_EVERY {
                             broadcast.log_numbers();
                             numbers_at = now;
                         }
 
-                        watch.get_or_insert_with(|| StallWatch::new(now)).tick(broadcast.counts(), now)
+                        watch
+                            .get_or_insert_with(|| StallWatch::new(now))
+                            .tick(broadcast.counts(), now)
                     }
                     None => {
                         watch = None;
@@ -246,12 +286,16 @@ impl Room {
             };
 
             match stall {
-                Some(Stall::Transport) => tracing::error!("transmissão: o encoder devolve quadros e nada sai para a rede"),
+                Some(Stall::Transport) => {
+                    tracing::error!("transmissão: o encoder devolve quadros e nada sai para a rede")
+                }
                 Some(stall) => {
                     let (source, on_hardware) = lock(&room.sending)
                         .screen
                         .as_ref()
-                        .map_or((None, false), |broadcast| (Some(broadcast.source), broadcast.on_hardware()));
+                        .map_or((None, false), |broadcast| {
+                            (Some(broadcast.source), broadcast.on_hardware())
+                        });
 
                     // A janela que fechou (o jogo que saiu) não volta refazendo: a transmissão
                     // para, e quem transmite fica sabendo — antes ela seguia "no ar" com o último
@@ -270,12 +314,22 @@ impl Room {
                         continue;
                     }
 
-                    let fall_back = stall == Stall::Encoder && on_hardware && watch.as_ref().is_some_and(StallWatch::encoder_keeps_failing);
+                    let fall_back = stall == Stall::Encoder
+                        && on_hardware
+                        && watch
+                            .as_ref()
+                            .is_some_and(StallWatch::encoder_keeps_failing);
 
                     match stall {
-                        _ if fall_back => tracing::error!("transmissão: o encoder da placa parou de novo, passando para o do processador"),
-                        Stall::Encoder => tracing::error!("transmissão: o encoder parou de devolver quadros, refazendo captura e encoder"),
-                        _ => tracing::warn!("transmissão: a captura parou de mandar quadros (tela parada ou captura travada), refazendo"),
+                        _ if fall_back => tracing::error!(
+                            "transmissão: o encoder da placa parou de novo, passando para o do processador"
+                        ),
+                        Stall::Encoder => tracing::error!(
+                            "transmissão: o encoder parou de devolver quadros, refazendo captura e encoder"
+                        ),
+                        _ => tracing::warn!(
+                            "transmissão: a captura parou de mandar quadros (tela parada ou captura travada), refazendo"
+                        ),
                     }
 
                     let refreshed = if fall_back {
@@ -290,7 +344,9 @@ impl Room {
                                 watch.restarted(Instant::now());
                             }
                         }
-                        Err(error) => tracing::error!(error = %error, "transmissão: não deu para refazer a captura"),
+                        Err(error) => {
+                            tracing::error!(error = %error, "transmissão: não deu para refazer a captura")
+                        }
                     }
                 }
                 None => {}
@@ -301,10 +357,18 @@ impl Room {
             let (starved, roomy) = lock(&room.sending)
                 .screen
                 .as_ref()
-                .map_or((false, false), |broadcast| (broadcast.starved(), broadcast.roomy()));
+                .map_or((false, false), |broadcast| {
+                    (broadcast.starved(), broadcast.roomy())
+                });
 
             if starved || roomy {
-                let stepped = room.redo_screen(|broadcast| if starved { broadcast.step_down() } else { broadcast.step_up() });
+                let stepped = room.redo_screen(|broadcast| {
+                    if starved {
+                        broadcast.step_down()
+                    } else {
+                        broadcast.step_up()
+                    }
+                });
 
                 if let Err(error) = stepped {
                     tracing::error!(error = %error, "transmissão: o degrau de qualidade não abriu");
@@ -318,7 +382,9 @@ impl Room {
             let lost = lock(&room.sending).lost_the_server();
 
             if lost {
-                tracing::error!("transmissão: o servidor parou de responder, subindo de novo por outro caminho");
+                tracing::error!(
+                    "transmissão: o servidor parou de responder, subindo de novo por outro caminho"
+                );
                 room.resend().await;
                 watch = None;
             }
@@ -332,6 +398,15 @@ impl Room {
         // O socket fechado encerra a fila, e é aí que este laço termina.
         while let Some(event) = events.recv().await {
             let changed = self.session.apply(&event);
+
+            if matches!(
+                event.name.as_str(),
+                "e2eeJoinRequested" | "e2eeCommit" | "e2eeWelcome" | "peerLeft" | "peerKicked"
+            ) && let Err(error) = self.handle_e2ee_event(&event).await
+            {
+                tracing::error!(%error, event = %event.name, "required call encryption failed");
+                self.fail_e2ee();
+            }
 
             match event.name.as_str() {
                 "newProducer" => self.consume_all().await,
@@ -360,10 +435,17 @@ impl Room {
 
                     if self.session.resumed() {
                         self.rewatch();
-                    } else {
-                        // Entrada nova (a carência do servidor expirou) perdeu tudo o que
-                        // estava aberto lá: o que ficou aqui só atrapalha.
-                        self.republish().await;
+                    }
+
+                    // A retomada também começa do zero quando a sala ficou sem ninguém ativo
+                    // enquanto esta pessoa caía: quem entrou fez outro grupo, com outra sessão.
+                    // `restart_e2ee` fecha as chaves velhas e republica quando houver grupo
+                    // local pronto ou quando chegar o Welcome da nova identidade.
+                    if (!self.session.resumed() || self.e2ee_outdated())
+                        && let Err(error) = self.restart_e2ee().await
+                    {
+                        tracing::error!(%error, "required call encryption could not restart");
+                        self.fail_e2ee();
                     }
 
                     self.settle().await;
@@ -371,9 +453,10 @@ impl Room {
                 "producerDead" => self.died(&event.data).await,
                 "serverMuted" => self.silenced(event.data["muted"].as_bool().unwrap_or(false)),
                 "producerReceiving" => {
-                    if let (Some(producer_id), Some(receiving)) =
-                        (event.data["producerId"].as_str(), event.data["receiving"].as_bool())
-                    {
+                    if let (Some(producer_id), Some(receiving)) = (
+                        event.data["producerId"].as_str(),
+                        event.data["receiving"].as_bool(),
+                    ) {
                         lock(&self.receiving).insert(producer_id.to_owned(), receiving);
                     }
                 }
@@ -410,6 +493,237 @@ impl Room {
         }
     }
 
+    async fn handle_e2ee_event(&self, event: &Event) -> Result<()> {
+        match event.name.as_str() {
+            "e2eeJoinRequested" => {
+                let signal = lock(&self.e2ee).parse_wire(
+                    &event.data,
+                    event.data["senderUserId"].as_str().unwrap_or_default(),
+                    SignalKind::KeyPackage,
+                )?;
+                let peer_id = event.data["senderPeerId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                let commit = {
+                    let mut e2ee = lock(&self.e2ee);
+                    let needed = e2ee.receive_key_package(&peer_id, &signal)?;
+                    if needed && e2ee.is_designated_committer()? {
+                        Some(e2ee.stage_add(&signal)?)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(commit) = commit {
+                    self.submit_e2ee_commit(commit, Some(peer_id)).await?;
+                }
+            }
+            "e2eeCommit" => {
+                let signal = lock(&self.e2ee).parse_wire(
+                    &event.data,
+                    event.data["senderUserId"].as_str().unwrap_or_default(),
+                    SignalKind::Commit,
+                )?;
+                let disposition = lock(&self.e2ee).receive_commit(&signal)?;
+                match disposition {
+                    CommitDisposition::Applied => {
+                        self.refresh_e2ee_media()?;
+                        self.consume_all().await;
+                    }
+                    CommitDisposition::DeferredFuture | CommitDisposition::Rejected { .. } => {
+                        self.fail_e2ee();
+                        self.restart_e2ee().await?;
+                    }
+                    CommitDisposition::DeferredPendingLocal => {
+                        {
+                            lock(&self.e2ee).discard_pending()?;
+                        }
+                        if matches!(
+                            lock(&self.e2ee).receive_commit(&signal)?,
+                            CommitDisposition::Applied
+                        ) {
+                            self.refresh_e2ee_media()?;
+                            self.consume_all().await;
+                        }
+                    }
+                    CommitDisposition::IgnoredStale => {}
+                }
+            }
+            "e2eeWelcome" => {
+                let signal = lock(&self.e2ee).parse_wire(
+                    &event.data,
+                    event.data["senderUserId"].as_str().unwrap_or_default(),
+                    SignalKind::Welcome,
+                )?;
+                let pending_commits = lock(&self.e2ee).receive_welcome(&signal)?;
+                self.refresh_e2ee_media()?;
+                for pending in pending_commits {
+                    let disposition = lock(&self.e2ee).receive_commit(&pending)?;
+                    match disposition {
+                        CommitDisposition::Applied => self.refresh_e2ee_media()?,
+                        CommitDisposition::IgnoredStale => {}
+                        CommitDisposition::DeferredFuture | CommitDisposition::Rejected { .. } => {
+                            self.fail_e2ee();
+                            self.restart_e2ee().await?;
+                            return Ok(());
+                        }
+                        CommitDisposition::DeferredPendingLocal => {
+                            lock(&self.e2ee).discard_pending()?;
+                        }
+                    }
+                }
+                // Producers may have arrived while this peer had no MLS tree. Retry them now
+                // that the Welcome authenticates the roster and gives us receiver keys.
+                self.consume_all().await;
+                if self
+                    .needs_e2ee_republish
+                    .swap(false, std::sync::atomic::Ordering::Relaxed)
+                {
+                    self.republish().await;
+                }
+            }
+            "peerLeft" | "peerKicked" => {
+                let peer_id = event.data["peerId"].as_str().unwrap_or_default();
+                if lock(&self.e2ee).is_designated_after_peer_leaves(peer_id)? {
+                    let commit = { lock(&self.e2ee).stage_remove_peer(peer_id)? };
+                    if let Some(commit) = commit {
+                        self.submit_e2ee_commit(commit, None).await?;
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.announce_encryption();
+        Ok(())
+    }
+
+    async fn submit_e2ee_commit(
+        &self,
+        commit: crate::e2ee_group::E2eeSignal,
+        welcome_peer: Option<String>,
+    ) -> Result<()> {
+        let request = {
+            let e2ee = lock(&self.e2ee);
+            let mut value = e2ee.wire(&commit);
+            value["epoch"] = json!(commit.epoch);
+            value
+        };
+        let result = self
+            .session
+            .client()
+            .call(action::E2EE_COMMIT, request)
+            .await;
+        let answer = match result {
+            Ok(answer) => answer,
+            Err(error) => {
+                lock(&self.e2ee).discard_pending()?;
+                return Err(error);
+            }
+        };
+        if answer["accepted"].as_bool() != Some(true) {
+            lock(&self.e2ee).discard_pending()?;
+            return Ok(());
+        }
+        let welcome = lock(&self.e2ee).confirm_pending()?;
+        self.refresh_e2ee_media()?;
+        if let (Some(peer_id), Some(welcome)) = (welcome_peer, welcome) {
+            self.send_e2ee_welcome(&peer_id, Some(welcome)).await?;
+        }
+        self.consume_all().await;
+        Ok(())
+    }
+
+    async fn send_e2ee_welcome(
+        &self,
+        peer_id: &str,
+        welcome: Option<crate::e2ee_group::E2eeSignal>,
+    ) -> Result<()> {
+        let Some(welcome) = welcome else {
+            return Ok(());
+        };
+        let mut request = lock(&self.e2ee).wire(&welcome);
+        request["targetPeerId"] = json!(peer_id);
+        self.session
+            .client()
+            .call(action::E2EE_WELCOME, request)
+            .await?;
+        Ok(())
+    }
+
+    fn refresh_e2ee_media(&self) -> Result<()> {
+        let senders = lock(&self.e2ee)
+            .sender_set()
+            .map_err(|e| anyhow!("could not derive E2EE send keys: {e}"))?;
+        lock(&self.sending).set_e2ee_senders(senders);
+        let producers: Vec<_> = self
+            .session
+            .peers()
+            .into_iter()
+            .flat_map(|peer| peer.producers)
+            .collect();
+        for producer in producers {
+            let (Some(member), Some(source)) =
+                (producer.e2ee_member_id, Source::parse(&producer.source))
+            else {
+                continue;
+            };
+            let Some(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(member)
+                .ok()
+            else {
+                continue;
+            };
+            if let Ok(receiver) = lock(&self.e2ee).receiver_for_public_key(&bytes, source) {
+                lock(&self.watching).rotate_e2ee(&producer.producer_id, receiver);
+            }
+        }
+        Ok(())
+    }
+
+    fn announce_encryption(&self) {
+        self.tell("room.encryption", lock(&self.e2ee).status());
+    }
+
+    fn fail_e2ee(&self) {
+        lock(&self.e2ee).fail();
+        lock(&self.sending).set_e2ee_senders(HashMap::new());
+        self.announce_encryption();
+    }
+
+    /// O grupo MLS daqui é de outra sessão E2EE da sala: o servidor a troca quando alguém entra
+    /// sem ninguém ativo, e quem entrou fez um grupo novo enquanto esta pessoa estava caída.
+    fn e2ee_outdated(&self) -> bool {
+        lock(&self.e2ee).group_id()
+            != crate::e2ee_call::group_id(self.session.room(), &self.session.e2ee_session_id())
+    }
+
+    async fn restart_e2ee(&self) -> Result<()> {
+        self.fail_e2ee();
+        let (call, join) = E2eeCall::start(
+            &self.session.user_id(),
+            self.session.room(),
+            &self.session.e2ee_session_id(),
+            self.session.own_peer_id().unwrap_or_default(),
+            self.session.peers().len() == 1,
+        )
+        .map_err(|error| anyhow!("could not restart required call encryption: {error}"))?;
+        *lock(&self.e2ee) = call;
+        if let Some(signal) = join {
+            self.needs_e2ee_republish
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let request = lock(&self.e2ee).wire(&signal);
+            self.session
+                .client()
+                .call(action::E2EE_JOIN, request)
+                .await?;
+        } else {
+            self.refresh_e2ee_media()?;
+            self.republish().await;
+        }
+        self.announce_encryption();
+        Ok(())
+    }
+
     /// O que fazer assim que a sala abre, e de novo a cada volta.
     async fn settle(&self) {
         self.consume_all().await;
@@ -434,11 +748,11 @@ impl Room {
             })
             .filter(|(own, producer)| {
                 if *own {
-                    // ponytail: no macOS a própria câmera volta pelo SFU em vez de uma prévia
-                    // local — custa um decoder e ~150 ms de atraso na própria imagem. A saída é
-                    // um cartão com `AVCaptureVideoPreviewLayer`; o Windows e o Linux já têm a deles.
+                    // ponytail: a própria câmera volta pelo SFU em vez de uma prévia local — custa
+                    // um decoder e acrescenta atraso na própria imagem.
                     (mine && producer.source == "screen")
-                        || (cfg!(target_os = "macos") && producer.source == "camera")
+                        || (cfg!(any(target_os = "macos", target_os = "windows"))
+                            && producer.source == "camera")
                 } else {
                     !closed.contains(&producer.producer_id)
                 }
@@ -448,13 +762,20 @@ impl Room {
 
         let chosen = lock(&self.chosen).clone();
         let watched = |producer: &ProducerInfo| {
-            lock(&self.watching).is_watching(&producer.producer_id) || lock(&self.opening).contains(&producer.producer_id)
+            lock(&self.watching).is_watching(&producer.producer_id)
+                || lock(&self.opening).contains(&producer.producer_id)
         };
-        let mut screens = wanted.iter().filter(|producer| producer.source == "screen" && watched(producer)).count();
+        let mut screens = wanted
+            .iter()
+            .filter(|producer| producer.source == "screen" && watched(producer))
+            .count();
 
         for producer in &wanted {
             // Além do limite, a tela fica no "Assistir": a pessoa escolhe qual abrir.
-            if producer.source == "screen" && !watched(producer) && !chosen.contains(&producer.producer_id) {
+            if producer.source == "screen"
+                && !watched(producer)
+                && !chosen.contains(&producer.producer_id)
+            {
                 if screens >= screens_at_once() {
                     continue;
                 }
@@ -476,10 +797,35 @@ impl Room {
             return Ok(());
         }
 
+        // The SFU roster is visible immediately on room entry, before a joiner's Welcome.
+        // Leave this producer unmarked so the next applied Commit/Welcome retries it.
+        let member_bytes = producer
+            .e2ee_member_id
+            .as_deref()
+            .and_then(|id| {
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(id)
+                    .ok()
+            })
+            .ok_or_else(|| anyhow!("producer omitted its E2EE member id"))?;
+        let media_source = Source::parse(&producer.source)
+            .ok_or_else(|| anyhow!("producer has unknown E2EE source"))?;
+        let receiver = match lock(&self.e2ee).receiver_for_public_key(&member_bytes, media_source) {
+            Ok(receiver) => receiver,
+            Err(E2eeGroupError::GroupNotReady | E2eeGroupError::UnknownMember) => return Ok(()),
+            Err(error) => {
+                return Err(anyhow!(
+                    "could not authenticate producer member in MLS: {error}"
+                ));
+            }
+        };
+
         // Outra tarefa já está abrindo este: o segundo consumer ficaria órfão, com a banda dele
         // correndo para sempre e pausar e fechar agindo no outro. E a sala que já saiu não abre
         // nada: o `settle` da entrada corre ao lado de um `leave` logo em seguida.
-        let Some(_opening) = Opening::mark(&self.opening, &producer.producer_id).filter(|_| !self.session.has_left()) else {
+        let Some(_opening) = Opening::mark(&self.opening, &producer.producer_id)
+            .filter(|_| !self.session.has_left())
+        else {
             return Ok(());
         };
 
@@ -510,7 +856,10 @@ impl Room {
             return Ok(());
         }
 
-        lock(&self.receiving).insert(producer.producer_id.clone(), answer["receiving"].as_bool().unwrap_or(false));
+        lock(&self.receiving).insert(
+            producer.producer_id.clone(),
+            answer["receiving"].as_bool().unwrap_or(false),
+        );
         let server_key = decode(&answer["srtpParameters"]["keyBase64"])
             .ok_or_else(|| anyhow!("consumidor sem chave"))?;
         let kind = answer["kind"].as_str().unwrap_or(&producer.kind).to_owned();
@@ -518,8 +867,20 @@ impl Room {
             .as_str()
             .unwrap_or(&producer.source)
             .to_owned();
+        if source != producer.source {
+            let _ = self
+                .session
+                .client()
+                .call(action::CLOSE_CONSUMER, json!({ "consumerId": consumer_id }))
+                .await;
+            return Err(anyhow!(
+                "SFU consumer source differs from the MLS producer roster"
+            ));
+        }
 
-        let follows = (source == "screenAudio").then(|| self.screen_beside(&producer.producer_id)).flatten();
+        let follows = (source == "screenAudio")
+            .then(|| self.screen_beside(&producer.producer_id))
+            .flatten();
         let started = lock(&self.watching).start(Incoming {
             producer_id: producer.producer_id.clone(),
             kind: &kind,
@@ -530,6 +891,9 @@ impl Room {
             always_muted: source == "screenAudio",
             rtx: crate::watching::rtx_of(&answer),
             follows,
+            e2ee: Some(Arc::new(Mutex::new(media::MediaReceiveWindow::new(
+                receiver,
+            )))),
         });
 
         if let Err(failure) = started {
@@ -568,9 +932,16 @@ impl Room {
 
     /// A tela da pessoa que manda este producer: é ela que o som da tela acompanha.
     fn screen_beside(&self, producer_id: &str) -> Option<String> {
-        let peer = self.session.peers().into_iter().find(|peer| peer.producers.iter().any(|other| other.producer_id == producer_id))?;
+        let peer = self.session.peers().into_iter().find(|peer| {
+            peer.producers
+                .iter()
+                .any(|other| other.producer_id == producer_id)
+        })?;
 
-        peer.producers.into_iter().find(|other| other.source == "screen").map(|screen| screen.producer_id)
+        peer.producers
+            .into_iter()
+            .find(|other| other.source == "screen")
+            .map(|screen| screen.producer_id)
     }
 
     /// Para de receber uma transmissão sem sair da sala; ela continua ao vivo para os outros.
@@ -649,7 +1020,10 @@ impl Room {
     /// Se uma transmissão de vídeo não está à vista: a janela está fora, ou outra está em tela
     /// cheia.
     fn unseen(&self, producer_id: &str) -> bool {
-        self.hidden.load(std::sync::atomic::Ordering::Relaxed) || lock(&self.focus).as_deref().is_some_and(|focused| focused != producer_id)
+        self.hidden.load(std::sync::atomic::Ordering::Relaxed)
+            || lock(&self.focus)
+                .as_deref()
+                .is_some_and(|focused| focused != producer_id)
     }
 
     /// Pausa no servidor o vídeo que deixou de estar à vista e retoma o que voltou — sem mexer no
@@ -661,7 +1035,11 @@ impl Room {
             .peers()
             .iter()
             .flat_map(|peer| peer.producers.iter())
-            .filter(|producer| producer.kind == "video" && !paused.contains(&producer.producer_id) && self.unseen(&producer.producer_id))
+            .filter(|producer| {
+                producer.kind == "video"
+                    && !paused.contains(&producer.producer_id)
+                    && self.unseen(&producer.producer_id)
+            })
             .map(|producer| producer.producer_id.clone())
             .collect();
         let current = lock(&self.away).clone();
@@ -669,12 +1047,25 @@ impl Room {
         let changes = unseen
             .difference(&current)
             .map(|producer_id| (producer_id.clone(), true))
-            .chain(current.difference(&unseen).map(|producer_id| (producer_id.clone(), false)));
+            .chain(
+                current
+                    .difference(&unseen)
+                    .map(|producer_id| (producer_id.clone(), false)),
+            );
 
         for (producer_id, away) in changes.collect::<Vec<_>>() {
-            let acted = if away { action::PAUSE_CONSUMER } else { action::RESUME_CONSUMER };
+            let acted = if away {
+                action::PAUSE_CONSUMER
+            } else {
+                action::RESUME_CONSUMER
+            };
             let done = match consumers.get(&producer_id) {
-                Some(consumer_id) => self.session.client().call(acted, json!({ "consumerId": consumer_id })).await.is_ok(),
+                Some(consumer_id) => self
+                    .session
+                    .client()
+                    .call(acted, json!({ "consumerId": consumer_id }))
+                    .await
+                    .is_ok(),
                 None => true,
             };
 
@@ -733,8 +1124,10 @@ impl Room {
                 .iter()
                 .filter(|peer| peer.self_peer)
                 .flat_map(|peer| {
+                    // Só a tela: a própria câmera volta pelo SFU mesmo sem o "ver a própria tela".
                     peer.producers
                         .iter()
+                        .filter(|producer| producer.source == "screen")
                         .map(|producer| producer.producer_id.clone())
                 })
                 .collect();
@@ -870,8 +1263,8 @@ impl Room {
     }
 
     /// A câmera que a própria captura abre e codifica: no Linux o GStreamer lê a webcam e já
-    /// entrega H.264 (`capture::captures_cameras`). No macOS a câmera vem pronta da interface,
-    /// por `open_camera`.
+    /// entrega H.264 (`capture::captures_cameras`). No macOS e no Windows a câmera vem pronta da
+    /// interface, por `open_camera`.
     pub async fn open_captured_camera(&self, config: CaptureConfig) -> Result<()> {
         if !capture::captures_cameras() {
             return Err(anyhow!("a captura deste sistema não abre câmera"));
@@ -918,7 +1311,9 @@ impl Room {
     }
 
     /// Abre o microfone no servidor. Quem captura é a interface, e o som entra por `speak`.
-    pub async fn open_microphone(&self) -> Result<()> {
+    pub async fn open_microphone(&self, filters: crate::voice::VoiceFilterConfig) -> Result<()> {
+        *lock(&self.voice_filters) = filters;
+
         if lock(&self.microphone).is_some() {
             return Ok(());
         }
@@ -928,7 +1323,8 @@ impl Room {
 
     async fn reopen_microphone(&self) -> Result<()> {
         let producers = self.open(&[Some(Source::Mic)]).await?;
-        let opened = lock(&self.sending).feed(Source::Mic);
+        let filters = *lock(&self.voice_filters);
+        let opened = lock(&self.sending).feed(Source::Mic, filters);
 
         let feed = match opened {
             Ok(feed) => Arc::new(feed),
@@ -970,6 +1366,12 @@ impl Room {
         }
     }
 
+    pub fn set_input_volume(&self, volume: u16) {
+        if let Some(feed) = lock(&self.microphone).as_ref() {
+            feed.set_input_volume(volume);
+        }
+    }
+
     /// A tecla de apertar para falar desceu ou subiu.
     pub fn talk(&self, talking: bool) {
         if let Some(feed) = lock(&self.microphone).as_ref() {
@@ -986,13 +1388,37 @@ impl Room {
         }
     }
 
+    /// Injeta um efeito na fila do microfone; o worker mistura depois do gate sem bloquear a captura.
+    pub fn inject_voice_audio(&self, samples: &[f32]) -> bool {
+        lock(&self.microphone)
+            .as_ref()
+            .is_some_and(|feed| feed.inject(samples))
+    }
+
+    /// O mudo e o surdo desta pessoa, para quem está na sala e quem vê a lista de fora: o SFU
+    /// guarda no `Peer`, devolve na presença e publica `VoiceMuteUpdated` (ver o CONTRATO).
+    pub async fn voice_state(&self, muted: bool, deafened: bool) {
+        if let Err(failure) = self
+            .session
+            .client()
+            .call(
+                action::VOICE_STATE,
+                json!({ "muted": muted, "deafened": deafened }),
+            )
+            .await
+        {
+            tracing::warn!(%failure, muted, deafened, "a sala não soube do mudo e do surdo");
+        }
+    }
+
     /// Mutar também pausa o producer: é o que faz a sala desenhar o microfone fechado.
     pub async fn mute_microphone(&self, muted: bool) {
         let Some(feed) = lock(&self.microphone).clone() else {
             return;
         };
 
-        self.user_muted.store(muted, std::sync::atomic::Ordering::Relaxed);
+        self.user_muted
+            .store(muted, std::sync::atomic::Ordering::Relaxed);
 
         // Silenciado por um moderador fica silenciado: o servidor recusa retomar o producer.
         if self.server_muted.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1032,7 +1458,7 @@ impl Room {
     }
 
     /// Abre a câmera no servidor. Quem captura é a interface, e o quadro entra por `show`.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub async fn open_camera(&self, size: (u32, u32), frame_rate: u32) -> Result<()> {
         if lock(&self.camera).is_some() {
             return Ok(());
@@ -1061,7 +1487,7 @@ impl Room {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub async fn close_camera(&self) {
         *lock(&self.camera) = None;
         *lock(&self.filming) = None;
@@ -1069,8 +1495,8 @@ impl Room {
         self.retire(Source::Camera).await;
     }
 
-    /// Um quadro da câmera, no buffer de GPU em que o sistema o entregou.
-    #[cfg(target_os = "macos")]
+    /// Um quadro da câmera, já enviado pela interface para a GPU.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub fn show(&self, surface: &capture::GpuSurface, timestamp_ns: u64) {
         let feed = lock(&self.camera).clone();
 
@@ -1097,7 +1523,7 @@ impl Room {
         self.stop_sharing().await;
         self.close_microphone().await;
 
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.close_camera().await;
 
         // A webcam do Linux é captura do núcleo: sem isto ela seguia filmando (e com a luz
@@ -1191,6 +1617,7 @@ impl Room {
     /// Abre no servidor cada origem pedida e aponta o remetente para a porta que ele deu —
     /// fora do cadeado da captura e antes dela, porque resolver o endereço pode ir ao DNS.
     async fn open(&self, sources: &[Option<Source>]) -> Result<Vec<String>> {
+        self.wait_for_e2ee().await?;
         let mut producers = Vec::new();
         let mut last = Value::Null;
 
@@ -1201,10 +1628,19 @@ impl Room {
             });
 
             merge(&mut request, lock(&self.sending).sfu_offer(*source));
+            request["e2eeMemberId"] = json!(
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(lock(&self.e2ee).own_member_id().as_bytes())
+            );
 
             // A tela abriu e o som dela não: sem fechar a tela aqui, a sala via um cartão vazio
             // até o servidor desistir dele em 30 s.
-            last = match self.session.client().call(action::PRODUCE_PLAIN, request).await {
+            last = match self
+                .session
+                .client()
+                .call(action::PRODUCE_PLAIN, request)
+                .await
+            {
                 Ok(answer) => answer,
                 Err(failure) => {
                     self.close(producers).await;
@@ -1231,12 +1667,45 @@ impl Room {
         Ok(producers)
     }
 
+    /// Opening a source is allowed to race MLS establishment, but no SFU producer or media
+    /// sender is created until encryption is active. A bounded wait turns a permanent failure
+    /// into an actionable E2EE error instead of silently downgrading to clear media.
+    async fn wait_for_e2ee(&self) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            match lock(&self.e2ee).state() {
+                CallCipherState::Encrypted => return Ok(()),
+                CallCipherState::Failed(reason) => {
+                    tracing::error!(reason = ?reason, "call encryption failed while media open was pending");
+                    return Err(anyhow!("call encryption failed: {reason:?}"));
+                }
+                CallCipherState::Establishing => {}
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::error!(
+                    timeout_seconds = 15,
+                    "call encryption did not establish before pending media open expired"
+                );
+                self.fail_e2ee();
+                return Err(anyhow!(
+                    "call encryption failed: timed out after 15 seconds"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
     /// O SFU avisa a sala inteira de um producer novo, menos quem o abriu. Sem o próprio
     /// producer no elenco, "ver o que a sala vê" não teria o que assistir.
     fn note_own_producer(&self, event: &str, producer_id: &str, source: &Source) {
         let Some(own) = self.session.peers().into_iter().find(|peer| peer.self_peer) else {
             return;
         };
+
+        // Com o membro MLS, como o SFU o anuncia aos outros: sem ele o `consume` recusa a
+        // própria tela, e o "ver o que a sala vê" nunca abria.
+        let member = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(lock(&self.e2ee).own_member_id().as_bytes());
 
         self.session.apply(&Event {
             name: event.to_owned(),
@@ -1246,6 +1715,7 @@ impl Room {
                 "producerId": producer_id,
                 "kind": if source.is_video() { "video" } else { "audio" },
                 "source": source.name(),
+                "e2eeMemberId": member,
             }),
         });
     }
@@ -1292,6 +1762,8 @@ impl Room {
     /// Depois de uma entrada nova (a carência do servidor expirou) ele não tem mais nada desta
     /// pessoa: o que estava aberto aqui é descartado, e o que ela transmitia sobe de novo.
     async fn republish(&self) {
+        self.needs_e2ee_republish
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         lock(&self.watching).stop(None);
         lock(&self.consumers).clear();
         lock(&self.paused).clear();
@@ -1316,18 +1788,22 @@ impl Room {
             [sending.screen.take(), sending.camera.take()]
         };
 
-        self.resending.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.resending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
 
         for mut broadcast in broadcasts.into_iter().flatten() {
             let _ = tokio::task::block_in_place(|| broadcast.stop());
         }
 
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             *lock(&self.camera) = None;
         }
 
-        let producers: Vec<String> = lock(&self.producers).drain().flat_map(|(_, opened)| opened).collect();
+        let producers: Vec<String> = lock(&self.producers)
+            .drain()
+            .flat_map(|(_, opened)| opened)
+            .collect();
 
         self.close(producers).await;
 
@@ -1354,12 +1830,14 @@ impl Room {
             }
         }
 
-        // A câmera volta como a tela. No macOS a interface segue entregando quadros por `show`,
-        // e eles passam a subir pelo remetente novo assim que ele abre.
+        // A câmera volta como a tela. A interface segue entregando quadros por `show`, e eles
+        // passam a subir pelo remetente novo assim que ele abre.
         let reopened = match camera {
             Some(CameraRecipe::Captured(config)) => Some(self.open_captured_camera(config).await),
-            #[cfg(target_os = "macos")]
-            Some(CameraRecipe::Fed(size, frame_rate)) => Some(self.open_camera(size, frame_rate).await),
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            Some(CameraRecipe::Fed(size, frame_rate)) => {
+                Some(self.open_camera(size, frame_rate).await)
+            }
             None => None,
         };
 
@@ -1368,7 +1846,8 @@ impl Room {
             self.tell("room.failed", json!({ "what": "camera" }));
         }
 
-        self.resending.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.resending
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         self.announce_mine();
     }
 
@@ -1386,7 +1865,8 @@ impl Room {
     /// producer; aqui o microfone cala de verdade e a interface mostra — antes ele seguia aberto
     /// na tela, falando para ninguém, e desmutar falhava calado. Como no app em React.
     fn silenced(&self, muted: bool) {
-        self.server_muted.store(muted, std::sync::atomic::Ordering::Relaxed);
+        self.server_muted
+            .store(muted, std::sync::atomic::Ordering::Relaxed);
 
         if let Some(feed) = lock(&self.microphone).as_ref() {
             feed.set_muted(muted || self.user_muted.load(std::sync::atomic::Ordering::Relaxed));
@@ -1405,7 +1885,11 @@ impl Room {
         let producer_id = data["producerId"].as_str().unwrap_or_default();
 
         // O aviso de um producer que já foi trocado não derruba o que subiu no lugar dele.
-        if !lock(&self.producers).values().flatten().any(|opened| opened == producer_id) {
+        if !lock(&self.producers)
+            .values()
+            .flatten()
+            .any(|opened| opened == producer_id)
+        {
             return;
         }
 
@@ -1447,7 +1931,7 @@ impl Room {
         *lock(&self.microphone) = None;
         *lock(&self.filming) = None;
 
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             *lock(&self.camera) = None;
         }
@@ -1502,7 +1986,11 @@ impl Room {
 /// em React. Cada tela 1080p60 decodificada custa perto de um núcleo; as que passam disso ficam
 /// no "Assistir".
 fn screens_at_once() -> usize {
-    if std::thread::available_parallelism().map_or(4, std::num::NonZero::get) <= 4 { 2 } else { 4 }
+    if std::thread::available_parallelism().map_or(4, std::num::NonZero::get) <= 4 {
+        2
+    } else {
+        4
+    }
 }
 
 fn address_of(answer: &Value) -> String {
@@ -1579,7 +2067,10 @@ pub fn signal_bars(round_trip_ms: u64) -> u8 {
 mod tests {
     #[test]
     fn the_mic_is_drawn_on_while_it_is_still_opening() {
-        let joined = Mine { can_speak: true, ..Mine::default() };
+        let joined = Mine {
+            can_speak: true,
+            ..Mine::default()
+        };
 
         assert!(!joined.mic_shown_off(true));
         assert!(joined.mic_shown_off(false));
@@ -1587,8 +2078,17 @@ mod tests {
 
     #[test]
     fn a_muted_or_voiceless_mic_is_drawn_off_even_while_opening() {
-        let muted = Mine { can_speak: true, mic: true, mic_muted: true, ..Mine::default() };
-        let voiceless = Mine { can_speak: false, mic: false, ..Mine::default() };
+        let muted = Mine {
+            can_speak: true,
+            mic: true,
+            mic_muted: true,
+            ..Mine::default()
+        };
+        let voiceless = Mine {
+            can_speak: false,
+            mic: false,
+            ..Mine::default()
+        };
 
         assert!(muted.mic_shown_off(true));
         assert!(voiceless.mic_shown_off(true));
@@ -1596,7 +2096,11 @@ mod tests {
 
     #[test]
     fn an_open_mic_that_can_speak_is_drawn_on() {
-        let open = Mine { can_speak: true, mic: true, ..Mine::default() };
+        let open = Mine {
+            can_speak: true,
+            mic: true,
+            ..Mine::default()
+        };
 
         assert!(!open.mic_shown_off(false));
     }
@@ -1614,7 +2118,10 @@ mod tests {
 
     #[test]
     fn the_signal_loses_a_bar_at_each_cut() {
-        assert_eq!([12, 80, 81, 150, 151, 250, 251, 900].map(super::signal_bars), [4, 4, 3, 3, 2, 2, 1, 1]);
+        assert_eq!(
+            [12, 80, 81, 150, 151, 250, 251, 900].map(super::signal_bars),
+            [4, 4, 3, 3, 2, 2, 1, 1]
+        );
     }
 
     use super::*;

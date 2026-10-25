@@ -14,5 +14,9 @@ rand = "0.8"
 aes-gcm = "0.10"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
+[features]
+# O Unkvoid Beta: pasta e chave próprias, ao lado do app instalado.
+beta = []
+
 [dev-dependencies]
 tempfile = "3"

@@ -1,6 +1,6 @@
 ---
 name: app
-description: Especialista no app do Unkvoid (`native/`) — os apps nativos (Windows/Slint, Linux/GTK4, macOS/SwiftUI), o núcleo em Rust (`shared/core`, `media`, `capture`, `clips`), captura, encoder por hardware, RTP puro + SRTP, quem assiste, som, e o Tauri legado (`apps/desktop`). Use para qualquer tarefa que toque `native/`. Não mexe em `web/` nem `sfu/`.
+description: Especialista no app do Unkvoid (`native/`) — o app único em transição de `apps/unkvoid` para `apps/unkvoid`, o núcleo em Rust (`shared/core`, `media`, `capture`, `clips`), captura, encoder por hardware, RTP puro + SRTP, quem assiste, som e publicação. Use para qualquer tarefa que toque `native/`. Não mexe em `web/` nem `sfu/`.
 ---
 
 Você é o dono do módulo `native/` do Unkvoid. Leia antes de escrever: `CLAUDE.md`,
@@ -19,16 +19,14 @@ são 16 666 µs por quadro).
 ```
 native/shared/core/      a regra: sala (room.rs), sessão e reconexão (session.rs, reconnect.rs),
                          transmitir (sharing.rs), assistir (watching.rs), tempo real, API,
-                         motivos de falha (failure.rs), log do dia (logbook.rs), ABI do Mac (ffi.rs)
+                         motivos de falha (failure.rs) e log do dia (logbook.rs)
 native/shared/media/     encoder (windows.rs, macos.rs), decoder do Windows (windows_decoder.rs),
                          RTP puro: PlainSender (plain.rs, pacer.rs, governor.rs) e PlainReceiver
                          (receiver.rs, recovery.rs), Playout (playout.rs), H.264/Opus (unpack.rs)
 native/shared/capture/   tela, áudio do sistema, mic e câmera, por plataforma
 native/shared/clips/     o replay (Clips) do Windows
-native/apps/windows/     Slint: bridge.rs (a interface ↔ núcleo), watching.rs, sound.rs, clips/
-native/apps/linux/       GTK4: bridge.rs, watching.rs (players GStreamer), sending.rs, screens/
-native/apps/macos/       SwiftUI sobre a ABI do núcleo (`./run.sh`)
-native/apps/desktop/     Tauri + React: legado, ainda publicado onde não há nativo
+native/apps/unkvoid/     app único, nome temporário antes de `apps/unkvoid`
+native/release/          assinatura minisign, publicação do site e APT, validação do `.deb`
 ```
 
 ## Estado por plataforma
@@ -36,8 +34,7 @@ native/apps/desktop/     Tauri + React: legado, ainda publicado onde não há na
 | | Tela e encoder | Assistir | Som |
 |---|---|---|---|
 | Windows | Graphics Capture (Desktop Duplication no 10, `UNKVOID_DUPLICATION=on` força) → VideoProcessor → MFT de hardware; sem nenhum, MFT de software em 720p30. Duas paradas seguidas do da placa caem para a CPU | `PlainReceiver` → Media Foundation na placa (DXVA, NV12→RGBA no VideoProcessor), CPU de reserva → `SharedPixelBuffer` RGBA | WASAPI: loopback por processo, saída e mic que reabrem quando o aparelho some |
-| Linux | `gst-launch-1.0` filho: `ximagesrc` (X11) ou `pipewiresrc` pelo portal (Wayland) → `nvh264enc`/`vah264enc`/`vaapih264enc` sondados, senão `x264enc` em 720p30 | `PlainReceiver` → player GStreamer por producer, no horário do `Playout` | PulseAudio/PipeWire (move sozinho o fluxo do padrão) |
-| macOS | ScreenCaptureKit + VideoToolbox | VideoToolbox | AVAudioEngine (cancela eco) |
+| Linux | `gst-launch-1.0` filho: `ximagesrc` (X11) ou `pipewiresrc` pelo portal (Wayland) → `nvh264enc`/`vah264enc`/`vaapih264enc` sondados, senão `x264enc` em 720p30 | `PlainReceiver` → GStreamer, no horário do `Playout` | PulseAudio/PipeWire (move sozinho o fluxo do padrão) |
 
 Ajustes por ambiente: `UNKVOID_SERVER` (site; padrão é produção), `UNKVOID_ENCODER=cpu`,
 `UNKVOID_DECODER=cpu`, `UNKVOID_CAPTURE=x11|portal` (o WSLg define `WAYLAND_DISPLAY` sem portal:
@@ -63,8 +60,6 @@ use `x11`), `UNKVOID_ABR=off` (sem governador de taxa), `UNKVOID_QUALITY_VS_SPEE
 
 ## Regras de negócio que a interface obedece
 
-- A sala por código é o caminho sem conta (nome, criar ou colar código, sem banco nem login): não
-  a degrade.
 - O app **só esconde botão**: quem autoriza é o Laravel e o SFU. Todo 403 vira aviso.
 - Tela só **dentro de um canal de voz**. Áudio de tela chega **mudo**; mic chega ligado. Câmera é
   cartão pequeno.
@@ -80,29 +75,24 @@ use `x11`), `UNKVOID_ABR=off` (sem governador de taxa), `UNKVOID_QUALITY_VS_SPEE
 - Regras do `CLAUDE.md` (inglês no código, comentário só o porquê, sem rustfmt, regra no `core`,
   erro sem caminho/código). Trabalho bloqueante fora do cadeado da sessão ou em `block_in_place`.
 - Toda falha conta ou loga — mas nunca log por quadro: logue a primeira e conte o resto.
-- No Tauri (`apps/desktop/ui`): **nenhum comentário**; `ui/core` uma classe por arquivo, sem DOM,
-  estado só pela `Store`; `ui/components` React, um componente por arquivo, que lê com `useStore`
-  e chama o núcleo — regra de negócio nunca em componente. Import no topo com a extensão
-  `.ts`/`.tsx`, tipo da API em `Models.ts`, nada de `enum` nem parâmetro-propriedade, nada de
-  referência crua a `RTCRtpReceiver`/`RTCRtpSender` (o WebKitGTK sem WebRTC lança: use `typeof`).
-  O `check-ui.py` e o ESLint cobram o resto. Testes em `tests/unit/<área>.test.ts` (hub, media,
-  voice, chat, sfu-client, broadcast, components).
+- A sala por código é o caminho sem conta (nome, criar ou colar código, sem banco nem login): não
+  a degrade.
+- A interface só traduz a intenção da pessoa e o estado do `core`. Caminho, token, decisão de
+  permissão e reconexão ficam no núcleo, para o futuro nome `apps/unkvoid` não duplicar regra.
 
 ## Antes de dizer que acabou
 
 ```bash
-cd native && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # Linux
-cd native && cargo clippy --workspace --exclude unkvoid-linux --all-targets -- -D warnings && cargo test --workspace --exclude unkvoid-linux   # Windows
-cd native/apps/macos && ./run.sh test
-cd native/apps/desktop && npm run check && npm run build   # se mexeu no Tauri
+cd native && cargo clippy -p unkvoid --all-targets -- -D warnings && cargo test -p unkvoid
+python3 native/tests/static/check-language.py
 ```
 
 Lógica nova em Rust deixa um teste, no arquivo do assunto. A prova viva é o exemplo
 `cargo run -p core-app --example room -- <ws(s)://…/sfu> <sala> share|watch [segundos] [window:<id>]`
 (fps, keyframes, perdidos, pausas e atraso por segundo); rodar o binário velho e o novo na mesma
-sala é o A/B. Testes vivos ignorados: `cargo test -p unkvoid-windows -- --ignored` e
-`UNKVOID_CAPTURE=x11 cargo test -p unkvoid-linux -- --ignored` (precisa de alguém escutando na
-porta). Antes de publicar, entre numa sala contra a produção (`wss://unkvoid.com/sfu`).
+sala é o A/B. Testes vivos ignorados: `cargo test -p unkvoid -- --ignored` (precisa de
+alguém escutando na porta). Antes de publicar, entre numa sala contra a produção
+(`wss://unkvoid.com/sfu`).
 
 ## Armadilhas já pagas
 
@@ -115,10 +105,6 @@ porta). Antes de publicar, entre numa sala contra a produção (`wss://unkvoid.c
 - Buffers de socket pequenos (64 KB no Windows) perdem keyframe inteiro: 16 MB na chegada, 4 MB na
   saída.
 - Linux: o `gst-launch` filho não aceita pedido de quadro-chave, então o GOP fica em 1 s.
-- WSLg: o GTK não aceita clique sintético (valide por teste e por `import -window`), a tela
-  inteira sai preta (compartilhe uma janela), e uma compilação de Rust por vez no WSL.
+- WSLg: uma compilação de Rust por vez; duas trocam memória com o disco até o WSL parar de
+  responder.
 - Windows não compila de dentro do WSL: veja `docs/BUILD-WINDOWS.md`.
-- Tauri: o fps sai de `getVideoPlaybackQuality()` (o WebKitGTK não tem
-  `requestVideoFrameCallback`); `backdrop-filter` prende `position: fixed` no cartão (a tela
-  cheia sai por portal); editar `ui/core` no `npm run dev` recarrega a página e derruba a voz;
-  duas classes de cor na mesma string valem pela ordem do CSS gerado, não da escrita.

@@ -28,6 +28,7 @@ export class SubscriptionController {
                 socket: request.session.socket,
                 userId: '',
                 name: '',
+                status: 'offline',
             });
 
             return { channel };
@@ -43,7 +44,12 @@ export class SubscriptionController {
             return { channel, members: [] };
         }
 
-        const subscriber = { socket: request.session.socket, userId, name: authorized ?? name };
+        const subscriber = {
+            socket: request.session.socket,
+            userId,
+            name: authorized.name ?? name,
+            status: authorized.status,
+        };
 
         if (!this.subscriptions.add(channel, subscriber)) {
             return { channel, members: this.subscriptions.presence(channel) };
@@ -55,7 +61,7 @@ export class SubscriptionController {
             this.broadcaster.send(
                 channel,
                 'presence.joining',
-                { id: userId, name: subscriber.name },
+                { id: userId, name: subscriber.name, status: subscriber.status },
                 request.session.socket,
             );
         }

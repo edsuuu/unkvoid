@@ -26,9 +26,11 @@ use Throwable;
  * @property int $position
  * @property int $permissions
  * @property bool $is_everyone
+ * @property bool $hoist
+ * @property bool $mentionable
  * @property-read Server $server
  */
-#[Fillable(['server_id', 'name', 'color', 'position', 'permissions', 'is_everyone'])]
+#[Fillable(['server_id', 'name', 'color', 'position', 'permissions', 'is_everyone', 'hoist', 'mentionable'])]
 final class ServerRole extends Model implements Auditable
 {
     use AuditableTrait;
@@ -43,7 +45,7 @@ final class ServerRole extends Model implements Auditable
     }
 
     /**
-     * @param  array{name?: string, color?: ?string, permissions?: int, position?: int}  $changes
+     * @param  array{name?: string, color?: ?string, permissions?: int, position?: int, hoist?: bool, mentionable?: bool}  $changes
      *
      * @throws Throwable
      */
@@ -101,6 +103,8 @@ final class ServerRole extends Model implements Auditable
             'position' => 'integer',
             'permissions' => 'integer',
             'is_everyone' => 'boolean',
+            'hoist' => 'boolean',
+            'mentionable' => 'boolean',
         ];
     }
 }

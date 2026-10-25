@@ -1,7 +1,7 @@
 //! Voltar para onde se estava depois que a atualização fechou o app.
 //!
-//! O instalador mata o processo e abre a versão nova. O que a pessoa fazia — a sala por
-//! código ou o canal de voz, e a tela no ar — fica guardado aqui um instante antes, e a versão
+//! O instalador mata o processo e abre a versão nova. O canal de voz e a tela no ar ficam
+//! guardados aqui um instante antes, e a versão
 //! nova lê uma vez só. Quem assistia volta assistindo sem nada guardado: entrar na sala já
 //! abre as telas de quem está transmitindo.
 
@@ -21,10 +21,8 @@ const FRESH: Duration = Duration::from_secs(10 * 60);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Resume {
-    /// O código da sala, ou o id do canal de voz.
+    /// O id do canal de voz.
     pub room: String,
-    /// O nome com que se entra numa sala por código.
-    pub name: String,
     pub voice: Option<VoiceSeat>,
     /// A tela no ar, como o seletor a manda: `sharing::capture_config` a lê de volta.
     pub share: Option<Value>,
@@ -83,7 +81,6 @@ mod tests {
     fn sharing_in_voice() -> Resume {
         Resume {
             room: "01j9zchannel".into(),
-            name: String::new(),
             voice: Some(VoiceSeat { name: "geral".into(), server: Some(7) }),
             share: Some(serde_json::json!({ "source": "window:42", "quality": "1080", "fps": 60 })),
             saved_at: 0,

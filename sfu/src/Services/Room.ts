@@ -8,7 +8,7 @@ import type {
     WebRtcTransport,
     Worker,
 } from 'mediasoup/types';
-import { randomUUID, randomBytes } from 'node:crypto';
+import { createHash, randomUUID, randomBytes } from 'node:crypto';
 import type { WebSocket } from 'ws';
 
 import { Peer, type ProducerDescription } from './Peer.js';
@@ -16,10 +16,15 @@ import { Webhook } from './Webhook.js';
 import { config } from '../Config/index.js';
 import type { SourceName } from '../Enums/Source.js';
 import {
+    ConflictException,
     NotFoundException,
     ServiceUnavailableException,
+    TooManyRequestsException,
     ValidationException,
 } from '../Exceptions/ApiException.js';
+import type { E2eeCommit } from '../Http/Request/E2eeCommitRequest.js';
+import type { E2eeOpaquePayload } from '../Http/Request/E2eeRequest.js';
+import type { E2eeWelcome } from '../Http/Request/E2eeWelcomeRequest.js';
 
 export type ProducerOwner = { peer: Peer; producer: Producer };
 
@@ -28,6 +33,20 @@ export type JoinOutcome = { peer: Peer; resumed: boolean };
 const GRACE_MS = 30_000;
 
 const MAX_TRANSPORTS = 8;
+
+/** Per peer, in a rolling window. Payloads are not retained in this accounting. */
+const E2EE_RATE_WINDOW_MS = 10_000;
+const E2EE_MAX_MESSAGES_PER_WINDOW = 20;
+const E2EE_MAX_BYTES_PER_WINDOW = 256 * 1024;
+const E2EE_MAX_GROUPS_PER_ROOM = 4;
+
+type E2eeRateSample = { at: number; bytes: number };
+
+/** The only persistent MLS metadata in the room: no KeyPackage, Commit, or Welcome bytes. */
+type E2eeGroupState = {
+    currentEpoch: number;
+    lastAccepted: { epoch: number; senderPeerId: string; payloadDigest: string } | null;
+};
 
 export type PeerDescription = {
     peerId: string;
@@ -62,6 +81,13 @@ export class Room {
     private readonly routers: MediaRouter[];
 
     private readonly piped = new Map<string, Promise<void>>();
+
+    private readonly e2eeGroups = new Map<string, E2eeGroupState>();
+
+    private readonly e2eeRates = new Map<string, E2eeRateSample[]>();
+
+    /** Random id of the live MLS group: a new one is minted whenever nobody active holds it. */
+    public e2eeSessionId = randomBytes(16).toString('base64url');
 
     private expanding: Promise<MediaRouter | null> | null = null;
 
@@ -244,6 +270,14 @@ export class Room {
         // Mutado pelo servidor já entra calado: o token leva `speak` (a permissão) e a marca
         // separada, para o desmutar devolver a voz sem a pessoa sair e entrar.
         peer.serverMuted = identity.muted === true;
+
+        // Sem ninguém ativo (só quem caiu e ainda pode voltar), o app de quem entra se vê sozinho
+        // e cria um grupo MLS do zero. O grupo antigo sai junto: com o mesmo id e a época velha
+        // guardada aqui, os commits do novo eram recusados como velhos e ninguém mais entrava.
+        if (![...this.peers.values()].some((other) => other !== previous && !other.isOrphaned())) {
+            this.e2eeSessionId = randomBytes(16).toString('base64url');
+            this.e2eeGroups.clear();
+        }
 
         this.peers.set(peer.id, peer);
 
@@ -455,6 +489,7 @@ export class Room {
         console.log(`[INFO] left room=${this.id} sub=${peer.userId} peer=${peer.id} ip=${peer.ip}`);
         peer.close();
         this.peers.delete(peer.id);
+        this.e2eeRates.delete(peer.id);
         this.broadcast('peerLeft', { peerId: peer.id }, peer.id);
 
         if (![...this.peers.values()].some((other) => other.userId === peer.userId)) {
@@ -549,7 +584,7 @@ export class Room {
             .createPlainTransport({
                 listenInfo: {
                     protocol: 'udp',
-                    ip: '0.0.0.0',
+                    ip: config.mediaHost,
                     announcedAddress: config.announcedAddress,
                 },
                 rtcpMux: true,
@@ -603,6 +638,180 @@ export class Room {
         }
 
         throw new NotFoundException(`producer ${producerId} does not exist in this room`);
+    }
+
+    /**
+     * Sends a new peer's opaque KeyPackage as a request for an existing member to add it. The
+     * relay keeps only the group's epoch state; an offline/new peer must send a fresh request and
+     * receive a fresh Welcome rather than replaying secret-bearing historical messages.
+     */
+    public relayE2eeJoin(peer: Peer, signal: E2eeOpaquePayload): number {
+        this.admitE2ee(peer, signal.payloadBytes);
+
+        return this.broadcastE2ee(
+            'e2eeJoinRequested',
+            {
+                version: signal.version,
+                group: signal.group,
+                kind: 'key_package',
+                senderPeerId: peer.id,
+                senderUserId: peer.userId,
+                payload: signal.payload,
+            },
+            peer.id,
+        );
+    }
+
+    /**
+     * Atomically accepts the first Commit advertised for the current epoch. Its bytes stay on
+     * the wire only: retaining a digest makes a lost reply idempotent without retaining MLS
+     * state. Later or competing Commits get an explicit rejection and cannot split the group.
+     */
+    public acceptE2eeCommit(
+        peer: Peer,
+        commit: E2eeCommit,
+    ): {
+        accepted: boolean;
+        reason?: 'stale_epoch' | 'future_epoch' | 'different_commit_already_accepted';
+        epoch: number;
+        currentEpoch: number;
+    } {
+        this.admitE2ee(peer, commit.payloadBytes);
+        const state = this.e2eeGroup(commit.group);
+        const payloadDigest = createHash('sha256').update(commit.payload).digest('base64url');
+
+        if (commit.epoch < state.currentEpoch) {
+            if (
+                state.lastAccepted?.epoch === commit.epoch &&
+                state.lastAccepted.senderPeerId === peer.id &&
+                state.lastAccepted.payloadDigest === payloadDigest
+            ) {
+                return { accepted: true, epoch: commit.epoch, currentEpoch: state.currentEpoch };
+            }
+
+            return {
+                accepted: false,
+                reason:
+                    state.lastAccepted?.epoch === commit.epoch
+                        ? 'different_commit_already_accepted'
+                        : 'stale_epoch',
+                epoch: commit.epoch,
+                currentEpoch: state.currentEpoch,
+            };
+        }
+
+        if (commit.epoch > state.currentEpoch) {
+            return {
+                accepted: false,
+                reason: 'future_epoch',
+                epoch: commit.epoch,
+                currentEpoch: state.currentEpoch,
+            };
+        }
+
+        state.lastAccepted = { epoch: commit.epoch, senderPeerId: peer.id, payloadDigest };
+        state.currentEpoch += 1;
+        this.broadcastE2ee(
+            'e2eeCommit',
+            {
+                version: commit.version,
+                group: commit.group,
+                epoch: commit.epoch,
+                kind: 'commit',
+                senderPeerId: peer.id,
+                senderUserId: peer.userId,
+                payload: commit.payload,
+            },
+            peer.id,
+        );
+
+        return { accepted: true, epoch: commit.epoch, currentEpoch: state.currentEpoch };
+    }
+
+    /** A Welcome is authorized only for the peer whose Commit the relay accepted for that epoch. */
+    public relayE2eeWelcome(peer: Peer, welcome: E2eeWelcome): void {
+        this.admitE2ee(peer, welcome.payloadBytes);
+        const state = this.e2eeGroups.get(welcome.group);
+
+        if (
+            !state ||
+            state.lastAccepted?.epoch !== welcome.epoch ||
+            state.lastAccepted.senderPeerId !== peer.id ||
+            state.currentEpoch !== welcome.epoch + 1
+        ) {
+            throw new ConflictException(
+                'Welcome requires an accepted Commit from this peer and epoch',
+            );
+        }
+
+        const target = this.findPeer(welcome.targetPeerId);
+
+        if (target.isOrphaned()) {
+            throw new ConflictException(
+                'Welcome target is not connected; request a fresh KeyPackage after reconnecting',
+            );
+        }
+
+        target.send('e2eeWelcome', {
+            version: welcome.version,
+            group: welcome.group,
+            epoch: welcome.epoch,
+            kind: 'welcome',
+            senderPeerId: peer.id,
+            senderUserId: peer.userId,
+            payload: welcome.payload,
+        });
+    }
+
+    private e2eeGroup(group: string): E2eeGroupState {
+        const existing = this.e2eeGroups.get(group);
+
+        if (existing) {
+            return existing;
+        }
+
+        if (this.e2eeGroups.size >= E2EE_MAX_GROUPS_PER_ROOM) {
+            throw new TooManyRequestsException('too many active E2EE groups in this room');
+        }
+
+        const state: E2eeGroupState = { currentEpoch: 0, lastAccepted: null };
+
+        this.e2eeGroups.set(group, state);
+
+        return state;
+    }
+
+    private admitE2ee(peer: Peer, bytes: number): void {
+        const now = Date.now();
+        const samples = (this.e2eeRates.get(peer.id) ?? []).filter(
+            (sample) => now - sample.at < E2EE_RATE_WINDOW_MS,
+        );
+        const usedBytes = samples.reduce((total, sample) => total + sample.bytes, 0);
+
+        if (
+            samples.length >= E2EE_MAX_MESSAGES_PER_WINDOW ||
+            usedBytes + bytes > E2EE_MAX_BYTES_PER_WINDOW
+        ) {
+            throw new TooManyRequestsException('E2EE signaling rate limit exceeded');
+        }
+
+        samples.push({ at: now, bytes });
+        this.e2eeRates.set(peer.id, samples);
+    }
+
+    private broadcastE2ee(event: string, data: unknown, exceptPeerId: string): number {
+        let delivered = 0;
+
+        for (const peer of this.peers.values()) {
+            if (peer.id === exceptPeerId || peer.isOrphaned()) {
+                continue;
+            }
+
+            peer.send(event, data);
+            delivered += 1;
+        }
+
+        return delivered;
     }
 
     public broadcast(event: string, data: unknown, exceptPeerId?: string): void {

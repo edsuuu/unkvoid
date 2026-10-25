@@ -28,6 +28,17 @@ export class ProducePlainRequest extends Request {
         if (typeof srtp.keyBase64 !== 'string' || srtp.keyBase64.trim() === '') {
             throw new ValidationException('field srtpParameters.keyBase64 is required');
         }
+
+        const memberId = this.data.e2eeMemberId;
+
+        if (
+            memberId !== undefined &&
+            (typeof memberId !== 'string' || !/^[A-Za-z0-9_-]{32,256}$/.test(memberId))
+        ) {
+            throw new ValidationException(
+                'field e2eeMemberId must be a base64url MLS signature key',
+            );
+        }
     }
 
     public kind(): MediaKind {
@@ -44,5 +55,10 @@ export class ProducePlainRequest extends Request {
 
     public srtpParameters(): SrtpParameters {
         return this.object<SrtpParameters>('srtpParameters');
+    }
+
+    /** O SFU não interpreta a chave: só devolve este identificador público ao consumidor. */
+    public e2eeMemberId(): string | null {
+        return typeof this.data.e2eeMemberId === 'string' ? this.data.e2eeMemberId : null;
     }
 }

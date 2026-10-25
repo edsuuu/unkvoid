@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Http\Controllers\Api\ActivityController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BanController;
 use App\Http\Controllers\Api\ChannelController;
@@ -9,14 +10,17 @@ use App\Http\Controllers\Api\ConfigController;
 use App\Http\Controllers\Api\DirectMessageController;
 use App\Http\Controllers\Api\ErrorReportController;
 use App\Http\Controllers\Api\FriendController;
+use App\Http\Controllers\Api\InviteController;
 use App\Http\Controllers\Api\MeController;
 use App\Http\Controllers\Api\MemberController;
 use App\Http\Controllers\Api\MessageController;
+use App\Http\Controllers\Api\MutualController;
 use App\Http\Controllers\Api\OverwriteController;
 use App\Http\Controllers\Api\ReleaseController;
 use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\RoomController;
 use App\Http\Controllers\Api\ServerController;
+use App\Http\Controllers\Api\ServerSoundController;
 use App\Http\Controllers\Api\Sfu\SfuController;
 use App\Http\Controllers\Api\VoiceController;
 use Illuminate\Support\Facades\Route;
@@ -25,7 +29,9 @@ Route::name('api.')->group(function (): void {
     Route::prefix('auth')->name('auth.')->group(function (): void {
         Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login')->name('login');
         Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:6,1')->name('register');
+        Route::post('/start', [AuthController::class, 'start'])->middleware('throttle:6,1')->name('start');
         Route::post('/refresh', [AuthController::class, 'refresh'])->middleware('throttle:30,1')->name('refresh');
+        Route::post('/app/exchange', [AuthController::class, 'exchangeAppCode'])->middleware('throttle:20,1')->name('app.exchange');
         Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth:sanctum')->name('logout');
     });
 
@@ -48,6 +54,8 @@ Route::name('api.')->group(function (): void {
     Route::middleware('auth:sanctum')->group(function (): void {
         Route::get('/me', [MeController::class, 'show'])->name('me');
         Route::patch('/me', [MeController::class, 'update'])->middleware('throttle:20,1')->name('me.update');
+        Route::put('/me/activity', [ActivityController::class, 'update'])->middleware('throttle:20,1')->name('me.activity.update');
+        Route::post('/me/email', [MeController::class, 'storeEmail'])->middleware('throttle:6,1')->name('me.email.store');
         Route::post('/me/avatar', [MeController::class, 'storeAvatar'])->middleware('throttle:20,1')->name('me.avatar.store');
         Route::delete('/me/avatar', [MeController::class, 'destroyAvatar'])->name('me.avatar.destroy');
 
@@ -85,10 +93,26 @@ Route::name('api.')->group(function (): void {
                     Route::post('/{user}', [BanController::class, 'store'])->name('store');
                     Route::delete('/{user}', [BanController::class, 'destroy'])->name('destroy');
                 });
+
+                Route::prefix('invites')->name('invites.')->group(function (): void {
+                    Route::get('/', [InviteController::class, 'index'])->name('index');
+                    Route::post('/', [InviteController::class, 'store'])->middleware('throttle:20,1')->name('store');
+                    Route::post('/pause', [InviteController::class, 'pause'])->name('pause');
+                    Route::delete('/pause', [InviteController::class, 'resume'])->name('resume');
+                });
+
+                Route::prefix('sounds')->name('sounds.')->group(function (): void {
+                    Route::get('/', [ServerSoundController::class, 'index'])->name('index');
+                    Route::post('/', [ServerSoundController::class, 'store'])->middleware('throttle:20,1')->name('store');
+                });
             });
         });
 
         Route::post('/invites/{code}', [ServerController::class, 'join'])->middleware('throttle:10,1')->name('invites.join');
+        Route::get('/invites/{code}', [InviteController::class, 'preview'])->middleware('throttle:30,1')->name('invites.preview');
+        Route::delete('/invites/{invite}', [InviteController::class, 'destroy'])->whereNumber('invite')->name('invites.destroy');
+
+        Route::delete('/sounds/{sound}', [ServerSoundController::class, 'destroy'])->name('sounds.destroy');
 
         Route::prefix('roles/{role}')->name('roles.')->group(function (): void {
             Route::patch('/', [RoleController::class, 'update'])->name('update');
@@ -125,6 +149,8 @@ Route::name('api.')->group(function (): void {
         Route::prefix('friends')->name('friends.')->group(function (): void {
             Route::get('/', [FriendController::class, 'index'])->name('index');
             Route::post('/', [FriendController::class, 'store'])->middleware('throttle:20,1')->name('store');
+            Route::post('/{user}', [FriendController::class, 'storeUser'])->middleware('throttle:20,1')->whereNumber('user')->name('store-user');
+            Route::get('/{user}/mutuals', [MutualController::class, 'show'])->whereNumber('user')->name('mutuals');
             Route::patch('/{friendship}', [FriendController::class, 'update'])->name('update');
             Route::delete('/{friendship}', [FriendController::class, 'destroy'])->name('destroy');
         });

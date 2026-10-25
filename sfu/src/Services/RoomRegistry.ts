@@ -46,13 +46,13 @@ export class RoomRegistry {
                 listenInfos: [
                     {
                         protocol: 'udp',
-                        ip: '0.0.0.0',
+                        ip: config.mediaHost,
                         announcedAddress: config.announcedAddress,
                         port,
                     },
                     {
                         protocol: 'tcp',
-                        ip: '0.0.0.0',
+                        ip: config.mediaHost,
                         announcedAddress: config.announcedAddress,
                         port,
                     },

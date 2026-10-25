@@ -12,7 +12,7 @@ projeto (no navegador o encoder roda na CPU e a transmissão cai para 1 fps com 
 
 | Pasta | O quê | Onde roda | Agente |
 |---|---|---|---|
-| `native/` | o app: `shared/` (núcleo, captura, encoder, RTP) + `apps/windows` (Slint), `apps/linux` (GTK4), `apps/macos` (SwiftUI); `apps/desktop` é o Tauri, legado | máquina de quem usa | `app` |
+| `native/` | o app: `shared/` (núcleo, captura, encoder, RTP) + `apps/unkvoid` (nome temporário do app único, a caminho de `apps/unkvoid`) e `release/` (assinatura e publicação) | máquina de quem usa | `app` |
 | `sfu/` | o relé de mídia (Node 22 + mediasoup) | VPS | `sfu` |
 | `web/` | site, contas, servidores, canais, chat, auditoria (Laravel 13 + Livewire 4 + Flux) | VPS | `web` |
 
@@ -47,11 +47,7 @@ As regras de negócio completas estão no `docs/CONTRATO.md` e no agente de cada
 cd web && composer dev                                    # Laravel :8000
 cd web && php artisan storage:bucket                      # o bucket do MinIO, se quiser antes do primeiro envio
 cd sfu && pnpm run build && SFU_SECRET=<o do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node dist/server.js
-cd native && UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid-windows   # app do Windows
-cd native && UNKVOID_SERVER=http://127.0.0.1:8000 UNKVOID_CAPTURE=x11 cargo run -p unkvoid-linux   # Linux (x11 no WSLg)
-cd native/apps/macos && ./run.sh                          # macOS; `./run.sh test`, `./run.sh app`
-cd native && cargo run -p core-app --example room -- <ws(s)://…/sfu> <sala> watch|share   # mede fps, perda e pausas
-cd native/apps/desktop && VITE_SERVER=http://127.0.0.1:8000 npm run dev:app      # Tauri (legado)
+cd native && UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid   # app único; o diretório ainda se chama apps/unkvoid
 ```
 
 Duas máquinas na rede: o IP no lugar de `127.0.0.1` em `APP_URL` e `SFU_PUBLIC_URL`, o SFU com
@@ -63,10 +59,8 @@ Duas máquinas na rede: o IP no lugar de `127.0.0.1` em `APP_URL` e `SFU_PUBLIC_
 ```bash
 cd web && composer check            # phpstan max + pint + rector + pest; rode 2x (o rector tem de ficar estável)
 cd sfu && pnpm run check && pnpm run build                 # eslint + tsc
-cd native && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # Linux
-cd native && cargo clippy --workspace --exclude unkvoid-linux --all-targets -- -D warnings && cargo test --workspace --exclude unkvoid-linux   # Windows (o GTK não compila lá)
-cd native/apps/macos && ./run.sh test
-cd native/apps/desktop && npm run check && npm run build   # Tauri (legado); `npm run test:integration` com a pilha no ar
+cd native && cargo clippy -p unkvoid --all-targets -- -D warnings && cargo test -p unkvoid
+python3 native/tests/static/check-language.py
 ```
 
 - O `opusic-sys` precisa de `cmake` no PATH (Linux e Windows); sem ele o clippy morre com uma
@@ -75,15 +69,14 @@ cd native/apps/desktop && npm run check && npm run build   # Tauri (legado); `np
 
 ## Publicar
 
-App nativo: [docs/AUTO-UPDATE.md](docs/AUTO-UPDATE.md) (Windows, macOS, Linux) e
-`docs/BUILD-*.md`. O `release.yml` e o `build-windows.ps1` ainda compilam o Tauri: não solte tag
-por eles, senão o Tauri volta por cima do nativo. Contrato mudou: o SFU primeiro.
+App nativo: [docs/AUTO-UPDATE.md](docs/AUTO-UPDATE.md) e `docs/BUILD-*.md`. Os workflows
+pausados usam o instalador e o assinador em `native/release/`. Contrato mudou: o SFU primeiro.
 
 ## Como escrever código
 
 - **Código 100% em inglês**: pastas, classes, métodos, variáveis, colunas, env. Português só em
   caminho de rota, texto de interface e comentário. O
-  `native/apps/desktop/tests/static/check-language.py` varre o repo e falha.
+  `native/tests/static/check-language.py` varre o repo e falha.
 - **Comentário explica o porquê**, nunca o quê, e só onde o nome não dá conta. Nunca acima de
   variável.
 - **Nada de abreviar variável**: `$exception`, não `$e`.
@@ -95,11 +88,9 @@ por eles, senão o Tauri volta por cima do nativo. Contrato mudou: o SFU primeir
   quando o recurso tem uma ação só. Tela é `Route::view` → blade com `<x-app-layout>` →
   `<livewire:…>`.
 - **TypeScript e JavaScript:** uma classe por arquivo, imports no topo, sem comentário
-  decorativo. No front do Tauri (`native/apps/desktop/ui`, React + TS estrito) **nenhum
-  comentário** — o `tests/static/check-ui.py` falha; os testes dele moram em
-  `native/apps/desktop/tests/` (Vitest).
-- **Rust:** clippy sem aviso, `cfg(target_os)` certo nas três plataformas, nada de trabalho por
-  quadro na thread da captura. **Nunca rode `rustfmt`/`cargo fmt`**: o repo não tem
+  decorativo. O SFU é TypeScript estrito.
+- **Rust:** clippy sem aviso, `cfg(target_os)` certo, nada de trabalho por quadro na thread da
+  captura. **Nunca rode `rustfmt`/`cargo fmt`**: o repo não tem
   `rustfmt.toml`, usa linhas longas, e o formatador quebra dezenas de linhas alheias.
 - **Regra de negócio não mora em pasta de sistema:** `native/shared/core` decide, `apps/*`
   desenham. "O Windows vai precisar disto igual?" Se sim, sobe para o `core`.

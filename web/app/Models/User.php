@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Enums\FriendshipStatusEnum;
 use App\Enums\PermissionEnum;
+use App\Events\UserStatusUpdated;
 use App\Models\Concerns\LogsFailedWrites;
 use App\Notifications\NewLoginNotification;
 use App\Notifications\ResetPasswordNotification;
@@ -21,6 +23,7 @@ use Illuminate\Notifications\Notifiable;
 use Illuminate\Notifications\Notification;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\HasApiTokens;
@@ -30,7 +33,7 @@ use Spatie\Permission\Models\Role;
 use Spatie\Permission\Traits\HasRoles;
 use Throwable;
 
-#[Fillable(['name', 'email', 'password', 'google_id', 'avatar_url', 'avatar_id', 'email_verified_at', 'nickname_confirmed_at'])]
+#[Fillable(['name', 'email', 'password', 'google_id', 'avatar_url', 'avatar_id', 'email_verified_at', 'nickname_confirmed_at', 'bio', 'pronouns', 'banner_color', 'custom_status', 'status', 'status_until'])]
 #[Hidden(['password', 'remember_token'])]
 final class User extends Authenticatable implements Auditable
 {
@@ -88,6 +91,62 @@ final class User extends Authenticatable implements Auditable
     }
 
     /**
+     * A conta que nasce com o nome e a senha, pelo app: o apelido livre tirado do nome, já
+     * confirmado, e é por ele que a conta entra (`loginColumn`). A coluna de e-mail não aceita
+     * vazio, então ele é de mentira — `apelido@<uuid>.unkvoid.com`, único pelo uuid — até a
+     * pessoa pôr um de verdade (`addEmail`). Nada sai para ele (`routeNotificationForMail`).
+     *
+     * @throws Throwable
+     */
+    public static function createFromName(string $name, string $password): self
+    {
+        $nickname = self::freeNickname($name);
+
+        return self::query()->create([
+            'name' => $nickname,
+            'email' => $nickname.'@'.Str::uuid()->toString().'.unkvoid.com',
+            'password' => $password,
+            'nickname_confirmed_at' => now(),
+        ]);
+    }
+
+    /**
+     * Entra-se pelo e-mail ou pelo apelido, e o apelido não tem `@`.
+     */
+    public static function loginColumn(string $login): string
+    {
+        return str_contains($login, '@') ? 'email' : 'name';
+    }
+
+    /**
+     * O e-mail ainda é o de mentira de quem entrou com o nome.
+     */
+    public function hasPlaceholderEmail(): bool
+    {
+        return (bool) preg_match('/@[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\.unkvoid\.com$/', $this->email);
+    }
+
+    /**
+     * O e-mail de verdade de quem entrou com o nome: daí em diante a conta também entra por
+     * ele, e recebe os avisos e a troca de senha.
+     *
+     * @throws Throwable
+     */
+    public function addEmail(string $email): void
+    {
+        self::write('falha ao pôr o e-mail na conta', fn () => $this->update(['email' => $email]), ['user_id' => $this->id]);
+    }
+
+    /**
+     * Para o e-mail de mentira não sai nada: nem boas-vindas, nem aviso de login, nem troca de
+     * senha. O canal de e-mail do Laravel pula quem não tem endereço.
+     */
+    public function routeNotificationForMail(): ?string
+    {
+        return $this->hasPlaceholderEmail() ? null : $this->email;
+    }
+
+    /**
      * Troca o apelido, a qualquer hora. A primeira troca também confirma o automático, e a
      * data dela fica: é a da escolha, não a da última troca.
      *
@@ -99,6 +158,85 @@ final class User extends Authenticatable implements Auditable
             'name' => $name,
             'nickname_confirmed_at' => $this->nickname_confirmed_at ?? now(),
         ]), ['user_id' => $this->id]);
+    }
+
+    /**
+     * O cartão de perfil. Só os campos que vieram mudam; `null` limpa.
+     *
+     * @param  array{bio?: ?string, pronouns?: ?string, banner_color?: ?string, custom_status?: ?string}  $profile
+     *
+     * @throws Throwable
+     */
+    public function changeProfile(array $profile): void
+    {
+        if ($profile === []) {
+            return;
+        }
+
+        self::write('falha ao trocar o perfil', fn () => $this->update($profile), ['user_id' => $this->id]);
+    }
+
+    /**
+     * O prazo é calculado aqui para que os clientes não possam escolher quando o status volta.
+     *
+     * @throws Throwable
+     */
+    public function changeStatus(string $status, ?int $minutes): void
+    {
+        $until = is_null($minutes) ? null : now()->addMinutes($minutes);
+
+        self::write('falha ao trocar o status', fn () => $this->update([
+            'status' => $status,
+            'status_until' => $until,
+        ]), ['user_id' => $this->id]);
+
+        $this->refresh();
+        self::publish(new UserStatusUpdated($this));
+    }
+
+    public function effectiveStatus(): string
+    {
+        $until = $this->getAttributes()['status_until'] ?? null;
+
+        if (is_string($until) && Date::parse($until)->isPast()) {
+            $this->expireStatusIfDue();
+
+            return 'online';
+        }
+
+        $status = $this->getAttributes()['status'] ?? 'online';
+
+        return is_string($status) ? $status : 'online';
+    }
+
+    public function publicStatus(): string
+    {
+        return $this->effectiveStatus() === 'invisible' ? 'offline' : $this->effectiveStatus();
+    }
+
+    /**
+     * @throws Throwable
+     */
+    public function expireStatusIfDue(): void
+    {
+        $expired = self::write('falha ao encerrar status temporário', function (): ?self {
+            $user = self::query()->whereKey($this->id)->whereNotNull('status_until')->where('status_until', '<=', now())->lockForUpdate()->first();
+
+            if (is_null($user)) {
+                return null;
+            }
+
+            $user->update(['status' => 'online', 'status_until' => null]);
+
+            return $user;
+        }, ['user_id' => $this->id]);
+
+        if (! is_null($expired)) {
+            $this->setRawAttributes($expired->getAttributes(), true);
+            self::publish(new UserStatusUpdated($expired));
+        } else {
+            $this->refresh();
+        }
     }
 
     public function hasConfirmedNickname(): bool
@@ -178,6 +316,14 @@ final class User extends Authenticatable implements Auditable
 
         if ($type === 'user') {
             return $this->id === (int) $id;
+        }
+
+        if ($type === 'friend') {
+            return Friendship::query()
+                ->where('status', FriendshipStatusEnum::Accepted)
+                ->where(fn ($query) => $query->where('requester_id', $this->id)->where('addressee_id', (int) $id)
+                    ->orWhere(fn ($pair) => $pair->where('requester_id', (int) $id)->where('addressee_id', $this->id)))
+                ->exists();
         }
 
         if ($type === 'server') {
@@ -274,6 +420,7 @@ final class User extends Authenticatable implements Auditable
         return [
             'email_verified_at' => 'datetime',
             'nickname_confirmed_at' => 'datetime',
+            'status_until' => 'datetime',
             'password' => 'hashed',
         ];
     }
@@ -287,5 +434,13 @@ final class User extends Authenticatable implements Auditable
     protected function avatarUrl(): Attribute
     {
         return Attribute::get(fn (mixed $value): ?string => $this->avatar?->url() ?? (is_string($value) ? $value : null));
+    }
+
+    /**
+     * @return Attribute<string, never>
+     */
+    protected function status(): Attribute
+    {
+        return Attribute::get(fn (): string => $this->effectiveStatus());
     }
 }

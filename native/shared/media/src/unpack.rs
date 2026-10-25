@@ -18,8 +18,8 @@ use rtc::rtp::packet::Packet;
 use rtc::rtp::packetizer::Depacketizer;
 use rtc::shared::marshal::Unmarshal;
 
-use crate::FRAME_MS;
 use crate::audio::SAMPLE_RATE;
+use crate::{FRAME_MS, MediaReceiveWindow};
 
 const NAL_IDR: u8 = 5;
 const NAL_SPS: u8 = 7;
@@ -58,7 +58,9 @@ impl VideoUnpacker {
         let packet = Packet::unmarshal(&mut Bytes::copy_from_slice(packet)).ok()?;
         let sequence = packet.header.sequence_number;
 
-        let gap = self.last_sequence.is_some_and(|last| last.wrapping_add(1) != sequence);
+        let gap = self
+            .last_sequence
+            .is_some_and(|last| last.wrapping_add(1) != sequence);
 
         if gap || starts_a_fragmented_nal(&packet.payload) {
             self.h264 = H264Packet::default();
@@ -88,12 +90,43 @@ impl VideoUnpacker {
         self.waiting_keyframe |= damaged;
 
         if damaged || data.is_empty() || (self.waiting_keyframe && !keyframe) {
+            tracing::debug!(
+                damaged,
+                empty = data.is_empty(),
+                keyframe,
+                bytes = data.len(),
+                "H.264 access unit discarded before E2EE"
+            );
             return None;
         }
 
         self.waiting_keyframe = false;
 
-        Some(AccessUnit { data, timestamp: packet.header.timestamp, keyframe })
+        Some(AccessUnit {
+            data,
+            timestamp: packet.header.timestamp,
+            keyframe,
+        })
+    }
+
+    /// Reassembles RTP first, then authenticates and opens the encoded H.264 access unit before
+    /// it reaches the decoder. A clear or malformed frame is deliberately indistinguishable to
+    /// the caller: neither produces decoder input.
+    pub fn push_e2ee(
+        &mut self,
+        packet: &[u8],
+        crypto: &mut MediaReceiveWindow,
+    ) -> Option<AccessUnit> {
+        let unit = self.push(packet)?;
+        let data = match crypto.decrypt_h264(&unit.data) {
+            Ok(data) => data.into_bytes(),
+            Err(error) => {
+                tracing::debug!(%error, timestamp = unit.timestamp, bytes = unit.data.len(), "H.264 E2EE access unit rejected");
+                return None;
+            }
+        };
+
+        Some(AccessUnit { data, ..unit })
     }
 
     /// A imagem está parada à espera de um keyframe: é a hora de pedir um ao servidor.
@@ -105,8 +138,12 @@ impl VideoUnpacker {
 /// Os NALs de um trecho em Annex-B, sem os códigos de início. Um NAL nunca termina em
 /// zero (o RBSP fecha com um bit 1), então zero no fim é sobra do código de 4 bytes seguinte.
 pub fn nals(annex_b: &[u8]) -> Vec<&[u8]> {
-    let starts: Vec<usize> =
-        annex_b.windows(3).enumerate().filter(|(_, window)| *window == [0, 0, 1]).map(|(index, _)| index).collect();
+    let starts: Vec<usize> = annex_b
+        .windows(3)
+        .enumerate()
+        .filter(|(_, window)| *window == [0, 0, 1])
+        .map(|(index, _)| index)
+        .collect();
 
     starts
         .iter()
@@ -133,7 +170,10 @@ fn starts_a_fragmented_nal(payload: &[u8]) -> bool {
 /// sem conferir que ele existe, e um pacote cortado (de um cliente modificado: o SFU repassa
 /// sem olhar) derrubava a thread de quem assiste. O que não é STAP-A passa.
 fn whole_aggregate(payload: &[u8]) -> bool {
-    if payload.first().is_none_or(|header| header & 0x1F != NAL_STAP_A) {
+    if payload
+        .first()
+        .is_none_or(|header| header & 0x1F != NAL_STAP_A)
+    {
         return true;
     }
 
@@ -154,7 +194,10 @@ fn whole_aggregate(payload: &[u8]) -> bool {
 }
 
 fn is_keyframe(annex_b: &[u8]) -> bool {
-    nals(annex_b).iter().any(|nal| nal.first().is_some_and(|header| matches!(header & 0x1F, NAL_IDR | NAL_SPS)))
+    nals(annex_b).iter().any(|nal| {
+        nal.first()
+            .is_some_and(|header| matches!(header & 0x1F, NAL_IDR | NAL_SPS))
+    })
 }
 
 /// Um bloco de 20 ms em estéreo, o que cada pacote do app carrega.
@@ -187,10 +230,13 @@ pub struct AudioUnpacker {
 
 impl AudioUnpacker {
     pub fn new() -> Result<Self> {
-        let decoder =
-            Decoder::new(SAMPLE_RATE, Channels::Stereo).map_err(|error| anyhow!("o decodificador Opus não abriu: {error}"))?;
+        let decoder = Decoder::new(SAMPLE_RATE, Channels::Stereo)
+            .map_err(|error| anyhow!("o decodificador Opus não abriu: {error}"))?;
 
-        Ok(Self { decoder, last: None })
+        Ok(Self {
+            decoder,
+            last: None,
+        })
     }
 
     pub fn push(&mut self, packet: &[u8]) -> Option<Vec<f32>> {
@@ -199,12 +245,34 @@ impl AudioUnpacker {
 
     fn push_at(&mut self, packet: &[u8], now: Instant) -> Option<Vec<f32>> {
         let packet = Packet::unmarshal(&mut Bytes::copy_from_slice(packet)).ok()?;
-        let sequence = packet.header.sequence_number;
-        let last = self.last.filter(|&(_, at)| now.saturating_duration_since(at) < QUIET_RESTART).map(|(last, _)| last);
+
+        self.push_payload_at(packet.header.sequence_number, &packet.payload, now)
+    }
+
+    /// Opens the RTP payload after SRTP and before the Opus decoder. Clear frames are rejected by
+    /// `Policy::Require`, so the decoder never sees a downgrade attempt.
+    pub fn push_e2ee(
+        &mut self,
+        packet: &[u8],
+        crypto: &mut MediaReceiveWindow,
+    ) -> Option<Vec<f32>> {
+        let packet = Packet::unmarshal(&mut Bytes::copy_from_slice(packet)).ok()?;
+        let opus = crypto.decrypt_opus(&packet.payload).ok()?.into_bytes();
+
+        self.push_payload_at(packet.header.sequence_number, &opus, Instant::now())
+    }
+
+    fn push_payload_at(&mut self, sequence: u16, payload: &[u8], now: Instant) -> Option<Vec<f32>> {
+        let last = self
+            .last
+            .filter(|&(_, at)| now.saturating_duration_since(at) < QUIET_RESTART)
+            .map(|(last, _)| last);
         let missing = last.map_or(0, |last| sequence.wrapping_sub(last).wrapping_sub(1));
 
         // Atrasado ou repetido: o lugar dele já tocou, estimado.
-        if missing >= u16::MAX / 2 && last.is_some_and(|last| last.wrapping_sub(sequence) <= LATE_WINDOW) {
+        if missing >= u16::MAX / 2
+            && last.is_some_and(|last| last.wrapping_sub(sequence) <= LATE_WINDOW)
+        {
             return None;
         }
 
@@ -219,9 +287,12 @@ impl AudioUnpacker {
                 let mut block = vec![0.0; OPUS_BLOCK];
                 // O último buraco pode vir de verdade dentro deste pacote (o FEC do Opus, quando
                 // quem manda o liga); sem ele o decodificador estima, como nos outros.
-                let carried: &[u8] = if gap == missing { &packet.payload } else { &[] };
+                let carried: &[u8] = if gap == missing { payload } else { &[] };
 
-                if let Ok(frames) = self.decoder.decode_float(carried, &mut block, gap == missing) {
+                if let Ok(frames) = self
+                    .decoder
+                    .decode_float(carried, &mut block, gap == missing)
+                {
                     block.truncate(frames * 2);
                     samples.extend(block);
                 }
@@ -229,7 +300,7 @@ impl AudioUnpacker {
         }
 
         let mut block = vec![0.0; LONGEST_OPUS_BLOCK];
-        let frames = self.decoder.decode_float(&packet.payload, &mut block, false).ok()?;
+        let frames = self.decoder.decode_float(payload, &mut block, false).ok()?;
 
         block.truncate(frames * 2);
         samples.extend(block);
@@ -250,15 +321,24 @@ mod tests {
     const MTU: usize = 1200;
 
     fn frame(nal_type: u8, size: usize) -> Vec<u8> {
-        let mut data = vec![0, 0, 0, 1, 0x67, 1, 2, 3, 0, 0, 0, 1, 0x68, 4, 5, 0, 0, 0, 1, nal_type];
+        let mut data = vec![
+            0, 0, 0, 1, 0x67, 1, 2, 3, 0, 0, 0, 1, 0x68, 4, 5, 0, 0, 0, 1, nal_type,
+        ];
 
         data.extend((0..size).map(|index| (index % 251) as u8 + 1));
 
         data
     }
 
-    fn packets(payloader: &mut H264Payloader, annex_b: &[u8], first_sequence: u16, timestamp: u32) -> Vec<Vec<u8>> {
-        let payloads = payloader.payload(MTU, &Bytes::copy_from_slice(annex_b)).expect("payload");
+    fn packets(
+        payloader: &mut H264Payloader,
+        annex_b: &[u8],
+        first_sequence: u16,
+        timestamp: u32,
+    ) -> Vec<Vec<u8>> {
+        let payloads = payloader
+            .payload(MTU, &Bytes::copy_from_slice(annex_b))
+            .expect("payload");
         let last = payloads.len() - 1;
 
         payloads
@@ -289,9 +369,15 @@ mod tests {
         let mut unpacker = VideoUnpacker::default();
         let sent_packets = packets(&mut H264Payloader::default(), &sent, 65_534, 9_000);
 
-        assert!(sent_packets.len() > 3, "o quadro tem de ter sido fragmentado");
+        assert!(
+            sent_packets.len() > 3,
+            "o quadro tem de ter sido fragmentado"
+        );
 
-        let got: Vec<AccessUnit> = sent_packets.iter().filter_map(|packet| unpacker.push(packet)).collect();
+        let got: Vec<AccessUnit> = sent_packets
+            .iter()
+            .filter_map(|packet| unpacker.push(packet))
+            .collect();
 
         assert_eq!(got.len(), 1);
         assert!(got[0].keyframe);
@@ -308,16 +394,35 @@ mod tests {
 
         damaged.remove(2);
 
-        assert!(damaged.iter().filter_map(|packet| unpacker.push(packet)).next().is_none(), "quadro furado não sai");
+        assert!(
+            damaged
+                .iter()
+                .filter_map(|packet| unpacker.push(packet))
+                .next()
+                .is_none(),
+            "quadro furado não sai"
+        );
         assert!(unpacker.waiting_keyframe());
 
         let delta = packets(&mut payloader, &[0, 0, 0, 1, 0x41, 9, 9, 9], next, 3_000);
 
-        assert!(delta.iter().filter_map(|packet| unpacker.push(packet)).next().is_none(), "quadro que depende do furado não sai");
+        assert!(
+            delta
+                .iter()
+                .filter_map(|packet| unpacker.push(packet))
+                .next()
+                .is_none(),
+            "quadro que depende do furado não sai"
+        );
 
         let key = packets(&mut payloader, &frame(0x65, 100), next + 1, 6_000);
 
-        assert!(key.iter().filter_map(|packet| unpacker.push(packet)).next().is_some_and(|unit| unit.keyframe));
+        assert!(
+            key.iter()
+                .filter_map(|packet| unpacker.push(packet))
+                .next()
+                .is_some_and(|unit| unit.keyframe)
+        );
         assert!(!unpacker.waiting_keyframe());
     }
 
@@ -328,23 +433,49 @@ mod tests {
     fn a_lost_fragment_end_does_not_rot_the_next_keyframe() {
         let mut payloader = H264Payloader::default();
         let mut unpacker = VideoUnpacker::default();
-        let mut big_delta = packets(&mut payloader, &[[0, 0, 0, 1, 0x41].as_slice(), &[7; 4_000]].concat(), 100, 0);
+        let mut big_delta = packets(
+            &mut payloader,
+            &[[0, 0, 0, 1, 0x41].as_slice(), &[7; 4_000]].concat(),
+            100,
+            0,
+        );
         let next = 100 + big_delta.len() as u16;
 
         big_delta.pop();
 
-        assert!(big_delta.iter().filter_map(|packet| unpacker.push(packet)).next().is_none());
+        assert!(
+            big_delta
+                .iter()
+                .filter_map(|packet| unpacker.push(packet))
+                .next()
+                .is_none()
+        );
 
         let small_delta = packets(&mut payloader, &[0, 0, 0, 1, 0x41, 9, 9, 9], next, 3_000);
 
-        assert!(small_delta.iter().filter_map(|packet| unpacker.push(packet)).next().is_none(), "o quadro depois do buraco não sai");
+        assert!(
+            small_delta
+                .iter()
+                .filter_map(|packet| unpacker.push(packet))
+                .next()
+                .is_none(),
+            "o quadro depois do buraco não sai"
+        );
 
         let sent = frame(0x65, 5_000);
         let key = packets(&mut payloader, &sent, next + 1, 6_000);
-        let got = key.iter().filter_map(|packet| unpacker.push(packet)).next().expect("o quadro-chave saiu");
+        let got = key
+            .iter()
+            .filter_map(|packet| unpacker.push(packet))
+            .next()
+            .expect("o quadro-chave saiu");
 
         assert!(got.keyframe);
-        assert_eq!(nals(&got.data), nals(&sent), "o quadro-chave saiu com o resto do NAL perdido grudado");
+        assert_eq!(
+            nals(&got.data),
+            nals(&sent),
+            "o quadro-chave saiu com o resto do NAL perdido grudado"
+        );
     }
 
     /// Um STAP-A com o comprimento cortado no meio fazia o depacotador da `rtc` ler além do pacote
@@ -353,7 +484,14 @@ mod tests {
     fn a_torn_aggregate_is_a_damaged_frame_and_not_a_panic() {
         let mut unpacker = VideoUnpacker::default();
         let torn = Packet {
-            header: Header { version: 2, marker: true, payload_type: 102, sequence_number: 1, ssrc: 7, ..Header::default() },
+            header: Header {
+                version: 2,
+                marker: true,
+                payload_type: 102,
+                sequence_number: 1,
+                ssrc: 7,
+                ..Header::default()
+            },
             payload: Bytes::from_static(&[0x78, 0x00, 0x01, 0x65, 0x00]),
         };
 
@@ -361,22 +499,45 @@ mod tests {
 
         let key = packets(&mut H264Payloader::default(), &frame(0x65, 100), 2, 3_000);
 
-        assert!(key.iter().filter_map(|packet| unpacker.push(packet)).next().is_some_and(|unit| unit.keyframe), "depois do pacote torto o quadro-chave sai");
+        assert!(
+            key.iter()
+                .filter_map(|packet| unpacker.push(packet))
+                .next()
+                .is_some_and(|unit| unit.keyframe),
+            "depois do pacote torto o quadro-chave sai"
+        );
     }
 
     #[test]
     fn opus_comes_back_as_stereo_pcm() {
         let mut encoder = crate::AudioEncoder::new(48_000).expect("encoder");
-        let tone: Vec<f32> = (0..1920).map(|index| (index as f32 * 0.05).sin() * 0.5).collect();
-        let block = capture::AudioChunk { sample_rate: 48_000, channels: 2, samples: tone };
-        let opus = encoder.push(&block).expect("push").pop().expect("um pacote por bloco de 20 ms");
+        let tone: Vec<f32> = (0..1920)
+            .map(|index| (index as f32 * 0.05).sin() * 0.5)
+            .collect();
+        let block = capture::AudioChunk {
+            sample_rate: 48_000,
+            channels: 2,
+            samples: tone,
+        };
+        let opus = encoder
+            .push(&block)
+            .expect("push")
+            .pop()
+            .expect("um pacote por bloco de 20 ms");
 
         let packet = Packet {
-            header: Header { version: 2, payload_type: 111, ..Header::default() },
+            header: Header {
+                version: 2,
+                payload_type: 111,
+                ..Header::default()
+            },
             payload: Bytes::from(opus),
         };
 
-        let samples = AudioUnpacker::new().expect("decoder").push(&packet.marshal().expect("marshal")).expect("pcm");
+        let samples = AudioUnpacker::new()
+            .expect("decoder")
+            .push(&packet.marshal().expect("marshal"))
+            .expect("pcm");
 
         assert_eq!(samples.len(), 1920, "20 ms em estéreo");
     }
@@ -385,8 +546,14 @@ mod tests {
     /// virar silêncio.
     #[test]
     fn a_lost_voice_packet_comes_back_from_the_next_one() {
-        let tone: Vec<f32> = (0..1920 * 4).map(|index| (index as f32 * 0.03).sin() * 0.5).collect();
-        let block = capture::AudioChunk { sample_rate: 48_000, channels: 2, samples: tone };
+        let tone: Vec<f32> = (0..1920 * 4)
+            .map(|index| (index as f32 * 0.03).sin() * 0.5)
+            .collect();
+        let block = capture::AudioChunk {
+            sample_rate: 48_000,
+            channels: 2,
+            samples: tone,
+        };
         let packets = |mut encoder: crate::AudioEncoder| -> Vec<Vec<u8>> {
             encoder
                 .push(&block)
@@ -394,9 +561,20 @@ mod tests {
                 .into_iter()
                 .enumerate()
                 .map(|(index, opus)| {
-                    let header = Header { version: 2, payload_type: 111, sequence_number: index as u16, ..Header::default() };
+                    let header = Header {
+                        version: 2,
+                        payload_type: 111,
+                        sequence_number: index as u16,
+                        ..Header::default()
+                    };
 
-                    Packet { header, payload: Bytes::from(opus) }.marshal().expect("marshal").to_vec()
+                    Packet {
+                        header,
+                        payload: Bytes::from(opus),
+                    }
+                    .marshal()
+                    .expect("marshal")
+                    .to_vec()
                 })
                 .collect()
         };
@@ -411,7 +589,9 @@ mod tests {
 
             energy(&pcm[..1920])
         };
-        let voice = refilled(&packets(crate::AudioEncoder::for_voice(48_000).expect("encoder")));
+        let voice = refilled(&packets(
+            crate::AudioEncoder::for_voice(48_000).expect("encoder"),
+        ));
 
         assert!(voice > 1.0, "o bloco perdido voltou mudo: energia {voice}");
     }
@@ -421,33 +601,80 @@ mod tests {
     fn a_lost_opus_packet_is_filled_and_a_late_one_is_dropped() {
         let mut encoder = crate::AudioEncoder::new(48_000).expect("encoder");
         let mut unpacker = AudioUnpacker::new().expect("decoder");
-        let tone: Vec<f32> = (0..1920 * 3).map(|index| (index as f32 * 0.05).sin() * 0.5).collect();
-        let block = capture::AudioChunk { sample_rate: 48_000, channels: 2, samples: tone };
+        let tone: Vec<f32> = (0..1920 * 3)
+            .map(|index| (index as f32 * 0.05).sin() * 0.5)
+            .collect();
+        let block = capture::AudioChunk {
+            sample_rate: 48_000,
+            channels: 2,
+            samples: tone,
+        };
         let packets: Vec<Vec<u8>> = encoder
             .push(&block)
             .expect("push")
             .into_iter()
             .enumerate()
             .map(|(index, opus)| {
-                let header = Header { version: 2, payload_type: 111, sequence_number: 65_535_u16.wrapping_add(index as u16), ..Header::default() };
+                let header = Header {
+                    version: 2,
+                    payload_type: 111,
+                    sequence_number: 65_535_u16.wrapping_add(index as u16),
+                    ..Header::default()
+                };
 
-                Packet { header, payload: Bytes::from(opus) }.marshal().expect("marshal").to_vec()
+                Packet {
+                    header,
+                    payload: Bytes::from(opus),
+                }
+                .marshal()
+                .expect("marshal")
+                .to_vec()
             })
             .collect();
 
         assert_eq!(unpacker.push(&packets[0]).expect("pcm").len(), 1920);
-        assert_eq!(unpacker.push(&packets[2]).expect("pcm").len(), 1920 * 2, "o perdido e o que chegou");
-        assert!(unpacker.push(&packets[1]).is_none(), "o atrasado já tocou estimado");
+        assert_eq!(
+            unpacker.push(&packets[2]).expect("pcm").len(),
+            1920 * 2,
+            "o perdido e o que chegou"
+        );
+        assert!(
+            unpacker.push(&packets[1]).is_none(),
+            "o atrasado já tocou estimado"
+        );
     }
 
     /// Um bloco de voz de 20 ms com o número `sequence`.
     fn voice_packet(encoder: &mut crate::AudioEncoder, sequence: u16) -> Vec<u8> {
-        let tone: Vec<f32> = (0..1_920).map(|index| (index as f32 * 0.05).sin() * 0.4).collect();
-        let block = capture::AudioChunk { sample_rate: 48_000, channels: 2, samples: tone };
-        let opus = encoder.push(&block).expect("encode").pop().expect("um pacote por bloco");
-        let header = Header { version: 2, payload_type: 111, sequence_number: sequence, timestamp: u32::from(sequence).wrapping_mul(960), ssrc: 7, ..Header::default() };
+        let tone: Vec<f32> = (0..1_920)
+            .map(|index| (index as f32 * 0.05).sin() * 0.4)
+            .collect();
+        let block = capture::AudioChunk {
+            sample_rate: 48_000,
+            channels: 2,
+            samples: tone,
+        };
+        let opus = encoder
+            .push(&block)
+            .expect("encode")
+            .pop()
+            .expect("um pacote por bloco");
+        let header = Header {
+            version: 2,
+            payload_type: 111,
+            sequence_number: sequence,
+            timestamp: u32::from(sequence).wrapping_mul(960),
+            ssrc: 7,
+            ..Header::default()
+        };
 
-        Packet { header, payload: Bytes::from(opus) }.marshal().expect("marshal").to_vec()
+        Packet {
+            header,
+            payload: Bytes::from(opus),
+        }
+        .marshal()
+        .expect("marshal")
+        .to_vec()
     }
 
     /// Ensurdecer, ou o som de uma tela que chega mudo, faz o receptor parar de repassar os
@@ -463,20 +690,41 @@ mod tests {
             let mut unpacker = AudioUnpacker::new().expect("decoder");
             let back = start + Duration::from_millis(20 * u64::from(muted));
 
-            assert!(unpacker.push_at(&voice_packet(&mut encoder, 0), start).is_some());
-            assert!(unpacker.push_at(&voice_packet(&mut encoder, 1), start).is_some());
             assert!(
-                unpacker.push_at(&voice_packet(&mut encoder, 1_u16.wrapping_add(muted)), back).is_some(),
+                unpacker
+                    .push_at(&voice_packet(&mut encoder, 0), start)
+                    .is_some()
+            );
+            assert!(
+                unpacker
+                    .push_at(&voice_packet(&mut encoder, 1), start)
+                    .is_some()
+            );
+            assert!(
+                unpacker
+                    .push_at(&voice_packet(&mut encoder, 1_u16.wrapping_add(muted)), back)
+                    .is_some(),
                 "o som não voltou depois de {muted} pacotes mudos"
             );
-            assert_eq!(unpacker.push_at(&voice_packet(&mut encoder, 2_u16.wrapping_add(muted)), back).map(|pcm| pcm.len()), Some(1_920), "e segue sem estimar nada");
+            assert_eq!(
+                unpacker
+                    .push_at(&voice_packet(&mut encoder, 2_u16.wrapping_add(muted)), back)
+                    .map(|pcm| pcm.len()),
+                Some(1_920),
+                "e segue sem estimar nada"
+            );
         }
 
         // O mesmo sem relógio, como a auditoria o reproduziu: o número longe demais para ser atraso.
         let mut unpacker = AudioUnpacker::new().expect("decoder");
 
         assert!(unpacker.push(&voice_packet(&mut encoder, 1)).is_some());
-        assert!(unpacker.push(&voice_packet(&mut encoder, 1 + 45_000)).is_some(), "o som só voltava depois de 20 537 pacotes");
+        assert!(
+            unpacker
+                .push(&voice_packet(&mut encoder, 1 + 45_000))
+                .is_some(),
+            "o som só voltava depois de 20 537 pacotes"
+        );
     }
 
     /// O número que cai a até `LATE_WINDOW` atrás é atraso de verdade, e qualquer número depois
@@ -487,9 +735,23 @@ mod tests {
         let mut unpacker = AudioUnpacker::new().expect("decoder");
         let start = Instant::now();
 
-        assert!(unpacker.push_at(&voice_packet(&mut encoder, 500), start).is_some());
-        assert!(unpacker.push_at(&voice_packet(&mut encoder, 500 - LATE_WINDOW), start).is_none(), "atrasado");
-        assert!(unpacker.push_at(&voice_packet(&mut encoder, 450), start + QUIET_RESTART).is_some(), "um segundo calado recomeça");
+        assert!(
+            unpacker
+                .push_at(&voice_packet(&mut encoder, 500), start)
+                .is_some()
+        );
+        assert!(
+            unpacker
+                .push_at(&voice_packet(&mut encoder, 500 - LATE_WINDOW), start)
+                .is_none(),
+            "atrasado"
+        );
+        assert!(
+            unpacker
+                .push_at(&voice_packet(&mut encoder, 450), start + QUIET_RESTART)
+                .is_some(),
+            "um segundo calado recomeça"
+        );
     }
 
     /// Um minuto de mudo (3 000 pacotes) sempre voltou na hora: a contraprova.
@@ -499,6 +761,10 @@ mod tests {
         let mut unpacker = AudioUnpacker::new().expect("decoder");
 
         assert!(unpacker.push(&voice_packet(&mut encoder, 0)).is_some());
-        assert!(unpacker.push(&voice_packet(&mut encoder, 1 + 3_000)).is_some());
+        assert!(
+            unpacker
+                .push(&voice_packet(&mut encoder, 1 + 3_000))
+                .is_some()
+        );
     }
 }

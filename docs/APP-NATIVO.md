@@ -1,51 +1,53 @@
 # O app nativo
 
-Um núcleo em Rust que decide tudo, e uma interface por sistema que só desenha. Cada pasta de
-sistema tem o seu `README.md` com o detalhe (`native/apps/windows`, `linux`, `macos`).
+Um núcleo Rust decide as regras e o app único só desenha e traduz ações. Durante a reescrita para
+egui, ele ainda está em `native/apps/unkvoid`; o diretório será renomeado para
+`native/apps/unkvoid`.
 
 ## As camadas
 
 | Pasta | O que faz |
 |---|---|
-| `shared/capture/` | captura de tela, do som do sistema, do microfone e da câmera, um arquivo por sistema |
-| `shared/media/` | encoder de hardware, Opus, envio RTP/SRTP (`plain.rs`, com pacer e governador de taxa), recepção com reenvio e pedido de quadro-chave (`receiver.rs`, `recovery.rs`), remontagem do quadro e do som (`unpack.rs`), buffer de chegada (`playout.rs`) e os decodificadores do Windows (`windows_decoder.rs`) e do Linux (`linux_decoder.rs`) |
-| `shared/core/` | **as regras**: sessão e cliente do SFU, a sala viva (`room.rs`: publicar, assistir, microfone, câmera, os vigias da transmissão e do caminho de chegada), cliente da API do Laravel, código de sala, estado do app, motivos de erro, atualização, log do dia e a ABI C do macOS |
-| `shared/storage/` | o estado em disco, com o token cifrado |
-| `shared/clips/` | o replay instantâneo (Clips) do Windows |
-| `apps/windows/` | Rust + Slint, usa o núcleo como crate |
-| `apps/linux/` | Rust + GTK4, aposentado: o app Slint de `apps/windows/` é o do Linux também |
-| `apps/macos/` | Swift + SwiftUI, fala com o núcleo pela ABI C |
-| `apps/desktop/` | o app Tauri + React de antes: referência de comportamento, não é mais publicado |
+| `shared/capture/` | captura de tela, som do sistema, microfone e câmera, com implementações por sistema |
+| `shared/media/` | encoder de hardware, Opus, RTP/SRTP, recuperação, buffer de chegada e decodificação |
+| `shared/core/` | **as regras**: sessão e reconexão, cliente do SFU, voz, tela, câmera, cliente Laravel, estado, atualização e motivos de falha |
+| `shared/storage/` | estado em disco e token cifrado pelo chaveiro do sistema |
+| `shared/clips/` | replay instantâneo (Clips) |
+| `apps/unkvoid/` | caminho temporário do app único; usa o núcleo como crate direto |
+| `release/` | assinatura minisign, publicação no site e no APT e validação do `.deb` |
 
-**A regra:** regra de negócio não mora em pasta de sistema. O teste é "o Windows vai precisar
-disto igual?" — se sim, sobe para o `shared/core`. Senão a mesma regra é escrita três vezes e
-diverge no primeiro ajuste.
+**A regra:** regra de negócio não mora no app. Se a decisão diz respeito à sessão, ao token, ao
+SFU ou à permissão, ela sobe para `shared/core`.
 
-## O que é de cada sistema
+## Mídia
 
-| | Windows | Linux | macOS |
-|---|---|---|---|
-| Tela | Graphics Capture; Desktop Duplication no monitor do Windows 10 | `ximagesrc` (X11) ou `pipewiresrc` pelo portal (Wayland) | ScreenCaptureKit |
-| Som do sistema | WASAPI por processo: só o jogo, sem o app de chamada | monitor do PulseAudio/PipeWire, sem o app de chamada | ScreenCaptureKit |
-| Encoder | Media Foundation na placa; sem placa, CPU em 720p30 | `nvh264enc`/`vah264enc`/`vaapih264enc`; sem placa, `x264enc` em 720p30 | VideoToolbox |
-| Microfone | WASAPI, pela interface | `pulsesrc`, pela captura | `AVAudioEngine` (com o cancelamento de eco do sistema) |
-| Câmera | ainda não (`capture::captures_cameras` diz que não, e a tela apaga o botão) | `v4l2src`, a escolhida em Configurações → Voz e vídeo (o botão do app Slint a liga; no build de depuração, `UNKVOID_CAMERA_SOURCE` troca a webcam por qualquer origem do GStreamer, para testar sem uma). Volta sozinha depois de uma queda | AVFoundation, `IOSurface` sem cópia; o núcleo a reabre depois de uma queda |
-| Assistir | Media Foundation na placa (DXVA), com reserva na CPU | `avdec_h264` dentro do processo (`gstreamer-rs`), no tamanho que veio | VideoToolbox (`AVSampleBufferDisplayLayer`) |
-| Som de quem assiste | WASAPI; o som da tela segue a espera da imagem dela no `Playout`, fora de 40 ms de folga e com emendas sem estalo | `pacat`, depois do mesmo mixer, com a mesma espera | `AVAudioEngine` (o som da tela ainda não segue a espera da imagem: o `follows` não atravessa a ABI) |
-| Atualização | pelo site, assinada (ver [AUTO-UPDATE.md](AUTO-UPDATE.md)), ou pela Microsoft Store | pelo APT | ainda sem versão publicada |
+O caminho é `captura → textura na GPU → encoder de hardware → RTP/SRTP → SFU → espectadores`.
+O app não usa uma webview: a interface e o núcleo são Rust no mesmo processo, e a mídia não deve
+descer para a CPU antes de ser comprimida.
 
-## A ponte do Swift
+- O envio abre um PlainTransport SRTP e pode produzir tela, som da tela, microfone e câmera.
+- Quem assiste usa NACK, RTX e pedido de quadro-chave; o `Playout` segura cada fluxo até a hora
+  de desenhar e tocar.
+- O encoder tenta a placa de vídeo; sem ela, usa o caminho de software configurado pelo núcleo.
+- O SFU recebe a autorização já assinada pelo Laravel. O app só pede o token, nunca decide se a
+  pessoa pode entrar ou transmitir.
 
-Só o macOS passa pela ABI C (`shared/core/src/ffi.rs`); Windows e Linux são Rust. As funções
-estão em [ARQUITETURA.md](ARQUITETURA.md#a-ponte-para-o-swift), e as ações e avisos que passam
-por elas no [CONTRATO.md](CONTRATO.md). Duas regras que não perdoam: `unkvoid_call` e
-`unkvoid_app` **bloqueiam** (nunca na thread que desenha), e toda string devolvida volta em
-`unkvoid_string_free`, uma vez só.
+## Build e publicação
+
+O instalador do site e o MSIX usam os ícones em `native/apps/unkvoid/icons/`. A versão de todos
+os artefatos é `[workspace.package].version` em `native/Cargo.toml`.
+
+O instalador do site recebe uma assinatura minisign encapsulada em Base64. A pública fica somente
+em `native/release/update-public-key.pub`, incluída pelo núcleo e lida pelos scripts de release.
+O `.deb` é gerado no Debian 12 e atualizado pelo APT, cuja chave GPG é outra.
+
+Os comandos completos estão em [BUILD-WINDOWS.md](BUILD-WINDOWS.md),
+[BUILD-LINUX.md](BUILD-LINUX.md) e [AUTO-UPDATE.md](AUTO-UPDATE.md).
 
 ## O que fica no disco
 
 | O quê | Onde |
 |---|---|
-| estado e preferências (`state.json`) | a pasta de configuração do sistema, em `com.unkvoid.desktop` |
-| token da conta | cifrado em AES-256-GCM no mesmo arquivo; a chave fica no chaveiro do sistema (Keychain, Credential Manager, Secret Service) |
-| log do dia | Windows: `%LOCALAPPDATA%\com.unkvoid.desktop\unkvoid-AAAA-MM-DD.log`; Linux: `~/.local/state/unkvoid/unkvoid-AAAA-MM-DD.log` (`$XDG_STATE_HOME`), a partir do `info`. Sete dias, e as linhas com `ERROR` vão para `POST /api/errors` a cada 30 s |
+| estado e preferências (`state.json`) | pasta de configuração do sistema, em `com.unkvoid.desktop` |
+| token da conta | cifrado em AES-256-GCM; a chave fica no chaveiro do sistema |
+| log do dia | `%LOCALAPPDATA%\com.unkvoid.desktop\` no Windows; no Linux, `$XDG_STATE_HOME` ou `~/.local/state/unkvoid/` |

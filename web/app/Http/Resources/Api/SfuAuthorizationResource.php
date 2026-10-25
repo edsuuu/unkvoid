@@ -15,7 +15,7 @@ final class SfuAuthorizationResource extends JsonResource
 {
     public static $wrap;
 
-    public function __construct(private readonly bool $allowed, private readonly string $name)
+    public function __construct(private readonly bool $allowed, private readonly string $name, private readonly string $status = 'offline')
     {
         parent::__construct(null);
     }
@@ -25,6 +25,6 @@ final class SfuAuthorizationResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
-        return ['allowed' => $this->allowed, 'name' => $this->name];
+        return ['allowed' => $this->allowed, 'name' => $this->name, 'status' => $this->status];
     }
 }

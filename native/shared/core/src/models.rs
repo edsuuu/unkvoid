@@ -6,11 +6,28 @@
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UserStatus {
+    #[default]
+    Online,
+    Idle,
+    Dnd,
+    Invisible,
+    Offline,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct User {
     pub id: i64,
     pub name: String,
     pub email: String,
+    #[serde(default)]
+    pub status: UserStatus,
+    #[serde(default)]
+    pub activity: Option<crate::activity::Activity>,
+    #[serde(default)]
+    pub status_until: Option<String>,
     pub avatar_url: Option<String>,
     #[serde(default)]
     pub avatar_uploaded: bool,
@@ -18,6 +35,27 @@ pub struct User {
     pub admin: bool,
     #[serde(default)]
     pub nickname_confirmed: bool,
+    /// Nasceu com o nome e a senha e ainda não pôs e-mail: o `email` é o de mentira do
+    /// servidor (`apelido@<uuid>.unkvoid.com`), e não se mostra.
+    #[serde(default)]
+    pub name_only: bool,
+    #[serde(flatten)]
+    pub profile: Profile,
+}
+
+/// O que o cartão de perfil mostra além do nome e da foto. Tudo opcional: conta antiga ou
+/// servidor sem a coluna chegam sem nada disso.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Profile {
+    #[serde(default)]
+    pub bio: Option<String>,
+    #[serde(default)]
+    pub pronouns: Option<String>,
+    /// `#rrggbb`; sem ela, a faixa sai da cor do nome.
+    #[serde(default)]
+    pub banner_color: Option<String>,
+    #[serde(default)]
+    pub custom_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,6 +65,9 @@ pub struct ServerSummary {
     pub owner_id: i64,
     pub icon_url: Option<String>,
     pub last_accessed_at: Option<String>,
+    /// As não lidas dos canais que a pessoa vê: é o que acende a bolinha no trilho.
+    #[serde(default)]
+    pub unread: i64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,6 +75,8 @@ pub struct ServerSummary {
 pub enum ChannelKind {
     Text,
     Voice,
+    /// Só agrupa: não tem chat, voz nem limite de pessoas.
+    Category,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -61,10 +104,24 @@ pub struct Channel {
     pub topic: Option<String>,
     pub position: i64,
     pub user_limit: Option<i64>,
+    /// A categoria em que o canal está; `None` é a raiz do servidor.
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// Mensagens de outras pessoas depois da marca de leitura; zero em categoria.
+    #[serde(default)]
+    pub unread: i64,
     /// A permissão já calculada pelo Laravel para quem pediu. A interface só esconde botão.
     pub permissions: i64,
     #[serde(default)]
     pub overwrites: Vec<Overwrite>,
+}
+
+/// Uma faixa da coluna de canais: a categoria (ou a raiz, sem ela) e os canais dela já na
+/// ordem em que se desenham.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelSection {
+    pub category: Option<Channel>,
+    pub channels: Vec<Channel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,6 +133,11 @@ pub struct Role {
     pub permissions: i64,
     #[serde(default)]
     pub is_everyone: bool,
+    /// Quem tem o cargo aparece num grupo próprio na lista de membros.
+    #[serde(default)]
+    pub hoist: bool,
+    #[serde(default)]
+    pub mentionable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,6 +147,10 @@ pub struct Member {
     pub avatar_url: Option<String>,
     pub nickname: Option<String>,
     #[serde(default)]
+    pub status: UserStatus,
+    #[serde(default)]
+    pub activity: Option<crate::activity::Activity>,
+    #[serde(default)]
     pub role_ids: Vec<i64>,
     #[serde(default)]
     pub server_mute: bool,
@@ -92,6 +158,13 @@ pub struct Member {
     pub server_deaf: bool,
     #[serde(default)]
     pub is_owner: bool,
+    #[serde(flatten)]
+    pub profile: Profile,
+    /// Quando a conta foi criada e quando entrou neste servidor (ISO 8601).
+    #[serde(default)]
+    pub member_since: Option<String>,
+    #[serde(default)]
+    pub joined_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -102,6 +175,8 @@ pub struct VoicePerson {
     pub sources: Vec<String>,
     #[serde(default)]
     pub muted: bool,
+    #[serde(default)]
+    pub deafened: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,6 +184,29 @@ pub struct Person {
     pub id: i64,
     pub name: String,
     pub avatar_url: Option<String>,
+    #[serde(default)]
+    pub status: UserStatus,
+    #[serde(default)]
+    pub activity: Option<crate::activity::Activity>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub banner_color: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MutualServer {
+    pub id: i64,
+    pub name: String,
+    pub icon_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Mutuals {
+    #[serde(default)]
+    pub mutual_friends: usize,
+    #[serde(default)]
+    pub mutual_servers: Vec<MutualServer>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -162,6 +260,65 @@ pub struct Ban {
     pub created_at: String,
 }
 
+/// Um convite de uma pessoa, como os do Discord (`GET /api/servers/{server}/invites`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerInvite {
+    pub id: i64,
+    pub code: String,
+    pub url: String,
+    pub uses: i64,
+    /// `None` é sem limite.
+    pub max_uses: Option<i64>,
+    /// `None` é sem validade.
+    pub expires_at: Option<String>,
+    pub channel: Option<InviteChannel>,
+    pub creator: Option<Person>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InvitePreview {
+    pub server: InvitePreviewServer,
+    pub members: i64,
+    pub inviter: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InvitePreviewServer {
+    pub id: i64,
+    pub name: String,
+    pub icon_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InviteChannel {
+    pub id: String,
+    pub name: String,
+}
+
+/// Um som do soundboard do servidor. A `url` é pré-assinada e vence em 2 h.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerSound {
+    pub id: i64,
+    pub name: String,
+    pub emoji: Option<String>,
+    pub volume: u8,
+    pub url: String,
+}
+
+/// Uma linha do registro de auditoria. O `summary` já vem em português, montado pelo Laravel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditEntry {
+    pub id: String,
+    pub at: String,
+    pub event: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// `None` quando a conta de quem fez foi apagada.
+    pub actor: Option<Person>,
+    pub summary: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Membership {
     pub user_id: i64,
@@ -177,6 +334,8 @@ pub struct ServerTree {
     pub name: String,
     pub owner_id: i64,
     pub invite_code: Option<String>,
+    #[serde(default)]
+    pub invites_paused: bool,
     pub icon_url: Option<String>,
     pub me: Membership,
     #[serde(default)]
@@ -199,11 +358,52 @@ impl ServerTree {
     /// Aqui e não em cada interface: escrita três vezes, a mesma lista sairia em três
     /// ordens diferentes no primeiro ajuste.
     pub fn ordered_channels(&self) -> Vec<Channel> {
-        let mut ordered = self.channels.clone();
+        let mut ordered: Vec<Channel> = self
+            .channels
+            .iter()
+            .filter(|channel| channel.kind != ChannelKind::Category)
+            .cloned()
+            .collect();
 
         ordered.sort_by_key(|channel| (channel.kind == ChannelKind::Voice, channel.position));
 
         ordered
+    }
+
+    /// A coluna como o Discord a desenha: primeiro os canais soltos na raiz, depois cada
+    /// categoria pela posição dela, e dentro de cada faixa texto antes de voz. Um canal que
+    /// aponta para uma categoria que a pessoa não vê fica na raiz: escondê-lo junto apagaria um
+    /// canal que ela pode abrir.
+    pub fn sections(&self) -> Vec<ChannelSection> {
+        let mut categories: Vec<&Channel> = self
+            .channels
+            .iter()
+            .filter(|channel| channel.kind == ChannelKind::Category)
+            .collect();
+
+        categories.sort_by_key(|category| category.position);
+
+        let visible = |parent: &Option<String>| {
+            parent.as_ref().is_some_and(|parent| categories.iter().any(|category| &category.id == parent))
+        };
+        let ordered = self.ordered_channels();
+        let mut sections = vec![ChannelSection {
+            category: None,
+            channels: ordered.iter().filter(|channel| !visible(&channel.parent_id)).cloned().collect(),
+        }];
+
+        for category in &categories {
+            sections.push(ChannelSection {
+                category: Some((*category).clone()),
+                channels: ordered
+                    .iter()
+                    .filter(|channel| channel.parent_id.as_deref() == Some(category.id.as_str()))
+                    .cloned()
+                    .collect(),
+            });
+        }
+
+        sections
     }
 }
 
@@ -232,6 +432,10 @@ pub struct ProducerInfo {
     pub source: String,
     #[serde(default)]
     pub paused: bool,
+    /// Public MLS signature key of the producer's session, in base64url. It is untrusted SFU
+    /// metadata and is checked against the authenticated MLS roster before deriving a key.
+    #[serde(default)]
+    pub e2ee_member_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -261,8 +465,8 @@ impl Peer {
     }
 }
 
-/// Como este app se apresenta ao SFU: sem conta vale o código e o nome digitado; com conta
-/// vale o token de 60 s que o Laravel assinou.
+/// Quem entra: o visitante da sala por código, sem conta, ou o token curto assinado pelo
+/// Laravel para entrar em um canal de voz.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum RoomIdentity {
@@ -272,6 +476,7 @@ pub enum RoomIdentity {
         name: String,
         install_id: String,
     },
+    #[serde(rename_all = "camelCase")]
     Account {
         token: String,
     },
@@ -283,6 +488,13 @@ pub struct JoinResponse {
     #[serde(default)]
     pub resumed: bool,
     pub peer_id: String,
+    /// The authenticated account bound by the SFU, used as the MLS BasicCredential identity.
+    #[serde(default)]
+    pub user_id: String,
+    /// Random identifier for this live Room instance. It changes after the Room empties and is
+    /// combined with the room code to derive the MLS group id.
+    #[serde(default)]
+    pub e2ee_session_id: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -304,14 +516,12 @@ pub struct JoinResponse {
 pub enum Screen {
     Entry,
     Hub,
-    Room,
     Offline,
     Updating,
 }
 
 impl Screen {
-    /// Onde se cai ao sair de uma sala, e onde se abre o app depois da atualização. Quem
-    /// tem conta volta para os servidores; quem não tem volta para o código.
+    /// Onde se abre o app depois da atualização: conta vai aos servidores, sem conta ao login.
     pub fn home(signed_in: bool) -> Self {
         if signed_in { Self::Hub } else { Self::Entry }
     }
@@ -403,6 +613,17 @@ mod tests {
 
         assert!(member.role_ids.is_empty());
         assert!(!member.is_owner);
+        assert_eq!(member.status, UserStatus::Online);
+    }
+
+    #[test]
+    fn status_is_read_from_the_wire_and_legacy_payloads_default_online() {
+        let user: User = serde_json::from_str(r#"{"id":1,"name":"Ada","email":"ada@example.test","avatar_url":null,"status":"dnd","status_until":"2026-10-14T20:00:00Z"}"#).expect("user");
+        let old_user: User = serde_json::from_str(r#"{"id":1,"name":"Ada","email":"ada@example.test","avatar_url":null}"#).expect("old user");
+
+        assert_eq!(user.status, UserStatus::Dnd);
+        assert_eq!(user.status_until.as_deref(), Some("2026-10-14T20:00:00Z"));
+        assert_eq!(old_user.status, UserStatus::Online);
     }
 
     #[test]
@@ -455,6 +676,7 @@ mod tests {
             name: "Casa".into(),
             owner_id: 1,
             invite_code: None,
+            invites_paused: false,
             icon_url: None,
             me: Membership {
                 user_id: 1,
@@ -489,9 +711,69 @@ mod tests {
             topic: None,
             position,
             user_limit: None,
+            parent_id: None,
+            unread: 0,
             permissions: 0,
             overwrites: Vec::new(),
         }
+    }
+
+    fn inside(mut channel: Channel, parent: &str) -> Channel {
+        channel.parent_id = Some(parent.into());
+
+        channel
+    }
+
+    #[test]
+    fn the_sections_put_the_loose_channels_first_then_each_category_in_order() {
+        let tree = ServerTree {
+            id: 1,
+            name: "Casa".into(),
+            owner_id: 1,
+            invite_code: None,
+            invites_paused: false,
+            icon_url: None,
+            me: Membership { user_id: 1, permissions: 0, top_position: 0 },
+            roles: Vec::new(),
+            members: Vec::new(),
+            voice: std::collections::HashMap::new(),
+            bans: Vec::new(),
+            channels: vec![
+                channel("projetos", ChannelKind::Category, 1),
+                channel("geral", ChannelKind::Category, 0),
+                inside(channel("programando", ChannelKind::Voice, 0), "projetos"),
+                inside(channel("config-pc", ChannelKind::Text, 1), "projetos"),
+                inside(channel("chat", ChannelKind::Text, 0), "geral"),
+                channel("regras", ChannelKind::Text, 0),
+                inside(channel("oculta", ChannelKind::Text, 1), "categoria-que-nao-vejo"),
+            ],
+        };
+        let sections: Vec<(Option<String>, Vec<String>)> = tree
+            .sections()
+            .into_iter()
+            .map(|section| {
+                (section.category.map(|category| category.name), section.channels.into_iter().map(|channel| channel.name).collect())
+            })
+            .collect();
+
+        assert_eq!(
+            sections,
+            [
+                (None, vec!["regras".to_owned(), "oculta".to_owned()]),
+                (Some("geral".to_owned()), vec!["chat".to_owned()]),
+                (Some("projetos".to_owned()), vec!["config-pc".to_owned(), "programando".to_owned()]),
+            ],
+            "a raiz vem antes, a categoria segue a posição, e o canal de categoria escondida não some"
+        );
+    }
+
+    #[test]
+    fn a_category_reads_from_the_wire_and_never_lands_among_the_channels() {
+        let raw = r#"{"id":"01jbqz3h7k9m2n4p6r8t0v1w3y","name":"Projetos","type":"category","topic":null,
+            "position":2,"user_limit":null,"parent_id":null,"unread":0,"permissions":256}"#;
+        let category: Channel = serde_json::from_str(raw).expect("categoria");
+
+        assert_eq!(category.kind, ChannelKind::Category);
     }
 
     #[test]
@@ -550,5 +832,18 @@ mod tests {
 
         assert_eq!(friendship.status, FriendshipStatus::Pending);
         assert_eq!(friendship.responded_at, None);
+    }
+
+    /// A linha da auditoria de quem apagou a conta chega sem `actor`, e o `type` do Laravel
+    /// vira `kind`.
+    #[test]
+    fn an_audit_line_without_its_author_still_reads() {
+        let entry: AuditEntry = serde_json::from_str(
+            r#"{"id":"c3","at":"2026-10-14T08:00:00-03:00","event":"deleted","type":"Channel",
+                "actor":null,"summary":"apagou o canal #geral"}"#,
+        )
+        .expect("auditoria");
+
+        assert_eq!((entry.kind.as_str(), entry.actor), ("Channel", None));
     }
 }

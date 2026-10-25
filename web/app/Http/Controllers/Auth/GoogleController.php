@@ -11,7 +11,9 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Laravel\Socialite\Facades\Socialite;
 use Symfony\Component\HttpFoundation\RedirectResponse as SocialiteRedirect;
 use Throwable;
@@ -92,15 +94,27 @@ final readonly class GoogleController
         $port = $request->session()->pull('app_port');
         $state = $request->session()->pull('app_state');
         $renewable = $request->session()->pull('app_refresh') === true;
+        $challenge = $request->session()->pull('app_code_challenge');
 
         if (is_string($state)) {
+            if (is_int($port) && is_string($challenge) && $challenge !== '') {
+                $code = Str::random(64);
+                Cache::put('app-login-exchange:'.hash('sha256', $code), [
+                    'user_id' => $user->id,
+                    'challenge' => $challenge,
+                    'refresh' => $renewable,
+                ], now()->addSeconds(60));
+
+                return redirect()->away("http://127.0.0.1:{$port}/?code=".urlencode($code).'&state='.urlencode($state));
+            }
+
+            // ponytail: o token na URL fica só para quem não manda PKCE (o nativo 0.1.19 pela
+            // porta, o Tauri até a 0.0.40 pelo `unkvoid://`); sai quando essas versões saírem
+            // de circulação.
             $tokens = $this->tokens->issue($user, 'app', $renewable);
             $token = $tokens['token'];
             $refresh = is_null($tokens['refresh_token']) ? '' : '&refresh_token='.urlencode($tokens['refresh_token']);
 
-            // O app até a 0.0.28 espera numa porta local; do 0.0.29 em diante ele registra
-            // o esquema `unkvoid://` e não manda porta. Atender os dois é o que impede o
-            // login de quebrar para quem ainda não atualizou.
             if (is_int($port)) {
                 return redirect()->away("http://127.0.0.1:{$port}/?token=".urlencode($token).$refresh.'&state='.$state);
             }

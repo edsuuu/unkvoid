@@ -16,7 +16,13 @@ mod windows;
 mod windows_audio;
 
 #[cfg(target_os = "windows")]
+mod windows_camera;
+
+#[cfg(target_os = "windows")]
 pub mod windows_duplication;
+
+#[cfg(target_os = "windows")]
+pub use windows_camera::{CameraFrame, CameraReader, SurfaceUploader};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -62,7 +68,7 @@ pub fn captures_cameras() -> bool {
     cfg!(target_os = "linux")
 }
 
-/// As câmeras que esta captura abre, a primeira sendo a padrão. Vazia onde ela não abre câmera.
+/// As câmeras disponíveis, na ordem do sistema; a primeira é a câmera padrão.
 pub fn cameras() -> Vec<Camera> {
     #[cfg(target_os = "linux")]
     return linux::LinuxCapturer::cameras()
@@ -70,7 +76,10 @@ pub fn cameras() -> Vec<Camera> {
         .filter_map(|(path, name)| Some(Camera { index: path.strip_prefix("/dev/video")?.parse().ok()?, name }))
         .collect();
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    return windows_camera::cameras();
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     Vec::new()
 }
 
@@ -183,29 +192,37 @@ pub enum Quality {
     Uhd2160,
 }
 
+/// A maior largura que sai: o H.264 da placa para em 4096.
+const MAX_WIDTH: u64 = 3840;
+
 impl Quality {
-    /// A qualidade escolhe só a largura; a altura vem da proporção da origem.
-    pub fn width(self) -> u32 {
+    /// A qualidade escolhe só a altura; a largura vem da proporção da origem.
+    pub fn height(self) -> u32 {
         match self {
-            Self::Hd720 => 1280,
-            Self::Hd1080 => 1920,
-            Self::Qhd1440 => 2560,
-            Self::Uhd2160 => 3840,
+            Self::Hd720 => 720,
+            Self::Hd1080 => 1080,
+            Self::Qhd1440 => 1440,
+            Self::Uhd2160 => 2160,
         }
     }
 
-    /// O tamanho de saída para uma origem de `source` pixels: a largura da qualidade
-    /// (nunca acima da origem — um monitor 720p não sobe para 1080p, e um 1080p pedido em
-    /// 4K continua em 1080p em vez de gastar banda com imagem esticada) e a altura que
-    /// mantém a proporção, as duas pares, como o H.264 em 4:2:0 exige.
+    /// O tamanho de saída para uma origem de `source` pixels: sempre a altura da qualidade —
+    /// quem assiste recebe o 1080p pedido mesmo de um ultrawide (3440x1440 sai 2580x1080) ou
+    /// de um monitor menor (1366x768 sobe para 1920x1080) — e a largura que mantém a
+    /// proporção, até `MAX_WIDTH`; as duas pares, como o H.264 em 4:2:0 exige.
     ///
-    /// Sem isto um ultrawide 21:9 e um monitor em pé saíam espremidos em 16:9.
+    /// Sem a proporção um ultrawide 21:9 e um monitor em pé saíam espremidos em 16:9.
     pub fn fit(self, source: (u32, u32)) -> (u32, u32) {
-        let (source_width, source_height) = (source.0.max(2), source.1.max(2));
-        let width = self.width().min(source_width);
-        let height = (u64::from(width) * u64::from(source_height) / u64::from(source_width)) as u32;
+        let (source_width, source_height) = (u64::from(source.0.max(2)), u64::from(source.1.max(2)));
+        let height = u64::from(self.height());
+        let width = height * source_width / source_height;
+        let (width, height) = if width > MAX_WIDTH {
+            (MAX_WIDTH, MAX_WIDTH * source_height / source_width)
+        } else {
+            (width, height)
+        };
 
-        (width & !1, height.clamp(2, source_height) & !1)
+        (width.max(2) as u32 & !1, height.max(2) as u32 & !1)
     }
 }
 
@@ -372,21 +389,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn quality_keeps_the_source_aspect_and_never_upscales() {
+    fn quality_is_always_the_chosen_height_in_the_source_aspect() {
         assert_eq!(Quality::Hd1080.fit((1920, 1080)), (1920, 1080));
         assert_eq!(Quality::Hd720.fit((3840, 2160)), (1280, 720));
-        // Ultrawide: 1920 * 1440 / 3440 = 803,7 → par.
-        assert_eq!(Quality::Hd1080.fit((3440, 1440)), (1920, 802));
+        // Ultrawides descem para 1080 de altura, com a largura toda.
+        assert_eq!(Quality::Hd1080.fit((3440, 1440)), (2580, 1080));
+        assert_eq!(Quality::Hd1080.fit((2560, 1080)), (2560, 1080));
+        // Monitor menor sobe para 1080.
+        assert_eq!(Quality::Hd1080.fit((1366, 768)), (1920, 1080));
+        assert_eq!(Quality::Hd1080.fit((1280, 720)), (1920, 1080));
         // Monitor em pé continua em pé.
-        assert_eq!(Quality::Qhd1440.fit((1080, 1920)), (1080, 1920));
-        // Monitor 720p pedido em 1080p fica em 720p, e 4K num monitor 1080p fica em 1080p.
-        assert_eq!(Quality::Hd1080.fit((1280, 720)), (1280, 720));
-        assert_eq!(Quality::Uhd2160.fit((1920, 1080)), (1920, 1080));
-        assert_eq!(Quality::Uhd2160.fit((3840, 2160)), (3840, 2160));
+        assert_eq!(Quality::Hd1080.fit((1080, 1920)), (606, 1080));
+        // Largo demais para o H.264 da placa: a largura para no teto e a altura acompanha.
+        assert_eq!(Quality::Uhd2160.fit((5120, 1440)), (3840, 1080));
         // Janela ímpar sai par.
-        assert_eq!(Quality::Hd1080.fit((1001, 601)), (1000, 600));
+        assert_eq!(Quality::Hd1080.fit((1001, 601)), (1798, 1080));
         // Origem desconhecida não divide por zero.
-        assert_eq!(Quality::Hd1080.fit((0, 0)), (2, 2));
+        assert_eq!(Quality::Hd1080.fit((0, 0)), (1080, 1080));
     }
 
     #[test]

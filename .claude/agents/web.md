@@ -42,7 +42,8 @@ por servidor, 10 caracteres; banido não entra com convite nenhum.
 **Voz**: `POST /api/channels/{channel}/voice/token` exige `VIEW_CHANNEL` + `CONNECT`, respeita
 `user_limit` (contagem sem cache), grava `channel_accesses` e devolve um token de 60 s com `can`
 (`speak`, `stream`, `video`) derivado das permissões e do `server_mute`. Desconectar
-(`MOVE_MEMBERS`), banir e expulsar chamam o SFU; falha do SFU nunca derruba a ação.
+(`MOVE_MEMBERS`), banir e expulsar chamam o SFU; falha do SFU nunca derruba a ação. Só canais de
+voz de servidores chegam ao SFU.
 
 **Imagem no chat**: até 3 por mensagem de canal (jpeg/png/webp/gif, 2 MB cada — o teto do PHP da
 VPS), sozinhas ou com texto. Cada uma é uma linha em `files` ligada por `message_files`; o envio

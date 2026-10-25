@@ -6,22 +6,22 @@
         <p>Ao usar o Unkvoid você concorda com o que está aqui. São poucas regras, e todas existem por um motivo.</p>
 
         <h2>O serviço</h2>
-        <p>O Unkvoid é um aplicativo de compartilhamento de tela. Você cria uma sala, recebe um código, e quem tiver o código vê o que você transmitir. A imagem passa pelo nosso servidor apenas para ser retransmitida, e não é gravada.</p>
+        <p>O Unkvoid é um aplicativo de servidores, canais e compartilhamento de tela. Você participa de servidores e entra nos canais de voz em que tiver permissão. A imagem passa pelo nosso servidor apenas para ser retransmitida, e não é gravada.</p>
 
         <h2>A conta</h2>
-        <p>A entrada é feita com uma conta Google. Você é responsável pelo que acontece nas salas criadas com a sua conta. Se achar que alguém está usando a sua conta, troque a senha no Google e avise a gente.</p>
+        <p>A entrada é feita com uma conta. Você é responsável pelo que acontece nos servidores criados com a sua conta. Se achar que alguém está usando a sua conta, troque a senha e avise a gente.</p>
 
         <h2>O que não pode</h2>
         <ul>
             <li>Transmitir conteúdo ilegal, ou que viole direitos de outra pessoa.</li>
             <li>Usar o serviço para assediar, ameaçar ou expor alguém.</li>
-            <li>Tentar entrar em salas adivinhando códigos, ou interferir no funcionamento do serviço.</li>
+            <li>Tentar contornar permissões de servidores e canais, ou interferir no funcionamento do serviço.</li>
             <li>Redistribuir o app modificado como se fosse o original.</li>
         </ul>
         <p>Quem faz isso perde a conta, sem aviso prévio quando o caso for grave.</p>
 
-        <h2>O código da sala</h2>
-        <p>O código é a chave da sala. Quem tem o código entra. Mande só para quem você quer lá dentro. O dono da sala pode remover pessoas, e a pessoa removida não consegue voltar.</p>
+        <h2>Servidores e canais</h2>
+        <p>Convites dão acesso a um servidor. Dentro dele, cargos e permissões definem quem pode ver canais, conversar, entrar em voz e transmitir. Quem for removido ou banido não consegue voltar sem uma nova autorização.</p>
 
         <h2>Relatórios de erro</h2>
         <p>Quando o app fecha sozinho ou registra um erro, o trecho do log daquele momento é enviado para a gente na próxima vez que ele abre. É assim que descobrimos falhas que só acontecem em alguns computadores, e que ninguém consegue descrever depois.</p>

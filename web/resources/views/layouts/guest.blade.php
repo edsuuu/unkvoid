@@ -34,6 +34,7 @@
                         <a href="{{ route('home') }}#app" class="lp-nav-link">Interface</a>
                         <a href="{{ route('home') }}#pipeline" class="lp-nav-link">Pipeline</a>
                         <a href="{{ route('home') }}#roadmap" class="lp-nav-link">Roadmap</a>
+                        <a href="{{ route('documentation.index') }}" class="lp-nav-link">Documentação</a>
                         @auth
                             <form method="POST" action="{{ route('logout') }}" style="display:contents">
                                 @csrf
@@ -59,6 +60,7 @@
                     <a href="{{ route('home') }}#pipeline">Pipeline</a>
                     <a href="{{ route('home') }}#roadmap">Roadmap</a>
                     <a href="{{ route('home') }}#download">Download</a>
+                    <a href="{{ route('documentation.index') }}">Documentação</a>
                     <a href="{{ route('privacy') }}">Privacidade</a>
                     <a href="{{ route('terms') }}">Termos</a>
                 </div>

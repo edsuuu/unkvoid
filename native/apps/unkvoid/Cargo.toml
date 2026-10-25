@@ -1,0 +1,104 @@
+[package]
+name = "unkvoid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "unkvoid"
+path = "src/main.rs"
+
+[features]
+# O Unkvoid Beta, para testar ao lado do app instalado: outro nome, outra pasta, outra chave,
+# outra trava de instância, e nunca se atualiza com o instalador do estável.
+beta = ["storage/beta", "egui_extras/svg"]
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# Sem ponte: o núcleo entra como crate, e o que ele decide chega tipado.
+core-app = { path = "../../shared/core" }
+storage = { path = "../../shared/storage" }
+# A captura e o encoder: a transmissão é a mesma do `core_app::sharing`, que já os usa.
+capture = { path = "../../shared/capture" }
+media = { path = "../../shared/media" }
+serde.workspace = true
+serde_json.workspace = true
+# A chave SRTP atravessa o `producePlain` em base64, e volta assim do servidor.
+base64 = "0.22"
+# A janela inteira, desenhada pela placa: um binário só no Windows e no Linux (X11 e Wayland),
+# e o mesmo código compila para o navegador depois. O `glow` (OpenGL) deixa o binário e a árvore
+# de dependências pequenos; o `wgpu` não é preciso para uma interface 2D.
+eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+egui = "0.36"
+# Fotos de perfil e ícones de servidor chegam por URL pré-assinada do bucket: o carregador por
+# HTTP com o decodificador de imagem.
+egui_extras = { version = "0.36", default-features = false, features = ["http", "image"] }
+# Os ícones do Phosphor (MIT) numa fonte: sem desenhar cada ícone à mão.
+egui-phosphor = { version = "0.14", features = ["regular", "fill"] }
+# JPEG da prévia do seletor de tela, PNG do ícone da janela, e os formatos que o chat aceita.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+# "Hoje às", "Ontem às": a data local. Já vem compilada pelo núcleo.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# O soundboard aceita arquivos do servidor em três formatos e não precisa de codecs extras.
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "ogg", "vorbis", "wav"] }
+# O print colado no chat: o egui só cola texto, e o arboard (que o eframe já usa) lê a imagem.
+arboard = "3.6"
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# O motor do replay instantâneo; a interface dele é a página dos Clips, em `ui/settings.rs`.
+clips-engine = { package = "clips", path = "../../shared/clips" }
+windows = { version = "0.62", features = [
+    # O pacote da Store: a identidade do processo e a tarefa de início do manifesto.
+    "ApplicationModel",
+    "ApplicationModel_Activation",
+    "Foundation",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Foundation",
+    # As miniaturas do Explorer e o recorte de janela da cola do Windows.
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_Media_MediaFoundation",
+    "Win32_Security",
+    # O mutex e o evento da instância única abertos a quem não é elevado (`SHARED`).
+    "Win32_Security_Authorization",
+    "Win32_Storage_Packaging_Appx",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    # A pasta escolhida no instalador do UnkvoidClips.
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+    # O `PROPVARIANT` e o `VT_LPWSTR` do nome do aparelho.
+    "Win32_System_Variant",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
+    # O `ShellExecuteW` que abre o instalador da atualização e o navegador.
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Dwm",
+    # A licença para capturar sem a borda amarela (`allow_borderless_capture`).
+    "Graphics_Capture",
+    "Security_Authorization_AppCapabilityAccess",
+] }
+windows-core = "0.62"
+# O HWND da janela do eframe, para o Windows arrastar pela barra. Já vem no lock pelo winit.
+raw-window-handle = "0.6"
+
+# O cano até o `pacat` fica com uma página só (`F_SETPIPE_SZ`): é o que mantém o atraso da voz
+# baixo. Já está no lock por meio mundo.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[build-dependencies]
+# O ícone e o manifesto do .exe; não faz nada fora do Windows.
+tauri-winres = "0.3"

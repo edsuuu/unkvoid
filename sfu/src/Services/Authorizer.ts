@@ -4,7 +4,7 @@ import { ForbiddenException, ServiceUnavailableException } from '../Exceptions/A
 
 const PATH = '/api/sfu/authorize';
 
-type Answer = { allowed?: unknown; name?: unknown };
+type Answer = { allowed?: unknown; name?: unknown; status?: unknown };
 
 /**
  * Quem decide se alguém pode ouvir um canal é o Laravel, que tem o banco, os cargos e as
@@ -15,7 +15,10 @@ type Answer = { allowed?: unknown; name?: unknown };
  * ser invalidado quando um cargo muda — por isso não começa com um.
  */
 export class Authorizer {
-    public static async allows(userId: string, channel: string): Promise<string | null> {
+    public static async allows(
+        userId: string,
+        channel: string,
+    ): Promise<{ name: string | null; status: string }> {
         if (config.laravelUrl === '') {
             throw new ServiceUnavailableException('SFU_LARAVEL_URL is not configured');
         }
@@ -56,6 +59,9 @@ export class Authorizer {
             throw new ForbiddenException('not authorized for this channel');
         }
 
-        return typeof answer.name === 'string' ? answer.name : null;
+        return {
+            name: typeof answer.name === 'string' ? answer.name : null,
+            status: typeof answer.status === 'string' ? answer.status : 'online',
+        };
     }
 }

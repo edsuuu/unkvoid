@@ -6,7 +6,8 @@
 
 A sala anônima por código **continua como está**: quem não quer conta abre o app,
 cria uma sala e manda o código. O que este documento descreve é o segundo modo, só
-para quem está logado.
+para quem está logado: servidores com conta, em que o Laravel autoriza cada canal de voz e
+assina o token que o SFU confere.
 
 ## Quem manda em quê
 
@@ -22,7 +23,7 @@ para quem está logado.
 ADMINISTRATOR   = 1 << 0     VIEW_CHANNEL    = 1 << 8      MUTE_MEMBERS    = 1 << 15
 MANAGE_SERVER   = 1 << 1     SEND_MESSAGES   = 1 << 9      DEAFEN_MEMBERS  = 1 << 16
 MANAGE_ROLES    = 1 << 2     MANAGE_MESSAGES = 1 << 10     MOVE_MEMBERS    = 1 << 17   (desconectar da voz)
-MANAGE_CHANNELS = 1 << 3     CONNECT         = 1 << 11
+MANAGE_CHANNELS = 1 << 3     CONNECT         = 1 << 11     MANAGE_EXPRESSIONS = 1 << 18 (sons do soundboard)
 KICK_MEMBERS    = 1 << 4     SPEAK           = 1 << 12
 BAN_MEMBERS     = 1 << 5     STREAM          = 1 << 13     (compartilhar tela)
 CREATE_INVITE   = 1 << 6     VIDEO           = 1 << 14     (câmera)
@@ -61,6 +62,11 @@ primeira oscilação), e o `can` continua levando `speak` pela permissão `SPEAK
 `joined` também chama `/mute true` para quem está mutado: é por esse `serverMuted` que o app
 fica sabendo. O `join` devolve `serverMuted: boolean`.
 
+O `join` também devolve `e2eeSessionId`, aleatório por instância viva de Room. O core combina-o
+com o código da sala para derivar um `group_id` MLS que não se repete quando uma sala vazia é
+recriada. Em `producePlain`, o app E2EE envia `e2eeMemberId` (chave pública de assinatura da
+sessão MLS); o SFU apenas ecoa o identificador público no roster e no `consumePlain`.
+
 Mutado pelo servidor, o `produce`/`producePlain` do `mic` **não** é recusado: o producer nasce
 pausado (a resposta traz `paused: true`), e o `/mute false` o retoma — assim o app liga o mic como
 sempre, sem erro, e a voz volta sem clique. Só `resumeProducer` do mic continua sendo 403
@@ -80,12 +86,82 @@ Ações novas (mesmo envelope `{id, action, data}`):
 
 | ação | data | resposta |
 |---|---|---|
-| `produce` | `{ transportId, kind, source, rtpParameters }` (WebRTC, `sendTransport` do mediasoup-client) | `{ producerId, kind, source }` |
 | `pauseProducer` | `{ producerId }` | `{ status: 'paused' }` |
 | `resumeProducer` | `{ producerId }` | `{ status: 'resumed' }` |
 | `closeConsumer` | `{ consumerId }` | `{ status: 'closed' }` |
 | `ping` | `{}` | `{}` — vale sem ter entrado em sala |
 | `voiceState` | `{ muted, deafened }` (os dois booleanos, obrigatórios; só dentro de sala) | `{ muted, deafened }` |
+| `e2eeJoin` | `{ version: 1, group, payload }` — pedido de entrada com o `KeyPackage` MLS opaco | `{ status: 'forwarded', delivered }` |
+| `e2eeCommit` | `{ version: 1, group, epoch, payload }` — Commit MLS opaco | `{ accepted, epoch, currentEpoch, reason? }` |
+| `e2eeWelcome` | `{ version: 1, group, epoch, targetPeerId, payload }` — Welcome MLS opaco | `{ status: 'forwarded' }` |
+
+### Sinalização MLS/E2EE (fase 4b, política Require no cliente 0.2.0)
+
+As três ações exigem que o socket já tenha entrado na `Room`. `group` e `payload` são base64url
+sem padding; `group` tem até 128 bytes e cada `payload` até 64 KiB depois de decodificado. O SFU
+nunca desserializa MLS, cifra, chave de mídia ou identidade de membro: repassa os bytes exatamente
+como chegaram e acrescenta no **evento** `senderPeerId` e `senderUserId`, tirados da sessão
+autenticada — o cliente não escolhe quem é o remetente.
+
+`e2eeJoin` vira o evento `e2eeJoinRequested` para os outros peers da sala, com
+`{ version, group, kind: 'key_package', senderPeerId, senderUserId, payload }`. É o pedido para
+o comitador atual acrescentar a pessoa que acabou de mandar o KeyPackage. O app seguirá a regra
+MLS de escolher o membro ativo de menor leaf index como comitador; o SFU não tenta deduzir esse
+índice de uma carga que deve permanecer opaca.
+
+`e2eeCommit` tem ordenação atômica **por `group` e `epoch`**: o SFU aceita somente o primeiro
+bloco cuja `epoch` seja a atual, responde `{ accepted: true, epoch, currentEpoch: epoch + 1 }` e
+emite `e2eeCommit` aos demais peers. Outro bloco da mesma época recebe
+`{ accepted: false, reason: 'different_commit_already_accepted', ... }`; época menor recebe
+`stale_epoch`, e maior `future_epoch`. Reenviar pelo mesmo peer o mesmo Commit recém-aceito (a
+resposta pode ter se perdido) volta como aceito. O autor só chama `confirm_pending()` no núcleo
+depois da resposta aceita; se receber recusa, chama `discard_pending()`, processa o vencedor e
+refaz a mudança se ainda for necessária.
+
+`e2eeWelcome` só é encaminhado como evento homônimo ao `targetPeerId` quando foi enviado pelo
+mesmo peer do último Commit aceito e para sua época (`currentEpoch == epoch + 1`). Antes disso,
+por outro autor ou para um alvo em reconexão, é 409. Assim o novo membro só recebe Welcome depois
+do aceite do Commit, sem o SFU abrir a mensagem.
+
+Para limitar abuso, cada peer pode enviar no máximo 20 blocos E2EE e 256 KiB de payload em uma
+janela móvel de 10 s; ultrapassar qualquer teto retorna 429. A Room mantém no máximo quatro
+grupos E2EE ativos. Para cada um, mantém **somente** `currentEpoch` e o SHA-256 do último Commit
+aceito, com o `peerId` autor, para responder a um reenvio idempotente. Não guarda KeyPackage,
+Commit ou Welcome. Isso basta para serializar mudanças; quem entra tarde sempre manda KeyPackage
+novo e recebe Welcome novo, enquanto histórico opaco guardado no SFU não o ajudaria a recuperar
+com segurança. A memória desaparece junto com a Room vazia.
+
+No `join`, o SFU devolve `e2eeSessionId`, aleatório por instância viva de Room. O core deriva
+`group_id = SHA-256("unkvoid-mls-voice-room-v1" || len(room) || room || len(e2eeSessionId) ||
+e2eeSessionId)`, portanto salas recriadas não reutilizam grupo. O primeiro peer cria o grupo;
+os demais enviam KeyPackage em `e2eeJoin`. O membro ativo de menor leaf index adiciona entradas e,
+ao sair o comitador, o próximo membro ativo o substitui. O cliente só confirma o Commit depois de
+`accepted: true`; apenas então envia Welcome ao `targetPeerId`.
+
+Na sala por código vale o mesmo: o `join` sem token devolve `userId` (`guest:<installId>`) e
+`e2eeSessionId` como o `join` da conta, e as três ações aceitam o visitante. Ali o
+`senderUserId` é a instalação que o próprio app escolheu: cifra contra o SFU, mas não autentica
+ninguém — quem tem o código entra no grupo, e dois apps com o mesmo `installId` aparecem com a
+mesma identidade.
+
+`producePlain` leva `e2eeMemberId`, a chave pública de assinatura MLS da sessão que possui aquele
+producer. O SFU a devolve no elenco e nas respostas `consumePlain`, sem interpretá-la. O consumidor
+confere esse valor contra a árvore MLS autenticada antes de derivar a chave `(época, MemberId,
+origem)`; ausência ou membro inativo falha fechado. Origens são `mic`, `screenAudio`, `screen` e
+`camera`. Cifrar ocorre após Opus/H.264 e antes do RTP; decifrar após remontar a unidade e antes
+do decoder. Em troca de época, o receptor aceita a época anterior por **3 segundos**, para pacotes
+RTP já emitidos e em trânsito, e nunca a usa para estado MLS.
+
+O core emite `room.encryption` com `{ state: establishing|encrypted|failed, reason?, privacyCode,
+members }`; o código é de 30 dígitos, e cada membro tem `accountId`, `memberId` público e
+`leafIndex`. Nenhuma chave privada nem chave de mídia sai do processo. O `epoch` do envelope é
+metadado de ordenação do relé, não prova criptográfica: época, árvore e remetente são aceitos
+somente após validação MLS. Mensagens E2EE não entram em logs, webhooks, `/presence` ou Laravel.
+Na voz do cliente 0.2.0, `Policy::Require`: sem grupo/MemberId não se abre producer nem se aceita
+quadro em claro; não há downgrade/interoperabilidade de mídia com um cliente antigo que mande
+claro. O SFU não exige essas ações nem altera o fluxo de entrada por código (inclusive sem conta):
+clientes que não usam E2EE ainda podem entrar pelo protocolo existente, sem Laravel flag ou rota
+nova.
 
 `Source` passa a ser `screen | screenAudio | mic | camera`. `producePlain` aceita os
 quatro. `newProducer`, `producerClosed`, `consume`, `consumePlain` e `describePeers`
@@ -94,7 +170,7 @@ já carregam `source`; nada muda no formato deles. Os eventos ganham
 para a sala inteira menos o dono.
 
 Plateia: o SFU manda para a sala inteira `watchers { producerId, watchers: [{ peerId, name }] }`
-— quem está **olhando** aquela transmissão agora, WebRTC e RTP puro no mesmo balde. Três
+— quem está **olhando** aquela transmissão agora. Três
 regras que o cliente precisa saber para não contar errado:
 
 - **só `source: screen`**. Câmera e microfone ficam de fora: numa sala cheia é todo mundo
@@ -166,7 +242,7 @@ lugar e com as mesmas portas. Para o app é uma queda como outra qualquer: recon
 percebem nada. Sem nenhum worker vivo, o `GET /health` responde **503** e o `join` também; o
 corpo do `/health` traz `workersDown`, quantos estão caídos agora.
 
-**Mover alguém de voz é o `kick` com destino.** O `POST /rooms/:code/kick` com `to` manda ao
+**Mover alguém de voz é o `kick` com destino.** O `POST /rooms/:channel/kick` com `to` manda ao
 peer `moved { to, by }` (`to` é o ULID do canal de destino, `by` o nome de quem moveu, ou
 `null`) em vez de `kicked`, e fecha o socket com o código **4003** (`moved`; 4001 é `kicked`,
 4002 é `replaced`). A sala recebe só o `peerLeft` de sempre, sem `peerKicked`, e o webhook
@@ -193,16 +269,19 @@ também ali: abrir a mesma chamada em outro dispositivo derruba o anterior. O `j
 token fica só para quem não tem conta.
 
 O `join` sem token (sala anônima) recusa sala de 26 caracteres: é o formato do ULID de
-canal, e sem isso qualquer um entraria num canal de voz sem passar pelo Laravel.
+canal, e sem isso qualquer um entraria num canal de voz sem passar pelo Laravel. Com token, o
+`room` tem de ser o ULID minúsculo de um canal (`POST /api/channels/{channel}/voice/token`) ou
+um código `[a-z0-9-]` de 3 a 32 caracteres (`POST /api/rooms/{code}/token`); outro formato é
+422.
 
 HTTP assinado (cabeçalhos `x-unkvoid-timestamp` e `x-unkvoid-signature`, assinatura
 sobre `ts\nMÉTODO\ncaminho\ncorpo`, janela de 300 s — como o `kick` de hoje):
 
 | rota | corpo | resposta |
 |---|---|---|
-| `POST /rooms/:code/kick` (já existe) | `{ "userId": "user:12", "to"?: "<ulid do destino>", "by"?: "Edsu" }` — com `to`, é mover (acima); `to` fora de `[a-z0-9]{26}` ou `by` que não é string de até 64 → 422 | `{ kicked: n }` |
+| `POST /rooms/:channel/kick` (já existe) | `{ "userId": "user:12", "to"?: "<ulid do destino>", "by"?: "Edsu" }` — com `to`, é mover (acima); o canal de origem e `to` fora de `[a-z0-9]{26}` ou `by` que não é string de até 64 → 422 | `{ kicked: n }` |
 | `POST /broadcast` | `{ channel, event, data }` — o tempo real do Laravel | `{ delivered: n }` (quantos sockets inscritos receberam) |
-| `POST /rooms/:code/mute` | `{ "userId": "user:12", "muted": true }` — pausa/retoma o producer `mic` daquela conta | `{ muted: n }` |
+| `POST /rooms/:channel/mute` | `{ "userId": "user:12", "muted": true }` — pausa/retoma o producer `mic` daquela conta | `{ muted: n }` |
 | `POST /kick`, `POST /mute` | o mesmo corpo mais `rooms: ["<ulid>", …]`, as salas em que agir (obrigatória, não vazia; cada uma no formato de sala, senão 422). É o que expulsar, banir e mutar no servidor usam, com os canais de voz **daquele servidor**: o Laravel não precisa saber em qual a pessoa está (a presença esconde quem está na carência e some quando o SFU demora), sai numa chamada só, e nunca alcança a voz de outro servidor — a conta tem uma sessão no SFU inteiro, e ela pode estar lá | `{ kicked: n }`, `{ muted: n }` |
 
 **Ordem de deploy: o SFU sobe antes do web, sem exceção** (desde o PR #52, 09/10/2026). Com o web
@@ -277,10 +356,9 @@ Tudo devolve `Resource`. Erro de permissão é 403 com `{ "message": "…" }`; v
 
 `POST /api/errors` (público, 30 por minuto) recebe `{ version, platform, log }` — `platform` é
 `windows`, `macos` ou `linux`, e `log` tem até 20 mil caracteres — e responde 2xx. O site agrupa
-pela versão, pelo sistema e pela primeira linha de pânico ou `ERROR` do log. Os apps nativos do
-Windows e do Linux mandam (`core_app::logbook`), de meio em meio minuto, o pedaço do log do dia
-que ganhou um `ERROR` desde o último envio, sem o nome do usuário da máquina; o app em Tauri
-mandava na abertura.
+pela versão, pelo sistema e pela primeira linha de pânico ou `ERROR` do log. O app manda
+(`core_app::logbook`), de meio em meio minuto, o pedaço do log do dia que ganhou um `ERROR` desde
+o último envio, sem o nome do usuário da máquina.
 
 Conta:
 
@@ -289,18 +367,25 @@ Conta:
 | `POST /api/auth/register` (público) | `{ email, password, device, refresh? }` | `{ token, refresh_token, expires_at, user }`. O apelido nasce de `User::freeNickname` sobre o e-mail, com `nickname_confirmed: false` |
 | `POST /api/auth/login` (público) | `{ email, password, device, refresh? }` | `{ token, refresh_token, expires_at, user }`. Senha errada é 401 com `"E-mail ou senha não conferem."` |
 | `POST /api/auth/refresh` (público) | `{ refresh_token }` | o par novo, no mesmo formato; o token de renovação usado morre na hora. Vencido, usado ou de outra coisa: 401 `"Sua sessão terminou. Entre de novo."` |
+| `POST /api/auth/app/exchange` (público, `throttle:20,1`) | `{ code, code_verifier }` | `{ token, refresh_token, expires_at, user }`; código de uso único, ligado ao challenge PKCE, vence em 60 s. Código expirado, usado ou verifier errado: 422 em português |
 | `POST /api/auth/logout` | `{ refresh_token? }` | 204; derruba o token de acesso da requisição e, se vier, o de renovação da mesma conta |
-| `GET /api/me` | — | `{ id, name, email, avatar_url, avatar_uploaded, admin, nickname_confirmed }` |
-| `PATCH /api/me` | `{ name }` (3 a 32 caracteres, `[A-Za-z0-9._]`, único; pode repetir o atual) | o mesmo `user`, agora com `nickname_confirmed: true`. Troca a qualquer hora; a primeira troca também confirma o automático |
+| `GET /api/me` | — | `{ id, name, email, avatar_url, avatar_uploaded, admin, nickname_confirmed, bio, pronouns, banner_color, custom_status, status, status_until, activity, created_at }`. `status` é efetivo: prazo vencido retorna `online`; `status_until` é o prazo da própria conta ou `null` |
+| `PATCH /api/me` | `{ name?, bio?, pronouns?, banner_color?, custom_status?, status?, status_minutes? }` — `name`: 3 a 32 caracteres, `[A-Za-z0-9._]`, único (pode repetir o atual); `bio` ≤ 190; `pronouns` ≤ 40; `banner_color` `#rrggbb`; `custom_status` ≤ 128; `status`: `online`, `idle`, `dnd` ou `invisible`; `status_minutes`: `null` para sempre, ou 15, 60, 480, 1440 ou 4320 minutos. `null` limpa campos opcionais | o mesmo `user`. Mandar `name` confirma o apelido automático (`nickname_confirmed: true`); os campos mudam só quando enviados. O servidor calcula `status_until` e volta o status a `online` quando vence |
+| `PUT /api/me/activity` | `{ activity: { name, started_at } \| null }` — nome de 1 a 80 caracteres e data ISO 8601 | `204`. A atividade é efêmera, guardada em cache por 120 s e renovada pelo cliente enquanto estiver aberta; `null` limpa imediatamente. Só amizades aceitas e membros do mesmo servidor recebem a atividade; invisível a oculta. O compartilhamento pode ser desligado nas preferências locais |
 | `POST /api/me/avatar` | `multipart`, campo `avatar` (jpeg/png/webp, ≤ 2 MB) | o mesmo `user`, com a foto nova; guarda no bucket privado e apaga a foto anterior |
 | `DELETE /api/me/avatar` | — | o mesmo `user` (200, não 204): tirar a foto enviada faz voltar a valer a do Google, e o app precisa do link novo |
 
+**Login Google no app.** O núcleo gera `code_verifier` aleatório (43–128 caracteres), envia
+`code_challenge = BASE64URL(SHA256(verifier))` e `code_challenge_method=S256` em
+`/oauth2/app`, junto da porta local e do `state`. O callback volta somente com `code` e `state`;
+o app troca o código por `POST /api/auth/app/exchange`. O challenge não é segredo e o verifier
+nunca sai do processo. O código é consumido mesmo se o verifier estiver errado.
+
 **A renovação.** Quem manda `refresh: true` (o núcleo nativo manda sempre) recebe o par: o
 token de acesso vence em **24 h** (`expires_at`) e o de renovação em **60 dias**, e esse só
-serve para trocar o par em `/api/auth/refresh` — como `Bearer` ele não abre rota nenhuma. Quem
-não manda (o app do Tauri até a 0.0.40) recebe o token de sempre, que não vence, e
-`refresh_token`/`expires_at` nulos. O login do Google faz o mesmo com `refresh=1` em
-`/oauth2/app`: o `refresh_token` volta na porta local ou no `unkvoid://` ao lado do `token`.
+serve para trocar o par em `/api/auth/refresh` — como `Bearer` ele não abre rota nenhuma. O login
+do Google faz o mesmo com `refresh=1` em `/oauth2/app`: o `refresh_token` volta na porta local ou
+no `unkvoid://` ao lado do `token` (sem PKCE), ou no corpo da troca do código (com PKCE).
 
 No núcleo, um 401 com sessão aberta renova o par uma vez (uma renovação por vez) e repete o
 pedido; se a renovação falha, a sessão acaba: os tokens saem do disco e a interface volta à
@@ -316,6 +401,11 @@ e na conta nova pelo Google (os dois ganham um apelido automático); nasce preen
 cadastro pelo site, onde a pessoa digita o apelido. As contas de antes da coluna vieram
 preenchidas.
 
+`status` é o estado efetivo da conta (`online`, `idle`, `dnd`, `invisible`); quando `status_until`
+vence, o Laravel o troca para `online` e publica `UserStatusUpdated`. Em `MemberResource`, nos
+dois lados de `FriendResource`, nas pessoas de mensagens/conversas e na presença do SFU,
+`invisible` é sempre exposto como `offline`.
+
 Servidores:
 
 | rota | corpo | resposta |
@@ -326,11 +416,20 @@ Servidores:
 | `PATCH /api/servers/{server}` | `{ name }` | `ServerResource` (`MANAGE_SERVER`) |
 | `DELETE /api/servers/{server}` | — | 204 (dono) |
 | `POST /api/servers/{server}/invite` | — | `{ invite_code }` (regenera; `CREATE_INVITE`) |
-| `POST /api/invites/{code}` | — | `ServerResource` (entra; banido → 403) |
+| `GET /api/invites/{code}` | — | prévia autenticada `{ server: { id, name, icon_url }, members, inviter? }`; inválido, vencido ou pausado → 404 em português |
+| `POST /api/invites/{code}` | — | `ServerResource` (entra; banido → 403; convites pausados → 403; convite vencido ou sem usos → 404). Vale o código de um convite de pessoa (abaixo) ou o `invite_code` antigo do servidor; só a entrada nova conta como uso |
+| `GET /api/servers/{server}/invites` | — | `[ { id, code, url, uses, max_uses, expires_at, channel: {id,name}?, creator: {id,name,avatar_url}?, created_at } ]`, só os que ainda deixam entrar, do mais novo para o mais antigo (`MANAGE_SERVER`) |
+| `POST /api/servers/{server}/invites` | `{ channel_id?, max_age?, max_uses? }` — `max_age` em segundos ∈ {0, 1800, 3600, 21600, 43200, 86400, 604800} (padrão 604800; 0 = nunca vence), `max_uses` ∈ {0, 1, 5, 10, 25, 50, 100} (0 = sem limite); o canal tem de ser do servidor | o convite (201), com código de 8 letras e números. `CREATE_INVITE`; pausados → 403 |
+| `DELETE /api/invites/{invite}` | — | 204. Quem criou, ou `MANAGE_SERVER` |
+| `POST` / `DELETE /api/servers/{server}/invites/pause` | — | 204. Pausa e retoma todos os convites do servidor (`MANAGE_SERVER`) |
 | `POST /api/servers/{server}/leave` | — | 204 (dono → 403) |
 | `POST /api/servers/{server}/icon` | `multipart`, campo `icon` (jpeg/png/webp, ≤ 2 MB) | `ServerResource` (`MANAGE_SERVER`); guarda no mesmo bucket privado e apaga o arquivo antigo |
 | `DELETE /api/servers/{server}/icon` | — | 204 (`MANAGE_SERVER`); volta ao ícone padrão |
 | `GET /api/servers/{server}/audits` | — | as 50 entradas mais recentes do histórico do servidor (`VIEW_AUDIT_LOG`) |
+
+O `url` de um convite abre `GET /convite/{code}` no site (sem login, 30 por minuto por IP): a quem
+recebeu, mostra nome, ícone e número de membros do servidor, quem convidou, e como entrar pelo app.
+Vencido, pausado ou inexistente mostra só o motivo, sem dizer de que servidor era.
 
 `icon_url` é pré-assinada e vence em 2 h, como a foto de perfil; sem ícone vem `null`.
 
@@ -352,13 +451,16 @@ membro apagados de vez saem da lista, porque o filtro é por id que ainda existe
 ```json
 { "id": 1, "name": "Meu servidor", "owner_id": 12, "icon_url": null, "invite_code": "abcdef1234" (só com CREATE_INVITE, senão null),
   "me": { "user_id": 12, "permissions": 262143, "top_position": 3 },   // dono: top_position = 2147483647
-  "roles": [ { "id": 1, "name": "@everyone", "color": null, "position": 0, "permissions": 31552, "is_everyone": true } ],
+  "invites_paused": false,   // POST/DELETE /api/servers/{server}/invites/pause
+  "roles": [ { "id": 1, "name": "@everyone", "color": null, "position": 0, "permissions": 31552, "is_everyone": true, "hoist": false, "mentionable": false } ],
   "channels": [ { "id": "01j7…", "name": "geral", "type": "text", "parent_id": null, "topic": null, "position": 0, "user_limit": null,
                   "unread": 3,            // mensagens de outras pessoas depois da minha marca de leitura; 0 em categoria
                   "permissions": 31552,   // as MINHAS efetivas neste canal
                   "overwrites": [ { "target_type": "role", "target_id": 1, "allow": 0, "deny": 256 } ] } ],   // só com MANAGE_ROLES
   "members": [ { "user_id": 12, "name": "Edsu", "avatar_url": null, "nickname": null, "role_ids": [1, 3],
-                 "server_mute": false, "server_deaf": false, "is_owner": true } ],
+                 "server_mute": false, "server_deaf": false, "is_owner": true,
+                 "bio": null, "pronouns": null, "banner_color": null, "custom_status": null,   // o cartão de perfil
+                 "member_since": "…", "joined_at": "…", "activity": { "name": "Arena", "started_at": "…" } } ],   // atividade pode ser null
   "voice": { "01j7…": [ { "user_id": 12, "name": "Edsu", "sources": ["mic"], "muted": false, "deafened": false } ] },   // do SFU (/presence), cache 3 s
   "bans": [ { "user_id": 40, "name": "Fulano", "reason": "…", "banned_by": 12, "created_at": "…" } ] }   // só com BAN_MEMBERS; banned_by null se quem baniu apagou a conta
 ```
@@ -375,18 +477,29 @@ Membros (`{user}` é id de usuário):
 
 | rota | corpo | regra |
 |---|---|---|
-| `PATCH /api/servers/{server}/members/{user}` | `{ nickname?, role_ids?, server_mute? }` | `MANAGE_ROLES` para cargos (só cargos abaixo do meu top, e só com permissões que eu tenho), `MUTE_MEMBERS` para o bool (chama `POST /rooms/:code/mute` no SFU se a pessoa estiver em voz), apelido próprio sempre. `server_deaf` existe na tabela mas ainda não tem escrita |
+| `PATCH /api/servers/{server}/members/{user}` | `{ nickname?, role_ids?, server_mute? }` | `MANAGE_ROLES` para cargos (só cargos abaixo do meu top, e só com permissões que eu tenho), `MUTE_MEMBERS` para o bool (chama `POST /rooms/:channel/mute` no SFU se a pessoa estiver em voz), apelido próprio sempre. `server_deaf` existe na tabela mas ainda não tem escrita |
 | `DELETE /api/servers/{server}/members/{user}` | — | `KICK_MEMBERS` + hierarquia; derruba da voz pelo `POST /kick` do SFU com os canais de voz **deste** servidor (o `mute` do servidor e o banimento idem): numa chamada só, sem depender da presença, e sem tocar a voz de outro servidor |
 | `GET /api/servers/{server}/bans` | — | `BAN_MEMBERS` |
 | `POST /api/servers/{server}/bans/{user}` | `{ reason? }` | `BAN_MEMBERS` + hierarquia; remove membro, derruba da voz |
 | `DELETE /api/servers/{server}/bans/{user}` | — | `BAN_MEMBERS` |
+
+Sons do soundboard (até 8 por servidor; o arquivo mora no bucket privado, como o ícone):
+
+| rota | corpo | resposta e regra |
+|---|---|---|
+| `GET /api/servers/{server}/sounds` | — | `[ { id, name, emoji, volume, url, user_id, created_at } ]`, do mais antigo para o mais novo; `url` é pré-assinada e vence em 2 h. Qualquer membro |
+| `POST /api/servers/{server}/sounds` | `multipart`: `sound` (mp3, ogg ou wav, ≤ 512 KB), `name` (1–32), `emoji?` (≤ 32), `volume?` (0–100, padrão 100) | o som criado (201). `MANAGE_EXPRESSIONS`; o nono → 422 em `sound` |
+| `DELETE /api/sounds/{sound}` | — | 204. `MANAGE_EXPRESSIONS` no servidor do som; o arquivo sai do bucket depois da linha |
+
+Tocar não passa pelo servidor: o app baixa o som pela `url` e o mistura na própria voz, então
+todo mundo na chamada ouve pelo áudio que já sobe. O app corta em 5 s.
 
 Cargos:
 
 | rota | corpo |
 |---|---|
 | `POST /api/servers/{server}/roles` | `{ name, color?, permissions }` (`MANAGE_ROLES`; posição = top do criador − 1, mínimo 1) |
-| `PATCH /api/roles/{role}` | `{ name?, color?, permissions?, position? }` (`@everyone`: só `permissions`) |
+| `PATCH /api/roles/{role}` | `{ name?, color?, permissions?, position?, hoist?, mentionable? }` (`@everyone`: só `permissions`). `hoist` põe quem tem o cargo num grupo próprio na lista de membros (sem nenhum cargo assim, a pessoa fica em "Online"); `mentionable` deixa qualquer um @mencionar o cargo |
 | `DELETE /api/roles/{role}` | — (`@everyone` → 422) |
 
 Canais:
@@ -456,7 +569,7 @@ Tempo real (as duas rotas que fazem o chat e a presença andarem sem o Reverb):
 
 | rota | corpo | resposta |
 |---|---|---|
-| `POST /api/sfu/authorize` (assinada, sem Sanctum) | `{ sub: "user:12", channel: "channel.01j7…", at }` | `{ allowed, name }` **sem o `data`** — é o único JSON da API que sai cru, porque quem lê é o SFU |
+| `POST /api/sfu/authorize` (assinada, sem Sanctum) | `{ sub: "user:12", channel: "channel.01j7…", at }` | `{ allowed, name, status }` **sem o `data`** — é o único JSON da API que sai cru, porque quem lê é o SFU. Para os demais, `invisible` vira `offline` |
 | `POST /api/sfu/session` (`auth:sanctum`) | — | `{ token, url, expires_in: 60 }` — o token do `identify`, no mesmo formato do de voz, mas com as claims `{ sub, name, exp }` e **sem `room` nem `can`** |
 
 ## Amigos
@@ -467,8 +580,10 @@ situação, e quem bloqueou passa a ser o `requester`.
 
 | rota | corpo | resposta |
 |---|---|---|
-| `GET /api/friends` | — | `[FriendResource]` — os dois lados vão no recurso, porque a interface precisa saber se mostra "aceitar" ou "aguardando" |
+| `GET /api/friends` | — | `[FriendResource]` — os dois lados vão no recurso, porque a interface precisa saber se mostra "aceitar" ou "aguardando"; a pessoa inclui `activity: { name, started_at } \| null`, `created_at` e `banner_color` |
+| `GET /api/friends/{user}/mutuals` | — | `{ mutual_friends, mutual_servers: [{ id, name, icon_url }] }`; autenticada, só para amizade aceita ou servidor em comum; bloqueios e pessoas sem relação retornam 404 |
 | `POST /api/friends` | `{ email }` | `FriendResource` (throttle 20/min). E-mail que não existe responde o mesmo que e-mail não encontrado, para a busca não virar lista de quem tem conta |
+| `POST /api/friends/{user}` | — | `FriendResource` (throttle 20/min); pede amizade a uma pessoa encontrada no app |
 | `PATCH /api/friends/{friendship}` | `{ action: accept\|block }` | `FriendResource`. Só quem recebeu aceita, e **linha bloqueada não aceita** |
 | `DELETE /api/friends/{friendship}` | — | `204`. Recusar, desfazer e desbloquear são a mesma coisa — a linha some —, mas **linha bloqueada só quem bloqueou apaga** |
 
@@ -487,7 +602,7 @@ desfez, e o par bloqueado some também da lista de conversas.
 
 | rota | corpo | resposta |
 |---|---|---|
-| `GET /api/dm` | — | uma linha por conversa, a da mensagem mais recente primeiro: `[ { user: {id,name,avatar_url}, last: { id, body, created_at, mine }, unread } ]` |
+| `GET /api/dm` | — | uma linha por conversa, a da mensagem mais recente primeiro: `[ { user: {id,name,avatar_url,status,activity,created_at,banner_color}, last: { id, body, created_at, mine }, unread } ]` |
 | `GET /api/dm/{user}?before={id}` | — | as 50 mais recentes antes de `before`, ordem crescente: `[DirectMessageResource]`. **Marca como lidas** as que chegaram para quem pediu: é assim que o app zera o `unread` |
 | `POST /api/dm/{user}` | `{ body }` (1–2000) | `DirectMessageResource` (throttle 60/min) |
 | `POST /api/dm/{user}/read` | — | `204`. Marca como lidas as que chegaram daquela pessoa — é o que o app chama quando a mensagem cai com a conversa **já aberta**, porque aí não houve `GET` para marcar |
@@ -496,7 +611,7 @@ desfez, e o par bloqueado some também da lista de conversas.
 
 ```json
 { "id": 12, "body": "oi", "created_at": "…", "edited_at": null, "mine": true,
-  "sender": { "id": 2, "name": "Edsu", "avatar_url": null } }
+  "sender": { "id": 2, "name": "Edsu", "avatar_url": null, "created_at": "…", "banner_color": null } }
 ```
 
 `mine` só existe na resposta HTTP, onde o dono da resposta é um só. No tempo real o pacote
@@ -514,15 +629,15 @@ há mais Reverb, nem `/broadcasting/auth`, nem `laravel-echo`. Depois de conecta
    A cada `subscribe` o SFU pergunta ao Laravel (`POST /api/sfu/authorize`) se aquela conta
    pode ouvir aquele canal; recusa vira erro de permissão e o socket não entra.
 
-O `subscribe` devolve a presença do canal, e o SFU emite `presence.joining { id, name }` e
-`presence.leaving { id }` para os outros inscritos na primeira e na última conexão de cada
-pessoa naquele canal.
+O `subscribe` devolve a presença como `{ id, name, status }`, e o SFU emite
+`presence.joining { id, name, status }` e `presence.leaving { id }` para os outros inscritos na
+primeira e na última conexão de cada pessoa naquele canal. O status é público; `invisible` chega
+como `offline`.
 
 **O canal `releases` é público.** Qualquer socket o assina, sem `identify` e sem o Laravel
 autorizar, e ele não tem presença: o `subscribe` devolve só `{ channel }`, e ninguém entra nem
-sai da lista. Só recebe o que o Laravel publica. É por ele que a versão nova chega a todo app
-aberto, inclusive a quem entrou sem conta: o app abre o socket do tempo real mesmo sem conta,
-só para ele.
+sai da lista. Só recebe o que o Laravel publica. É por ele que a versão nova chega ao app antes
+de a pessoa se identificar para o tempo real dos servidores, inclusive a quem entrou sem conta.
 
 O que o Laravel publica sai por `POST /broadcast` assinado, um pedido por canal. Falha do
 SFU não desfaz nada: a escrita já está no banco, a resposta HTTP sai normal e o erro fica no
@@ -535,7 +650,9 @@ mais recentes do canal e da conversa abertos, emendando com o que já estava na 
 | `channel.{ulid}` | `VIEW_CHANNEL` | texto: `MessageSent { message }`, `MessageUpdated { message }`, `MessageDeleted { id, channel_id }` · voz: `VoiceStateUpdated { channel_id, user_id, name, event: joined\|left }` (no canal da própria voz, para canal oculto não vazar quem está nele; o app assina o canal de cada voz que enxerga) · `VoiceMuteUpdated { channel_id, user_id, name, muted, deafened }` (publicado pelo **SFU**, não pelo Laravel: é o `voiceState` de quem está na voz) |
 | `server.{id}` | membro | `ServerUpdated { server_id }` (qualquer mudança de estrutura: o app refaz o `GET`) |
 | `releases` | qualquer socket, sem `identify` | `ReleasePublished { version, platform }` (a cada `POST /api/releases`: o app compara com a própria versão e plataforma, anota a versão na configuração e baixa calado até mostrar o botão verde) |
-| `user.{id}` | o próprio | `FriendshipUpdated { friendship, removed }` (`FriendResource`, nos canais dos **dois** lados) · `MemberRemoved { server_id, reason: kicked\|banned }` · `DirectMessageCreated { message, recipient }`, `DirectMessageUpdated { message, recipient }`, `DirectMessageDeleted { id }` (nos canais dos **dois** lados da conversa; `message` é o `DirectMessageResource` sem o `mine`) |
+| `user.{id}` | o próprio | `FriendshipUpdated { friendship, removed }` (`FriendResource`, nos canais dos **dois** lados) · `UserStatusUpdated { user_id, status }` (no próprio canal e nos canais dos amigos aceitos; invisível publica `offline`) · `MemberRemoved { server_id, reason: kicked\|banned }` · `DirectMessageCreated { message, recipient }`, `DirectMessageUpdated { message, recipient }`, `DirectMessageDeleted { id }` (nos canais dos **dois** lados da conversa; `message` é o `DirectMessageResource` sem o `mine`) |
+| `friend.{id}` | o próprio e seus amigos aceitos | `UserStatusUpdated { user_id, status }` · `ActivityUpdated { user_id, activity }`; este canal separado não expõe mensagens diretas |
+| `server.{id}` | membro | `ServerUpdated { server_id }` (qualquer mudança de estrutura: o app refaz o `GET`) · `UserStatusUpdated { user_id, status }` (status público de um membro) · `ActivityUpdated { user_id, activity }` |
 
 O nome do canal perdeu os prefixos `private-` e `presence-` do Pusher: é `channel.`, `server.`
 e `user.`, o mesmo nome dos dois lados.
@@ -560,192 +677,56 @@ Vale a partir do momento em que acontece; quem já tinha saído antes não é re
 
 ## App — o que aparece
 
-- Entrada: a tela de código continua; ao lado, "Entrar" (e-mail/senha ou Google pelo
-  `/oauth2/app?state=&port=`, de volta por uma porta em `127.0.0.1`; o app Tauri de antes voltava
-  pelo `unkvoid://`) e "Criar conta". O token do Sanctum fica cifrado no disco, com a chave no
-  chaveiro do sistema (`shared/storage`; no Tauri de antes, `localStorage` `unkvoid:token`). Com
-  token válido (`GET /api/me`), abre o modo servidor. Criar conta pelo app é só e-mail e senha.
-- Com `nickname_confirmed: false`, um modal que não fecha pede o apelido (já preenchido com o
-  automático) a cada abertura do app, até o `PATCH /api/me` dar certo. Dá para sair da conta
-  por ele.
-- Com a conta aberta, "Minha conta" nas configurações troca o apelido pelo mesmo
-  `PATCH /api/me`, com o erro de validação embaixo do campo.
-- Nos formulários de entrar e criar conta, o campo recusado fica com a borda vermelha e a
-  mensagem embaixo dele; o que não é de campo (credencial errada, 429) fica na linha geral.
-- Logado e sem servidor aberto, o centro mostra **Criar sala** e **Últimas salas**. Criar
-  sala é `POST /api/servers { name }` (servidor com `#geral` e `Geral` de voz): abre o
-  servidor, **não** entra na voz, e mostra o código de convite para mandar. Últimas salas
-  é o `GET /api/servers`: abrir uma mostra quem está em cada voz, e entrar é um clique. A
-  sala por código sem login continua como está.
-- Entrar numa voz liga o microfone **aberto**; quem prefere entrar calado marca "Silenciar ao
-  entrar" nas configurações. (Até a 0.0.39 o padrão era mutado.)
+O app é um só, em Rust com egui (`native/apps/unkvoid`), no desenho do Discord: trilho de
+servidores | canais (ou conversas, na Home) | centro | membros. A janela não tem moldura do
+sistema: a barra de cima é desenhada pelo app, arrasta, maximiza no clique duplo e a borda
+redimensiona.
+
+- Entrada: "Entrar com o Google" (`/oauth2/app?state=&port=&refresh=1&code_challenge=&code_challenge_method=S256`, de volta com um código por uma porta em
+  `127.0.0.1`, trocado no endpoint PKCE) e e-mail e senha, com "Registre-se" alternando para criar conta. O token do Sanctum
+  fica cifrado no disco, com a chave no chaveiro do sistema (`shared/storage`). Com token válido
+  (`GET /api/me`), abre o hub.
+- A sala por código continua: sem conta entra pelo `join` sem token, e logado pelo token de
+  `POST /api/rooms/{code}/token`.
+- Nos formulários, o campo recusado fica com o rótulo vermelho e a mensagem ao lado dele; o que
+  não é de campo (credencial errada, 429) fica na linha geral.
+- Com `nickname_confirmed: false`, um aviso que não fecha pede o apelido até o `PATCH /api/me`
+  dar certo; dá para sair da conta por ele. "Minha conta" troca o apelido pelo mesmo `PATCH`.
+- Trilho: a Home (conversas diretas, com a soma das não lidas), um ícone por servidor (o
+  `icon_url` ou as iniciais) e o "+" (criar servidor ou entrar por convite, que aceita o link
+  inteiro). A pílula branca na borda diz o aberto, o do cursor e o que tem não lidas
+  (`unread` do `GET /api/servers`).
+- Coluna do servidor: o nome abre o menu (convidar, criar canal, criar categoria, recolher
+  categorias, copiar ID, sair do servidor). Os canais vêm de `ServerTree::sections` (núcleo): os
+  soltos na raiz primeiro, depois cada categoria pela posição, texto antes de voz; categoria
+  recolhe no clique. Canal com não lidas fica em negrito com a pílula; o que `@everyone` não vê
+  leva cadeado. Embaixo de cada canal de voz, quem está nele (o `voice` da árvore).
+- Chat: mensagens agrupadas como no Discord (mesma pessoa, mesmo dia, menos de 7 minutos), o
+  nome na cor do cargo mais alto, divisor de dia, "(editado)", a citação da resposta e as
+  imagens. No hover, copiar, editar (a própria) e apagar (a própria, ou com `MANAGE_MESSAGES`).
+  Rolar até o alto busca a página anterior (`?before=`) sem a tela pular. Enter envia,
+  Shift+Enter quebra a linha. O começo do canal mostra "Boas-vindas a #canal!".
+- Membros: online agrupados pelo cargo mais alto com a cor dele, offline no fim, apagados
+  (`members::group` do núcleo); coroa no dono; clique direito com "Mensagem" e "Copiar ID".
+- Home: Amigos (todos, pendentes com aceitar e recusar, adicionar pelo e-mail) e a conversa
+  direta aberta.
+- Avisos no canto de baixo, que somem em 3,5 s (6 s o de erro). Versão nova baixada: o botão
+  verde na barra de cima reinicia e instala.
+
+**Voz, tela e câmera chegam no app novo na fase 2** (desenho em `docs/VOZ.md`). O que vale
+para eles, igual ao app de antes:
+
 - O clique no canal de voz vale na hora: a pessoa já aparece na lista do canal e a barra de voz
   mostra "Conectando…" enquanto o token, o SFU e o microfone acontecem por trás. Se a entrada
-  falhar, ela sai da lista. O ícone de mudo da própria pessoa na lista do canal segue o estado
-  local (mutar, ensurdecer, mudo do servidor), sem esperar ninguém.
-- Modo servidor: trilho de servidores | canais (texto e voz, quem está em cada voz) |
-  centro (chat ou palco) | membros com cargos. Barra de voz embaixo: mutar, ensurdecer,
-  câmera, **compartilhar tela (só aqui)**, sair.
-- Microfone e câmera sobem pelo núcleo em RTP puro (`producePlain`), como a tela, nos três apps
-  nativos. (O app Tauri de antes usava `getUserMedia` + `sendTransport.produce` no Windows e no
-  macOS.)
+  falhar, ela sai da lista. Entrar liga o microfone **aberto**, salvo "Silenciar ao entrar".
+- Microfone e câmera sobem pelo núcleo em RTP puro (`producePlain`), como a tela, que só se
+  compartilha de dentro da voz.
 - Áudio de `screenAudio` chega **mudo**. `mic` toca direto. `camera` vira cartão pequeno.
-- Chat: até 3 imagens por mensagem, por botão, colando ou arrastando; o app reduz cada uma para
-  caber em 2 MB antes de enviar. Quem está numa voz tem o chat daquele canal ao lado do palco.
-- Cada pessoa da voz tem volume e mudo locais (guardados por conta). A saída de áudio e o
-  microfone se escolhem na setinha ao lado de cada botão da barra, e a troca vale na hora. No
-  Linux o volume por pessoa ainda não existe.
+- Cada pessoa da voz tem volume e mudo locais (guardados por conta).
 - Variáveis de ambiente do app, para calibrar e diagnosticar: `UNKVOID_SERVER` (outro Laravel),
   `UNKVOID_ENCODER=cpu` (pula o encoder da placa), `UNKVOID_DECODER=cpu` (assiste sem o DXVA, no
   Windows), `UNKVOID_ABR=off` (taxa fixa, sem acompanhar a perda), `UNKVOID_CAPTURE=x11|portal`
   (força a captura do Linux).
-
-## App — a ABI do núcleo (interfaces nativas)
-
-O Swift fala com o `native/shared/core` por uma ABI C (`shared/core/src/ffi.rs`); o header
-está em `native/apps/macos/Sources/UnkvoidCore/include/unkvoid_core.h`. Os apps do Linux
-(GTK) e do Windows (Slint) não passam por ela: são Rust e usam o `core` como crate.
-
-Tudo o que muda dentro do núcleo vive atrás de cadeado: a interface pode ler eventos e
-mídia em outras threads **enquanto** uma ação está em voo.
-
-| Função | Devolve |
-|---|---|
-| `unkvoid_core_new()` | o ponteiro do núcleo, ou nulo |
-| `unkvoid_connect(h, url)` | `true` se o socket do tempo real abriu. É o socket do chat e da presença; ele cai e volta sozinho (`realtime.lost`, `realtime.back`). A sala abre outro |
-| `unkvoid_call(h, ação, json)` | a resposta do SFU nesse socket (`subscribe`, `unsubscribe`, `ping`). **Bloqueia**, no máximo 10 s |
-| `unkvoid_app(h, ação, json)` | as decisões do app. **Bloqueia** no que fala com o servidor |
-| `unkvoid_next_event(h)` | o próximo aviso, ou nulo. Não bloqueia |
-| `unkvoid_next_media(h, *tamanho)` | o próximo quadro ou bloco de som do que se assiste; espera até 100 ms e devolve nulo. Para **uma** thread só da interface |
-| `unkvoid_chime(nome, *tamanho)` | o toque de um `room.chime` (`joined`, `left`, `streamStarted`, `streamStopped`) ou o de mensagem (`message`) em PCM `f32` estéreo a 48 kHz, para a interface tocar pelo mesmo caminho das vozes; nulo para nome desconhecido; liberar com `unkvoid_bytes_free` |
-| `unkvoid_speak(h, *amostras, n)` | o microfone que a interface capturou: PCM `f32` estéreo intercalado a 48 kHz |
-| `unkvoid_show(h, IOSurfaceRef, ns)` | macOS: um quadro da câmera, no buffer de GPU, **já retido** — quem solta é o núcleo |
-| `unkvoid_string_free(texto)`, `unkvoid_bytes_free(bloco, tamanho)` | devolvem o que o núcleo alocou — uma vez só |
-
-O bloco de `unkvoid_next_media`, little-endian:
-`[tipo u8: 0 vídeo, 1 som][keyframe u8][tamanho do id u16][timestamp u32][id do producer][conteúdo]`.
-Vídeo é um quadro H.264 inteiro em Annex-B (o `timestamp` é o do RTP, 90 kHz); som é PCM
-`f32` estéreo intercalado a 48 kHz, já decodificado do Opus. Quem decodifica o vídeo é a
-interface, com o que o sistema tem (`AVSampleBufferDisplayLayer` no macOS).
-
-As ações de `unkvoid_app`:
-
-| Ação | Entra | Sai |
-|---|---|---|
-| `state` | — | `{screen, name, room, signedIn}` |
-| `createRoom`, `joinRoom` | `{name, code}` | `{ok, room}`, `{refused}` ou `{failed}`. **Entra de verdade no SFU**: se ele recusar, a tela não muda |
-| `joinVoice` | `{channel}` | `{ok, room}`: a mesma sala, com o token de voz de 60 s |
-| `leaveRoom`, `recentRooms` | — | `{ok}` / `{rooms}` |
-| `room` | — | `{peers, tiles, mine}`: a sala de agora, sem esperar aviso |
-| `displays` | — | `{portal, displays: [{id, width, height}], windows: [{id, title, application}]}` |
-| `share` | `{source, quality, fps, audio, muteCalls}` | `{ok}`. `source` é `display:<id>` ou `window:<id>`; `quality` é `720`, `1080`, `1440` ou `2160` |
-| `stopSharing` | — | `{ok}` |
-| `openMicrophone`, `closeMicrophone` | — | `{ok}`: abre o producer do microfone; o som entra por `unkvoid_speak` |
-| `muteMicrophone` | `{muted}` | `{ok}`: manda silêncio e pausa o producer |
-| `openCamera`, `closeCamera` | `{width, height, fps}` / — | `{ok}` (macOS): o quadro entra por `unkvoid_show` |
-| `deafen` | `{deafened}` | `{ok}`: cala o som que chega, sem pausar o vídeo |
-| `muteWatched` | `{producerId, muted}` | `{ok}`: o som de uma tela, que chega mudo por regra |
-| `closeWatched`, `pauseWatched` | `{producerId}` / `{producerId, paused}` | `{ok}`: fecha ou pausa uma transmissão só para esta pessoa |
-| `watch` | `{producerId?}` | `{ok}`: reabre o que foi fechado; sem `producerId`, tudo |
-| `selfView` | `{wanted}` | `{ok}`: "ver o que a sala vê" — assistir à própria tela |
-| `changeQuality` | `{quality, fps}` | `{ok}`: troca resolução e quadros com a transmissão no ar |
-| `preview` | `{source}` | `{jpeg}`: a miniatura de uma tela ou janela, em base64 (vazia sem permissão) |
-| `inputMode` | `{mode, sensitivity}` | `{ok}`: `voice` (abre acima de `sensitivity`, 0–100), `ptt` ou `open` |
-| `talk` | `{talking}` | `{ok}`: a tecla de apertar para falar desceu ou subiu |
-| `useServer` | `{url}` | `{ok}` |
-| `config` | — | `{sfu}`: o endereço do SFU que o Laravel anuncia |
-| `login`, `register` | `{email, password, device}` | `{ok, user}`. Como o `signOut`, já deixa o `state` na tela certa: quem decide onde se cai é o núcleo |
-| `me` | — | `{ok, user}`; com o token vencido, `{failed: signedOut}` e o token sai do disco |
-| `signOut` | — | `{ok}` |
-| `identify` | — | `{ok}`: apresenta a conta ao tempo real com o token de `/api/sfu/session` |
-| `servers` | — | `{servers}` |
-| `server` | `{id}` | `{server}` |
-| `messages` | `{channel}` | `{messages}` |
-| `sendMessage` | `{channel, body}` | `{ok, message}` |
-| `editMessage` | `{id, body}` | `{ok, message}` |
-| `deleteMessage` | `{id}` | `{ok}` |
-| `api` | `{name, params, body}` | `{ok, data}`: uma rota do Laravel pelo **nome** (`shared/core/src/routes.rs`): `createServer`, `kickMember`, `putOverwrite`, `friends`, `sendDirect`… `params` preenche o caminho (`{server}`, `{user}`) e pode levar `query`. `moveVoiceMember` (`PATCH …/voice/members/{user}`) e o `moved` em `session.rs` (que não vira `kicked`) já estão no núcleo (09/10/2026); **pendente**: `readMessages` (`POST …/messages/read`) |
-| `upload` | `{name, params, field, files, fields}` | `{ok, data}`: o mesmo, em `multipart` — foto, ícone do servidor, imagens de uma mensagem. `files` são caminhos no disco |
-| `preference`, `setPreference` | `{key}` / `{key, value}` | `{value}` / `{ok}`: o que se guarda em disco, com as chaves do app de hoje (`unkvoid:voice`…). O token não sai por aqui |
-| `keys`, `keyName` | `{accelerator}` / `{code}` | macOS: um atalho (`CmdOrCtrl+Shift+KeyM`) nos códigos do sistema, e o caminho de volta |
-| `googleStart`, `googleWait` | — | `{ok, url}` e depois `{ok, user}`: login com Google por uma porta local (`google.rs`); a segunda espera até 5 min |
-| `logs` | `{lines}` | `{path, lines}`: o fim do registro do núcleo |
-| `update` | — | `{version, url}` se há versão mais nova publicada para esta plataforma, senão `{upToDate}` |
-
-A ação `server` devolve também `abilities` — o que esta pessoa pode fazer ali, já calculado
-(`permissions.rs`): `{can: [nomes], owner, members: {<user_id>: {nickname, mute, deafen,
-disconnect, kick, ban, roles}}, roles: [{id, editable, assignable, up, down}]}`. A interface
-só esconde botão com isso; quem autoriza é o Laravel, em toda chamada.
-
-`screen` é `entry`, `hub`, `room`, `offline` ou `updating`.
-
-Os avisos de `unkvoid_next_event` são `{event, channel, data}`. Os do tempo real vêm como o
-SFU os manda (`MessageSent`, `presence.joining`…), com o `channel` de onde vieram. Os da
-sala aberta não têm canal:
-
-| Aviso | `data` |
-|---|---|
-| `room.peers` | `{peers: [{peerId, userId, name, producers, reconnecting, selfPeer}]}`, a lista inteira |
-| `room.tiles` | `{tiles: [{producerId, peerId, label, camera, mine, paused, audio}], pending: […]}`: o que dá para desenhar, e o que está ao vivo e a pessoa fechou; `audio` é o producer do som daquela tela |
-| `room.mine` | `{sharing, selfView, mic, micMuted, camera, canShare, canSpeak, canVideo}`: o que esta pessoa manda, e o `can` do servidor |
-| `room.watchers` | `{producerId, watchers: [{peerId, name}]}`: quem está assistindo àquela tela |
-| `room.session` | `{state: "lost" \| "rejoined" \| "gone" \| "replaced" \| "kicked" \| "moved", to?, by?}`. Os três últimos são o servidor tirando esta sessão de propósito: o núcleo **não** volta sozinho. Em `replaced` e `kicked` a interface tira a pessoa da sala; em `moved` ela entra no canal de `to` (o ULID do destino) e avisa "{by} moveu você para {canal}." |
-| `room.failed` | `{what: "watch" \| "share" \| "mic"}` |
-| `room.ping` | `{ms}`: a ida e volta da sinalização, a cada 5 s |
-| `room.level` | `{level, percent}`: o nível do microfone — de 0 a 1, e na escala de 0 a 100 da sensibilidade —, uns dez por segundo |
-| `room.chime` | `{chime: "joined" \| "left" \| "streamStarted" \| "streamStopped"}`: o toque de uma troca do elenco (`chimes.rs`); a interface só toca `Chime::samples()` |
-| `room.notice` | `{text}`: o aviso do React junto com o toque — "fulano entrou", "saiu", "começou a transmitir" |
-| `realtime.lost`, `realtime.back` | `{}`: na volta a interface se apresenta e se inscreve de novo |
-| `session.ended` | `{}`: o par não renovou e a sessão acabou; a interface volta à entrada |
-
-**Falha nunca atravessa com detalhe técnico.** Vem `{failed: "<motivo>"}` — `unreachable`,
-`signedOut`, `notAllowed`, `gone`, `invalid`, `serverBroke`, `tooFast` — e a interface
-escreve a frase em português. A exceção é validação: `{invalid: {field, message}}`, que o
-Laravel já devolve em português e sobre o campo digitado. Caminho, endereço e código de
-status ficam no log.
-
-**Movido de canal.** Quando o SFU manda `moved { to, by }` ao peer, o núcleo para a sala e
-avisa `room.session` com `{ "state": "moved", "to": "<ulid>", "by": "<nome>" }` — e **não**
-reconecta sozinho, como em `kicked`. A interface fecha o que ficou aberto sem o toque de
-saída, pede `POST /api/channels/{to}/voice/token` e entra no destino, dizendo "{by} moveu
-você para {canal}". A rota de quem move é `moveVoiceMember` no mapa de rotas
-(`PATCH /api/channels/{channel}/voice/members/{user}` com `{ channel_id }`).
-
-## App — comandos do Tauri
-
-**Só o app Tauri de antes** (`native/apps/desktop`), que não é mais publicado; os apps nativos não
-passam por aqui. A interface chama com `invoke`, com os argumentos em camelCase (`serverKey`, `producerId`); o
-Tauri converte para o snake_case do Rust. Mudou um comando, mude aqui e em `ui/core`.
-
-| Comando | Argumentos | Devolve | Para quê |
-|---|---|---|---|
-| `app_version` | — | `string` | versão instalada |
-| `check_update` | — | versão nova ou `null` | procura, baixa e instala; emite `update:progress` com `[baixado, total]` |
-| `restart` | — | — | reinicia depois de atualizar |
-| `expand_window` | — | — | a janela nasce do tamanho de um diálogo e cresce quando o app está pronto |
-| `log_line` / `log_path` | `line` / — | — / caminho | log em disco: a janela não tem console |
-| `report_check` | `webrtc, receiver[], sender[], userAgent` | — | o diagnóstico do `--check`, chamado pela página que o próprio Rust abre |
-| `list_displays` | — | `[{id, width, height, portal}]` | as telas do seletor. No Linux em sessão Wayland vem **um** item, `{id: 1, width: 0, height: 0, portal: true}`: quem lista e escolhe é o seletor do próprio sistema |
-| `list_windows` | — | `[{id, title, application}]` | os aplicativos do seletor (vazio no Wayland) |
-| `source_preview` | `source` (`display:<id>` ou `window:<id>`) | data URL JPEG, ou `""` | a miniatura do seletor (`""` no Wayland) |
-| `list_cameras` | — | `[{id, …}]` | as câmeras, no Linux |
-| `machine_cores` | — | número de núcleos | registrado; a interface não chama hoje |
-| `start_broadcast` | `quality, fps, source, audio, muteCalls` | — | captura e encoder da tela. No Wayland o `source` é ignorado: abre o seletor do sistema (monitor ou janela) e só resolve quando a pessoa escolhe; cancelar rejeita com `screen picker closed without choosing a source` |
-| `change_broadcast_quality` | `quality, fps` | — | troca resolução e fps no meio da transmissão, sem fechar os producers (no Wayland reaproveita a sessão do portal: o seletor não abre de novo) |
-| `stop_broadcast` | — | quadros enviados | para a tela; sem nenhuma origem subindo, solta o remetente e sorteia chave SRTP nova |
-| `broadcast_stats` | — | `{active, …, encoder: "gpu" \| "cpu", targetBitrate, lossPermille}` | a linha de números da transmissão. `targetBitrate` (bits por segundo) é a taxa que o governador de perda pediu ao encoder; `lossPermille` (0 a 1000) é a perda da última janela de ~1 s com tráfego — tela parada não atualiza, o valor anterior fica |
-| `sfu_offer` | `source` (`screen`, `screenAudio`, `mic`, `camera`) | `{rtpParameters, srtpParameters}` | o corpo do `producePlain` |
-| `use_sfu` | `address, serverKey` | — | aponta o remetente para a porta do `producePlain`; repetir o mesmo endereço não faz nada |
-| `renew_sfu_key` | — | — | chave SRTP nova para republicar depois de o SFU reiniciar |
-| `set_shortcuts` | `bindings: [{action, accelerator}]` | `{registered, failed}` | atalhos do sistema (mutar, ensurdecer, falar apertando); cada tecla disparada chega no evento `shortcut` com `{action, pressed}`. No Windows **nenhuma** ação passa pelo registro de atalho do sistema, que engole a tecla (o jogo deixa de recebê-la) e não enxerga o mouse: o Rust consulta o estado das teclas a cada 20 ms e só avisa a interface, então a tecla chega ao jogo e ao app ao mesmo tempo. Vale para `mute`, `deafen` e `talk`; modificador a mais não impede (quem corre com Shift no jogo ainda muta), e `Mouse3`, `Mouse4` e `Mouse5` valem como tecla de falar. No macOS e no Linux continua o registro do sistema. O formato do `accelerator` é o mesmo: modificadores + código (`Control+KeyV`, `KeyV`, `Mouse4`) |
-| `start_voice` / `stop_voice` / `set_voice_muted` | — / — / `muted` | — | o mic pelo Rust (Linux). De `start_voice` a `stop_voice` sai o evento `voice:level` com `{ level }` (RMS linear de 0 a 1, o maior de cada janela de 100 ms): é o que a detecção de voz da interface mede, já que ali o áudio não passa pela janela. Sai **mesmo mutado** — é ele que reabre o portão. Mutado, o Rust manda silêncio em Opus em vez de nenhum pacote: sem pacote o relógio de 30 s do SFU mataria o producer |
-| `start_camera` / `stop_camera` | `device` / — | — | a câmera pelo Rust (Linux) |
-| `watch_key` | — | chave SRTP em base64 | a chave de recepção do `consumePlain` |
-| `watch_native` | `consumer: { producerId, kind, address, serverKey, payloadType, ssrc, rtx }` | porta do MJPEG em 127.0.0.1 (0 no áudio) | assistir por RTP puro onde a janela não tem WebRTC (Linux); `rtx` é o do `consumePlain`, para o reenvio de pacote perdido |
-| `stop_watch` | `producerId`, ou `null` para tudo | — | só o `null` fecha o socket de recepção: o `comedia` do SFU aprendeu aquele endereço |
-| `watch_mute` | `producerId, muted` | — | o Rust para de repassar o áudio da tela |
-| `watch_stats` | — | pacotes recebidos | registrado; a interface não chama hoje |
-| `google_login` | `server` (só http/https) | token do Sanctum | login pelo navegador do sistema, de volta pelo `unkvoid://login?token=&state=` |
 
 ## Rodar tudo local (para testar antes de subir)
 
@@ -759,7 +740,7 @@ cd web && composer dev            # serve em :8000, fila, logs, vite
 cd sfu && pnpm run build && SFU_SECRET=<o mesmo do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node dist/server.js
 
 # 3. App apontando para o Laravel local (o SFU vem do GET /api/config)
-cd native && UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid-windows   # ou unkvoid-linux; no Mac, native/apps/macos/run.sh
+cd native && UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid
 ```
 
 Duas máquinas na mesma rede: troque `127.0.0.1` pelo IP da máquina que roda os

@@ -30,6 +30,6 @@ transmissão cai".
 | 5 | algum encoder de H.264 abre de verdade | a captura não sobe |
 | 6 | os testes do Rust passam neste Linux | `cargo test --workspace` |
 
-O que este contêiner **não** prova: a janela do app (o `native/apps/linux/Dockerfile` abre ela
+O que este contêiner **não** prova: a janela do app (o `native/apps/unkvoid/Dockerfile` abre ela
 sob `xvfb`) e o caminho até o SFU — para esse, com um SFU no ar,
 `cargo run -p core-app --example room -- <sfu> <sala> share` num lado e `... watch` no outro.

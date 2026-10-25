@@ -27,6 +27,10 @@ pub mod action {
     pub const RESUME_CONSUMER: &str = "resumeConsumer";
     pub const CLOSE_CONSUMER: &str = "closeConsumer";
     pub const REMOVE_PEER: &str = "removePeer";
+    pub const VOICE_STATE: &str = "voiceState";
+    pub const E2EE_JOIN: &str = "e2eeJoin";
+    pub const E2EE_COMMIT: &str = "e2eeCommit";
+    pub const E2EE_WELCOME: &str = "e2eeWelcome";
 }
 
 /// Eventos que o servidor **não** manda: são desta máquina, sobre o socket dela. Entram na

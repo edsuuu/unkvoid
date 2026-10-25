@@ -11,6 +11,6 @@ final class InvalidCredentialsException extends Exception
 {
     public function render(): JsonResponse
     {
-        return response()->json(['message' => 'E-mail ou senha não conferem.'], 401);
+        return response()->json(['message' => 'E-mail, apelido ou senha não conferem.'], 401);
     }
 }
