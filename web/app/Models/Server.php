@@ -39,18 +39,24 @@ use Throwable;
  * @property int $owner_id
  * @property string $invite_code
  * @property ?string $icon_path
+ * @property ?CarbonImmutable $invites_paused_at
  * @property ?CarbonImmutable $last_accessed_at só em `listFor`
  * @property ?int $unread só em `listFor`
  * @property-read Collection<int, ServerRole> $roles
  * @property-read Collection<int, ServerMember> $members
  * @property-read Collection<int, Channel> $channels
  * @property-read Collection<int, ServerBan> $bans
+ * @property-read Collection<int, ServerSound> $sounds
+ * @property-read Collection<int, ServerInvite> $invites
  */
-#[Fillable(['name', 'owner_id', 'invite_code', 'icon_path'])]
+#[Fillable(['name', 'owner_id', 'invite_code', 'icon_path', 'invites_paused_at'])]
 final class Server extends Model implements Auditable
 {
     use AuditableTrait;
     use LogsFailedWrites;
+
+    /** Quantos sons o soundboard de um servidor guarda. */
+    public const int MOST_SOUNDS = 8;
 
     private const int AUDIT_PAGE = 50;
 
@@ -89,11 +95,27 @@ final class Server extends Model implements Auditable
      */
     public static function joinByInvite(User $user, string $code): self
     {
-        $server = self::query()->where('invite_code', $code)->first() ?? throw new NotFoundHttpException('Esse convite não existe. Confira o código.');
+        // O convite de cada pessoa primeiro; o código único de antes continua valendo para o app
+        // já instalado.
+        $invite = ServerInvite::query()->with('server')->where('code', $code)->first();
+
+        throw_if(! is_null($invite) && $invite->spent(), NotFoundHttpException::class, 'Esse convite venceu. Peça outro.');
+
+        $server = $invite->server ?? self::query()->where('invite_code', $code)->first() ?? throw new NotFoundHttpException('Esse convite não existe. Confira o código.');
 
         throw_if($server->bans()->where('user_id', $user->id)->exists(), ForbiddenException::class, 'Você foi banido deste servidor.');
+        throw_if(! is_null($server->invites_paused_at), ForbiddenException::class, 'Os convites deste servidor estão pausados.');
 
-        $member = self::write('falha ao entrar no servidor', fn (): ServerMember => $server->members()->firstOrCreate(['user_id' => $user->id], ['joined_at' => now()]), ['server_id' => $server->id, 'user_id' => $user->id]);
+        $member = self::write('falha ao entrar no servidor', function () use ($server, $user, $invite): ServerMember {
+            $member = $server->members()->firstOrCreate(['user_id' => $user->id], ['joined_at' => now()]);
+
+            // Só quem entra conta como uso: clicar de novo sendo membro não gasta o convite.
+            if ($member->wasRecentlyCreated && ! is_null($invite)) {
+                $invite->increment('uses');
+            }
+
+            return $member;
+        }, ['server_id' => $server->id, 'user_id' => $user->id]);
 
         // Quem já era membro e clicou no convite de novo não chega duas vezes. E o aviso
         // não derruba a entrada: a adesão já está gravada, e quem entrou não tem culpa de
@@ -200,6 +222,96 @@ final class Server extends Model implements Auditable
         return $this->hasMany(ServerBan::class);
     }
 
+    /**
+     * @return HasMany<ServerSound, $this>
+     */
+    public function sounds(): HasMany
+    {
+        return $this->hasMany(ServerSound::class);
+    }
+
+    /**
+     * @return HasMany<ServerInvite, $this>
+     */
+    public function invites(): HasMany
+    {
+        return $this->hasMany(ServerInvite::class);
+    }
+
+    /**
+     * Os convites que ainda deixam entrar, do mais novo para o mais antigo. Ver todos é de quem
+     * gerencia o servidor, como no Discord.
+     *
+     * @return Collection<int, ServerInvite>
+     *
+     * @throws ForbiddenException
+     */
+    public function invitesFor(User $actor): Collection
+    {
+        $this->memberOrFail($actor)->authorize(PermissionEnum::ManageServer);
+
+        return $this->invites()
+            ->with(['user', 'channel'])
+            ->where(fn ($query) => $query->whereNull('expires_at')->orWhere('expires_at', '>', now()))
+            ->where(fn ($query) => $query->whereNull('max_uses')->orWhereColumn('uses', '<', 'max_uses'))
+            ->orderByDesc('id')
+            ->get();
+    }
+
+    /**
+     * Um convite novo de quem pediu: `maxAge` em segundos (0 é sem validade) e `maxUses` (0 é
+     * sem limite), os mesmos números do Discord.
+     *
+     * @throws Throwable
+     */
+    public function createInvite(User $actor, ?string $channelId, int $maxAge, int $maxUses): ServerInvite
+    {
+        $this->memberOrFail($actor)->authorize(PermissionEnum::CreateInvite);
+
+        throw_if(! is_null($this->invites_paused_at), ForbiddenException::class, 'Os convites deste servidor estão pausados.');
+        throw_if(
+            ! is_null($channelId) && ! $this->channels()->whereKey($channelId)->exists(),
+            ValidationException::withMessages(['channel_id' => 'Esse canal não é deste servidor.']),
+        );
+
+        return self::write('falha ao criar o convite', fn (): ServerInvite => $this->invites()->create([
+            'user_id' => $actor->id,
+            'channel_id' => $channelId,
+            'code' => $this->newPersonalInviteCode(),
+            'uses' => 0,
+            'max_uses' => $maxUses === 0 ? null : $maxUses,
+            'expires_at' => $maxAge === 0 ? null : now()->addSeconds($maxAge),
+        ]), ['server_id' => $this->id]);
+    }
+
+    /**
+     * Revogar é de quem criou ou de quem gerencia o servidor.
+     *
+     * @throws Throwable
+     */
+    public function revokeInvite(User $actor, ServerInvite $invite): void
+    {
+        throw_if($invite->server_id !== $this->id, NotFoundHttpException::class);
+
+        if ($invite->user_id !== $actor->id) {
+            $this->memberOrFail($actor)->authorize(PermissionEnum::ManageServer);
+        }
+
+        self::write('falha ao revogar o convite', fn () => $invite->delete(), ['server_id' => $this->id, 'invite_id' => $invite->id]);
+    }
+
+    /**
+     * @throws Throwable
+     */
+    public function pauseInvites(User $actor, bool $paused): void
+    {
+        $this->memberOrFail($actor)->authorize(PermissionEnum::ManageServer);
+
+        self::write('falha ao pausar os convites', fn () => $this->update(['invites_paused_at' => $paused ? now() : null]), ['server_id' => $this->id]);
+
+        self::publish(new ServerUpdated($this->id));
+    }
+
     public function everyoneRole(): ServerRole
     {
         return $this->roles->firstOrFail('is_everyone', true);
@@ -291,7 +403,7 @@ final class Server extends Model implements Auditable
 
         self::write('falha ao guardar o ícone', fn () => $this->update(['icon_path' => $path]), ['server_id' => $this->id]);
 
-        $this->forgetIcon($previous);
+        $this->forgetFile($previous, 'falha ao apagar o icone antigo do servidor');
 
         self::publish(new ServerUpdated($this->id));
     }
@@ -307,9 +419,67 @@ final class Server extends Model implements Auditable
 
         self::write('falha ao tirar o ícone', fn () => $this->update(['icon_path' => null]), ['server_id' => $this->id]);
 
-        $this->forgetIcon($previous);
+        $this->forgetFile($previous, 'falha ao apagar o icone antigo do servidor');
 
         self::publish(new ServerUpdated($this->id));
+    }
+
+    /**
+     * Os sons do soundboard: quem é membro vê e toca; enviar e apagar pede "Gerenciar
+     * expressões".
+     *
+     * @return Collection<int, ServerSound>
+     *
+     * @throws ForbiddenException
+     */
+    public function soundsFor(User $actor): Collection
+    {
+        $this->memberOrFail($actor);
+
+        return $this->sounds()->orderBy('id')->get();
+    }
+
+    /**
+     * @throws Throwable
+     */
+    public function addSound(User $actor, UploadedFile $file, string $name, ?string $emoji, int $volume, BucketService $bucket): ServerSound
+    {
+        $this->memberOrFail($actor)->authorize(PermissionEnum::ManageExpressions);
+
+        throw_if(
+            $this->sounds()->count() >= self::MOST_SOUNDS,
+            ValidationException::withMessages(['sound' => 'O servidor já tem '.self::MOST_SOUNDS.' sons. Apague um para enviar outro.']),
+        );
+
+        $bucket->ensure();
+
+        $path = $file->store('sounds/'.$this->id, 's3');
+
+        throw_if($path === false, RuntimeException::class, 'não deu para guardar o som');
+
+        return self::write('falha ao guardar o som', fn (): ServerSound => $this->sounds()->create([
+            'user_id' => $actor->id,
+            'name' => $name,
+            'emoji' => $emoji,
+            'path' => $path,
+            'volume' => $volume,
+        ]), ['server_id' => $this->id]);
+    }
+
+    /**
+     * @throws Throwable
+     */
+    public function removeSound(User $actor, ServerSound $sound): void
+    {
+        $this->memberOrFail($actor)->authorize(PermissionEnum::ManageExpressions);
+
+        throw_if($sound->server_id !== $this->id, NotFoundHttpException::class);
+
+        $path = $sound->path;
+
+        self::write('falha ao apagar o som', fn () => $sound->delete(), ['server_id' => $this->id, 'sound_id' => $sound->id]);
+
+        $this->forgetFile($path, 'falha ao apagar o arquivo do som');
     }
 
     /**
@@ -553,6 +723,18 @@ final class Server extends Model implements Auditable
     }
 
     /**
+     * Oito letras e números, maiúsculas e minúsculas, como os do Discord.
+     */
+    private function newPersonalInviteCode(): string
+    {
+        do {
+            $code = Str::random(8);
+        } while (ServerInvite::query()->where('code', $code)->exists() || self::query()->where('invite_code', $code)->exists());
+
+        return $code;
+    }
+
+    /**
      * @param  Collection<int, ServerRole>|Collection<int, Channel>  $items
      */
     private function nextPosition(Collection $items): int
@@ -588,10 +770,10 @@ final class Server extends Model implements Auditable
     }
 
     /**
-     * O arquivo antigo só sai depois que a linha já aponta para o novo: falhar aqui deixa
-     * lixo no bucket, nunca um ícone quebrado na tela.
+     * O arquivo só sai do bucket depois que a linha já não aponta para ele: falhar aqui deixa
+     * lixo no bucket, nunca um ícone ou um som quebrado na tela.
      */
-    private function forgetIcon(?string $path): void
+    private function forgetFile(?string $path, string $failure): void
     {
         if (is_null($path)) {
             return;
@@ -600,7 +782,7 @@ final class Server extends Model implements Auditable
         try {
             Storage::disk('s3')->delete($path);
         } catch (Throwable $exception) {
-            Log::channel('daily')->error('[ERRO] falha ao apagar o icone antigo do servidor', [
+            Log::channel('daily')->error('[ERRO] '.$failure, [
                 'server_id' => $this->id,
                 'path' => $path,
                 'exception' => $exception,

@@ -1,62 +1,40 @@
 # Build e teste no Linux
 
-## O `.deb` (a release)
+O app único está provisoriamente em `native/apps/unkvoid`; ele também gera o `.deb` e será
+renomeado para `native/apps/unkvoid`. O build usa Debian 12 para o binário continuar compatível
+com distribuições mais antigas.
 
-## O app Slint no Linux
+## O `.deb`
 
-O app Slint (`native/apps/windows`, o mesmo crate do Windows) compila, testa e abre num
-contêiner próprio, e tem o seu `.deb` em `native/apps/windows/build-deb.sh` (Debian 12, sem GTK):
-está tudo em [`native/apps/windows/README.md`](../native/apps/windows/README.md). O que segue é
-o `.deb` do app GTK e o laboratório da captura.
-
-O pacote é o `unkvoid`, do app nativo (`native/apps/linux`, GTK4), compilado dentro de um
-**Debian 12** (`native/apps/linux/Dockerfile.deb`): o binário fica preso à glibc de quem compila,
-e o Debian 12 é a distro mais velha que queremos suportar. Precisa de Docker; num Windows, roda
-no WSL.
+Precisa de Docker. No Windows, rode no WSL:
 
 ```bash
-native/apps/linux/build-deb.sh          # sai em native/target/deb12/Unkvoid_<versão>_amd64.deb
+native/apps/unkvoid/build-deb.sh
 ```
 
-A versão é a do `native/Cargo.toml` (`0.1.0-beta` vira `0.1.0~beta` no Debian, para a final vir
-depois da beta). O build roda com `nice -n 19`.
+O arquivo sai em `native/target/deb12/Unkvoid_<versão>_amd64.deb`. A versão é a de
+`[workspace.package]` em `native/Cargo.toml`; uma pré-release como `0.1.0-beta` vira
+`0.1.0~beta` para o Debian ordenar a final depois dela.
 
-Publicar no APT é na VPS, onde mora a chave GPG do repositório: o passo a passo está em
-[AUTO-UPDATE.md](AUTO-UPDATE.md#linux). O `.deb` não leva assinatura própria; quem autentica é a
-assinatura do índice.
-
-> O `build-linux.yml` e o `native/apps/desktop/build-vps.sh` ainda geram o `.deb` do **Tauri**.
-> Não rode nenhum dos dois: o Tauri voltaria por cima do nativo no próximo `apt upgrade`.
-
-## O laboratório em contêiner
-
-`native/tests/linux` é um Ubuntu 24.04 com os mesmos pacotes que o `.deb` exige, um Xvfb e um
-PulseAudio de mentira. Seis casos (captura que passa dos 30 s, som do sistema, microfone,
-`webrtcdsp`, encoder, `cargo test`):
+Antes de publicar, o validador instala o arquivo em uma Debian 12 limpa:
 
 ```bash
-docker build -t unkvoid-linux native/tests/linux
-docker run --rm -v "$PWD/native:/unkvoid/native" unkvoid-linux /unkvoid/native/tests/linux/cenarios.sh
+native/release/validate-deb.sh native/target/deb12/Unkvoid_<versão>_amd64.deb
 ```
 
-O que cada caso prova: [`native/tests/linux/README.md`](../native/tests/linux/README.md). A
-janela do app sob `xvfb` é o `native/apps/linux/Dockerfile`.
+O passo de APT está em [AUTO-UPDATE.md](AUTO-UPDATE.md#linux). O workflow `build-linux.yml`
+continua pausado e chama `native/release/build-vps.sh`, sem instalar nem compilar o aplicativo
+antigo.
 
-## Compilar e testar sem contêiner
+## Rodar a janela no Linux
 
-Numa máquina com GTK4 (`libgtk-4-dev`, `libdbus-1-dev`, GStreamer good/bad/ugly, `pactl`,
-`cmake`):
+O `Dockerfile` do app compila, testa e abre a janela sob Xvfb:
 
 ```bash
 cd native
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-UNKVOID_CAPTURE=x11 cargo test -p unkvoid-linux -- --ignored --nocapture   # teste vivo da captura
+docker build -f apps/unkvoid/Dockerfile -t unkvoid-app .
+docker run --rm --cpus=2 unkvoid-app
 ```
 
-O teste vivo precisa de alguém escutando na porta de destino: um socket UDP apontado para porta
-fechada recebe o ICMP de volta e falha no envio seguinte.
-
-No WSL: uma compilação de Rust por vez (dois `cargo` trocam memória com o disco até o WSL parar
-de responder), e `UNKVOID_CAPTURE=x11` para compartilhar a tela no WSLg — compartilhar a tela
-inteira sai preto ali; compartilhe uma janela.
+Para compilar sem contêiner, instale as bibliotecas de desenvolvimento listadas em
+`native/apps/unkvoid/Dockerfile.deb` e rode `cargo test -p unkvoid`.

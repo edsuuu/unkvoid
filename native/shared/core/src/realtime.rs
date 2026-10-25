@@ -21,6 +21,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::api::Api;
 use crate::chimes::Chime;
+use crate::models::UserStatus;
 use crate::client::SfuClient;
 use crate::protocol::Event;
 use crate::reconnect::{Backoff, MAX_ATTEMPTS};
@@ -192,6 +193,15 @@ async fn relay(realtime: Weak<Realtime>, mut events: UnboundedReceiver<Event>) {
     }
 }
 
+/// O mudo e o surdo que o SFU anunciou para uma pessoa num canal de voz.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceMute {
+    pub channel_id: String,
+    pub user_id: i64,
+    pub muted: bool,
+    pub deafened: bool,
+}
+
 /// O que um evento do tempo real pede da interface — o mesmo que o React e o Mac fazem com
 /// ele. A interface só executa: relê o que mudou, toca, e mostra o aviso.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -211,16 +221,22 @@ pub struct Reading {
     pub removed_from: Option<i64>,
     /// Quem está online no servidor aberto mudou.
     pub presence: Option<Presence>,
+    /// O status público mudou; invisível chega como offline para não revelar a escolha.
+    pub status_update: Option<(i64, UserStatus)>,
     /// O socket voltou depois de cair: relê tudo o que pode ter passado.
     pub catch_up: bool,
+    /// O mudo e o surdo de alguém na voz mudaram.
+    pub voice_mute: Option<VoiceMute>,
     pub chime: Option<Chime>,
     pub notice: Option<Notice>,
+    /// Permite ao app respeitar Não perturbar sem silenciar alertas que não são mensagens.
+    pub message_notice: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Presence {
     Here(Vec<i64>),
-    Joining(i64),
+    Joining(i64, UserStatus),
     Leaving(i64),
 }
 
@@ -228,8 +244,12 @@ impl Presence {
     pub fn apply(&self, online: &mut HashSet<i64>) {
         match self {
             Self::Here(everyone) => *online = everyone.iter().copied().collect(),
-            Self::Joining(person) => {
-                online.insert(*person);
+            Self::Joining(person, status) => {
+                if *status == UserStatus::Offline {
+                    online.remove(person);
+                } else {
+                    online.insert(*person);
+                }
             }
             Self::Leaving(person) => {
                 online.remove(person);
@@ -283,6 +303,7 @@ pub fn read(event: &str, channel: Option<&str>, data: &Value, me: i64, talking: 
                 reading.chime = Some(Chime::Message);
 
                 if person != talking {
+                    reading.message_notice = true;
                     let name = data["message"]["sender"]["name"].as_str().unwrap_or_default();
                     let body: String = data["message"]["body"].as_str().unwrap_or_default().chars().take(60).collect();
 
@@ -314,15 +335,35 @@ pub fn read(event: &str, channel: Option<&str>, data: &Value, me: i64, talking: 
             }));
         }
         "ServerUpdated" | "VoiceStateUpdated" => reading.tree = true,
+        // O SFU publica o mudo e o surdo de quem está na voz: a lista muda no lugar, sem reler
+        // a árvore (a presença do Laravel guarda 3 s e devolveria o estado de antes).
+        "VoiceMuteUpdated" => {
+            reading.voice_mute = data["user_id"].as_i64().zip(data["channel_id"].as_str()).map(|(user_id, channel_id)| VoiceMute {
+                channel_id: channel_id.to_owned(),
+                user_id,
+                muted: data["muted"].as_bool().unwrap_or_default(),
+                deafened: data["deafened"].as_bool().unwrap_or_default(),
+            });
+        }
+        "UserStatusUpdated" => {
+            reading.status_update = data["user_id"].as_i64().zip(parse_status(data["status"].as_str().unwrap_or_default()));
+            reading.tree = true;
+            reading.friends = true;
+            reading.direct = true;
+        }
+        "ActivityUpdated" => {
+            reading.friends = true;
+            reading.tree = true;
+        }
         "presence.here" => {
             let everyone = data["members"]
                 .as_array()
-                .map(|members| members.iter().filter_map(|member| member["id"].as_str().and_then(person_id)).collect())
+                .map(|members| members.iter().filter(|member| parse_status(member["status"].as_str().unwrap_or_default()) != Some(UserStatus::Offline)).filter_map(|member| member["id"].as_str().and_then(person_id)).collect())
                 .unwrap_or_default();
 
             reading.presence = Some(Presence::Here(everyone));
         }
-        "presence.joining" => reading.presence = data["id"].as_str().and_then(person_id).map(Presence::Joining),
+        "presence.joining" => reading.presence = data["id"].as_str().and_then(person_id).map(|person| Presence::Joining(person, parse_status(data["status"].as_str().unwrap_or_default()).unwrap_or_default())),
         "presence.leaving" => reading.presence = data["id"].as_str().and_then(person_id).map(Presence::Leaving),
         "realtime.back" => reading.catch_up = true,
         "realtime.closed" => {
@@ -334,6 +375,17 @@ pub fn read(event: &str, channel: Option<&str>, data: &Value, me: i64, talking: 
     }
 
     reading
+}
+
+fn parse_status(status: &str) -> Option<UserStatus> {
+    match status {
+        "online" => Some(UserStatus::Online),
+        "idle" => Some(UserStatus::Idle),
+        "dnd" => Some(UserStatus::Dnd),
+        "invisible" => Some(UserStatus::Invisible),
+        "offline" => Some(UserStatus::Offline),
+        _ => None,
+    }
 }
 
 /// A presença manda a pessoa como `user:5`; o resto do app a conhece por `5`.
@@ -364,6 +416,19 @@ mod tests {
 
         assert!(!reading.unread);
         assert_eq!(reading.chime, None);
+    }
+
+    #[test]
+    fn the_sfu_mute_and_deafen_of_someone_in_voice_changes_the_list_in_place() {
+        let data = json!({ "channel_id": "01m50ekbdyjxy1ekbjgs380we3", "user_id": 23, "name": "Bia", "muted": true, "deafened": true });
+
+        let reading = read("VoiceMuteUpdated", Some("channel.01m50ekbdyjxy1ekbjgs380we3"), &data, 1, None);
+
+        assert_eq!(
+            reading.voice_mute,
+            Some(VoiceMute { channel_id: "01m50ekbdyjxy1ekbjgs380we3".into(), user_id: 23, muted: true, deafened: true })
+        );
+        assert!(!reading.tree, "a presença do Laravel guarda 3 s: reler traria o estado de antes");
     }
 
     #[test]
@@ -424,7 +489,7 @@ mod tests {
 
         for (event, data) in [
             ("presence.here", here),
-            ("presence.joining", json!({ "id": "user:3" })),
+            ("presence.joining", json!({ "id": "user:3", "status": "online" })),
             ("presence.leaving", json!({ "id": "user:1" })),
         ] {
             read(event, Some("server.9"), &data, 1, None).presence.expect("presença").apply(&mut online);
@@ -494,5 +559,26 @@ mod tests {
         assert_eq!(person_id("user:42"), Some(42));
         assert_eq!(person_id("42"), Some(42));
         assert_eq!(person_id("guest:abc"), None);
+    }
+
+    #[test]
+    fn invisible_status_is_applied_as_offline_and_requests_fresh_views() {
+        let reading = read("UserStatusUpdated", Some("server.3"), &json!({"user_id": 7, "status": "offline"}), 1, None);
+
+        assert_eq!(reading.status_update, Some((7, UserStatus::Offline)));
+        assert!(reading.tree && reading.friends && reading.direct);
+    }
+
+    #[test]
+    fn activity_updates_refresh_friend_and_member_views() {
+        let reading = read(
+            "ActivityUpdated",
+            Some("friend.7"),
+            &json!({ "user_id": 7, "activity": { "name": "Arena", "started_at": "2026-10-15T12:00:00Z" } }),
+            1,
+            None,
+        );
+
+        assert!(reading.friends && reading.tree);
     }
 }

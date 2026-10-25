@@ -1,116 +1,55 @@
 SHELL := /bin/bash
 
-DESKTOP_DIR := native/apps/desktop
-RUST_DIR := native
+NATIVE_DIRECTORY := native
+RELEASE_DIRECTORY := $(NATIVE_DIRECTORY)/release
 
-.PHONY: help dev run frontend rust-check check build build-windows build-mac build-linux mac-build install build-vps release publish-windows
+.PHONY: help rust-check build-windows build-linux build-vps release publish-windows
 
 VPS_REMOTE ?= vps
-VPS_APP := /var/www/projects/unkvoid
-REPO_URL := https://github.com/edsuuu/unkvoid.git
-CHAVE := $(HOME)/.tauri/unkvoid.key
-
-# Onde o build-windows.ps1 larga os instaladores, visto de dentro do WSL.
-WINDOWS_APPS ?= /mnt/c/Users/edsu/Desktop/apps
-VERSAO = $(shell node -pe 'JSON.parse(require("fs").readFileSync("$(DESKTOP_DIR)/src-tauri/tauri.conf.json","utf8")).version')
+VPS_APPLICATION := /var/www/projects/unkvoid
+WINDOWS_INSTALLERS ?= /mnt/c/Users/edsu/Desktop/apps
+RELEASE_SECRET_FILE ?= $(HOME)/auxilos/release-secret.env
+VERSION = $(shell awk '\
+  /^\[workspace\.package\]$$/ { in_workspace_package = 1; next } \
+  /^\[/ { in_workspace_package = 0 } \
+  in_workspace_package && /^version[[:space:]]*=/ { value = $$0; sub(/^[^"]*"/, "", value); sub(/".*$$/, "", value); print value; exit } \
+' $(NATIVE_DIRECTORY)/Cargo.toml)
 
 help:
 	@printf "Comandos disponíveis:\n"
-	@printf "  make dev        Abre o app Tauri em desenvolvimento com hot reload\n"
-	@printf "  make run        Executa o app Tauri localmente\n"
-	@printf "  make frontend   Sobe somente o Vite em http://localhost:1420\n"
-	@printf "  make rust-check Verifica o workspace Rust\n"
-	@printf "  make check      Executa os checks do desktop e do SFU\n"
-	@printf "  make build      Gera o build de produção do frontend\n"
-	@printf "  make build-windows Gera NSIS e MSI para Windows\n"
-	@printf "  make build-mac  Gera .app e .dmg para macOS\n"
-	@printf "  make build-linux Gera DEB e AppImage para Linux\n"
-	@printf "  make install     Instala e abre o .app no macOS\n"
-	@printf "  make build-vps   Gera DEB e AppImage na VPS e publica assinado\n"
-	@printf "  make release     Publica os instaladores desta máquina na release\n"
-	@printf "  make publish-windows Publica o .msi e o .exe que o Windows acabou de gerar\n"
-
-dev:
-	cd $(DESKTOP_DIR) && npm run tauri dev
-
-run:
-	cd $(DESKTOP_DIR) && npm run tauri dev -- --release
-
-frontend:
-	cd $(DESKTOP_DIR) && npm run dev
+	@printf "  make rust-check       Verifica o workspace Rust\n"
+	@printf "  make build-windows    Gera o instalador .exe no Windows\n"
+	@printf "  make build-linux      Gera o .deb do app único no Debian 12\n"
+	@printf "  make build-vps        Gera e publica o .deb no APT pela VPS\n"
+	@printf "  make release          Publica os instaladores desta máquina no GitHub\n"
+	@printf "  make publish-windows  Publica o .exe do Windows no site\n"
 
 rust-check:
-	cd $(RUST_DIR) && cargo check --workspace
-
-check:
-	cd $(DESKTOP_DIR) && npm run check
-	cd sfu && npm run build
-	$(MAKE) rust-check
-
-build:
-	cd $(DESKTOP_DIR) && npm run build
-
-# A chave do updater entra aqui. Sem ela o bundle do .app.tar.gz para no fim do
-# build pedindo senha, e o erro derruba o `make install` antes de instalar.
-mac-build:
-	cd $(DESKTOP_DIR) && TAURI_SIGNING_PRIVATE_KEY="$$(cat $(CHAVE))" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" npx tauri build --bundles app,dmg
+	cd $(NATIVE_DIRECTORY) && cargo check --workspace
 
 build-windows:
-	cd $(DESKTOP_DIR) && npx tauri build --bundles nsis,msi
-
-build-mac: mac-build
+	powershell.exe -ExecutionPolicy Bypass -File native\apps\unkvoid\build-installer.ps1
 
 build-linux:
-	cd $(DESKTOP_DIR) && npx tauri build --bundles deb,appimage
+	cd $(NATIVE_DIRECTORY)/apps/unkvoid && ./build-deb.sh
 
-# O Linux sai da VPS: gera o .deb e publica no APT, que é como o Linux instala e
-# atualiza. O .dmg e o .msi saem das máquinas de cada sistema, porque nenhum dos dois
-# pode ser gerado em Linux — um exige um Mac por licença, o outro exige o WiX no Windows.
-#
-# A chave que assina atualizações NÃO vem para cá. O Linux não a usa, e a VPS é uma
-# máquina exposta: quem a tiver publica atualização para todo mundo que instalou o app.
-#
-# Por rsync e não por git: o repositório é privado, e clonar de lá exigiria uma
-# credencial do GitHub guardada numa máquina exposta à internet. O `--delete` mantém a
-# cópia igual à daqui, e os `--exclude` preservam o cache do cargo, que são 2 GB e
-# quarenta minutos de compilação.
+# Por rsync e não por git: a VPS não precisa guardar uma credencial do GitHub para compilar.
 build-vps:
 	@set -e; \
-	ssh $(VPS_REMOTE) "mkdir -p $(VPS_APP)"; \
+	ssh $(VPS_REMOTE) "mkdir -p $(VPS_APPLICATION)"; \
 	rsync -az --delete \
 		--exclude .git --exclude node_modules --exclude target --exclude dist \
-		./native ./Makefile "$(VPS_REMOTE):$(VPS_APP)/"; \
-	ssh $(VPS_REMOTE) "$(VPS_APP)/native/apps/desktop/build-vps.sh"
+		./native ./Makefile "$(VPS_REMOTE):$(VPS_APPLICATION)/"; \
+	ssh $(VPS_REMOTE) "$(VPS_APPLICATION)/native/release/build-vps.sh"
 
 release:
-	cd $(DESKTOP_DIR) && node release.mjs
+	node $(RELEASE_DIRECTORY)/release.mjs
 
-# O Windows compila no Windows e publica daqui: o publish-release.sh é bash e o segredo
-# da API mora no WSL. Os dois instaladores vão com chave própria no manifesto — quem
-# instalou pelo .msi receberia `InvalidUpdaterFormat` se baixasse o .exe de volta.
-#
-# O filtro pela versão não é enfeite: a pasta de saída junta build de todas as versões,
-# e publicar o .msi de ontem com o número de hoje deixa todo mundo baixando o errado.
+# O segredo fica no WSL, e o instalador é assinado antes de chegar à API do site.
 publish-windows:
 	@set -e; \
-	source $(HOME)/auxilos/release-secret.env; \
+	source $(RELEASE_SECRET_FILE); \
 	export RELEASE_SECRET; \
-	cd $(DESKTOP_DIR); \
-	for file in $(WINDOWS_APPS)/Unkvoid_$(VERSAO)_*.msi; do \
-		./publish-release.sh windows-x86_64-msi "$$file" "$$file.sig"; \
-	done; \
-	for file in $(WINDOWS_APPS)/Unkvoid_$(VERSAO)_*-setup.exe; do \
-		./publish-release.sh windows-x86_64-nsis "$$file" "$$file.sig"; \
+	for installer in $(WINDOWS_INSTALLERS)/Unkvoid_$(VERSION)_*-setup.exe; do \
+		$(RELEASE_DIRECTORY)/publish-release.sh windows-x86_64-nsis "$$installer" "$$installer.sig"; \
 	done
-
-install: mac-build
-	@set -e; \
-	app="$(CURDIR)/native/target/release/bundle/macos/Unkvoid.app"; \
-	if pgrep -x unkvoid-desktop >/dev/null 2>&1; then \
-		osascript -e 'tell application "Unkvoid" to quit' >/dev/null 2>&1 || true; \
-		sleep 2; \
-		pkill -x unkvoid-desktop 2>/dev/null || true; \
-	fi; \
-	rm -rf /Applications/Unkvoid.app; \
-	ditto "$$app" /Applications/Unkvoid.app; \
-	open -a /Applications/Unkvoid.app

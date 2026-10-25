@@ -15,7 +15,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use rand::RngCore;
 
-const SERVICE: &str = "com.unkvoid.desktop";
+const SERVICE: &str = crate::APP_DIR;
 
 const ENTRY: &str = "state-key";
 

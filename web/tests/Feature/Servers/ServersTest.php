@@ -314,7 +314,7 @@ it('o POST /api/sfu/authorize decide quem ouve: canal só com VIEW_CHANNEL, serv
 
     $this->postJson('/api/sfu/authorize', ['sub' => $member->subject(), 'channel' => "channel.{$text->id}", 'at' => time()])->assertUnauthorized();
 
-    $ask($member, "channel.{$text->id}")->assertOk()->assertExactJson(['allowed' => true, 'name' => $member->name]);
+    $ask($member, "channel.{$text->id}")->assertOk()->assertExactJson(['allowed' => true, 'name' => $member->name, 'status' => 'online']);
     $ask($stranger, "channel.{$text->id}")->assertOk()->assertJsonPath('allowed', false);
     $ask($member, "server.{$server->id}")->assertOk()->assertJsonPath('allowed', true);
     $ask($stranger, "server.{$server->id}")->assertOk()->assertJsonPath('allowed', false);
@@ -657,6 +657,188 @@ it('quem tem MANAGE_SERVER sem ser dono troca o ícone, e só imagem de até 2 M
         ->assertUnprocessable();
 });
 
+it('o cargo liga "mostrar separado" e "mencionável", e a árvore devolve os dois', function (): void {
+    fakeSfu();
+    $owner = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    $role = $server->roles()->create(['name' => 'Moderação', 'position' => 1, 'permissions' => 0]);
+
+    $this->actingAs($owner, 'sanctum')->patchJson("/api/roles/{$role->id}", ['hoist' => true, 'mentionable' => true])
+        ->assertOk()
+        ->assertJsonPath('data.hoist', true)
+        ->assertJsonPath('data.mentionable', true);
+
+    $this->actingAs($owner, 'sanctum')->getJson("/api/servers/{$server->id}")
+        ->assertOk()
+        ->assertJsonPath('data.roles.1.hoist', true)
+        ->assertJsonPath('data.roles.0.hoist', false);
+});
+
+it('cada pessoa cria o seu convite, com validade e limite de usos, e ele entra no servidor', function (): void {
+    Http::fake();
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $guest = User::factory()->create();
+    $late = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    $channel = $server->channels()->where('type', 'text')->firstOrFail();
+    joinServer($server, $member);
+
+    $code = $this->actingAs($member, 'sanctum')->postJson("/api/servers/{$server->id}/invites", ['channel_id' => $channel->id, 'max_uses' => 1])
+        ->assertCreated()
+        ->assertJsonPath('data.uses', 0)
+        ->assertJsonPath('data.max_uses', 1)
+        ->assertJsonPath('data.channel.id', $channel->id)
+        ->assertJsonPath('data.creator.id', $member->id)
+        ->assertJsonPath('data.expires_at', fn (?string $at): bool => ! is_null($at))
+        ->json('data.code');
+
+    expect($code)->toMatch('/^[A-Za-z0-9]{8}$/');
+
+    $this->actingAs($guest, 'sanctum')->postJson("/api/invites/{$code}")->assertOk()->assertJsonPath('data.id', $server->id);
+    $this->actingAs($late, 'sanctum')->postJson("/api/invites/{$code}")->assertNotFound();
+
+    $this->actingAs($member, 'sanctum')->getJson("/api/servers/{$server->id}/invites")->assertForbidden();
+    $this->actingAs($owner, 'sanctum')->getJson("/api/servers/{$server->id}/invites")->assertOk()->assertJsonCount(0, 'data');
+
+    $this->actingAs($member, 'sanctum')->postJson("/api/servers/{$server->id}/invites", ['max_age' => 0])
+        ->assertCreated()
+        ->assertJsonPath('data.expires_at', null)
+        ->assertJsonPath('data.max_uses', null);
+    $this->actingAs($member, 'sanctum')->postJson("/api/servers/{$server->id}/invites", ['max_age' => 5])->assertUnprocessable();
+    $this->actingAs($member, 'sanctum')->postJson("/api/servers/{$server->id}/invites", ['channel_id' => str_repeat('0', 26)])->assertUnprocessable();
+});
+
+it('mostra a prévia autenticada de convite válido e não revela convites inválidos', function (): void {
+    $owner = User::factory()->create();
+    $guest = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa da Ada');
+    $invite = $server->createInvite($owner, null, 604800, 0);
+
+    $this->actingAs($guest, 'sanctum')->getJson("/api/invites/{$invite->code}")
+        ->assertOk()
+        ->assertJsonPath('data.server.id', $server->id)
+        ->assertJsonPath('data.server.name', 'Casa da Ada')
+        ->assertJsonPath('data.members', 1)
+        ->assertJsonPath('data.inviter', $owner->name);
+
+    $this->actingAs($guest, 'sanctum')->getJson('/api/invites/naoexiste')->assertNotFound();
+
+    $spent = $server->createInvite($owner, null, 1800, 0);
+    $this->travel(31)->minutes();
+    $this->actingAs($guest, 'sanctum')->getJson("/api/invites/{$spent->code}")->assertNotFound();
+
+    $server->pauseInvites($owner, true);
+    $this->actingAs($guest, 'sanctum')->getJson("/api/invites/{$invite->code}")->assertNotFound();
+});
+
+it('quem gerencia o servidor pausa e revoga convites, e o código antigo segue valendo', function (): void {
+    Http::fake();
+    fakeSfu();
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $guest = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+
+    $invite = $server->createInvite($member, null, 0, 0);
+
+    $this->actingAs($member, 'sanctum')->postJson("/api/servers/{$server->id}/invites/pause")->assertForbidden();
+    $this->actingAs($owner, 'sanctum')->postJson("/api/servers/{$server->id}/invites/pause")->assertNoContent();
+    $this->actingAs($owner, 'sanctum')->getJson("/api/servers/{$server->id}")->assertOk()->assertJsonPath('data.invites_paused', true);
+    $this->actingAs($guest, 'sanctum')->postJson("/api/invites/{$invite->code}")->assertForbidden();
+    $this->actingAs($guest, 'sanctum')->postJson("/api/invites/{$server->invite_code}")->assertForbidden();
+    $this->actingAs($member, 'sanctum')->postJson("/api/servers/{$server->id}/invites")->assertForbidden();
+
+    $this->actingAs($owner, 'sanctum')->deleteJson("/api/servers/{$server->id}/invites/pause")->assertNoContent();
+    $this->actingAs($guest, 'sanctum')->postJson("/api/invites/{$server->invite_code}")->assertOk();
+
+    $this->actingAs($guest, 'sanctum')->deleteJson("/api/invites/{$invite->id}")->assertForbidden();
+    $this->actingAs($member, 'sanctum')->deleteJson("/api/invites/{$invite->id}")->assertNoContent();
+
+    expect($server->invites()->count())->toBe(0);
+});
+
+it('o membro na árvore leva o cartão de perfil: bio, pronomes, faixa, status e as datas', function (): void {
+    fakeSfu();
+    $owner = User::factory()->create(['bio' => 'Dono da casa', 'pronouns' => 'ele/dele', 'banner_color' => '#112233', 'custom_status' => 'online']);
+    $server = Server::createFor($owner, 'Casa');
+
+    $this->actingAs($owner, 'sanctum')->getJson("/api/servers/{$server->id}")
+        ->assertOk()
+        ->assertJsonPath('data.members.0.bio', 'Dono da casa')
+        ->assertJsonPath('data.members.0.pronouns', 'ele/dele')
+        ->assertJsonPath('data.members.0.banner_color', '#112233')
+        ->assertJsonPath('data.members.0.custom_status', 'online')
+        ->assertJsonPath('data.members.0.member_since', fn (?string $at): bool => ! is_null($at))
+        ->assertJsonPath('data.members.0.joined_at', fn (?string $at): bool => ! is_null($at));
+});
+
+it('os sons do servidor: membro lista e toca, só GERENCIAR EXPRESSÕES envia e apaga, até 8', function (): void {
+    Http::fake();
+    $commands = fakeS3Client();
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $stranger = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+    joinServer($server, $member);
+    $sound = fn (string $name = 'risada'): array => ['sound' => UploadedFile::fake()->create('som.mp3', 40, 'audio/mpeg'), 'name' => $name, 'emoji' => '😂'];
+
+    $this->actingAs($member, 'sanctum')->postJson("/api/servers/{$server->id}/sounds", $sound())->assertForbidden();
+
+    $this->actingAs($owner, 'sanctum')->postJson("/api/servers/{$server->id}/sounds", $sound())
+        ->assertCreated()
+        ->assertJsonPath('data.name', 'risada')
+        ->assertJsonPath('data.emoji', '😂')
+        ->assertJsonPath('data.volume', 100)
+        ->assertJsonPath('data.url', fn (string $url): bool => $url !== '');
+
+    expect($server->sounds()->firstOrFail()->path)->toStartWith("sounds/{$server->id}/")
+        ->and($commands->getArrayCopy())->toContain('PutObject');
+
+    $this->actingAs($member, 'sanctum')->getJson("/api/servers/{$server->id}/sounds")->assertOk()->assertJsonCount(1, 'data');
+    $this->actingAs($stranger, 'sanctum')->getJson("/api/servers/{$server->id}/sounds")->assertForbidden();
+
+    giveRole($server, $member, PermissionEnum::ManageExpressions->value);
+
+    foreach (range(2, Server::MOST_SOUNDS) as $index) {
+        $this->actingAs($member, 'sanctum')->postJson("/api/servers/{$server->id}/sounds", $sound("som {$index}"))->assertCreated();
+    }
+
+    $this->actingAs($member, 'sanctum')->postJson("/api/servers/{$server->id}/sounds", $sound('demais'))
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['sound']);
+
+    $first = $server->sounds()->orderBy('id')->firstOrFail();
+
+    $this->actingAs($stranger, 'sanctum')->deleteJson("/api/sounds/{$first->id}")->assertForbidden();
+    $this->actingAs($member, 'sanctum')->deleteJson("/api/sounds/{$first->id}")->assertNoContent();
+
+    expect($server->sounds()->count())->toBe(Server::MOST_SOUNDS - 1)
+        ->and($commands->getArrayCopy())->toContain('DeleteObject');
+});
+
+it('só som de até 512 KB em mp3, ogg ou wav entra, com nome', function (): void {
+    Http::fake();
+    fakeS3Client();
+    $owner = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa');
+
+    $this->actingAs($owner, 'sanctum')
+        ->postJson("/api/servers/{$server->id}/sounds", ['sound' => UploadedFile::fake()->create('livro.pdf', 10, 'application/pdf'), 'name' => 'livro'])
+        ->assertUnprocessable();
+    $this->actingAs($owner, 'sanctum')
+        ->postJson("/api/servers/{$server->id}/sounds", ['sound' => UploadedFile::fake()->create('longo.mp3', 600, 'audio/mpeg'), 'name' => 'longo'])
+        ->assertUnprocessable();
+    $this->actingAs($owner, 'sanctum')
+        ->postJson("/api/servers/{$server->id}/sounds", ['sound' => UploadedFile::fake()->create('sem-nome.ogg', 10, 'audio/ogg')])
+        ->assertUnprocessable();
+    $this->actingAs($owner, 'sanctum')
+        ->postJson("/api/servers/{$server->id}/sounds", ['sound' => UploadedFile::fake()->create('ok.wav', 10, 'audio/wav'), 'name' => 'ok'])
+        ->assertCreated()
+        ->assertJsonPath('data.emoji', null);
+});
+
 it('ensurdecer no servidor exige DEAFEN_MEMBERS, respeita a hierarquia e nunca chama o SFU', function (): void {
     Http::fake();
     $owner = User::factory()->create();
@@ -715,4 +897,30 @@ it('categoria agrupa canais: só texto e voz entram nela, e apagá-la devolve os
 
     expect($text->refresh()->parent_id)->toBeNull()
         ->and($server->channels()->count())->toBe(3);
+});
+
+it('a página do link de convite mostra o servidor a quem recebeu, e o convite inválido não revela nada', function (): void {
+    Http::fake();
+    $owner = User::factory()->create(['name' => 'Ana']);
+    $member = User::factory()->create(['name' => 'Bia']);
+    $guest = User::factory()->create();
+    $server = Server::createFor($owner, 'Casa da Ana');
+    joinServer($server, $member);
+
+    $this->get(route('invite.show', $server->invite_code))->assertOk()->assertSee('Casa da Ana')->assertSee('2 membros');
+
+    $code = $this->actingAs($member, 'sanctum')->postJson("/api/servers/{$server->id}/invites", ['max_uses' => 1])
+        ->assertCreated()
+        ->json('data.code');
+
+    $this->get(route('invite.show', $code))->assertOk()->assertSee('Bia convidou você para entrar em')->assertSee('Casa da Ana');
+
+    $this->actingAs($guest, 'sanctum')->postJson("/api/invites/{$code}")->assertOk();
+
+    $this->get(route('invite.show', $code))->assertOk()->assertSee('Esse convite venceu')->assertDontSee('Casa da Ana');
+    $this->get(route('invite.show', 'naoexiste'))->assertOk()->assertSee('Esse convite não existe')->assertDontSee('Casa da Ana');
+
+    $this->actingAs($owner, 'sanctum')->postJson("/api/servers/{$server->id}/invites/pause")->assertNoContent();
+
+    $this->get(route('invite.show', $server->invite_code))->assertOk()->assertSee('pausados')->assertDontSee('Casa da Ana');
 });

@@ -31,6 +31,10 @@ pub enum Failure {
     ServerBroke,
     /// Passou do limite de tentativas; esperar um pouco resolve.
     TooFast,
+    /// A chamada não conseguiu estabelecer ou validar sua cifra ponta a ponta. A interface
+    /// mostra só este motivo estável; o detalhe MLS fica no log local.
+    #[serde(rename = "encryption")]
+    E2ee,
 }
 
 impl Failure {
@@ -116,6 +120,7 @@ mod tests {
             Failure::NotAllowed,
             Failure::Unreachable,
             Failure::ServerBroke,
+            Failure::E2ee,
         ] {
             let json = serde_json::to_string(&failure).expect("serialize");
 

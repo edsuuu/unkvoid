@@ -1,5 +1,0 @@
-module UnkvoidCore {
-    header "include/unkvoid_core.h"
-    link "core_app"
-    export *
-}

@@ -5,16 +5,19 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api;
 
 use App\Http\Requests\Api\Auth\StoreAvatarRequest;
+use App\Http\Requests\Api\Auth\StoreEmailRequest;
 use App\Http\Requests\Api\Auth\UpdateMeRequest;
 use App\Http\Resources\Api\UserResource;
 use App\Models\User;
 use App\Services\Storage\BucketService;
 use Illuminate\Container\Attributes\CurrentUser;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 
 /**
- * A conta de quem está logado: o apelido e a foto de perfil.
+ * A conta de quem está logado: o apelido, o perfil, a foto e o e-mail e senha de quem entrou só
+ * com o nome.
  */
 final class MeController
 {
@@ -28,7 +31,34 @@ final class MeController
      */
     public function update(UpdateMeRequest $request, #[CurrentUser] User $user): UserResource
     {
-        $user->changeNickname($request->string('name')->toString());
+        if ($request->has('name')) {
+            $user->changeNickname($request->string('name')->toString());
+        }
+
+        if ($request->has('status')) {
+            $minutes = is_null($request->input('status_minutes')) ? null : $request->integer('status_minutes');
+            $user->changeStatus($request->string('status')->toString(), $minutes);
+        }
+
+        /** @var array{bio?: ?string, pronouns?: ?string, banner_color?: ?string, custom_status?: ?string} $profile */
+        $profile = $request->safe()->only(['bio', 'pronouns', 'banner_color', 'custom_status']);
+
+        $user->changeProfile($profile);
+
+        return new UserResource($user);
+    }
+
+    /**
+     * O e-mail para a conta que nasceu com o nome. Uma vez só: quem já tem e-mail de verdade
+     * troca pelo site, com a senha de antes.
+     *
+     * @throws Throwable
+     */
+    public function storeEmail(StoreEmailRequest $request, #[CurrentUser] User $user): UserResource
+    {
+        throw_unless($user->hasPlaceholderEmail(), ValidationException::withMessages(['email' => 'Esta conta já tem e-mail.']));
+
+        $user->addEmail(mb_strtolower(mb_trim($request->string('email')->toString())));
 
         return new UserResource($user);
     }

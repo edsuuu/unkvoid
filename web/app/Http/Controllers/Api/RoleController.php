@@ -36,7 +36,7 @@ final class RoleController
      */
     public function update(UpdateRoleRequest $request, ServerRole $role, #[CurrentUser] User $user): RoleResource
     {
-        /** @var array{name?: string, color?: ?string, permissions?: int, position?: int} $changes */
+        /** @var array{name?: string, color?: ?string, permissions?: int, position?: int, hoist?: bool, mentionable?: bool} $changes */
         $changes = $request->validated();
 
         $role->change($user, $changes);

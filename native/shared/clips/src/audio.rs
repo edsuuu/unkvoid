@@ -567,7 +567,7 @@ pub struct Microphone {
 }
 
 /// Os microfones ligados agora, como o Windows os lista. Copiado de
-/// `unkvoid/native/apps/windows/src/devices.rs`. Sem WASAPI a lista sai vazia: é uma máquina
+/// `unkvoid/native/apps/unkvoid/src/devices.rs`. Sem WASAPI a lista sai vazia: é uma máquina
 /// onde a escolha não existe, não uma falha.
 pub fn microphones() -> Vec<Microphone> {
     use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;

@@ -1,17 +1,21 @@
 //! Entrar com o Google num app que não é navegador.
 //!
-//! O app abre uma porta em `127.0.0.1`, manda a pessoa ao navegador com a porta e um `state`
-//! sorteado (`GET /oauth2/app`), e o Laravel, depois do Google, devolve o navegador para essa
-//! porta com o token do Sanctum. O `state` de volta tem de ser o que saiu: sem isso qualquer
-//! página aberta na máquina entregaria um token ao app.
+//! O app abre uma porta em `127.0.0.1`, manda a pessoa ao navegador com a porta, um `state`
+//! sorteado e o challenge S256 (`GET /oauth2/app`). O callback devolve apenas um código à porta;
+//! o app o troca por tokens no corpo de um POST usando o verifier que não saiu do processo.
+//! O `state` de volta tem de ser o que saiu: sem isso qualquer página aberta na máquina poderia
+//! tentar completar o login local.
 //!
-//! É o caminho da porta, e não o do esquema `unkvoid://`, porque funciona igual nos três
+//! É o caminho da porta, e não o de um esquema `unkvoid://`, porque funciona igual nos três
 //! sistemas e não depende de o app estar instalado e registrado.
 
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::Rng;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -28,6 +32,8 @@ const DONE: &str = "<!doctype html><meta charset=utf-8><title>Unkvoid</title>\
 pub struct GoogleLogin {
     listener: TcpListener,
     state: String,
+    verifier: String,
+    server: String,
     /// O endereço que a interface abre no navegador da pessoa.
     pub url: String,
 }
@@ -39,14 +45,18 @@ impl GoogleLogin {
         let state: String = (0..32)
             .map(|_| format!("{:x}", rand::thread_rng().gen_range(0..16)))
             .collect();
+        let verifier = URL_SAFE_NO_PAD.encode(rand::thread_rng().r#gen::<[u8; 32]>());
+        let challenge = code_challenge(&verifier);
+        let server = server.trim_end_matches('/').to_owned();
         let url = format!(
-            "{}/oauth2/app?port={port}&state={state}&refresh=1",
-            server.trim_end_matches('/')
+            "{server}/oauth2/app?port={port}&state={state}&refresh=1&code_challenge={challenge}&code_challenge_method=S256"
         );
 
         Ok(Self {
             listener,
             state,
+            verifier,
+            server,
             url,
         })
     }
@@ -59,15 +69,30 @@ impl GoogleLogin {
                 let (mut browser, _) = self.listener.accept().await?;
                 let mut request = [0_u8; 4096];
                 let size = browser.read(&mut request).await.unwrap_or(0);
-                let token = token_of(&String::from_utf8_lossy(&request[..size]), &self.state);
+                let request = String::from_utf8_lossy(&request[..size]);
+                let mut exchange_failed = false;
+                let credentials = if let Some(code) = code_of(&request, &self.state) {
+                    match self.exchange(&code).await {
+                        Ok(credentials) => Some(credentials),
+                        Err(_) => {
+                            exchange_failed = true;
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
 
-                let (status, body) = if token.is_some() { ("200 OK", DONE) } else { ("400 Bad Request", "") };
+                let (status, body) = if credentials.is_some() { ("200 OK", DONE) } else { ("400 Bad Request", "") };
                 let reply = format!("HTTP/1.1 {status}\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
 
                 let _ = browser.write_all(reply.as_bytes()).await;
 
-                if let Some(token) = token {
-                    return Ok(token);
+                if let Some(credentials) = credentials {
+                    return Ok(credentials);
+                }
+                if exchange_failed {
+                    return Err(anyhow!("o login do Google não foi concluído"));
                 }
             }
         })
@@ -76,33 +101,56 @@ impl GoogleLogin {
     }
 }
 
-/// O token da primeira linha do pedido (`GET /?token=…&refresh_token=…&state=… HTTP/1.1`),
-/// com o de renovação quando o site o manda, se o `state` bate.
-fn token_of(request: &str, expected: &str) -> Option<(String, Option<String>)> {
-    let query = request
-        .lines()
-        .next()?
-        .split_whitespace()
-        .nth(1)?
-        .split_once('?')?
-        .1;
-    let field = |name: &str| {
+impl GoogleLogin {
+    async fn exchange(&self, code: &str) -> Result<(String, Option<String>)> {
+        let answer = reqwest::Client::new()
+            .post(format!("{}/api/auth/app/exchange", self.server))
+            .timeout(Duration::from_secs(10))
+            .json(&serde_json::json!({ "code": code, "code_verifier": self.verifier }))
+            .send()
+            .await
+            .map_err(|_| anyhow!("o código de entrada não foi aceito"))?;
+        if !answer.status().is_success() {
+            return Err(anyhow!("o código de entrada não foi aceito"));
+        }
+        let body: serde_json::Value = answer
+            .json()
+            .await
+            .map_err(|_| anyhow!("a resposta do login não pôde ser lida"))?;
+        let token = body["data"]["token"]
+            .as_str()
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| anyhow!("a resposta do login não trouxe a sessão"))?
+            .to_owned();
+        let refresh = body["data"]["refresh_token"].as_str().map(str::to_owned);
+
+        Ok((token, refresh))
+    }
+}
+
+pub fn code_challenge(verifier: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+fn code_of(request: &str, expected: &str) -> Option<String> {
+    let target = request.lines().next()?.split_whitespace().nth(1)?;
+    let query = target.split_once('?')?.1;
+    let value = |name: &str| {
         query
             .split('&')
             .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
     };
 
-    if field("state")? != expected {
+    if value("state")? != expected {
         return None;
     }
 
-    let token = decode(field("token")?);
-    let refresh = field("refresh_token").map(decode).filter(|refresh| !refresh.is_empty());
+    let code = decode(value("code")?);
 
-    (!token.is_empty()).then_some((token, refresh))
+    (!code.is_empty()).then_some(code)
 }
 
-/// O token do Sanctum vem com `|`, que o Laravel manda como `%7C`.
+/// O código gerado pelo Laravel usa caracteres seguros; a decodificação também aceita escape URL.
 fn decode(text: &str) -> String {
     let mut bytes = Vec::with_capacity(text.len());
     let mut rest = text.as_bytes();
@@ -135,35 +183,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_token_is_read_only_when_the_state_matches() {
-        let request = "GET /?token=12%7Cabc&state=f00d HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+    fn only_a_code_with_the_matching_state_is_accepted() {
+        let request = "GET /?code=12_abc&state=f00d HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
 
-        assert_eq!(token_of(request, "f00d"), Some(("12|abc".to_owned(), None)));
+        assert_eq!(code_of(request, "f00d"), Some("12_abc".to_owned()));
         assert_eq!(
-            token_of("GET /?token=12%7Cabc&refresh_token=13%7Cdef&state=f00d HTTP/1.1\r\n\r\n", "f00d"),
-            Some(("12|abc".to_owned(), Some("13|def".to_owned()))),
-            "o de renovação vem junto quando o site o manda"
+            code_of("GET /?code=abc&state=beef HTTP/1.1\r\n\r\n", "f00d"),
+            None
         );
+        assert_eq!(code_of("GET /favicon.ico HTTP/1.1\r\n\r\n", "f00d"), None);
         assert_eq!(
-            token_of(request, "beef"),
-            None,
-            "o state de outra pessoa não entrega token"
-        );
-        assert_eq!(token_of("GET /favicon.ico HTTP/1.1\r\n\r\n", "f00d"), None);
-        assert_eq!(
-            token_of("GET /?state=f00d&token= HTTP/1.1\r\n\r\n", "f00d"),
-            None,
-            "token vazio não é token"
+            code_of("GET /?state=f00d&token=plain HTTP/1.1\r\n\r\n", "f00d"),
+            None
         );
     }
 
+    #[test]
+    fn creates_the_rfc_7636_appendix_b_challenge() {
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+        assert_eq!(
+            code_challenge(verifier),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn reads_only_a_code_with_the_matching_state() {
+        assert_eq!(
+            code_of("GET /?code=abc_123&state=f00d HTTP/1.1", "f00d"),
+            Some("abc_123".to_owned())
+        );
+        assert_eq!(code_of("GET /?code=abc&state=beef HTTP/1.1", "f00d"), None);
+    }
+
     #[tokio::test]
-    async fn the_browser_coming_back_hands_the_token_over() {
+    async fn the_login_url_carries_only_the_public_pkce_challenge() {
         let login = GoogleLogin::start("http://127.0.0.1:8000/")
             .await
             .expect("start");
-        let port = login.listener.local_addr().expect("address").port();
-        let state = login.state.clone();
 
         assert!(
             login
@@ -172,26 +230,10 @@ mod tests {
             "{}",
             login.url
         );
-
-        let waiting = tokio::spawn(login.wait());
-
-        for path in [
-            "/?token=wrong&state=0000".to_owned(),
-            format!("/?token=9%7Cxyz&state={state}"),
-        ] {
-            let mut browser = tokio::net::TcpStream::connect(("127.0.0.1", port))
-                .await
-                .expect("connect");
-
-            browser
-                .write_all(format!("GET {path} HTTP/1.1\r\n\r\n").as_bytes())
-                .await
-                .expect("request");
-
-            let mut answer = String::new();
-            let _ = browser.read_to_string(&mut answer).await;
-        }
-
-        assert_eq!(waiting.await.expect("join").expect("token"), ("9|xyz".to_owned(), None));
+        assert!(login.url.contains("code_challenge_method=S256"));
+        assert!(login.url.contains(&format!(
+            "code_challenge={}",
+            code_challenge(&login.verifier)
+        )));
     }
 }

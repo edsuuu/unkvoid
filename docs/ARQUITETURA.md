@@ -43,8 +43,8 @@ A sala por código é produto, não legado: mexer num modo não degrada o outro.
  ┌──────────────────────────────────────────────────────┐
  │ App Unkvoid (native/)                                │
  │                                                      │
- │  Interface nativa: Slint · GTK4 · SwiftUI            │
- │            ▲  crate (Windows, Linux) / ABI C (macOS) │
+ │  Interface nativa única                              │
+ │            ▲ crate                                  │
  │            │                         ▼               │
  │  Núcleo em Rust (shared/core)                        │
  │    regras, sessão, captura, encoder, RTP/SRTP        │
@@ -72,7 +72,7 @@ A sala por código é produto, não legado: mexer num modo não degrada o outro.
 
 | Pasta | Para que serve | Tecnologia | Roda em | Dona de | Nunca faz |
 |---|---|---|---|---|---|
-| `native/` | tudo o que acontece na máquina de quem usa: capturar, comprimir, mandar, receber e mostrar | núcleo em Rust; interface nativa por sistema (Slint, GTK4, SwiftUI) | Windows, Linux, macOS | interface, captura, encoder, mídia local | decidir permissão: só esconde botão |
+| `native/` | tudo o que acontece na máquina de quem usa: capturar, comprimir, mandar, receber e mostrar | núcleo e app único em Rust | Windows e Linux | interface, captura, encoder, mídia local | decidir permissão: só esconde botão |
 | `sfu/` | relé de mídia: recebe cada transmissão uma vez e replica para quem assiste | Node 22 + mediasoup | VPS | salas, pessoas conectadas, producers, consumers, a mídia | decidir permissão: só confere a assinatura |
 | `web/` | site, contas e tudo que precisa de banco | Laravel 13, Livewire 4, Flux, Sanctum | VPS | conta, servidor, cargo, canal, membro, mensagem, auditoria, versões do app | tocar em mídia |
 
@@ -81,7 +81,7 @@ Fora das três:
 | Pasta | O que tem |
 |---|---|
 | `infra/` | nginx, `docker-compose.yml` (MySQL, MinIO, e-mail), sysctl de UDP, `deploy-web.sh`, instalação do runner |
-| `.github/workflows/` | deploy do site e do SFU (pausados: só disparo à mão) e os builds do Tauri de antes (`release.yml`, `build-linux.yml`), que não se usam mais |
+| `.github/workflows/` | deploy do site e do SFU (pausados: só disparo à mão) e os builds pausados do app único (`release.yml`, `build-linux.yml`) |
 
 ## `native/`: o app
 
@@ -89,37 +89,15 @@ O **núcleo** (`shared/core`) é Rust e decide tudo; a **interface** desenha e n
 o que é de cada sistema e o que fica no disco: [APP-NATIVO.md](APP-NATIVO.md).
 
 ```
-    Rust (Windows, Slint)  ───┐
-    Rust (Linux, GTK)      ───┼──► shared/core ──► capture · media · SFU · Laravel
-    Swift (macOS)  ──► ABI C ─┘
+    Rust (app único, caminho temporário apps/unkvoid) ───► shared/core ──► capture · media · SFU · Laravel
 ```
 
 **A regra que sustenta o desenho:** regra de negócio não mora em pasta de sistema. O teste é
 direto: "o Windows vai precisar disto igual?" Se sim, sobe para o `core`.
 
 **Por que interface nativa, e não uma webview** (decisão do dono, 20/09/2026): o app roda ao lado
-de um jogo, e uma webview carrega um motor de browser inteiro para desenhar botão — e são três
-motores diferentes (WebView2, WKWebView, WebKitGTK), o do Linux sem WebRTC. O preço é escrever a
-tela três vezes; a lógica, que é o grosso, é escrita uma vez. O app Tauri + React de antes
-(`native/apps/desktop`) continua no repositório como referência de comportamento.
-
-### A ponte para o Swift
-
-Uma ABI C pequena, em `shared/core/src/ffi.rs` — as ações, uma por uma, estão no
-[CONTRATO.md](CONTRATO.md). **Só o macOS passa por ela.**
-
-| Função | O quê |
-|---|---|
-| `unkvoid_core_new` / `unkvoid_core_free` | cria e libera o núcleo |
-| `unkvoid_connect` | abre o socket do SFU |
-| `unkvoid_call` | uma ação do SFU. **Bloqueia** até a resposta — nunca na thread que desenha |
-| `unkvoid_app` | as decisões do app: tela, sala, voz, compartilhar, conta, servidores, mensagens. Também bloqueia no que fala com o servidor |
-| `unkvoid_next_event` | o próximo aviso da fila (sala, chat, presença), sem bloquear |
-| `unkvoid_next_media` | o próximo quadro H.264 ou bloco de som do que se assiste, para uma thread só da interface |
-| `unkvoid_speak` / `unkvoid_show` | o microfone e a câmera que a interface captura, entrando no núcleo (PCM; `IOSurface`, sem cópia) |
-| `unkvoid_string_free` / `unkvoid_bytes_free` | devolvem o que o núcleo alocou — uma vez só |
-
-O `Handle` é seguro para uso concorrente: tudo atrás de `Mutex`, e as funções tomam `&`.
+de um jogo, e uma webview carrega um motor de browser inteiro para desenhar botão. A interface
+única fala com o núcleo direto, sem uma webview entre os dois.
 
 **Erro que chega à tela nunca carrega caminho, endereço nem código de status.** O núcleo devolve
 um motivo (`unreachable`, `signedOut`, `notAllowed`, `gone`, `invalid`, `serverBroke`, `tooFast`,
@@ -143,7 +121,6 @@ O Node não vê um único pacote de vídeo. Por que o SFU é Node: [DECISOES.md]
 | producer | uma origem que alguém manda: `screen`, `screenAudio`, `mic` ou `camera` |
 | consumer | a cópia de um producer indo para uma pessoa; nasce pausado |
 | transporte plain | RTP puro com SRTP: é por ele que o app nativo manda e recebe. Um por sentido por pessoa, a partir da porta 41000. O `comedia` aprende o endereço de quem manda pelo primeiro pacote (ninguém abre porta em casa); chave nova troca o transporte, e é assim que o app refaz o caminho quando o endereço muda |
-| transporte WebRTC | o do app Tauri de antes. Uma porta por worker a partir de 40000, UDP com TCP de reserva |
 
 As pastas, as rotas e as variáveis de ambiente: [`sfu/README.md`](../sfu/README.md).
 
@@ -191,7 +168,7 @@ aparece. A regra completa está no [CONTRATO.md](CONTRATO.md#permissões-bits-ub
 
 | De → para | Por onde | Quem prova quem é | Para quê |
 |---|---|---|---|
-| interface → núcleo | chamada direta (Windows, Linux) ou ABI C (macOS) | mesmo processo | tudo |
+| interface → núcleo | chamada direta | mesmo processo | tudo |
 | app → Laravel | HTTPS, JSON | `Authorization: Bearer` do Sanctum | tudo do modo servidor |
 | app → SFU | WSS em `/sfu` | token HMAC de 60 s assinado pelo Laravel, ou nenhum (sala por código) | sinalização |
 | app → SFU | WSS, o mesmo socket | `identify` com o token de `POST /api/sfu/session`, e `subscribe` por canal | chat, presença e versão nova em tempo real |
@@ -311,7 +288,7 @@ token do Sanctum. O `state` de volta tem de ser o que saiu (`shared/core/src/goo
   pela Microsoft Store atualiza pela Store.
 - Linux: o `.deb` no repositório APT, assinado com GPG. Quem atualiza é o `apt`.
 - Publicar é a partir da máquina de quem publica (o instalador no Windows, o `.deb` num Debian 12
-  em contêiner), pelo `publish-release.sh` e pelo `apt-publish.sh`.
+  em contêiner), por `native/release/publish-release.sh` e `native/release/apt-publish.sh`.
 
 As duas chaves e o passo a passo: [AUTO-UPDATE.md](AUTO-UPDATE.md).
 
@@ -335,7 +312,6 @@ Portas que o firewall do painel precisa abrir:
 |---|---|---|
 | 80, 443 | TCP | site, API, WebSockets |
 | 41000-42000 | UDP | RTP puro: quem transmite e quem assiste |
-| 40000 até 40000 + workers − 1 | UDP e TCP | o WebRTC do app Tauri de antes (uma por worker) |
 
 Porta fechada não dá erro: a transmissão "funciona" e ninguém vê nada. Por que a faixa é larga:
 [UDP.md](UDP.md). A máquina e as medições: [SERVIDOR.md](SERVIDOR.md). Levantar do zero:

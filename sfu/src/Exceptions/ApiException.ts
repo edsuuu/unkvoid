@@ -14,6 +14,18 @@ export class ValidationException extends ApiException {
     }
 }
 
+export class ConflictException extends ApiException {
+    public constructor(message = 'the requested state conflicts with the current room') {
+        super(message, 409);
+    }
+}
+
+export class TooManyRequestsException extends ApiException {
+    public constructor(message = 'too many requests') {
+        super(message, 429);
+    }
+}
+
 export class UnauthorizedException extends ApiException {
     public constructor(message = 'not authenticated') {
         super(message, 401);

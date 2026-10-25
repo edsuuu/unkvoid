@@ -158,6 +158,9 @@ it('o webhook do SFU abre e fecha o acesso e retransmite o estado da voz', funct
     expect(ChannelAccess::query()->whereNull('left_at')->count())->toBe(0);
 
     Event::assertDispatched(VoiceStateUpdated::class, fn (VoiceStateUpdated $event): bool => $event->event === 'left');
+
+    $invalidSubject = [...$joined, 'sub' => 'account:1', 'at' => time() + 270];
+    $this->withHeaders(sfuHeaders($invalidSubject))->postJson('/api/sfu/events', $invalidSubject)->assertUnprocessable();
 });
 
 it('quem foi expulso ou banido e entra com um token antigo é derrubado da voz na hora', function (): void {

@@ -14,8 +14,17 @@ use Illuminate\Support\Facades\Route;
 Route::get('/health', fn (): array => ['ok' => true])->name('health');
 
 Route::view('/', 'home.index')->name('home');
+Route::view('/documentacao', 'documentation.index')->name('documentation.index');
+Route::view('/documentacao/{section}/{page}', 'documentation.show')
+    ->whereIn('section', array_keys(config()->array('documentation.sections')))
+    ->name('documentation.show');
 Route::view('/privacidade', 'legal.privacy')->name('privacy');
 Route::view('/termos', 'legal.terms')->name('terms');
+// O link que o app copia: quem não tem o app cai aqui, vê para onde foi chamado e baixa.
+Route::view('/convite/{code}', 'invite.show')
+    ->where('code', '[A-Za-z0-9-]{1,64}')
+    ->middleware('throttle:30,1')
+    ->name('invite.show');
 
 Route::prefix('downloads')->name('downloads.')->group(function (): void {
     Route::get('/latest.json', [DownloadController::class, 'manifest'])->name('manifest');

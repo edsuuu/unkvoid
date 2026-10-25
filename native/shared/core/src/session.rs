@@ -145,6 +145,7 @@ impl Roster {
         let producer_id = data["producerId"].as_str().unwrap_or_default().to_owned();
         let kind = data["kind"].as_str().unwrap_or_default().to_owned();
         let source = data["source"].as_str().unwrap_or_default().to_owned();
+        let e2ee_member_id = data["e2eeMemberId"].as_str().map(str::to_owned);
         let Some(peer) = self.find(peer_id) else {
             return false;
         };
@@ -162,6 +163,7 @@ impl Roster {
             kind,
             source,
             paused: false,
+            e2ee_member_id,
         });
 
         true
@@ -182,6 +184,11 @@ struct State {
     resumed: bool,
     /// Quando a sala começou, no relógio desta máquina.
     started: Option<Instant>,
+    /// A conta autenticada, devolvida pelo SFU junto com o `peerId`; o token nunca é usado como
+    /// credencial MLS e não sai da memória da sessão.
+    user_id: String,
+    /// Id aleatório da instância viva da Room, para o group id MLS não sobreviver a uma sala vazia.
+    e2ee_session_id: String,
 }
 
 /// Uma sala aberta: o socket, a lista de quem está e o que esta sessão pode fazer.
@@ -248,6 +255,8 @@ impl Session {
         state.can = joined.can.clone();
         state.resumed = joined.resumed;
         state.started = started_from(joined.elapsed_ms, Instant::now());
+        state.user_id = joined.user_id.clone();
+        state.e2ee_session_id = joined.e2ee_session_id.clone();
         state.roster.reset(&joined);
 
         Ok(joined)
@@ -405,6 +414,23 @@ impl Session {
 
     pub fn resume_key(&self) -> Option<String> {
         self.state().resume_key.clone()
+    }
+
+    /// A identidade de conta que o SFU autenticou no `join`, para a BasicCredential MLS.
+    pub fn user_id(&self) -> String {
+        self.state().user_id.clone()
+    }
+
+    /// A sessão viva da Room da qual o identificador MLS é derivado.
+    pub fn e2ee_session_id(&self) -> String {
+        self.state().e2ee_session_id.clone()
+    }
+
+    pub fn own_peer_id(&self) -> Option<String> {
+        self.peers()
+            .into_iter()
+            .find(|peer| peer.self_peer)
+            .map(|peer| peer.peer_id)
     }
 
     /// Quando a sala começou, desde a primeira pessoa: é daí que o relógio da barra conta.

@@ -48,7 +48,11 @@ export class ProducerController {
             kind: request.kind(),
             rtpParameters: request.rtpParameters(),
             keyFrameRequestDelay: KEYFRAME_REQUEST_DELAY_MS,
-            appData: { plain: true },
+            appData: {
+                plain: true,
+                source: request.source(),
+                ...(request.e2eeMemberId() ? { e2eeMemberId: request.e2eeMemberId() } : {}),
+            },
         });
 
         await this.announce(peer, room, producer, request.source());
@@ -58,6 +62,9 @@ export class ProducerController {
             kind: producer.kind,
             source: request.source(),
             paused: producer.paused,
+            ...(typeof producer.appData.e2eeMemberId === 'string'
+                ? { e2eeMemberId: producer.appData.e2eeMemberId }
+                : {}),
             ip: transport.tuple.localAddress,
             port: transport.tuple.localPort,
             srtpParameters: transport.srtpParameters,
@@ -132,6 +139,9 @@ export class ProducerController {
                 producerId: producer.id,
                 kind: producer.kind,
                 source,
+                ...(typeof producer.appData.e2eeMemberId === 'string'
+                    ? { e2eeMemberId: producer.appData.e2eeMemberId }
+                    : {}),
             },
             peer.id,
         );

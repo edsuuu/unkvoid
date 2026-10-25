@@ -71,7 +71,7 @@
   <h2>SFU</h2>
   <label><input type="checkbox"><span>/health responde ok em https://unkvoid.com/health</span><i class="tag auto">e2e</i></label>
   <label><input type="checkbox"><span>join sem token dá 422; token com outro segredo ou vencido dá 401</span><i class="tag auto">check.mjs</i></label>
-  <label><input type="checkbox"><span>POST /rooms/:code/kick sem assinatura dá 401; com assinatura da produção passa; não é alcançável pelo nginx</span><i class="tag auto">e2e</i></label>
+  <label><input type="checkbox"><span>POST /rooms/:channel/kick sem assinatura dá 401; com assinatura da produção passa; não é alcançável pelo nginx</span><i class="tag auto">e2e</i></label>
   <label><input type="checkbox"><span>Deploy do SFU espera a sala esvaziar antes de reiniciar (install.sh)</span></label>
 
   <h2>Servidores, canais, voz e chat</h2>
@@ -91,7 +91,7 @@
   <label><input type="checkbox"><span>POST /channels/{id}/voice/token: 403 sem CONNECT, 403 em canal de texto, 403 com user_limit cheio; token verifica com o mesmo HMAC do SFU, exp = agora + 60, can sem speak quando server_mute</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>Webhook POST /api/sfu/events: sem assinatura, com outro segredo, fora da janela de 300 s, sem SFU_SECRET ou repetida → 401; joined fecha o acesso aberto e abre outro com sfu_ip; left fecha</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>Acesso aberto há mais de 24 h é fechado quando outro abre (webhook perdido)</span><i class="tag auto">pest</i></label>
-  <label><input type="checkbox"><span>Mutar no servidor com a pessoa em voz chama POST /rooms/:code/mute no SFU com cabeçalhos assinados; expulsar/banir/sair chama kick; SFU respondendo 500 não desfaz a expulsão nem o banimento</span><i class="tag auto">pest</i></label>
+  <label><input type="checkbox"><span>Mutar no servidor com a pessoa em voz chama POST /rooms/:channel/mute no SFU com cabeçalhos assinados; expulsar/banir/sair chama kick; SFU respondendo 500 não desfaz a expulsão nem o banimento</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>GET /api/config (público) devolve sfu (SFU_PUBLIC_URL); nada de reverb</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>POST /api/sfu/authorize assinado: channel.{ulid} só com VIEW_CHANNEL, server.{id} só membro, user.{id} só o próprio; canal desconhecido vira allowed:false e sem assinatura é 401</span><i class="tag auto">pest</i></label>
   <label><input type="checkbox"><span>Eventos MessageSent/MessageUpdated/MessageDeleted, VoiceStateUpdated, ServerUpdated e MemberRemoved saem em POST /broadcast assinado para o SFU, com o canal e o payload de docs/CONTRATO.md</span><i class="tag auto">Event::fake</i></label>

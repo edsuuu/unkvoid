@@ -23,12 +23,9 @@ vez** para o servidor, que replica. O upload de quem transmite não cresce com a
 
 | Pasta | O quê | Onde roda |
 |---|---|---|
-| `native/` | o app: núcleo em Rust (captura, encoder, mídia, regras) e uma interface nativa por sistema — Slint no Windows, GTK4 no Linux, SwiftUI no macOS | na máquina de quem usa |
+| `native/` | o app único: núcleo em Rust (captura, encoder, mídia, regras) e interface em reescrita | na máquina de quem usa |
 | `sfu/` | o relé de mídia (Node 22 + mediasoup) | na VPS |
 | `web/` | site, contas, servidores, canais, chat, auditoria (Laravel 13 + Livewire 4 + Flux) | na VPS |
-
-O app Tauri + React (`native/apps/desktop`) é o de antes dos nativos: continua no repositório
-como referência de comportamento, mas não é mais publicado.
 
 **Sala por código (sem conta):** o app fala só com o SFU. **Servidores (com conta):** o Laravel
 decide quem pode o quê e assina um token de 60 s; o SFU só confere a assinatura; o app só esconde
@@ -42,8 +39,8 @@ rede: [docs/CONTRATO.md](docs/CONTRATO.md).
 | | Captura | Encoder | Assistir |
 |---|---|---|---|
 | Windows | Graphics Capture (Desktop Duplication no monitor do Windows 10, sem a borda amarela) | Media Foundation na placa (NVENC, QuickSync, AMF); sem placa, CPU em 720p30 | Media Foundation na placa (DXVA), com reserva na CPU |
-| Linux | GStreamer: `ximagesrc` (X11) ou `pipewiresrc` pelo portal (Wayland) | `nvh264enc`, `vah264enc`, `vaapih264enc`; sem placa, `x264enc` em 720p30 | GStreamer, um processo por transmissão |
-| macOS | ScreenCaptureKit | VideoToolbox | VideoToolbox |
+| Linux | GStreamer: `ximagesrc` (X11) ou `pipewiresrc` pelo portal (Wayland) | `nvh264enc`, `vah264enc`, `vaapih264enc`; sem placa, `x264enc` em 720p30 | GStreamer |
+| macOS | pendente no app único | pendente no app único | pendente no app único |
 
 Nos três a mídia é RTP puro cifrado (SRTP) direto com o SFU, com reenvio de pacote perdido,
 pedido de quadro-chave, buffer de chegada e o caminho refeito sozinho quando a rede troca de
@@ -71,12 +68,11 @@ Rodar as três peças, o que verificar antes de um PR e as regras de código:
 ```bash
 cd web && composer setup && composer dev                 # Laravel em :8000
 cd sfu && pnpm install && pnpm run build && SFU_SECRET=<o do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node dist/server.js
-cd native && UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid-windows   # ou unkvoid-linux
-cd native/apps/macos && ./run.sh                                                  # no Mac
+cd native && UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid
 ```
 
 Instalador não se cross-compila: cada um sai no seu sistema.
-[Windows](docs/BUILD-WINDOWS.md) · [Linux](docs/BUILD-LINUX.md) · [macOS](docs/BUILD-MACOS.md) ·
+[Windows](docs/BUILD-WINDOWS.md) · [Linux](docs/BUILD-LINUX.md) ·
 [assinar e publicar](docs/AUTO-UPDATE.md).
 
 ## Documentação

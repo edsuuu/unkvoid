@@ -14,8 +14,8 @@ use Throwable;
 /**
  * Os tokens do app. Quem pede renovação recebe dois: o de acesso, que vence em um dia, e o de
  * renovação, que vence em sessenta e só serve para trocar o par em `POST /api/auth/refresh`.
- * Quem não pede — o app do Tauri até a 0.0.40 — recebe o token de sempre, sem validade: ele
- * não sabe renovar, e um token vencido o deixaria preso fora da conta.
+ * Quem não pede recebe o token de sempre, sem validade: isso mantém compatibilidade enquanto
+ * todo cliente migra para a renovação.
  */
 final readonly class AppTokens
 {

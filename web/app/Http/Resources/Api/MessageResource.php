@@ -23,7 +23,7 @@ final class MessageResource extends JsonResource
         return [
             'id' => $this->id,
             'channel_id' => $this->channel_id,
-            'user' => ['id' => $this->user->id, 'name' => $this->user->name, 'avatar_url' => $this->user->avatar_url],
+            'user' => ['id' => $this->user->id, 'name' => $this->user->name, 'avatar_url' => $this->user->avatar_url, 'status' => $this->user->publicStatus()],
             'type' => $this->type->value,
             'body' => $this->body,
             'files' => $this->files->map(fn (File $file): array => [

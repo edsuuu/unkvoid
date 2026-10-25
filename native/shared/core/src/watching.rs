@@ -7,13 +7,13 @@
 
 use std::collections::HashMap;
 use std::net::UdpSocket;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use media::{AudioUnpacker, Counters, PlainReceiver, Rtx, Stream, VideoUnpacker};
+use media::{AudioUnpacker, Counters, MediaReceiveWindow, MediaReceiver, PlainReceiver, Rtx, Stream, VideoUnpacker};
 use serde_json::Value;
 
 /// Quadros e blocos de som esperando a interface. Dois segundos de uma tela a 60 fps com o
@@ -72,6 +72,9 @@ pub struct Incoming<'a> {
     pub rtx: Option<Rtx>,
     /// O vídeo que este som acompanha — ver `Media::follows`.
     pub follows: Option<String>,
+    /// A chave MLS do membro que possui este producer. Sem ela, uma sala 0.2.0 não abre mídia:
+    /// aceitar RTP claro aqui seria um downgrade silencioso.
+    pub e2ee: Option<Arc<Mutex<MediaReceiveWindow>>>,
 }
 
 /// O `rtx` da resposta do `consumePlain`, quando o servidor anuncia um.
@@ -86,6 +89,7 @@ struct Watch {
     stop: Arc<AtomicBool>,
     video: bool,
     always_muted: bool,
+    e2ee: Option<Arc<Mutex<MediaReceiveWindow>>>,
 }
 
 pub struct Watching {
@@ -151,6 +155,7 @@ impl Watching {
             always_muted,
             rtx,
             follows,
+            e2ee,
         } = incoming;
 
         // Outro endereço é outra sessão no servidor: o que estava aberto já morreu lá.
@@ -190,6 +195,7 @@ impl Watching {
             video,
             Arc::clone(&stop),
             (self.out.clone(), receiver.keyframe_asker(producer_id.clone())),
+            e2ee.clone(),
         )?;
         receiver.route(Stream {
             id: producer_id.clone(),
@@ -211,6 +217,7 @@ impl Watching {
                 stop,
                 video,
                 always_muted,
+                e2ee,
             },
         );
 
@@ -293,6 +300,27 @@ impl Watching {
             receiver.request_keyframe(producer_id);
         }
     }
+
+    /// Troca a chave da época MLS depois do Commit. O receptor anterior fica só na pequena
+    /// janela do próprio `MediaReceiveWindow`, para não cortar o áudio já em voo.
+    pub fn rotate_e2ee(&mut self, producer_id: &str, receiver: MediaReceiver) -> bool {
+        let Some(crypto) = self
+            .active
+            .get(producer_id)
+            .and_then(|watch| watch.e2ee.as_ref())
+        else {
+            return false;
+        };
+
+        match crypto.lock() {
+            Ok(mut crypto) => {
+                crypto.rotate(receiver);
+
+                true
+            }
+            Err(_) => false,
+        }
+    }
 }
 
 impl Drop for Watching {
@@ -314,6 +342,7 @@ fn pump<Ask: Fn() + Send + 'static>(
     video: bool,
     stop: Arc<AtomicBool>,
     (out, ask): (SyncSender<Media>, Ask),
+    e2ee: Option<Arc<Mutex<MediaReceiveWindow>>>,
 ) -> Result<()> {
     let audio = if video {
         None
@@ -324,18 +353,28 @@ fn pump<Ask: Fn() + Send + 'static>(
     std::thread::Builder::new()
         .name(format!("watch-{producer_id}"))
         .spawn(move || match audio {
-            Some(audio) => pump_audio(&socket, (&producer_id, follows.as_deref()), &stop, &out, audio),
-            None => pump_video(&socket, &producer_id, &stop, &out, &ask),
+            Some(audio) => pump_audio(&socket, (&producer_id, follows.as_deref()), &stop, &out, audio, e2ee),
+            None => pump_video(&socket, &producer_id, &stop, &out, &ask, e2ee),
         })?;
 
     Ok(())
 }
 
-fn pump_audio(socket: &UdpSocket, (producer_id, follows): (&str, Option<&str>), stop: &AtomicBool, out: &SyncSender<Media>, mut audio: AudioUnpacker) {
+fn pump_audio(
+    socket: &UdpSocket,
+    (producer_id, follows): (&str, Option<&str>),
+    stop: &AtomicBool,
+    out: &SyncSender<Media>,
+    mut audio: AudioUnpacker,
+    e2ee: Option<Arc<Mutex<MediaReceiveWindow>>>,
+) {
     let mut datagram = [0_u8; DATAGRAM];
 
     while !stop.load(Ordering::Relaxed) {
-        let Some(samples) = socket.recv(&mut datagram).ok().and_then(|size| audio.push(&datagram[..size])) else {
+        let Some(samples) = socket.recv(&mut datagram).ok().and_then(|size| match &e2ee {
+            Some(crypto) => crypto.lock().ok().and_then(|mut crypto| audio.push_e2ee(&datagram[..size], &mut crypto)),
+            None => audio.push(&datagram[..size]),
+        }) else {
             continue;
         };
 
@@ -357,7 +396,14 @@ fn pump_audio(socket: &UdpSocket, (producer_id, follows): (&str, Option<&str>), 
 /// quadro que ficou de fora da fila cheia também deixam a imagem esperando um quadro-chave, e é
 /// daqui que ele é pedido — de novo a cada `ASK_AGAIN` enquanto não vem. Antes ninguém pedia, e
 /// a tela ficava parada até o quadro-chave periódico, 4 s depois.
-fn pump_video(socket: &UdpSocket, producer_id: &str, stop: &AtomicBool, out: &SyncSender<Media>, ask: &impl Fn()) {
+fn pump_video(
+    socket: &UdpSocket,
+    producer_id: &str,
+    stop: &AtomicBool,
+    out: &SyncSender<Media>,
+    ask: &impl Fn(),
+    e2ee: Option<Arc<Mutex<MediaReceiveWindow>>>,
+) {
     let mut frames = VideoUnpacker::default();
     let mut stalled = Stalled::default();
     // A fila da interface encheu e um quadro ficou de fora: o P seguinte desenharia lixo.
@@ -365,7 +411,10 @@ fn pump_video(socket: &UdpSocket, producer_id: &str, stop: &AtomicBool, out: &Sy
     let mut datagram = [0_u8; DATAGRAM];
 
     while !stop.load(Ordering::Relaxed) {
-        let unit = socket.recv(&mut datagram).ok().and_then(|size| frames.push(&datagram[..size]));
+        let unit = socket.recv(&mut datagram).ok().and_then(|size| match &e2ee {
+            Some(crypto) => crypto.lock().ok().and_then(|mut crypto| frames.push_e2ee(&datagram[..size], &mut crypto)),
+            None => frames.push(&datagram[..size]),
+        });
         let now = Instant::now();
 
         if let Some(unit) = unit
@@ -508,7 +557,7 @@ mod tests {
     use super::*;
 
     fn incoming<'a>(producer_id: &str, kind: &'a str, address: &'a str, server_key: &'a [u8], always_muted: bool) -> Incoming<'a> {
-        Incoming { producer_id: producer_id.to_owned(), kind, address, server_key, payload_type: 111, ssrc: Some(7), always_muted, rtx: None, follows: None }
+        Incoming { producer_id: producer_id.to_owned(), kind, address, server_key, payload_type: 111, ssrc: Some(7), always_muted, rtx: None, follows: None, e2ee: None }
     }
 
     /// O som da tela que a pessoa ligou antes de ele chegar continua ligado quando chega, e

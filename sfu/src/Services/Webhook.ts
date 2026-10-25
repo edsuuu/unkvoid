@@ -6,6 +6,8 @@ const PATH = '/api/sfu/events';
 
 export class Webhook {
     public static send(event: 'joined' | 'left', roomId: string, peer: Peer): void {
+        // O Laravel só aceita `user:N` e `guest:<instalação>`; outro sub deixaria um 422 em
+        // cada entrada e saída.
         if (!peer.userId.startsWith('user:') && !peer.userId.startsWith('guest:')) {
             return;
         }

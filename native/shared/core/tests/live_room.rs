@@ -29,25 +29,64 @@ use core_app::room::Room;
 use core_app::watching::{Media, MediaKind};
 use serde_json::Value;
 
+mod common;
+
 fn sfu() -> String {
     std::env::var("UNKVOID_SFU").unwrap_or_else(|_| "ws://127.0.0.1:3000/sfu".into())
 }
 
-/// Um código de sala novo por teste: o mesmo código entre dois testes acharia a sala do anterior.
-fn code(prefix: &str) -> String {
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() % 1_000_000;
+/// Um id de canal novo por execução para evitar reencontrar canais anteriores.
+fn code(_prefix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    format!("{prefix}{stamp:06}")
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+
+    format!(
+        "{:013x}{:013x}",
+        stamp,
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
-fn guest(room: &str, name: &str) -> Identity {
+fn account(room: &str, name: &str) -> Identity {
     let (room, name) = (room.to_owned(), name.to_owned());
 
     Arc::new(move || {
-        let identity = RoomIdentity::Guest { room: room.clone(), name: name.clone(), install_id: format!("ponta-a-ponta-{name}") };
+        // Uma conta por pessoa: o SFU troca a sessão de uma conta que entra de novo na mesma sala,
+        // e quem transmite caía quando quem assiste entrava com a mesma conta.
+        let subject = if name.contains("movido") {
+            "user:7001".to_owned()
+        } else {
+            format!("user:{}", 7100 + name.bytes().map(u32::from).sum::<u32>())
+        };
+        let identity = RoomIdentity::Account {
+            token: common::join_token(&room, &subject, &name),
+        };
 
         Box::pin(async move { Ok(identity) }) as _
     })
+}
+
+fn account_as(room: &str, name: &str, subject: &str) -> Identity {
+    let (room, name, subject) = (room.to_owned(), name.to_owned(), subject.to_owned());
+    Arc::new(move || {
+        let identity = RoomIdentity::Account {
+            token: common::join_token(&room, &subject, &name),
+        };
+        Box::pin(async move { Ok(identity) }) as _
+    })
+}
+
+async fn enter_as(room: &str, name: &str, subject: &str) -> (Arc<Room>, Receiver<Media>, Heard) {
+    let (updates, heard) = std::sync::mpsc::channel();
+    let (room, media) = Room::enter(&sfu(), room, account_as(room, name, subject), updates)
+        .await
+        .expect("entrou na sala E2EE");
+    (room, media, Heard::listen(heard))
 }
 
 /// Os avisos da sala, guardados para o teste procurar depois.
@@ -73,17 +112,31 @@ impl Heard {
     fn any(&self, wanted: impl Fn(&Value) -> bool) -> bool {
         self.0.lock().expect("os avisos").iter().any(wanted)
     }
+
+    fn latest(&self, event: &str) -> Option<Value> {
+        self.0
+            .lock()
+            .expect("os avisos")
+            .iter()
+            .rev()
+            .find(|value| value["event"] == event)
+            .cloned()
+    }
 }
 
 async fn enter(room: &str, name: &str) -> (Arc<Room>, Receiver<Media>, Heard) {
     let (updates, heard) = std::sync::mpsc::channel();
-    let (room, media) = Room::enter(&sfu(), room, guest(room, name), updates).await.expect("entrou na sala");
+    let (room, media) = Room::enter(&sfu(), room, account(room, name), updates)
+        .await
+        .expect("entrou no canal");
 
     (room, media, Heard::listen(heard))
 }
 
 fn share_config(fps: u32) -> capture::CaptureConfig {
-    core_app::sharing::capture_config(&serde_json::json!({ "quality": "720", "fps": fps, "audio": true, "muteCalls": false }))
+    core_app::sharing::capture_config(
+        &serde_json::json!({ "quality": "720", "fps": fps, "audio": true, "muteCalls": false }),
+    )
 }
 
 /// O que quem assiste viu de uma transmissão de vídeo.
@@ -118,13 +171,17 @@ struct Viewer {
 
 impl Viewer {
     fn start(media: Receiver<Media>) -> Self {
-        let (seen, stop) = (Arc::new(Mutex::new(Seen::default())), Arc::new(AtomicBool::new(false)));
+        let (seen, stop) = (
+            Arc::new(Mutex::new(Seen::default())),
+            Arc::new(AtomicBool::new(false)),
+        );
 
         std::thread::spawn({
             let (seen, stop) = (Arc::clone(&seen), Arc::clone(&stop));
 
             move || {
-                let mut decoders: HashMap<String, (media::H264Decoder, media::Playout)> = HashMap::new();
+                let mut decoders: HashMap<String, (media::H264Decoder, media::Playout)> =
+                    HashMap::new();
                 let mut delays: HashMap<String, Duration> = HashMap::new();
 
                 while !stop.load(Ordering::Relaxed) {
@@ -135,18 +192,34 @@ impl Viewer {
                     };
 
                     match item.kind {
-                        MediaKind::Video { keyframe, timestamp } => {
-                            seen.lock().expect("o visto").pictures.entry(item.producer_id.clone()).or_default().clock.push((timestamp, item.arrived));
+                        MediaKind::Video {
+                            keyframe,
+                            timestamp,
+                        } => {
+                            seen.lock()
+                                .expect("o visto")
+                                .pictures
+                                .entry(item.producer_id.clone())
+                                .or_default()
+                                .clock
+                                .push((timestamp, item.arrived));
 
                             if !decoders.contains_key(&item.producer_id) {
                                 if !keyframe {
                                     continue;
                                 }
 
-                                decoders.insert(item.producer_id.clone(), (media::H264Decoder::new().expect("o decodificador abriu"), media::Playout::default()));
+                                decoders.insert(
+                                    item.producer_id.clone(),
+                                    (
+                                        media::H264Decoder::new().expect("o decodificador abriu"),
+                                        media::Playout::default(),
+                                    ),
+                                );
                             }
 
-                            let Some((decoder, playout)) = decoders.get_mut(&item.producer_id) else {
+                            let Some((decoder, playout)) = decoders.get_mut(&item.producer_id)
+                            else {
                                 continue;
                             };
                             let due = playout.due(timestamp, item.arrived);
@@ -159,19 +232,36 @@ impl Viewer {
                             };
                             let shown = due.max(item.arrived) + started.elapsed();
 
-                            seen.lock().expect("o visto").pictures.entry(item.producer_id).or_default().images.push((
-                                shown,
-                                image.width,
-                                image.height,
-                                brightness(&image.rgba),
-                            ));
+                            seen.lock()
+                                .expect("o visto")
+                                .pictures
+                                .entry(item.producer_id)
+                                .or_default()
+                                .images
+                                .push((shown, image.width, image.height, brightness(&image.rgba)));
                         }
                         MediaKind::Audio => {
-                            let samples: Vec<f32> = item.data.as_chunks::<4>().0.iter().map(|bytes| f32::from_le_bytes(*bytes)).collect();
-                            let loud = samples.iter().position(|sample| sample.abs() > 0.2).map(|index| index / 2);
-                            let rms = (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len().max(1) as f32).sqrt();
+                            let samples: Vec<f32> = item
+                                .data
+                                .as_chunks::<4>()
+                                .0
+                                .iter()
+                                .map(|bytes| f32::from_le_bytes(*bytes))
+                                .collect();
+                            let loud = samples
+                                .iter()
+                                .position(|sample| sample.abs() > 0.2)
+                                .map(|index| index / 2);
+                            let rms = (samples.iter().map(|sample| sample * sample).sum::<f32>()
+                                / samples.len().max(1) as f32)
+                                .sqrt();
 
-                            let hold = item.follows.as_ref().and_then(|screen| delays.get(screen)).copied().unwrap_or_default();
+                            let hold = item
+                                .follows
+                                .as_ref()
+                                .and_then(|screen| delays.get(screen))
+                                .copied()
+                                .unwrap_or_default();
                             let mut seen = seen.lock().expect("o visto");
                             let sound = seen.sounds.entry(item.producer_id).or_default();
 
@@ -187,15 +277,30 @@ impl Viewer {
     }
 
     fn images(&self, producer: &str) -> usize {
-        self.seen.lock().expect("o visto").pictures.get(producer).map_or(0, |picture| picture.images.len())
+        self.seen
+            .lock()
+            .expect("o visto")
+            .pictures
+            .get(producer)
+            .map_or(0, |picture| picture.images.len())
     }
 
     fn frames(&self, producer: &str) -> usize {
-        self.seen.lock().expect("o visto").pictures.get(producer).map_or(0, |picture| picture.clock.len())
+        self.seen
+            .lock()
+            .expect("o visto")
+            .pictures
+            .get(producer)
+            .map_or(0, |picture| picture.clock.len())
     }
 
     fn blocks(&self, producer: &str) -> usize {
-        self.seen.lock().expect("o visto").sounds.get(producer).map_or(0, |sound| sound.blocks.len())
+        self.seen
+            .lock()
+            .expect("o visto")
+            .sounds
+            .get(producer)
+            .map_or(0, |sound| sound.blocks.len())
     }
 
     /// Espera até `wanted` imagens da transmissão, ou o prazo.
@@ -222,7 +327,13 @@ impl Drop for Viewer {
 
 /// O brilho médio de uma amostra dos pixels, de 0 a 255.
 fn brightness(rgba: &[u8]) -> f64 {
-    let picked: Vec<f64> = rgba.chunks_exact(4).step_by(97).map(|pixel| f64::from(pixel[0]) + f64::from(pixel[1]) + f64::from(pixel[2])).collect();
+    let picked: Vec<f64> = rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .step_by(97)
+        .map(|pixel| f64::from(pixel[0]) + f64::from(pixel[1]) + f64::from(pixel[2]))
+        .collect();
 
     picked.iter().sum::<f64>() / picked.len().max(1) as f64 / 3.0
 }
@@ -231,9 +342,16 @@ fn brightness(rgba: &[u8]) -> f64 {
 fn screen_of(room: &Room) -> Option<(String, Option<String>)> {
     let tiles = room.tiles();
 
-    tiles["tiles"].as_array()?.iter().find(|tile| tile["camera"] == false && tile["mine"] == false).map(|tile| {
-        (tile["producerId"].as_str().unwrap_or_default().to_owned(), tile["audio"].as_str().map(str::to_owned))
-    })
+    tiles["tiles"]
+        .as_array()?
+        .iter()
+        .find(|tile| tile["camera"] == false && tile["mine"] == false)
+        .map(|tile| {
+            (
+                tile["producerId"].as_str().unwrap_or_default().to_owned(),
+                tile["audio"].as_str().map(str::to_owned),
+            )
+        })
 }
 
 fn wait_for<T>(patience: Duration, mut found: impl FnMut() -> Option<T>) -> Option<T> {
@@ -252,7 +370,13 @@ fn wait_for<T>(patience: Duration, mut found: impl FnMut() -> Option<T>) -> Opti
 
 /// As imagens por segundo de uma transmissão numa janela, pela hora em que cada uma apareceu.
 fn rate(seen: &Seen, producer: &str, from: Instant, to: Instant) -> f64 {
-    let shown = seen.pictures.get(producer).map_or(0, |picture| picture.images.iter().filter(|(at, ..)| *at >= from && *at < to).count());
+    let shown = seen.pictures.get(producer).map_or(0, |picture| {
+        picture
+            .images
+            .iter()
+            .filter(|(at, ..)| *at >= from && *at < to)
+            .count()
+    });
 
     shown as f64 / to.duration_since(from).as_secs_f64()
 }
@@ -262,10 +386,19 @@ fn longest_pause(seen: &Seen, producer: &str, from: Instant, to: Instant) -> Dur
     let Some(picture) = seen.pictures.get(producer) else {
         return to.duration_since(from);
     };
-    let mut times: Vec<Instant> = picture.images.iter().map(|(at, ..)| *at).filter(|at| *at >= from && *at < to).collect();
+    let mut times: Vec<Instant> = picture
+        .images
+        .iter()
+        .map(|(at, ..)| *at)
+        .filter(|at| *at >= from && *at < to)
+        .collect();
 
     times.sort();
-    times.windows(2).map(|pair| pair[1].duration_since(pair[0])).max().unwrap_or(to.duration_since(from))
+    times
+        .windows(2)
+        .map(|pair| pair[1].duration_since(pair[0]))
+        .max()
+        .unwrap_or(to.duration_since(from))
 }
 
 /// Quem chega depois vê a tela sem esperar o quadro-chave periódico, e ouve o som dela junto:
@@ -284,13 +417,20 @@ async fn a_late_viewer_sees_and_hears_the_screen_in_sync() {
     let (viewer_room, media, _) = enter(&code, "quem-assiste").await;
     let joined = Instant::now();
     let viewer = Viewer::start(media);
-    let (screen, audio) = tokio::task::block_in_place(|| wait_for(Duration::from_secs(5), || screen_of(&viewer_room))).expect("o cartão da tela apareceu");
+    let (screen, audio) = tokio::task::block_in_place(|| {
+        wait_for(Duration::from_secs(5), || screen_of(&viewer_room))
+    })
+    .expect("o cartão da tela apareceu");
     let audio = audio.expect("a tela veio com o som dela");
 
     // O som da tela chega mudo por regra, e quem assiste o liga no cartão.
     viewer_room.mute_watched(&audio, false);
 
-    assert!(tokio::task::block_in_place(|| viewer.wait_images(&screen, 1, Duration::from_secs(3))), "a primeira imagem não chegou em 3 s ({} quadros chegaram)", viewer.frames(&screen));
+    assert!(
+        tokio::task::block_in_place(|| viewer.wait_images(&screen, 1, Duration::from_secs(3))),
+        "a primeira imagem não chegou em 3 s ({} quadros chegaram)",
+        viewer.frames(&screen)
+    );
 
     let first = viewer.seen.lock().expect("o visto").pictures[&screen].images[0].0;
 
@@ -301,25 +441,39 @@ async fn a_late_viewer_sees_and_hears_the_screen_in_sync() {
         let seen = viewer.seen.lock().expect("o visto");
         let picture = &seen.pictures[&screen];
         let sound = seen.sounds.get(&audio).unwrap_or_else(|| {
-            panic!("o som da tela não chegou: {audio} calado={:?}; chegou som de {:?}", viewer_room.is_watched_muted(&audio), seen.sounds.keys().collect::<Vec<_>>())
+            panic!(
+                "o som da tela não chegou: {audio} calado={:?}; chegou som de {:?}",
+                viewer_room.is_watched_muted(&audio),
+                seen.sounds.keys().collect::<Vec<_>>()
+            )
         });
         let fps = rate(&seen, &screen, now - Duration::from_secs(10), now);
         let pause = longest_pause(&seen, &screen, now - Duration::from_secs(10), now);
         let (_, width, height, _) = *picture.images.last().expect("uma imagem");
 
-        let flashes: Vec<Instant> = picture.images.windows(2).filter(|pair| pair[0].3 < 100.0 && pair[1].3 > 150.0).map(|pair| pair[1].0).collect();
+        let flashes: Vec<Instant> = picture
+            .images
+            .windows(2)
+            .filter(|pair| pair[0].3 < 100.0 && pair[1].3 > 150.0)
+            .map(|pair| pair[1].0)
+            .collect();
         let beeps: Vec<Instant> = sound
             .blocks
             .windows(2)
             .filter(|pair| pair[0].1 < 0.05 && pair[1].1 >= 0.05)
-            .map(|pair| pair[1].0 + Duration::from_secs_f64(pair[1].2.unwrap_or(0) as f64 / 48_000.0))
+            .map(|pair| {
+                pair[1].0 + Duration::from_secs_f64(pair[1].2.unwrap_or(0) as f64 / 48_000.0)
+            })
             .collect();
         let mut offsets: Vec<f64> = flashes
             .iter()
             .filter_map(|flash| {
                 beeps
                     .iter()
-                    .map(|beep| flash.duration_since(*beep).as_secs_f64() * 1000.0 - beep.duration_since(*flash).as_secs_f64() * 1000.0)
+                    .map(|beep| {
+                        flash.duration_since(*beep).as_secs_f64() * 1000.0
+                            - beep.duration_since(*flash).as_secs_f64() * 1000.0
+                    })
                     .min_by(|left, right| left.abs().total_cmp(&right.abs()))
             })
             .filter(|offset| offset.abs() < 500.0)
@@ -336,14 +490,37 @@ async fn a_late_viewer_sees_and_hears_the_screen_in_sync() {
             sound.blocks.len(),
         );
 
-        assert!(first.duration_since(joined) < Duration::from_secs(3), "quem chegou depois esperou demais pela primeira imagem");
+        assert!(
+            first.duration_since(joined) < Duration::from_secs(3),
+            "quem chegou depois esperou demais pela primeira imagem"
+        );
         assert!(fps >= 25.0, "só {fps:.1} imagens por segundo");
-        assert!(pause < Duration::from_millis(500), "a imagem parou {} ms", pause.as_millis());
+        assert!(
+            pause < Duration::from_millis(500),
+            "a imagem parou {} ms",
+            pause.as_millis()
+        );
         assert_eq!((width, height), (1280, 720));
-        assert!(sound.blocks.len() > 400, "só {} blocos de som em 12 s", sound.blocks.len());
-        assert_eq!(sound.follows.as_ref(), Some(&screen), "o som da tela não diz que acompanha a tela");
-        assert!(offsets.len() >= 5, "poucos clarões casados com bipes: {offsets:?} (clarões {}, bipes {})", flashes.len(), beeps.len());
-        assert!(median.abs() < 80.0, "a imagem está {median:.0} ms fora do som");
+        assert!(
+            sound.blocks.len() > 400,
+            "só {} blocos de som em 12 s",
+            sound.blocks.len()
+        );
+        assert_eq!(
+            sound.follows.as_ref(),
+            Some(&screen),
+            "o som da tela não diz que acompanha a tela"
+        );
+        assert!(
+            offsets.len() >= 5,
+            "poucos clarões casados com bipes: {offsets:?} (clarões {}, bipes {})",
+            flashes.len(),
+            beeps.len()
+        );
+        assert!(
+            median.abs() < 80.0,
+            "a imagem está {median:.0} ms fora do som"
+        );
     }
 
     viewer_room.leave().await;
@@ -358,13 +535,18 @@ async fn the_microphone_reaches_the_room() {
     let (listener_room, media, _) = enter(&code, "quem-ouve").await;
     let listener = Viewer::start(media);
 
-    speaker.open_microphone().await.expect("o microfone abriu");
+    speaker
+        .open_microphone(core_app::VoiceFilterConfig::default())
+        .await
+        .expect("o microfone abriu");
 
-    let tone: Vec<f32> = (0..960).flat_map(|index| {
-        let sample = (index as f32 * 2.0 * std::f32::consts::PI * 440.0 / 48_000.0).sin() * 0.5;
+    let tone: Vec<f32> = (0..960)
+        .flat_map(|index| {
+            let sample = (index as f32 * 2.0 * std::f32::consts::PI * 440.0 / 48_000.0).sin() * 0.5;
 
-        [sample, sample]
-    }).collect();
+            [sample, sample]
+        })
+        .collect();
     let started = Instant::now();
 
     while started.elapsed() < Duration::from_secs(3) {
@@ -375,17 +557,226 @@ async fn the_microphone_reaches_the_room() {
     let peers = listener_room.peers();
     let mic = peers["peers"]
         .as_array()
-        .and_then(|peers| peers.iter().flat_map(|peer| peer["producers"].as_array().cloned().unwrap_or_default()).find(|producer| producer["source"] == "mic"))
+        .and_then(|peers| {
+            peers
+                .iter()
+                .flat_map(|peer| peer["producers"].as_array().cloned().unwrap_or_default())
+                .find(|producer| producer["source"] == "mic")
+        })
         .and_then(|producer| producer["producerId"].as_str().map(str::to_owned))
         .expect("o microfone apareceu na sala");
-    let heard = listener.seen.lock().expect("o visto").sounds.get(&mic).map(|sound| sound.blocks.iter().filter(|(_, rms, _)| *rms > 0.1).count()).unwrap_or(0);
+    let heard = listener
+        .seen
+        .lock()
+        .expect("o visto")
+        .sounds
+        .get(&mic)
+        .map(|sound| sound.blocks.iter().filter(|(_, rms, _)| *rms > 0.1).count())
+        .unwrap_or(0);
 
-    println!("{heard} blocos de voz com som de {} recebidos", listener.blocks(&mic));
+    println!(
+        "{heard} blocos de voz com som de {} recebidos",
+        listener.blocks(&mic)
+    );
 
     assert!(heard > 50, "só {heard} blocos com voz em 3 s");
 
     listener_room.leave().await;
     speaker.leave().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+#[ignore = "precisa do SFU local; configure UNKVOID_SFU, SFU_SECRET e SFU_MEDIA_HOST=127.0.0.1"]
+async fn two_then_three_clients_exchange_only_encrypted_opus() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("core_app=debug,capture=info,media=debug")
+        .try_init();
+    let code = code("e2ee-opus");
+    let (alice, alice_media, alice_events) = enter_as(&code, "e2ee-alice", "user:8101").await;
+    // Reproduz a ordem do app: pede o microfone assim que Room::enter volta, sem esperar MLS.
+    let alice_open = tokio::spawn({
+        let alice = Arc::clone(&alice);
+        async move {
+            alice
+                .open_microphone(core_app::VoiceFilterConfig::default())
+                .await
+        }
+    });
+    let (bob, bob_media, bob_events) = enter_as(&code, "e2ee-bob", "user:8102").await;
+    let bob_open = tokio::spawn({
+        let bob = Arc::clone(&bob);
+        async move {
+            bob.open_microphone(core_app::VoiceFilterConfig::default())
+                .await
+        }
+    });
+    let alice_view = Viewer::start(alice_media);
+    let bob_view = Viewer::start(bob_media);
+    tokio::time::timeout(Duration::from_secs(15), async {
+        alice_open
+            .await
+            .expect("tarefa Alice")
+            .expect("microfone pendente abriu cifrado");
+        bob_open
+            .await
+            .expect("tarefa Bob")
+            .expect("microfone pendente abriu cifrado");
+    })
+    .await
+    .expect("aberturas pendentes concluíram");
+    wait_for(Duration::from_secs(5), || {
+        (alice_events.any(|v| v["event"] == "room.encryption" && v["data"]["state"] == "encrypted")
+            && bob_events
+                .any(|v| v["event"] == "room.encryption" && v["data"]["state"] == "encrypted"))
+        .then_some(())
+    })
+    .expect("MLS convergiu com dois clientes");
+    let (frames_before, nanos_before) = media::e2ee_frame_cost_snapshot();
+    let tone: Vec<f32> = (0..960)
+        .flat_map(|index| {
+            let value = (index as f32 * 2.0 * std::f32::consts::PI * 440.0 / 48_000.0).sin() * 0.5;
+            [value, value]
+        })
+        .collect();
+    for _ in 0..100 {
+        alice.speak(&tone);
+        bob.speak(&tone);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (frames_after, nanos_after) = media::e2ee_frame_cost_snapshot();
+    let encrypted_frames = frames_after.saturating_sub(frames_before);
+    let encryption_us_per_frame =
+        nanos_after.saturating_sub(nanos_before) as f64 / encrypted_frames.max(1) as f64 / 1_000.0;
+    println!(
+        "custo do caminho RTP real: {encrypted_frames} frames cifrados, {encryption_us_per_frame:.3} µs/frame (somente AEAD após encoder)"
+    );
+    assert!(
+        encrypted_frames > 10,
+        "o caminho RTP não registrou quadros cifrados"
+    );
+    assert!(
+        alice_view
+            .seen
+            .lock()
+            .expect("mídia")
+            .sounds
+            .values()
+            .any(|sound| sound.blocks.iter().any(|(_, rms, _)| *rms > 0.1)),
+        "Alice não decifrou Opus de Bob"
+    );
+    assert!(
+        bob_view
+            .seen
+            .lock()
+            .expect("mídia")
+            .sounds
+            .values()
+            .any(|sound| sound.blocks.iter().any(|(_, rms, _)| *rms > 0.1)),
+        "Bob não decifrou Opus de Alice"
+    );
+
+    let (carol, carol_media, carol_events) = enter_as(&code, "e2ee-carol", "user:8103").await;
+    let carol_open = tokio::spawn({
+        let carol = Arc::clone(&carol);
+        async move {
+            carol
+                .open_microphone(core_app::VoiceFilterConfig::default())
+                .await
+        }
+    });
+    let carol_view = Viewer::start(carol_media);
+    tokio::time::timeout(Duration::from_secs(15), carol_open)
+        .await
+        .expect("abertura pendente de Carol concluiu")
+        .expect("tarefa Carol")
+        .expect("microfone de Carol abriu cifrado");
+    wait_for(Duration::from_secs(5), || {
+        (alice_events.any(|v| v["event"] == "room.encryption" && v["data"]["state"] == "encrypted")
+            && bob_events
+                .any(|v| v["event"] == "room.encryption" && v["data"]["state"] == "encrypted")
+            && carol_events
+                .any(|v| v["event"] == "room.encryption" && v["data"]["state"] == "encrypted"))
+        .then_some(())
+    })
+    .expect("MLS convergiu com três clientes");
+    for _ in 0..100 {
+        alice.speak(&tone);
+        bob.speak(&tone);
+        carol.speak(&tone);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        bob_view
+            .seen
+            .lock()
+            .expect("mídia")
+            .sounds
+            .values()
+            .any(|sound| sound.blocks.iter().any(|(_, rms, _)| *rms > 0.1)),
+        "Bob não recebeu Opus E2EE no grupo de três"
+    );
+    assert!(
+        alice_view
+            .seen
+            .lock()
+            .expect("mídia")
+            .sounds
+            .values()
+            .any(|sound| sound.blocks.iter().any(|(_, rms, _)| *rms > 0.1)),
+        "Alice não recebeu Opus E2EE no grupo de três"
+    );
+    assert!(
+        carol_view
+            .seen
+            .lock()
+            .expect("mídia")
+            .sounds
+            .values()
+            .any(|sound| sound.blocks.iter().any(|(_, rms, _)| *rms > 0.1)),
+        "Carol não decifrou Opus do grupo"
+    );
+
+    // O caminho visual usa o encoder H.264 real da captura de tela e o consumer do mediasoup.
+    // A asserção de imagem decodificada prova que o primeiro keyframe chegou apesar dos NAL
+    // headers abertos e do footer E2EE.
+    alice
+        .share(share_config(15))
+        .await
+        .expect("Alice abriu a transmissão de tela H.264");
+    let screen = wait_for(Duration::from_secs(5), || {
+        bob.tiles()["tiles"]
+            .as_array()?
+            .iter()
+            .find(|tile| tile["camera"] == false && tile["mine"] == false)
+            .and_then(|tile| tile["producerId"].as_str().map(str::to_owned))
+    })
+    .expect("o consumer de tela apareceu depois do Welcome");
+    let decoded =
+        tokio::task::block_in_place(|| bob_view.wait_images(&screen, 1, Duration::from_secs(10)));
+    let received = bob_view.frames(&screen);
+    let rtp = bob.counters(&screen);
+    assert!(
+        decoded,
+        "mediasoup não encaminhou/decifrou o keyframe H.264 da tela: {received} quadros depacketizados, contadores RTP {rtp:?}"
+    );
+    assert!(
+        bob_view.frames(&screen) > 0,
+        "não chegou quadro H.264 após o depacketizer"
+    );
+
+    carol.leave().await;
+    wait_for(Duration::from_secs(5), || {
+        let alice_members = alice_events
+            .latest("room.encryption")
+            .and_then(|value| value["data"]["members"].as_array().map(Vec::len));
+        let bob_members = bob_events
+            .latest("room.encryption")
+            .and_then(|value| value["data"]["members"].as_array().map(Vec::len));
+        (alice_members == Some(2) && bob_members == Some(2)).then_some(())
+    })
+    .expect("o Commit de saída removeu Carol e ambos ficaram na mesma época do grupo");
+    bob.leave().await;
+    alice.leave().await;
 }
 
 /// Só o Linux captura a câmera pelo núcleo; no Windows ela ainda não existe, e no macOS vem da
@@ -394,7 +785,10 @@ async fn the_microphone_reaches_the_room() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "precisa do SFU, de uma tela X, de um servidor de som e de UNKVOID_CAMERA_SOURCE — ver o topo do arquivo"]
 async fn a_camera_is_watched_beside_the_screen() {
-    assert!(std::env::var_os("UNKVOID_CAMERA_SOURCE").is_some(), "sem UNKVOID_CAMERA_SOURCE não há câmera neste teste");
+    assert!(
+        std::env::var_os("UNKVOID_CAMERA_SOURCE").is_some(),
+        "sem UNKVOID_CAMERA_SOURCE não há câmera neste teste"
+    );
 
     let code = code("camera");
     let (sharer, _own, _) = enter(&code, "quem-mostra").await;
@@ -403,29 +797,53 @@ async fn a_camera_is_watched_beside_the_screen() {
 
     sharer.share(share_config(30)).await.expect("compartilhou");
     sharer
-        .open_captured_camera(capture::CaptureConfig { source: capture::CaptureSource::Camera(0), capture_audio: false, ..capture::CaptureConfig::default() })
+        .open_captured_camera(capture::CaptureConfig {
+            source: capture::CaptureSource::Camera(0),
+            capture_audio: false,
+            ..capture::CaptureConfig::default()
+        })
         .await
         .expect("a câmera abriu");
 
     let camera = tokio::task::block_in_place(|| {
         wait_for(Duration::from_secs(5), || {
-            viewer_room.tiles()["tiles"].as_array()?.iter().find(|tile| tile["camera"] == true).and_then(|tile| tile["producerId"].as_str().map(str::to_owned))
+            viewer_room.tiles()["tiles"]
+                .as_array()?
+                .iter()
+                .find(|tile| tile["camera"] == true)
+                .and_then(|tile| tile["producerId"].as_str().map(str::to_owned))
         })
     })
     .expect("o cartão da câmera apareceu");
     let (screen, _) = screen_of(&viewer_room).expect("o cartão da tela continua");
 
-    assert!(tokio::task::block_in_place(|| viewer.wait_images(&camera, 60, Duration::from_secs(5))), "a câmera não deu 60 imagens em 5 s");
-    assert!(viewer.images(&screen) > 30, "a tela parou quando a câmera entrou");
+    assert!(
+        tokio::task::block_in_place(|| viewer.wait_images(&camera, 60, Duration::from_secs(5))),
+        "a câmera não deu 60 imagens em 5 s"
+    );
+    assert!(
+        viewer.images(&screen) > 30,
+        "a tela parou quando a câmera entrou"
+    );
 
-    let size = viewer.seen.lock().expect("o visto").pictures[&camera].images.last().map(|(_, width, height, _)| (*width, *height));
+    let size = viewer.seen.lock().expect("o visto").pictures[&camera]
+        .images
+        .last()
+        .map(|(_, width, height, _)| (*width, *height));
 
     assert_eq!(size, Some((640, 360)));
 
     sharer.close_captured_camera().await;
 
     assert!(
-        tokio::task::block_in_place(|| wait_for(Duration::from_secs(3), || viewer_room.tiles()["tiles"].as_array()?.iter().all(|tile| tile["camera"] == false).then_some(()))).is_some(),
+        tokio::task::block_in_place(|| wait_for(Duration::from_secs(3), || {
+            viewer_room.tiles()["tiles"]
+                .as_array()?
+                .iter()
+                .all(|tile| tile["camera"] == false)
+                .then_some(())
+        }))
+        .is_some(),
         "o cartão da câmera não saiu"
     );
 
@@ -443,10 +861,19 @@ async fn late_join(code: &str, name: &str) -> (String, Option<Duration>, Option<
     let viewer = Viewer::start(media);
     let first = |camera: bool| {
         let tiles = room.tiles();
-        let producer = tiles["tiles"].as_array()?.iter().find(|tile| tile["camera"] == camera && tile["mine"] == false)?["producerId"].as_str()?.to_owned();
+        let producer = tiles["tiles"]
+            .as_array()?
+            .iter()
+            .find(|tile| tile["camera"] == camera && tile["mine"] == false)?["producerId"]
+            .as_str()?
+            .to_owned();
         let seen = viewer.seen.lock().expect("o visto");
 
-        seen.pictures.get(&producer)?.images.first().map(|(shown, ..)| shown.duration_since(started))
+        seen.pictures
+            .get(&producer)?
+            .images
+            .first()
+            .map(|(shown, ..)| shown.duration_since(started))
     };
     let (mut screen, mut camera) = (None, None);
 
@@ -470,15 +897,26 @@ async fn late_join(code: &str, name: &str) -> (String, Option<Duration>, Option<
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "precisa do SFU, de uma tela X, de UNKVOID_CAMERA_SOURCE e de UNKVOID_KEYFRAME_SECONDS=4 — ver o topo do arquivo"]
 async fn late_viewers_see_the_screen_and_the_camera_within_a_second() {
-    assert_eq!(std::env::var("UNKVOID_KEYFRAME_SECONDS").as_deref(), Ok("4"), "com o GOP de 1 s o quadro-chave periódico chega antes do pedido, e o teste não prova nada");
-    assert!(std::env::var_os("UNKVOID_CAMERA_SOURCE").is_some(), "sem UNKVOID_CAMERA_SOURCE não há câmera neste teste");
+    assert_eq!(
+        std::env::var("UNKVOID_KEYFRAME_SECONDS").as_deref(),
+        Ok("4"),
+        "com o GOP de 1 s o quadro-chave periódico chega antes do pedido, e o teste não prova nada"
+    );
+    assert!(
+        std::env::var_os("UNKVOID_CAMERA_SOURCE").is_some(),
+        "sem UNKVOID_CAMERA_SOURCE não há câmera neste teste"
+    );
 
     let code = code("atrasado");
     let (sharer, _own, _) = enter(&code, "quem-mostra").await;
 
     sharer.share(share_config(30)).await.expect("compartilhou");
     sharer
-        .open_captured_camera(capture::CaptureConfig { source: capture::CaptureSource::Camera(0), capture_audio: false, ..capture::CaptureConfig::default() })
+        .open_captured_camera(capture::CaptureConfig {
+            source: capture::CaptureSource::Camera(0),
+            capture_audio: false,
+            ..capture::CaptureConfig::default()
+        })
         .await
         .expect("a câmera abriu");
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -500,11 +938,16 @@ async fn late_viewers_see_the_screen_and_the_camera_within_a_second() {
     joins.push(first.await.expect("p1"));
     tokio::time::sleep(Duration::from_millis(1_500)).await;
 
-    let together: Vec<_> = ["g1", "g2", "g3"].map(|name| tokio::spawn({
-        let code = code.clone();
+    let together: Vec<_> = ["g1", "g2", "g3"]
+        .map(|name| {
+            tokio::spawn({
+                let code = code.clone();
 
-        async move { late_join(&code, name).await }
-    })).into_iter().collect();
+                async move { late_join(&code, name).await }
+            })
+        })
+        .into_iter()
+        .collect();
 
     for join in together {
         joins.push(join.await.expect("g"));
@@ -512,14 +955,23 @@ async fn late_viewers_see_the_screen_and_the_camera_within_a_second() {
 
     let late: Vec<String> = joins
         .iter()
-        .flat_map(|(name, screen, camera)| [("tela", screen), ("câmera", camera)].map(|(what, took)| (name, what, *took)))
+        .flat_map(|(name, screen, camera)| {
+            [("tela", screen), ("câmera", camera)].map(|(what, took)| (name, what, *took))
+        })
         .filter(|(_, _, took)| took.is_none_or(|took| took > Duration::from_secs(1)))
         .map(|(name, what, took)| format!("{name} {what}: {took:?}"))
         .collect();
 
     println!(
         "primeira imagem de quem entra atrasado (tela, câmera) em ms: {:?}",
-        joins.iter().map(|(name, screen, camera)| (name.as_str(), screen.map(|took| took.as_millis()), camera.map(|took| took.as_millis()))).collect::<Vec<_>>()
+        joins
+            .iter()
+            .map(|(name, screen, camera)| (
+                name.as_str(),
+                screen.map(|took| took.as_millis()),
+                camera.map(|took| took.as_millis())
+            ))
+            .collect::<Vec<_>>()
     );
 
     assert!(late.is_empty(), "passaram de 1 s: {late:?}");
@@ -534,7 +986,11 @@ async fn late_viewers_see_the_screen_and_the_camera_within_a_second() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "precisa do SFU, de uma tela X e de UNKVOID_KEYFRAME_SECONDS=4 — ver o topo do arquivo"]
 async fn five_percent_lost_on_the_way_in_never_holds_the_picture_for_a_second() {
-    assert_eq!(std::env::var("UNKVOID_KEYFRAME_SECONDS").as_deref(), Ok("4"), "com o GOP de 1 s o periódico tapa o buraco antes do pedido, e o teste não prova nada");
+    assert_eq!(
+        std::env::var("UNKVOID_KEYFRAME_SECONDS").as_deref(),
+        Ok("4"),
+        "com o GOP de 1 s o periódico tapa o buraco antes do pedido, e o teste não prova nada"
+    );
 
     let code = code("perda");
     let (sharer, _own, _) = enter(&code, "quem-mostra").await;
@@ -548,9 +1004,15 @@ async fn five_percent_lost_on_the_way_in_never_holds_the_picture_for_a_second() 
 
     let (viewer_room, media, _) = enter(&code, "quem-assiste").await;
     let viewer = Viewer::start(media);
-    let (screen, _) = tokio::task::block_in_place(|| wait_for(Duration::from_secs(5), || screen_of(&viewer_room))).expect("o cartão da tela apareceu");
+    let (screen, _) = tokio::task::block_in_place(|| {
+        wait_for(Duration::from_secs(5), || screen_of(&viewer_room))
+    })
+    .expect("o cartão da tela apareceu");
 
-    assert!(tokio::task::block_in_place(|| viewer.wait_images(&screen, 1, Duration::from_secs(3))), "a primeira imagem não chegou");
+    assert!(
+        tokio::task::block_in_place(|| viewer.wait_images(&screen, 1, Duration::from_secs(3))),
+        "a primeira imagem não chegou"
+    );
 
     // SAFETY: o mesmo; o receptor já leu.
     unsafe { std::env::remove_var("UNKVOID_LOSS") };
@@ -563,12 +1025,23 @@ async fn five_percent_lost_on_the_way_in_never_holds_the_picture_for_a_second() 
     let (fps, pause) = {
         let seen = viewer.seen.lock().expect("o visto");
 
-        (rate(&seen, &screen, from, to), longest_pause(&seen, &screen, from, to))
+        (
+            rate(&seen, &screen, from, to),
+            longest_pause(&seen, &screen, from, to),
+        )
     };
 
-    println!("5% de perda na chegada por 15 s: {fps:.1} imagens/s, maior parada {} ms; {:?}", pause.as_millis(), viewer_room.counters(&screen));
+    println!(
+        "5% de perda na chegada por 15 s: {fps:.1} imagens/s, maior parada {} ms; {:?}",
+        pause.as_millis(),
+        viewer_room.counters(&screen)
+    );
 
-    assert!(pause <= Duration::from_secs(1), "a imagem parou {} ms", pause.as_millis());
+    assert!(
+        pause <= Duration::from_secs(1),
+        "a imagem parou {} ms",
+        pause.as_millis()
+    );
     assert!(fps >= 24.0, "só {fps:.1} imagens por segundo");
 
     viewer_room.leave().await;
@@ -585,25 +1058,49 @@ async fn stopping_and_sharing_again_brings_the_picture_back() {
 
     sharer.share(share_config(30)).await.expect("compartilhou");
 
-    let (first, _) = tokio::task::block_in_place(|| wait_for(Duration::from_secs(5), || screen_of(&viewer_room))).expect("a primeira tela");
+    let (first, _) = tokio::task::block_in_place(|| {
+        wait_for(Duration::from_secs(5), || screen_of(&viewer_room))
+    })
+    .expect("a primeira tela");
 
-    assert!(tokio::task::block_in_place(|| viewer.wait_images(&first, 30, Duration::from_secs(4))));
+    assert!(tokio::task::block_in_place(|| viewer.wait_images(
+        &first,
+        30,
+        Duration::from_secs(4)
+    )));
 
     sharer.stop_sharing().await;
 
     assert!(
-        tokio::task::block_in_place(|| wait_for(Duration::from_secs(3), || screen_of(&viewer_room).is_none().then_some(()))).is_some(),
+        tokio::task::block_in_place(|| wait_for(Duration::from_secs(3), || screen_of(
+            &viewer_room
+        )
+        .is_none()
+        .then_some(())))
+        .is_some(),
         "o cartão da tela parada não saiu"
     );
 
-    sharer.share(share_config(30)).await.expect("compartilhou de novo");
+    sharer
+        .share(share_config(30))
+        .await
+        .expect("compartilhou de novo");
 
     let again = Instant::now();
-    let (second, _) = tokio::task::block_in_place(|| wait_for(Duration::from_secs(5), || screen_of(&viewer_room))).expect("a segunda tela");
+    let (second, _) = tokio::task::block_in_place(|| {
+        wait_for(Duration::from_secs(5), || screen_of(&viewer_room))
+    })
+    .expect("a segunda tela");
 
     assert_ne!(first, second, "a tela nova é outro producer");
-    assert!(tokio::task::block_in_place(|| viewer.wait_images(&second, 30, Duration::from_secs(4))), "a tela de novo não deu imagem");
-    println!("a imagem voltou {} ms depois de compartilhar de novo", again.elapsed().as_millis());
+    assert!(
+        tokio::task::block_in_place(|| viewer.wait_images(&second, 30, Duration::from_secs(4))),
+        "a tela de novo não deu imagem"
+    );
+    println!(
+        "a imagem voltou {} ms depois de compartilhar de novo",
+        again.elapsed().as_millis()
+    );
 
     viewer_room.leave().await;
     sharer.leave().await;
@@ -611,8 +1108,9 @@ async fn stopping_and_sharing_again_brings_the_picture_back() {
 
 /// Trocar o fps no meio refaz captura e encoder no mesmo producer: a imagem continua, e o
 /// relógio do RTP anda o tempo de verdade que a troca levou — não volta, nem anda um quadro só.
-/// O descompasso é a pior diferença, de um quadro para o seguinte, entre o que o relógio do RTP
-/// andou e o que o de cá andou: a rede local não segura nada, então é a troca que aparece nele.
+/// O descompasso é quanto a chegada, descontado o relógio do RTP, mudou da troca para cá, pelo
+/// quadro mais adiantado de cada lado: o ritmo da saída segura os quadros atrás de cada
+/// quadro-chave (100 KB da tela do Windows a 4 Mb/s são 200 ms), e o mais adiantado não esperou.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "precisa do SFU, de uma tela X e de um servidor de som — ver o topo do arquivo"]
 async fn a_quality_change_keeps_the_clock_and_the_picture() {
@@ -623,13 +1121,23 @@ async fn a_quality_change_keeps_the_clock_and_the_picture() {
 
     sharer.share(share_config(30)).await.expect("compartilhou");
 
-    let (screen, _) = tokio::task::block_in_place(|| wait_for(Duration::from_secs(5), || screen_of(&viewer_room))).expect("a tela");
+    let (screen, _) = tokio::task::block_in_place(|| {
+        wait_for(Duration::from_secs(5), || screen_of(&viewer_room))
+    })
+    .expect("a tela");
 
-    assert!(tokio::task::block_in_place(|| viewer.wait_images(&screen, 60, Duration::from_secs(5))));
+    assert!(tokio::task::block_in_place(|| viewer.wait_images(
+        &screen,
+        60,
+        Duration::from_secs(5)
+    )));
 
     let changed = Instant::now();
 
-    sharer.change_quality(capture::Quality::Hd720, 15, None).await.expect("trocou");
+    sharer
+        .change_quality(capture::Quality::Hd720, 15, None)
+        .await
+        .expect("trocou");
     tokio::time::sleep(Duration::from_secs(4)).await;
 
     {
@@ -638,22 +1146,40 @@ async fn a_quality_change_keeps_the_clock_and_the_picture() {
         let picture = &seen.pictures[&screen];
         let pause = longest_pause(&seen, &screen, changed - Duration::from_secs(1), now);
         let fps = rate(&seen, &screen, now - Duration::from_secs(2), now);
-        let drift = picture
-            .clock
-            .windows(2)
-            .map(|pair| {
-                let media = f64::from(pair[1].0.wrapping_sub(pair[0].0).cast_signed()) / 90_000.0;
-                let wall = pair[1].1.duration_since(pair[0].1).as_secs_f64();
+        let (first_rtp, first_arrival) = picture.clock[0];
+        let (mut rtp, mut previous) = (0_i64, first_rtp);
+        let (mut before, mut after) = (f64::INFINITY, f64::INFINITY);
 
-                ((wall - media) * 1000.0).abs()
-            })
-            .fold(0.0_f64, f64::max);
+        for &(timestamp, arrived) in &picture.clock {
+            rtp += i64::from(timestamp.wrapping_sub(previous).cast_signed());
+            previous = timestamp;
 
-        println!("depois da troca: {fps:.1} imagens/s, maior parada {} ms, pior descompasso do relógio {drift:.0} ms", pause.as_millis());
+            let late = arrived.duration_since(first_arrival).as_secs_f64() - rtp as f64 / 90_000.0;
+            let side = if arrived < changed { &mut before } else { &mut after };
 
-        assert!(pause < Duration::from_millis(1_500), "a imagem parou {} ms na troca", pause.as_millis());
-        assert!((12.0..=18.0).contains(&fps), "{fps:.1} imagens/s depois de pedir 15");
-        assert!(drift < 150.0, "o relógio do RTP descompassou {drift:.0} ms na troca");
+            *side = side.min(late);
+        }
+
+        let drift = (after - before).abs() * 1000.0;
+
+        println!(
+            "depois da troca: {fps:.1} imagens/s, maior parada {} ms, pior descompasso do relógio {drift:.0} ms",
+            pause.as_millis()
+        );
+
+        assert!(
+            pause < Duration::from_millis(1_500),
+            "a imagem parou {} ms na troca",
+            pause.as_millis()
+        );
+        assert!(
+            (12.0..=18.0).contains(&fps),
+            "{fps:.1} imagens/s depois de pedir 15"
+        );
+        assert!(
+            drift < 50.0,
+            "o relógio do RTP descompassou {drift:.0} ms na troca"
+        );
     }
 
     viewer_room.leave().await;
@@ -675,41 +1201,88 @@ async fn a_moved_person_leaves_for_good_and_shares_in_the_new_room() {
 
     moved.share(share_config(30)).await.expect("compartilhou");
 
-    let (screen, _) = tokio::task::block_in_place(|| wait_for(Duration::from_secs(5), || screen_of(&viewer_room))).expect("a tela");
+    let (screen, _) = tokio::task::block_in_place(|| {
+        wait_for(Duration::from_secs(5), || screen_of(&viewer_room))
+    })
+    .expect("a tela");
 
-    assert!(tokio::task::block_in_place(|| viewer.wait_images(&screen, 30, Duration::from_secs(4))));
+    assert!(tokio::task::block_in_place(|| viewer.wait_images(
+        &screen,
+        30,
+        Duration::from_secs(4)
+    )));
 
     let channel = "01jabcdefghjkmnpqrstvwxyz0";
-    let body = serde_json::json!({ "userId": "guest:ponta-a-ponta-quem-e-movido", "to": channel, "by": "moderador" }).to_string();
+    let body =
+        serde_json::json!({ "userId": "user:7001", "to": channel, "by": "moderador" }).to_string();
     let path = format!("/rooms/{origin}/kick");
     let answer = signed_post(&secret, &path, &body);
 
-    assert!(answer.contains("\"kicked\":1"), "o SFU não moveu ninguém: {answer}");
+    assert!(
+        answer.contains("\"kicked\":1"),
+        "o SFU não moveu ninguém: {answer}"
+    );
 
     let told = tokio::task::block_in_place(|| {
-        wait_for(Duration::from_secs(3), || heard.any(|event| event["event"] == "room.session" && event["data"]["state"] == "moved" && event["data"]["to"] == channel).then_some(()))
+        wait_for(Duration::from_secs(3), || {
+            heard
+                .any(|event| {
+                    event["event"] == "room.session"
+                        && event["data"]["state"] == "moved"
+                        && event["data"]["to"] == channel
+                })
+                .then_some(())
+        })
     });
 
-    assert!(told.is_some(), "a interface não soube que foi movida, nem para onde");
     assert!(
-        tokio::task::block_in_place(|| wait_for(Duration::from_secs(3), || screen_of(&viewer_room).is_none().then_some(()))).is_some(),
+        told.is_some(),
+        "a interface não soube que foi movida, nem para onde"
+    );
+    assert!(
+        tokio::task::block_in_place(|| wait_for(Duration::from_secs(3), || screen_of(
+            &viewer_room
+        )
+        .is_none()
+        .then_some(())))
+        .is_some(),
         "a tela de quem foi movido ficou na sala de origem"
     );
-    assert_eq!(moved.mine()["sharing"], false, "quem foi movido continuou transmitindo");
+    assert_eq!(
+        moved.mine()["sharing"],
+        false,
+        "quem foi movido continuou transmitindo"
+    );
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    assert!(!heard.any(|event| event["event"] == "room.session" && event["data"]["state"] == "rejoined"), "quem foi movido voltou sozinho para a origem");
+    assert!(
+        !heard
+            .any(|event| event["event"] == "room.session" && event["data"]["state"] == "rejoined"),
+        "quem foi movido voltou sozinho para a origem"
+    );
 
     let (arrived, _arrived_media, _) = enter(&destination, "quem-e-movido").await;
     let (follower, follower_media, _) = enter(&destination, "quem-segue").await;
     let following = Viewer::start(follower_media);
 
-    arrived.share(share_config(30)).await.expect("compartilhou no destino");
+    arrived
+        .share(share_config(30))
+        .await
+        .expect("compartilhou no destino");
 
-    let (new_screen, _) = tokio::task::block_in_place(|| wait_for(Duration::from_secs(5), || screen_of(&follower))).expect("a tela no destino");
+    let (new_screen, _) =
+        tokio::task::block_in_place(|| wait_for(Duration::from_secs(5), || screen_of(&follower)))
+            .expect("a tela no destino");
 
-    assert!(tokio::task::block_in_place(|| following.wait_images(&new_screen, 30, Duration::from_secs(4))), "a tela no destino não deu imagem");
+    assert!(
+        tokio::task::block_in_place(|| following.wait_images(
+            &new_screen,
+            30,
+            Duration::from_secs(4)
+        )),
+        "a tela no destino não deu imagem"
+    );
 
     follower.leave().await;
     arrived.leave().await;
@@ -718,7 +1291,11 @@ async fn a_moved_person_leaves_for_good_and_shares_in_the_new_room() {
 
 /// O `POST` assinado do Laravel para o SFU, pelo `curl` e pelo `openssl` da máquina.
 fn signed_post(secret: &str, path: &str, body: &str) -> String {
-    let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs().to_string();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string();
     let signed = format!("{timestamp}\nPOST\n{path}\n{body}");
     let mut openssl = std::process::Command::new("openssl")
         .args(["dgst", "-sha256", "-hmac", secret, "-hex"])
@@ -727,15 +1304,37 @@ fn signed_post(secret: &str, path: &str, body: &str) -> String {
         .spawn()
         .expect("o openssl abriu");
 
-    std::io::Write::write_all(&mut openssl.stdin.take().expect("a entrada"), signed.as_bytes()).expect("assinou");
+    std::io::Write::write_all(
+        &mut openssl.stdin.take().expect("a entrada"),
+        signed.as_bytes(),
+    )
+    .expect("assinou");
 
-    let digest = String::from_utf8(openssl.wait_with_output().expect("o openssl respondeu").stdout).expect("texto");
-    let signature = digest.trim().rsplit(' ').next().unwrap_or_default().to_owned();
-    let base = sfu().replace("ws://", "http://").replace("wss://", "https://");
+    let digest = String::from_utf8(
+        openssl
+            .wait_with_output()
+            .expect("o openssl respondeu")
+            .stdout,
+    )
+    .expect("texto");
+    let signature = digest
+        .trim()
+        .rsplit(' ')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let base = sfu()
+        .replace("ws://", "http://")
+        .replace("wss://", "https://");
     let origin = base.split("/sfu").next().unwrap_or_default().to_owned();
     let output = std::process::Command::new("curl")
         .args(["-s", "-X", "POST", "-H", "content-type: application/json"])
-        .args(["-H", &format!("x-unkvoid-timestamp: {timestamp}"), "-H", &format!("x-unkvoid-signature: {signature}")])
+        .args([
+            "-H",
+            &format!("x-unkvoid-timestamp: {timestamp}"),
+            "-H",
+            &format!("x-unkvoid-signature: {signature}"),
+        ])
         .args(["--data-binary", body, &format!("{origin}{path}")])
         .output()
         .expect("o curl respondeu");

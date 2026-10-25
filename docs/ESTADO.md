@@ -4,7 +4,35 @@ Só o que ainda não foi feito: o que foi escrito sem rodar em hardware, o que f
 perguntas que esperam o dono. O que já existe está no [README](../README.md) e na
 [ARQUITETURA.md](ARQUITETURA.md); o histórico está no git.
 
-Última revisão: 03/10/2026 (versão 0.1.16).
+Última revisão: 14/10/2026 (o app único em egui, fase 1).
+
+## O app único (egui), fase 1 — 14/10/2026
+
+Desde 13/10/2026 o app é um só, em Rust com egui (`native/apps/unkvoid`); Tauri, GTK e SwiftUI
+saíram, e a sala por código também (só servidores, como no Discord) — ela voltou em 24/10/2026,
+a pedido do dono, no `web/` e no `sfu/` como era antes. A fase 1 compila sem aviso
+do clippy e passa nos testes, mas **ninguém usou a janela ainda**: a tela estava bloqueada quando
+o build ficou pronto.
+
+O que a fase 1 tem: entrar (Google, e-mail e senha), trilho de servidores, canais com categorias,
+chat (agrupar, editar, apagar, histórico ao rolar), membros, amigos, mensagens diretas, convite,
+criar servidor, canal e categoria, sair do servidor, apelido, avisos e o botão verde da versão
+nova.
+
+O que ainda **não** está no app novo, e o app de antes tinha:
+
+- **Voz, tela, câmera e o palco** (fase 2; desenho em [VOZ.md](VOZ.md)). Os módulos de som,
+  aparelhos, palco e assistir continuam compilando, com os testes, à espera dela.
+- **Clips**: o motor (`shared/clips`) segue; a interface era Slint e volta em egui. A cola do
+  Windows dela (player, aviso por cima do jogo, recorte do Alt+Z, configurações) está no commit
+  `31504d4`, em `native/apps/windows/src/clips`.
+- **Bandeja, início com o Windows e atalhos globais** (fase da casca do desktop).
+- **Configurações** além de "Minha conta"; mandar imagem no chat; responder; reações.
+
+Corrigido junto: o replay preso na tela bloqueada reabria o Desktop Duplication a cada quadro e
+escrevia uma linha de log em cada volta (38 mil linhas em dez minutos, visto em 14/10 na 0.1.19).
+Agora a queda seguida espera 200 ms e o log tem uma linha na queda e outra na volta. A 0.1.19
+instalada segue com o defeito até a próxima versão.
 
 ## Escrito, mas nunca rodou em hardware
 
@@ -68,8 +96,8 @@ perguntas que esperam o dono. O que já existe está no [README](../README.md) e
   `keepalive-time` com tela parada, o fechamento da sessão). Provado só o caminho de falha. O
   roteiro está abaixo.
 
-- **O app Slint no Linux** (09/10/2026, `apps/windows`, o mesmo crate do Windows): compila,
-  passa nos testes e abre sob `xvfb` no contêiner (`apps/windows/Dockerfile`), com a Archivo
+- **O app Slint no Linux** (09/10/2026, `apps/unkvoid`, o mesmo crate do Windows): compila,
+  passa nos testes e abre sob `xvfb` no contêiner (`apps/unkvoid/Dockerfile`), com a Archivo
   embutida. O que só um Linux de verdade prova:
   - a janela num Wayland real (o contêiner é X11 pelo Xvfb) e o OpenGL de uma placa (lá é o
     `llvmpipe` do Mesa);
@@ -108,11 +136,7 @@ perguntas que esperam o dono. O que já existe está no [README](../README.md) e
 
 ### macOS
 
-- **O app nativo nunca foi publicado.** Ele roda e passa nos testes num Mac (21/09/2026), mas não
-  há `.dmg` nem release (os PRs #30 e #31, toques e `.dmg` sem assinatura, estão abertos).
-- Encoder por software em 720p30 quando o VideoToolbox não usa a placa
-  (`UsingHardwareAcceleratedVideoEncoder`), a largura da tela Retina em pontos ou pixels, e o
-  `set_bitrate` do VideoToolbox (sem teto de rajada).
+- O app único ainda não tem implementação nem pacote para macOS.
 
 ### As três peças
 
@@ -122,7 +146,7 @@ perguntas que esperam o dono. O que já existe está no [README](../README.md) e
 
 ## O que falta fazer
 
-- **macOS:** o `.dmg`, a publicação de `darwin-aarch64` e a atualização sozinha.
+- **macOS:** implementar o alvo no app único, criar o pacote e publicar `darwin-aarch64`.
 - **Assinatura de código:** nenhum instalador leva assinatura de editor, e o Windows avisa que o
   editor é desconhecido. Decidido não pagar certificado por ora (28/09/2026); a SignPath reprovou o
   projeto. A saída grátis no Windows é a Microsoft Store, que assina o pacote. Quando houver
@@ -132,8 +156,7 @@ perguntas que esperam o dono. O que já existe está no [README](../README.md) e
   Clips; no Linux o `webrtcdsp` roda com `echo-cancel=false` (o eco exige a sonda no mesmo processo
   que toca o som), e o Ubuntu 24.04 nem distribui o `webrtcdsp`.
 - **Windows:** a câmera; o Discord aberto **no navegador** e mixers fora de `RELAYS` continuam
-  vazando som na transmissão (a exclusão é por nome de executável); o `logbook.rs` do app ainda é
-  próprio, enquanto o Linux já usa o `core_app::logbook` (unificar).
+  vazando som na transmissão (a exclusão é por nome de executável).
 - **Linux, captura:** a conversão de cor na CPU (`videoconvert`; o caminho é `cudaconvert` ou
   `vapostproc`); o app não percebe o "parar de compartilhar" do indicador do sistema; o seletor do
   portal pode aparecer atrás do app; em monitor com escala o portal informa o tamanho lógico.

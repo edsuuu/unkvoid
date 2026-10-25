@@ -62,15 +62,14 @@ bate mais.
 
 ### WebSocket — `src/Routers/WebSocketRouter.ts`
 
-Tudo o mais é WebSocket em `/sfu`, e **não** passa pelo Express. São 20 ações: `join`,
-`leave`, `ping`, `removePeer`, `identify`, `subscribe`, `unsubscribe`, `createTransport`,
-`connectTransport`, `produce`, `producePlain`, `pauseProducer`, `resumeProducer`,
-`closeProducer`, `consume`, `consumePlain`, `pauseConsumer`, `resumeConsumer`, `closeConsumer`,
-`voiceState`.
+Tudo o mais é WebSocket em `/sfu`, e **não** passa pelo Express. O app usa `join`, `leave`,
+`ping`, `removePeer`, `identify`, `subscribe`, `unsubscribe`, `producePlain`, `pauseProducer`,
+`resumeProducer`, `closeProducer`, `consumePlain`, `pauseConsumer`, `resumeConsumer`,
+`closeConsumer` e `voiceState`.
 
 Abertas sem estar numa sala: `join`, `ping` e as três do tempo real (`identify`, `subscribe`,
-`unsubscribe`). As outras exigem sessão. O app nativo usa as de RTP puro (`producePlain`,
-`consumePlain`); `createTransport`, `produce` e `consume` são do WebRTC do app Tauri de antes.
+`unsubscribe`). As outras exigem sessão. O app nativo usa as ações de RTP puro (`producePlain`,
+`consumePlain`).
 
 ## Rodar local
 
@@ -90,21 +89,6 @@ SFU_SECRET=<o do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node dist/serve
 ```
 
 Duas máquinas na mesma rede: `SFU_HOST=0.0.0.0 SFU_ANNOUNCED_ADDRESS=<o IP>`.
-
-## CORS
-
-Só importa para a interface React rodando no navegador (`npm run dev` em
-`native/apps/desktop`): os apps nativos não são navegador. Em produção quem põe o cabeçalho é o
-nginx (`location = /health`). Local **não há nginx no caminho**: a interface está em
-`http://localhost:1420` e fala direto com a porta 3000, e sem o cabeçalho o navegador recusa a
-resposta.
-
-```bash
-CORS_URL=http://localhost:1420,https://unkvoid.com
-```
-
-Sem a variável vale `*`. A assinatura HMAC não é afetada: CORS é regra de navegador, e
-quem chama as rotas assinadas é o Laravel, de servidor para servidor.
 
 ## Ambiente
 

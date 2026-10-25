@@ -20,31 +20,27 @@ vez. Mudança que quebre uma dessas três coisas não entra, por melhor que seja
 
 | Pasta | O quê | Pilha |
 |---|---|---|
-| `native/` | o app: núcleo, captura, encoder, interface | Rust; Slint (Windows), GTK4 (Linux), SwiftUI (macOS) |
+| `native/` | o app: núcleo, captura, encoder, interface e publicação | Rust; app único provisoriamente em `apps/unkvoid`, depois `apps/unkvoid` |
 | `sfu/` | o relé de mídia | Node 22, mediasoup, pnpm |
 | `web/` | site, contas, servidores, chat, auditoria | Laravel 13, Livewire 4, Flux, Pest |
 
-O app Tauri + React de antes (`native/apps/desktop`) fica como referência de comportamento e não
-é mais publicado.
-
 Mudança que toca uma peça só fica dentro da pasta dela. Mudança que atravessa a rede (rota,
-evento, token, ação do SFU, ABI do macOS) **começa pelo contrato**: primeiro o `docs/CONTRATO.md`,
-depois o código das peças.
+evento, token ou ação do SFU) **começa pelo contrato**: primeiro o `docs/CONTRATO.md`, depois o
+código das peças.
 
 ## Ambiente
 
 - **Rust** (rustup, toolchain padrão) e **cmake** (o Opus compila com ele; sem ele o clippy morre
   no `opusic-sys` com uma mensagem que não diz isso).
-- **Node 22+** e `pnpm`, para o SFU (e o `npm` do app Tauri de antes).
+- **Node 22+** e `pnpm`, para o SFU.
 - **PHP 8.4** e **Composer** para o Laravel.
 - **Docker** para MySQL, MinIO e e-mail de teste: `infra/docker-compose.yml` é o da VPS; local,
   bastam um MySQL em `127.0.0.1:3306` (`root`/`root`) e um MinIO em `127.0.0.1:9000`, que é o
   que o `web/.env.example` espera.
-- **Linux:** `libgtk-4-dev libdbus-1-dev build-essential`, `gstreamer1.0-tools` com os plugins
-  good/bad/ugly, e o `pactl`. Ver [docs/BUILD-LINUX.md](docs/BUILD-LINUX.md).
+- **Linux:** Docker para gerar o `.deb`; as dependências do app estão em
+  [docs/BUILD-LINUX.md](docs/BUILD-LINUX.md).
 - **Windows:** Visual Studio Build Tools com "Desenvolvimento para desktop com C++". Não compila
   de dentro do WSL: veja [docs/BUILD-WINDOWS.md](docs/BUILD-WINDOWS.md).
-- **macOS:** Xcode Command Line Tools; veja [docs/BUILD-MACOS.md](docs/BUILD-MACOS.md).
 
 ## Rodar tudo local
 
@@ -58,9 +54,7 @@ cd sfu && pnpm install && pnpm run build
 cd sfu && SFU_SECRET=<o do web/.env> SFU_LARAVEL_URL=http://127.0.0.1:8000 node dist/server.js
 
 # O app apontando para o Laravel local (a URL do SFU vem do GET /api/config)
-cd native && UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid-windows   # no Windows
-cd native && UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid-linux     # no Linux
-cd native/apps/macos && ./run.sh                                                  # no Mac
+cd native && UNKVOID_SERVER=http://127.0.0.1:8000 cargo run -p unkvoid   # app único; o diretório ainda se chama apps/unkvoid
 
 # Sem interface: entrar numa sala e transmitir ou contar o que chega
 cd native && cargo run -p core-app --example room -- ws://127.0.0.1:3000/sfu sala-de-teste share
@@ -79,11 +73,8 @@ cd web && composer check          # phpstan max + pint + rector + pest em SQLite
 
 cd sfu && pnpm run check && pnpm run typecheck && pnpm run build
 
-cd native && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # no Linux
-cd native && cargo clippy --workspace --exclude unkvoid-linux --all-targets -- -D warnings      # no Windows (o GTK não compila lá)
-cd native/apps/macos && ./run.sh test                                                            # no Mac, contra a pilha local
-
-cd native/apps/desktop && npm run check && npm run build   # só se mexeu no app Tauri de antes
+cd native && cargo clippy -p unkvoid --all-targets -- -D warnings && cargo test -p unkvoid
+python3 native/tests/static/check-language.py
 ```
 
 Comportamento novo vem com teste: Pest (Feature, nome em frase, e o negativo de autorização é
@@ -97,10 +88,9 @@ melhor um item honesto ali do que um "funciona" que ninguém viu.
 ## Como escrever código aqui
 
 - **Código 100% em inglês**: pastas, classes, métodos, variáveis, colunas, env. Português só em
-  caminho de rota, texto de interface e comentário. `native/apps/desktop/tests/static/check-language.py`
+  caminho de rota, texto de interface e comentário. `native/tests/static/check-language.py`
   varre o repositório e falha.
-- **Comentário explica o porquê**, nunca o quê, e só onde o nome não dá conta. Na interface do
-  app Tauri (`native/apps/desktop/ui`) não há comentário nenhum, e o `check-ui.py` cobra.
+- **Comentário explica o porquê**, nunca o quê, e só onde o nome não dá conta.
 - **Nada de abreviar variável**: `$exception`, não `$e`.
 - **PHP:** `declare(strict_types=1)`, classes `final`, early return, rota → FormRequest →
   controller → Resource, um controller por recurso, autorização no modelo, escrita em
@@ -110,7 +100,7 @@ melhor um item honesto ali do que um "funciona" que ninguém viu.
   linhas longas; o formatador reescreve dezenas de linhas alheias.
 - **Regra de negócio não mora em pasta de sistema** (`native/apps/*`): se o Windows vai precisar
   igual, sobe para o `native/shared/core`.
-- **TypeScript** (o SFU e o app Tauri): estrito, uma classe por arquivo.
+- **TypeScript** (o SFU): estrito, uma classe por arquivo.
 - **Atalho deliberado** ganha comentário `ponytail:` dizendo o teto e o caminho de saída.
 - O mínimo que resolve. Dependência nova só quando algumas linhas não dão conta.
 

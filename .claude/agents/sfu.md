@@ -42,6 +42,8 @@ Laravel: quem ouve que canal é o Laravel que responde em `/api/sfu/authorize`).
   Token de outra conta não retoma.
 - **Sala anônima** entra sem token como `guest:<installId>` com `can` cheio e **recusa sala de 26
   caracteres** (o formato do ULID de canal).
+- **Entrada na voz** de canal só aceita token com `room` no ULID minúsculo do canal. O Laravel
+  assina o `sub` como `user:<id>`.
 - **RTP puro do app nativo** (`producePlain`/`consumePlain`, PlainTransport com `comedia` e SRTP):
   um transporte de envio e um de chegada por peer, até quatro SSRC (um por origem). **Chave
   nova troca o transporte** (o `comedia` prende o primeiro endereço; é assim que o app refaz o
@@ -68,7 +70,7 @@ Laravel: quem ouve que canal é o Laravel que responde em `/api/sfu/authorize`).
 cd sfu && pnpm run check && pnpm run build                         # eslint + tsc
 cd sfu && SFU_SECRET=<o do servidor no ar> node --test check-realtime.mjs   # o tempo real
 cd native && cargo run -p core-app --example room -- ws://127.0.0.1:3000/sfu <sala> share|watch   # a mídia de ponta a ponta
-python3 native/apps/desktop/tests/static/check-language.py
+python3 native/tests/static/check-language.py
 ```
 
 ## Armadilhas já pagas

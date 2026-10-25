@@ -7,6 +7,7 @@
 use capture::Quality;
 
 mod audio;
+mod e2ee;
 mod governor;
 mod pacer;
 mod plain;
@@ -28,8 +29,9 @@ mod windows_decoder;
 mod linux_decoder;
 
 pub use audio::{AudioEncoder, FRAME_MS};
+pub use e2ee::{DecryptedPayload, E2eeError, Epoch, FrameMetadata, MEDIA_KEY_LEN, MediaReceiveWindow, MediaReceiver, MediaSender, Origin, PREVIOUS_EPOCH_WINDOW, Policy, frame_metadata};
 pub use governor::BitrateGovernor;
-pub use plain::{Feedback, PlainSender, Source};
+pub use plain::{Feedback, PlainSender, Source, e2ee_frame_cost_snapshot};
 pub use playout::Playout;
 pub use receiver::{PlainReceiver, Rtx, Stream, grow_receive_buffer, resolve};
 pub use recovery::Counters;
@@ -106,7 +108,7 @@ pub struct EncodedFrame {
 #[derive(Debug, Clone)]
 pub struct EncoderConfig {
     pub quality: Quality,
-    /// O tamanho de saída: a largura da qualidade e a altura na proporção da origem —
+    /// O tamanho de saída: a altura da qualidade e a largura na proporção da origem —
     /// ver `Quality::fit`. É o que o encoder recebe; a qualidade sozinha não basta.
     pub width: u32,
     pub height: u32,
@@ -386,7 +388,7 @@ mod tests {
     fn the_cpu_ceiling_is_720p30_in_the_source_aspect() {
         let ultrawide = EncoderConfig::new(Quality::Hd1080, 60, (3440, 1440)).for_cpu();
 
-        assert_eq!((ultrawide.width, ultrawide.height), (1280, 534));
+        assert_eq!((ultrawide.width, ultrawide.height), (1720, 720));
         assert_eq!(ultrawide.frame_rate, 30.0);
         assert_eq!(ultrawide.bitrate, EncoderConfig::new(Quality::Hd720, 30, FULL_HD).bitrate);
 
@@ -423,6 +425,6 @@ mod tests {
     fn the_output_follows_the_source_aspect() {
         let ultrawide = EncoderConfig::new(Quality::Hd1080, 60, (3440, 1440));
 
-        assert_eq!((ultrawide.width, ultrawide.height), (1920, 802));
+        assert_eq!((ultrawide.width, ultrawide.height), (2580, 1080));
     }
 }

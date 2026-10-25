@@ -14,6 +14,10 @@ export const config = {
     listenPort: Number(process.env.SFU_PORT ?? 3000),
     path: process.env.SFU_PATH ?? '/sfu',
     announcedAddress: process.env.SFU_ANNOUNCED_ADDRESS ?? '127.0.0.1',
+    // A mídia escuta em todas as interfaces mesmo com o HTTP atrás do nginx em loopback: é o
+    // UDP/TCP que os clientes de fora alcançam. Em desenvolvimento, 127.0.0.1 evita o pedido
+    // do Firewall do Windows.
+    mediaHost: process.env.SFU_MEDIA_HOST ?? '0.0.0.0',
     appVersion: process.env.SFU_APP_VERSION ?? '0.0.3',
 
     laravelUrl: process.env.SFU_LARAVEL_URL ?? '',

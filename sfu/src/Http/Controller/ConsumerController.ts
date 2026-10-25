@@ -45,6 +45,9 @@ export class ConsumerController {
             peerId: owner.peer.id,
             name: owner.peer.name,
             source: String(owner.producer.appData.source),
+            ...(typeof owner.producer.appData.e2eeMemberId === 'string'
+                ? { e2eeMemberId: owner.producer.appData.e2eeMemberId }
+                : {}),
         };
     }
 
@@ -90,6 +93,9 @@ export class ConsumerController {
             peerId: owner.peer.id,
             name: owner.peer.name,
             source: String(owner.producer.appData.source),
+            ...(typeof owner.producer.appData.e2eeMemberId === 'string'
+                ? { e2eeMemberId: owner.producer.appData.e2eeMemberId }
+                : {}),
             receiving: owner.producer.appData.receiving === true,
         };
     }

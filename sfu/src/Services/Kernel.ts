@@ -8,6 +8,7 @@ import {
     UnauthorizedException,
 } from '../Exceptions/ApiException.js';
 import { ConsumerController } from '../Http/Controller/ConsumerController.js';
+import { E2eeController } from '../Http/Controller/E2eeController.js';
 import { JoinController } from '../Http/Controller/JoinController.js';
 import { LeaveController } from '../Http/Controller/LeaveController.js';
 import { PeerController } from '../Http/Controller/PeerController.js';
@@ -32,6 +33,7 @@ export class Kernel {
             producer: new ProducerController(),
             peer: new PeerController(broadcaster),
             consumer: new ConsumerController(),
+            e2ee: new E2eeController(),
             subscription: new SubscriptionController(subscriptions, broadcaster),
         });
     }
@@ -47,7 +49,7 @@ export class Kernel {
             throw new NotFoundException(`unknown action: ${action}`);
         }
 
-        if (!route.guest && !session.peer) {
+        if (route.requiresPeer !== false && !session.peer) {
             throw new UnauthorizedException('join a room before this action');
         }
 

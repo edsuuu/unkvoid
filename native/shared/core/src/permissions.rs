@@ -27,6 +27,7 @@ pub const VIDEO: i64 = 1 << 14;
 pub const MUTE_MEMBERS: i64 = 1 << 15;
 pub const DEAFEN_MEMBERS: i64 = 1 << 16;
 pub const MOVE_MEMBERS: i64 = 1 << 17;
+pub const MANAGE_EXPRESSIONS: i64 = 1 << 18;
 
 /// O nome que a interface lê e o bit que ele vale.
 const NAMES: &[(&str, i64)] = &[
@@ -42,6 +43,7 @@ const NAMES: &[(&str, i64)] = &[
     ("muteMembers", MUTE_MEMBERS),
     ("deafenMembers", DEAFEN_MEMBERS),
     ("moveMembers", MOVE_MEMBERS),
+    ("manageExpressions", MANAGE_EXPRESSIONS),
 ];
 
 /// Administrador tem tudo, como no cálculo do servidor.

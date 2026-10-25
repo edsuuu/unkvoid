@@ -18,8 +18,9 @@ mod secret;
 
 pub use secret::Cipher;
 
-/// O mesmo identificador do bundle, para cair na pasta que o instalador já usa.
-const APP_DIR: &str = "com.unkvoid.desktop";
+/// O mesmo identificador do bundle, para cair na pasta que o instalador já usa. O beta tem a
+/// dele: lendo a do instalado, ele não abriria o token de lá e o apagaria como inválido.
+pub const APP_DIR: &str = if cfg!(feature = "beta") { "com.unkvoid.beta" } else { "com.unkvoid.desktop" };
 
 const FILE: &str = "state.json";
 

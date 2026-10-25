@@ -10,6 +10,7 @@ export type ProducerDescription = {
     kind: string;
     source: string;
     paused: boolean;
+    e2eeMemberId?: string;
 };
 
 export class Peer {
@@ -149,6 +150,9 @@ export class Peer {
             kind: producer.kind,
             source: String(producer.appData.source),
             paused: producer.paused,
+            ...(typeof producer.appData.e2eeMemberId === 'string'
+                ? { e2eeMemberId: producer.appData.e2eeMemberId }
+                : {}),
         }));
     }
 

@@ -27,6 +27,8 @@ enum PermissionEnum: int
     case MuteMembers = 1 << 15;
     case DeafenMembers = 1 << 16;
     case MoveMembers = 1 << 17;
+    // Enviar e apagar os sons do soundboard do servidor.
+    case ManageExpressions = 1 << 18;
 
     public static function everyoneDefault(): int
     {

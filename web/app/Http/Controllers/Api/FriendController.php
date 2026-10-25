@@ -32,6 +32,11 @@ final class FriendController
         return new FriendResource(Friendship::requestByEmail($user, $request->string('email')->toString()));
     }
 
+    public function storeUser(User $target, #[CurrentUser] User $user): FriendResource
+    {
+        return new FriendResource(Friendship::request($user, $target)->load(['requester', 'addressee']));
+    }
+
     /**
      * @throws Throwable
      */

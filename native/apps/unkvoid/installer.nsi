@@ -1,0 +1,187 @@
+; O instalador do app nativo do Windows.
+;
+; Ele ocupa o lugar exato do app do Tauri — a mesma pasta, o mesmo `unkvoid-desktop.exe`, a
+; mesma chave de desinstalação e o mesmo AppUserModelID —, e é isso que migra quem ainda tem o Tauri: o atualizador
+; dele baixa este instalador, confere a assinatura com a mesma chave e o abre com
+; `/P /UPDATE /R /ARGS …`. O mesmo nome de arquivo mantém o atalho do menu Iniciar e o app
+; fixado na barra de tarefas apontando para o lugar certo.
+;
+; Só há a página do progresso. `/P` do atualizador antigo é aceito sem tornar a instalação
+; silenciosa: o NSIS mostra o progresso, e `/S` continua sendo a opção silenciosa dele.
+; `/BACKGROUND` reabre o app só na bandeja: é o
+; que o atualizador passa quando a troca acontece com o app escondido (aberto no logon).
+;
+; Ele também absorve o UnkvoidClips, o replay que era um app separado e agora é a aba Clips
+; daqui: tira o app antigo e deixa os clipes e as escolhas, que o Unkvoid importa.
+;
+;   makensis /DVERSION=0.1.0-beta /DBINARY=…\unkvoid.exe /DICON=…\icon.ico /DOUTFILE=…\setup.exe installer.nsi
+
+Unicode true
+ManifestDPIAware true
+SetCompressor /SOLID lzma
+
+!include "LogicLib.nsh"
+!include "FileFunc.nsh"
+!include "x64.nsh"
+
+!define PRODUCT "Unkvoid"
+!define EXE "unkvoid-desktop.exe"
+!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT}"
+
+Name "${PRODUCT}"
+OutFile "${OUTFILE}"
+Icon "${ICON}"
+UninstallIcon "${ICON}"
+InstallDir "$PROGRAMFILES64\${PRODUCT}"
+RequestExecutionLevel admin
+AutoCloseWindow true
+ShowInstDetails nevershow
+ShowUninstDetails nevershow
+BrandingText "${PRODUCT} ${VERSION}"
+
+Page instfiles
+UninstPage instfiles
+
+Function .onInit
+  ${IfNot} ${RunningX64}
+    MessageBox MB_OK|MB_ICONSTOP "O Unkvoid só roda no Windows de 64 bits." /SD IDOK
+    Abort
+  ${EndIf}
+
+  SetRegView 64
+  SetShellVarContext all
+FunctionEnd
+
+Function un.onInit
+  SetRegView 64
+  SetShellVarContext all
+FunctionEnd
+
+; O app importa o Media Foundation, que é o encoder, e ele falta nas edições N e KN — sem ele
+; o Windows nem abre o .exe. O instalador é de 32 bits: `Sysnative` é o System32 de verdade
+; visto daqui, e o DISM de 32 bits se recusa a mexer num Windows de 64.
+Function MediaFeaturePack
+  ${If} ${FileExists} "$WINDIR\Sysnative\mfplat.dll"
+    Return
+  ${EndIf}
+
+  ${If} ${Cmd} `MessageBox MB_YESNO|MB_ICONEXCLAMATION "Este Windows está sem o Media Feature Pack, e o Unkvoid não abre sem ele.$\n$\nInstalar agora pelo Windows Update? Precisa de internet e pode levar alguns minutos." /SD IDNO IDYES`
+    DetailPrint "Instalando o Media Feature Pack..."
+    nsExec::ExecToLog `"$WINDIR\Sysnative\dism.exe" /Online /NoRestart /Add-Capability /CapabilityName:Media.MediaFeaturePack~~~~0.0.1.0`
+    Pop $0
+
+    ; 3010 é sucesso pedindo reinício; "error" e "timeout" chegam como texto.
+    ${If} $0 == 3010
+      MessageBox MB_OK|MB_ICONINFORMATION "Media Feature Pack instalado. Reinicie o computador antes de abrir o Unkvoid." /SD IDOK
+    ${ElseIf} $0 != 0
+      MessageBox MB_OK|MB_ICONSTOP "Não deu para instalar o Media Feature Pack (código $0). Instale em Configurações > Aplicativos > Recursos opcionais > Media Feature Pack." /SD IDOK
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+; O UnkvoidClips virou a aba Clips: os dois abertos gravariam a tela duas vezes e brigariam
+; pelos mesmos atalhos. Sai o app, a tarefa do logon e o buffer de replay (gigas de vídeo que
+; já não servem); ficam os clipes, a pasta escolhida e o `settings.json`, que o Unkvoid lê
+; na primeira vez.
+Function RemoveUnkvoidClips
+  nsExec::Exec `taskkill /F /T /IM UnkvoidClips.exe`
+  Pop $0
+  nsExec::Exec `schtasks /Delete /F /TN "UnkvoidClips"`
+  Pop $0
+
+  Delete "$PROGRAMFILES64\UnkvoidClips\UnkvoidClips.exe"
+  Delete "$PROGRAMFILES64\UnkvoidClips\uninstall.exe"
+  RMDir "$PROGRAMFILES64\UnkvoidClips"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\UnkvoidClips"
+
+  ; O UnkvoidClips punha os atalhos e o buffer na conta de quem instalou.
+  SetShellVarContext current
+  Delete "$SMPROGRAMS\UnkvoidClips.lnk"
+  Delete "$DESKTOP\UnkvoidClips.lnk"
+  RMDir /r "$LOCALAPPDATA\UnkvoidClips\buffer"
+  SetShellVarContext all
+FunctionEnd
+
+Section
+  Call MediaFeaturePack
+  Call RemoveUnkvoidClips
+
+  ; O app aberto trava o .exe. O atualizador sai sozinho logo depois de abrir o instalador,
+  ; mas não espera por nós; quem abriu à mão também está aqui.
+  nsExec::Exec `taskkill /F /T /IM ${EXE}`
+  Pop $0
+  Sleep 800
+
+  SetOutPath "$INSTDIR"
+  File "/oname=${EXE}" "${BINARY}"
+  WriteUninstaller "$INSTDIR\uninstall.exe"
+
+  CreateShortcut "$SMPROGRAMS\${PRODUCT}.lnk" "$INSTDIR\${EXE}"
+
+  ; Na atualização o atalho da área de trabalho fica como a pessoa deixou: quem o apagou não
+  ; quer vê-lo de volta a cada versão.
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/UPDATE" $R1
+  ${If} ${Errors}
+    CreateShortcut "$DESKTOP\${PRODUCT}.lnk" "$INSTDIR\${EXE}"
+  ${EndIf}
+
+  WriteRegStr HKLM "Software\unkvoid\${PRODUCT}" "" "$INSTDIR"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT}"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayIcon" '"$INSTDIR\${EXE}"'
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "Publisher" "${PRODUCT}"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "MainBinaryName" "${EXE}"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "InstallLocation" '"$INSTDIR"'
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "URLInfoAbout" "https://unkvoid.com"
+  WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoModify" 1
+  WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoRepair" 1
+
+  ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
+  IntFmt $0 "0x%08X" $0
+  WriteRegDWORD HKLM "${UNINSTALL_KEY}" "EstimatedSize" "$0"
+
+  ; Abre o app no fim — menos no silencioso sem `/R`, que é instalação por script. Direto
+  ; daqui: o app pede o nível mais alto da conta (os Clips precisam), e aberto pelo instalador
+  ; ele herda o nível sem outro UAC.
+  ClearErrors
+  ${GetOptions} $R0 "/R" $R1
+  ${IfNot} ${Errors}
+  ${OrIfNot} ${Silent}
+    ClearErrors
+    ${GetOptions} $R0 "/BACKGROUND" $R1
+    ${If} ${Errors}
+      Exec `"$INSTDIR\${EXE}"`
+    ${Else}
+      Exec `"$INSTDIR\${EXE}" --background`
+    ${EndIf}
+  ${EndIf}
+SectionEnd
+
+Section "Uninstall"
+  nsExec::Exec `taskkill /F /T /IM ${EXE}`
+  Pop $0
+  ; A tarefa que o app cria para abrir no logon (a opção "Iniciar com o Windows" dos Clips).
+  nsExec::Exec `schtasks /Delete /F /TN "${PRODUCT}"`
+  Pop $0
+  Sleep 800
+
+  Delete "$INSTDIR\${EXE}"
+  Delete "$INSTDIR\uninstall.exe"
+  RMDir "$INSTDIR"
+
+  Delete "$SMPROGRAMS\${PRODUCT}.lnk"
+  Delete "$DESKTOP\${PRODUCT}.lnk"
+
+  DeleteRegKey HKLM "${UNINSTALL_KEY}"
+  DeleteRegKey HKLM "Software\unkvoid\${PRODUCT}"
+  DeleteRegKey /ifempty HKLM "Software\unkvoid"
+
+  ; O buffer do replay é só desta máquina e pode ter gigas. Os clipes salvos ficam.
+  SetShellVarContext current
+  RMDir /r "$LOCALAPPDATA\com.unkvoid.desktop\clips-buffer"
+  SetShellVarContext all
+SectionEnd

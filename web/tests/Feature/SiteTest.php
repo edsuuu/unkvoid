@@ -125,6 +125,7 @@ it('abre a página inicial com o download', function (): void {
     $this->get(route('home'))
         ->assertOk()
         ->assertSee('Baixar Unkvoid')
+        ->assertSee('apps.microsoft.com/detail/9NGPGTV3NPLW', false)
         ->assertSee('apt install unkvoid');
 });
 
@@ -138,4 +139,54 @@ it('abre os termos de uso', function (): void {
     $this->get(route('terms'))
         ->assertOk()
         ->assertSee('Termos de uso');
+});
+
+it('abre as páginas públicas da documentação', function (string $url, string $title): void {
+    $this->get($url)
+        ->assertOk()
+        ->assertSee($title);
+})->with([
+    ['/documentacao', 'O que é o Unkvoid'],
+    ['/documentacao/guia/baixar-e-atualizar', 'Baixar e atualizar'],
+    ['/documentacao/guia/primeiros-passos', 'Primeiros passos'],
+    ['/documentacao/guia/usar-um-servidor', 'Como usar um servidor'],
+    ['/documentacao/guia/voz-tela-e-camera', 'Voz, tela e câmera'],
+    ['/documentacao/guia/clips', 'replay instantâneo local'],
+    ['/documentacao/referencia/como-conecta', 'Como o Unkvoid conecta'],
+    ['/documentacao/referencia/privacidade-e-seguranca', 'Privacidade e segurança'],
+    ['/documentacao/referencia/cargos-e-permissoes', 'Cargos e permissões'],
+    ['/documentacao/referencia/canais-e-chat', 'Canais e chat'],
+    ['/documentacao/referencia/configuracoes-e-arquivos', 'Configurações e arquivos'],
+    ['/documentacao/referencia/api-para-integracoes', 'API para integrações'],
+]);
+
+it('responde 404 para uma página de documentação inexistente', function (): void {
+    $this->get('/documentacao/guia/nao-existe')->assertNotFound();
+});
+
+it('ordena a barra lateral pela configuração da documentação', function (): void {
+    $this->get('/documentacao/referencia/como-conecta')
+        ->assertOk()
+        ->assertSeeInOrder([
+            'Guia',
+            'O que é o Unkvoid',
+            'Baixar e atualizar',
+            'Primeiros passos',
+            'Como usar um servidor',
+            'Voz, tela e câmera',
+            'Clips',
+            'Referência',
+            'Como o Unkvoid conecta',
+            'Privacidade e segurança',
+            'Cargos e permissões',
+            'Canais e chat',
+            'Configurações e arquivos',
+            'API para integrações',
+        ]);
+});
+
+it('mostra o link da documentação no cabeçalho e no rodapé', function (): void {
+    $response = $this->get(route('home'))->assertOk();
+
+    expect(mb_substr_count((string) $response->getContent(), route('documentation.index')))->toBe(2);
 });

@@ -34,7 +34,8 @@ final class Index extends Component
                 'macOS' => $link(ReleasePlatformEnum::MacosDmg),
                 'Windows' => $link(ReleasePlatformEnum::WindowsNsis) ?? $link(ReleasePlatformEnum::WindowsMsi),
                 'WindowsExe' => $link(ReleasePlatformEnum::WindowsNsis),
-                'WindowsMsi' => $link(ReleasePlatformEnum::WindowsMsi),
+                // `mode=direct` abre o app da Store no Windows; fora dele, a página do produto.
+                'WindowsStore' => 'https://apps.microsoft.com/detail/9NGPGTV3NPLW?mode=direct',
                 'Linux' => $link(ReleasePlatformEnum::LinuxDeb),
             ],
             'aptUrl' => $aptUrl,
@@ -44,9 +45,9 @@ final class Index extends Component
                 'sudo apt update && sudo apt install unkvoid',
             ]),
             'steps' => [
-                ['number' => '01', 'title' => 'Crie uma sala', 'text' => 'Abra o app, escreva seu nome e crie uma sala. Sai um código de 12 caracteres.', 'footLabel' => 'Código da sala', 'footValue' => 'k3m9xq2vt7bd'],
-                ['number' => '02', 'title' => 'Envie o código', 'text' => 'Quem colar o código entra. Sem conta, sem cadastro, sem link de reunião e sem chat.', 'footLabel' => 'O que é preciso', 'footValue' => 'só o código'],
-                ['number' => '03', 'title' => 'Transmita', 'text' => 'Todo mundo vê a tela de quem estiver transmitindo. A sala deixa de existir quando a última pessoa sai.', 'footLabel' => 'Qualidade', 'footValue' => 'até 1440p60'],
+                ['number' => '01', 'title' => 'Crie um servidor', 'text' => 'Abra o app, entre na sua conta e crie um servidor para o seu grupo.', 'footLabel' => 'Organização', 'footValue' => 'canais e cargos'],
+                ['number' => '02', 'title' => 'Convide as pessoas', 'text' => 'Mande o convite do servidor. Cada pessoa entra com a própria conta.', 'footLabel' => 'Controle', 'footValue' => 'permissões'],
+                ['number' => '03', 'title' => 'Entre em voz e transmita', 'text' => 'No canal de voz, compartilhe a tela com todo mundo que está acompanhando.', 'footLabel' => 'Qualidade', 'footValue' => 'até 1440p60'],
             ],
             'reasons' => [
                 ['number' => '01', 'title' => 'A CPU fica livre', 'text' => 'A codificação acontece no encoder de hardware da placa de vídeo.'],
@@ -54,10 +55,9 @@ final class Index extends Component
                 ['number' => '03', 'title' => 'Áudio do sistema, sem barra de navegador', 'text' => 'O som vai junto e nada fica por cima da tela transmitida.'],
             ],
             'roadmap' => [
-                ['number' => '01', 'title' => 'Login opcional', 'text' => 'Só para quem quiser guardar nome e preferências. O app segue funcionando inteiro sem login, como é hoje.'],
-                ['number' => '02', 'title' => 'Servidores e salas personalizadas', 'text' => 'Salas com nome próprio, no lugar de um código sorteado.'],
-                ['number' => '03', 'title' => 'Transmissão compartilhada', 'text' => 'Mais de uma pessoa transmitindo na mesma sala.'],
-                ['number' => '04', 'title' => 'Câmera e áudio', 'text' => 'Compartilhar câmera e microfone junto com a tela.'],
+                ['number' => '01', 'title' => 'Transmissão compartilhada', 'text' => 'Mais de uma pessoa transmitindo no mesmo canal de voz.'],
+                ['number' => '02', 'title' => 'Câmera e áudio', 'text' => 'Compartilhar câmera e microfone junto com a tela.'],
+                ['number' => '03', 'title' => 'Mais controles de servidor', 'text' => 'Ferramentas para organizar cargos, canais e permissões do grupo.'],
             ],
         ]);
     }

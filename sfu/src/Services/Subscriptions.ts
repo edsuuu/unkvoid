@@ -4,9 +4,10 @@ export type Subscriber = {
     socket: WebSocket;
     userId: string;
     name: string;
+    status: string;
 };
 
-export type PresenceMember = { id: string; name: string };
+export type PresenceMember = { id: string; name: string; status: string };
 
 export class Subscriptions {
     /**
@@ -96,7 +97,11 @@ export class Subscriptions {
         const unique = new Map<string, PresenceMember>();
 
         for (const member of this.members(channel)) {
-            unique.set(member.userId, { id: member.userId, name: member.name });
+            unique.set(member.userId, {
+                id: member.userId,
+                name: member.name,
+                status: member.status,
+            });
         }
 
         return [...unique.values()];

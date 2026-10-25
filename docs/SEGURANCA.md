@@ -11,7 +11,6 @@ O que está protegido, o que não está, e por quê. Escrito para ser escolha e 
 | Imagens (foto, ícone, chat) | TLS | bucket privado no MinIO; toda URL é assinada e vence em 2 h | **não** |
 | Sinalização do SFU | WSS | nada é guardado | — |
 | Tela, câmera, voz e o que se assiste, pelo app (RTP puro) | SRTP: AES-128 com HMAC-SHA1, chave sorteada por transmissão | nada é guardado | **não** |
-| O WebRTC do app Tauri de antes | DTLS-SRTP | nada é guardado | **não** |
 | Token da conta no app | — | cifrado em AES-256-GCM no disco, com a chave no chaveiro do sistema | — |
 | Instaladores | TLS + assinatura minisign conferida pelo app; APT assinado com GPG | bucket privado, URL de 1 h | — |
 
@@ -90,23 +89,22 @@ legítima, e criptografia nenhuma impede isso.
   próprio app e a sala inteira o recebe: valer como identidade deixaria qualquer um derrubar
   qualquer um. Só se remove da lista quem já caiu e ficou órfão. Quem precisa expulsar, banir
   ou esconder canal usa um servidor, onde existe conta.
+- Com o E2EE de [E2EE.md](E2EE.md), a identidade do visitante no grupo MLS é o
+  `guest:<installId>` que o próprio app declara: cifra contra o SFU, mas não prova quem está do
+  outro lado. Quem tem o código entra no grupo como entra na sala.
 
 ## O que não está protegido
 
-1. **O token do app Tauri de antes mora em texto puro**, no `localStorage` da webview
-   (`unkvoid:token`). Os apps nativos guardam o token cifrado, com a chave no chaveiro do sistema
-   (Keychain, Credential Manager, Secret Service): o arquivo copiado sozinho não abre conta
-   nenhuma.
-2. **O token do login com Google passa pela barra de endereço do navegador.** Ele volta ao app
-   pela URL `http://127.0.0.1:<porta>/?token=&state=`; o `state` sorteado impede uma página
-   qualquer de logar a pessoa em conta alheia, mas o token fica no histórico do navegador. O
-   caminho de saída é PKCE, com o segredo nascendo dentro do app e o token trocado por fora do
-   navegador.
-3. **Quem foi expulso ainda ouve até reconectar, se o cliente for modificado.** O SFU não
+1. **Compatibilidade temporária do login Google antigo.** O app atual usa PKCE: o verifier nasce
+   no processo, o callback volta à porta local apenas com um código de 60 s e o código é trocado
+   uma vez por POST. O caminho sem challenge ainda devolve tokens na URL — pela porta, para o
+   nativo 0.1.19, e pelo `unkvoid://`, para o app Tauri até a 0.0.40; remover esse ramo quando
+   essas versões saírem de circulação.
+2. **Quem foi expulso ainda ouve até reconectar, se o cliente for modificado.** O SFU não
    derruba a inscrição de quem já estava ouvindo — a autorização é perguntada ao Laravel no
    `subscribe`, e não de novo a cada evento; o app oficial sai dos canais no `MemberRemoved`. Fechar isso é fazer os eventos não levarem conteúdo — muda o contrato, e é
    pergunta aberta no [ESTADO.md](ESTADO.md).
-4. **Quem controla a VPS lê tudo** — ver "Por que não há ponta a ponta".
+3. **Quem controla a VPS lê tudo** — ver "Por que não há ponta a ponta".
 
 ## Ofuscação, e por que ela não entra
 

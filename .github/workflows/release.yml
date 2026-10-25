@@ -1,46 +1,29 @@
-# Os instaladores do Windows e do macOS saem daqui, de um runner do GitHub, a partir do próprio
-# repositório — e não da máquina de ninguém: é o que deixa qualquer pessoa conferir de onde veio
-# o que ela instalou, e o que uma assinatura de código vai exigir quando houver. O Linux sai da VPS (build-linux.yml), porque o .deb vai para o APT de lá.
-#
-# Cada instalador vai para o site pela API assinada, que o guarda no MinIO e monta o latest.json
-# que o app lê. Ninguém se atualiza pelo GitHub.
+# O instalador do Windows sai de um runner verificável. O fluxo fica pausado até o app único
+# terminar a transição; disparado à mão, só publica se o mantenedor pedir explicitamente.
 name: release
 
-# PAUSADO: nada sobe sozinho até a paridade do Linux e do Windows terminar. Para voltar,
-# descomente o `push` — a tag v<versão> volta a publicar o Windows no site.
 on:
   # push:
   #   tags: ['v*']
   workflow_dispatch:
     inputs:
-      platform:
-        description: 'Qual sistema compilar'
-        type: choice
-        default: windows
-        options: [windows, macos, ambos]
       publish:
-        description: 'Publicar no site (desligado: só compila e deixa os instaladores como artefato)'
+        description: 'Publicar o instalador no site'
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
 
-# Duas releases ao mesmo tempo registrariam a mesma versão duas vezes no site.
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
   windows:
-    # Tag publica o Windows; disparo à mão compila só o sistema escolhido. Publicar um
-    # instalador que ninguém compilou naquele sistema é o tipo de coisa que só aparece
-    # na máquina de quem instalou.
-    if: github.event_name == 'push' || inputs.platform != 'macos'
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: native/apps/desktop
         shell: bash
     steps:
       - uses: actions/checkout@v4
@@ -49,83 +32,54 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - run: choco install nsis minisign --no-progress -y
 
-      # A tag é só o gatilho: a versão que o instalador carrega é a do tauri.conf.json. Tag
-      # v0.0.40 em cima de um conf 0.0.39 publicaria a 0.0.39 de novo, com cara de versão nova.
+      # A tag é só o gatilho; o aplicativo e os instaladores leem a mesma versão do workspace.
       - if: github.event_name == 'push'
         run: |
-          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          version=$(awk '
+            /^\[workspace\.package\]$/ { in_workspace_package = 1; next }
+            /^\[/ { in_workspace_package = 0 }
+            in_workspace_package && /^version[[:space:]]*=/ {
+              value = $0
+              sub(/^[^"]*"/, "", value)
+              sub(/".*$/, "", value)
+              print value
+              exit
+            }
+          ' native/Cargo.toml)
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::a tag é $GITHUB_REF_NAME e o tauri.conf.json diz $version"
+            echo "::error::a tag é $GITHUB_REF_NAME e native/Cargo.toml diz $version"
             exit 1
           fi
 
-      - run: npm ci
-      - run: npm run check
-      - run: npx tauri build --bundles nsis,msi
+      - run: powershell -ExecutionPolicy Bypass -File native/apps/unkvoid/build-installer.ps1
+      - name: Assinar o instalador
         env:
-          # Sem a chave o bundle sai sem `.sig`: o instalador funciona e a atualização
-          # automática não. É o erro que passou meses sem ninguém notar.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      # Antes de publicar, e não depois: o Tauri só avisa quando a chave não bate com a
-      # `pubkey` do app, e quem descobre é quem instalou, na hora de atualizar.
-      - run: node check-signature.mjs ../../target/release/bundle/msi/*.msi.sig ../../target/release/bundle/nsis/*-setup.exe.sig
+          MINISIGN_SECRET_KEY: ${{ secrets.UNKVOID_UPDATE_SECRET_KEY }}
+        run: |
+          secret_key=$(mktemp)
+          trap 'rm -f "$secret_key"' EXIT
+          printf '%s' "$MINISIGN_SECRET_KEY" > "$secret_key"
+          export UNKVOID_UPDATE_SECRET_KEY="$secret_key"
+          for installer in native/target/release/bundle/windows/*-setup.exe; do
+            native/release/sign-update.sh "$installer"
+          done
 
-      # Os instaladores ficam no próprio run: é daqui que a assinatura de código os pega (ela
-      # só aceita o que veio de um run verificável), e é o que sobra de um disparo sem publicar.
       - uses: actions/upload-artifact@v4
         with:
-          name: unkvoid-windows
+          name: unkvoid
           if-no-files-found: error
           retention-days: 14
           path: |
-            native/target/release/bundle/msi/*.msi
-            native/target/release/bundle/msi/*.msi.sig
-            native/target/release/bundle/nsis/*-setup.exe
-            native/target/release/bundle/nsis/*-setup.exe.sig
+            native/target/release/bundle/windows/*-setup.exe
+            native/target/release/bundle/windows/*-setup.exe.sig
 
       - if: github.event_name == 'push' || inputs.publish
-        run: |
-          for file in ../../target/release/bundle/msi/*.msi; do ./publish-release.sh windows-x86_64-msi "$file" "$file.sig"; done
-          for file in ../../target/release/bundle/nsis/*-setup.exe; do ./publish-release.sh windows-x86_64-nsis "$file" "$file.sig"; done
         env:
           RELEASE_SECRET: ${{ secrets.RELEASE_SECRET }}
-
-  macos:
-    if: github.event_name == 'workflow_dispatch' && inputs.platform != 'windows'
-    runs-on: macos-latest
-    defaults:
-      run:
-        working-directory: native/apps/desktop
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm ci
-      - run: npm run check
-      - run: npx tauri build --bundles app,dmg
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      - run: node check-signature.mjs ../../target/release/bundle/macos/Unkvoid.app.tar.gz.sig
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: unkvoid-macos
-          if-no-files-found: error
-          retention-days: 14
-          path: |
-            native/target/release/bundle/macos/Unkvoid.app.tar.gz
-            native/target/release/bundle/macos/Unkvoid.app.tar.gz.sig
-            native/target/release/bundle/dmg/*.dmg
-
-      - if: inputs.publish
         run: |
-          ./publish-release.sh darwin-aarch64 ../../target/release/bundle/macos/Unkvoid.app.tar.gz ../../target/release/bundle/macos/Unkvoid.app.tar.gz.sig
-          for file in ../../target/release/bundle/dmg/*.dmg; do ./publish-release.sh darwin-aarch64-dmg "$file"; done
-        env:
-          RELEASE_SECRET: ${{ secrets.RELEASE_SECRET }}
+          for installer in native/target/release/bundle/windows/*-setup.exe; do
+            native/release/publish-release.sh windows-x86_64-nsis "$installer" "$installer.sig"
+          done

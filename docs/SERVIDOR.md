@@ -78,10 +78,11 @@ EOF
 
 ```
 
-A pública (`unkvoid.gpg`, a que cada máquina importa uma vez) o `apt-publish.sh` exporta e sobe
+A pública (`unkvoid.gpg`, a que cada máquina importa uma vez) o
+`native/release/apt-publish.sh` exporta e sobe
 para o bucket a cada publicação.
 
-Sem senha (`%no-protection`) porque o `apt-publish.sh` assina sem terminal, a
+Sem senha (`%no-protection`) porque o `native/release/apt-publish.sh` assina sem terminal, a
 cada build. Quem tiver essa chave publica pacote como se fosse você, então ela
 não sai desta máquina. Se sumir, gere outra e cada máquina instalada precisa
 importar a nova.
@@ -94,11 +95,10 @@ gpg --export-secret-keys --armor repo@unkvoid.com > unkvoid-apt-secreta.asc
 
 ### Publicar uma versão
 
-O `.deb` do app nativo é compilado fora daqui (`native/apps/linux/build-deb.sh`, num Debian 12
-em contêiner), copiado para a VPS e entregue ao `apt-publish.sh`, que o põe no bucket `apt` do
-MinIO, refaz o `Packages` e o `Release` e assina o `InRelease`. O passo a passo está no
-[AUTO-UPDATE.md](AUTO-UPDATE.md#linux). O `make build-vps` gera o `.deb` do Tauri de antes: não
-use.
+O `.deb` do app único é compilado fora daqui (`native/apps/unkvoid/build-deb.sh`, num Debian 12
+em contêiner), copiado para a VPS e entregue ao `native/release/apt-publish.sh`, que o põe no
+bucket `apt`, refaz o `Packages` e o `Release` e assina o `InRelease`. O passo a passo está em
+[AUTO-UPDATE.md](AUTO-UPDATE.md#linux). O `make build-vps` chama esse mesmo caminho.
 
 ### Do lado de quem instala
 
@@ -123,7 +123,7 @@ gpg --verify <(curl -s https://unkvoid.com/apt/InRelease)
 ## 3. Downloads e manifesto de atualização
 
 Nada disso mora no disco do servidor. Os instaladores do macOS e do Windows vão
-para o MinIO pela API assinada de `publish-release.sh`, e o `latest.json` que o
+para o MinIO pela API assinada de `native/release/publish-release.sh`, e o `latest.json` que o
 app lê é montado pelo Laravel a cada pedido, em `/downloads/latest.json`, a
 partir da tabela `releases`. Cada sistema compila numa máquina diferente e
 registra só a sua linha, então publicar o Windows não apaga o macOS que subiu

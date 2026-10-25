@@ -19,7 +19,7 @@ use serde_json::Value;
 
 use crate::failure::Failure;
 use crate::models::{
-    AuthToken, ChannelKind, Config, Conversation, DirectMessage, Friendship, Message,
+    AuthToken, ChannelKind, Config, Conversation, DirectMessage, Friendship, InvitePreview, Message, Mutuals,
     ServerSummary, ServerTree, User,
 };
 
@@ -138,11 +138,6 @@ impl Api {
         self.trees
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// O token de quem tem conta para entrar numa sala por código.
-    pub async fn room_token(&self, room: &str) -> Result<String, HttpError> {
-        self.token_from(&format!("/api/rooms/{room}/token")).await
     }
 
     pub fn set_token(&self, token: Option<String>) {
@@ -288,6 +283,28 @@ impl Api {
             .await
     }
 
+    /// Entrar com o nome e uma senha: a conta nasce no servidor com o apelido tirado do nome,
+    /// sem e-mail, e o token já fica guardado como no login. Dali em diante ela entra pelo
+    /// apelido e a senha (`login` aceita o apelido no lugar do e-mail).
+    pub async fn start(&self, name: &str, password: &str, device: &str) -> Result<AuthToken, HttpError> {
+        let answer: AuthToken = self
+            .post(
+                "/api/auth/start",
+                &serde_json::json!({ "name": name, "password": password, "device": device, "refresh": true }),
+            )
+            .await?;
+
+        self.adopt(&answer.token, answer.refresh_token.as_deref());
+
+        Ok(answer)
+    }
+
+    /// O e-mail para a conta que entrou com o nome. O Laravel recusa e-mail de outra conta
+    /// como `Invalid`, já em português.
+    pub async fn add_email(&self, email: &str) -> Result<User, HttpError> {
+        self.post("/api/me/email", &serde_json::json!({ "email": email })).await
+    }
+
     /// Entrar e criar conta só diferem no caminho: as duas devolvem o token e já o guardam,
     /// para a próxima chamada não precisar lembrar de passá-lo.
     async fn authenticate(
@@ -350,6 +367,10 @@ impl Api {
             .await
     }
 
+    pub async fn invite_preview(&self, code: &str) -> Result<InvitePreview, HttpError> {
+        self.get(&format!("/api/invites/{code}")).await
+    }
+
     /// Sorteia um convite novo. O anterior para de valer na hora.
     pub async fn regenerate_invite(&self, server: i64) -> Result<String, HttpError> {
         let answer: Value = self
@@ -386,11 +407,12 @@ impl Api {
         server: i64,
         name: &str,
         kind: ChannelKind,
+        parent: Option<&str>,
     ) -> Result<(), HttpError> {
         let _: Value = self
             .post(
                 &format!("/api/servers/{server}/channels"),
-                &serde_json::json!({ "name": name, "type": kind }),
+                &serde_json::json!({ "name": name, "type": kind, "parent_id": parent }),
             )
             .await?;
 
@@ -401,10 +423,18 @@ impl Api {
         self.get("/api/friends").await
     }
 
+    pub async fn mutuals(&self, user: i64) -> Result<Mutuals, HttpError> {
+        self.get(&format!("/api/friends/{user}/mutuals")).await
+    }
+
     /// Pede amizade pelo e-mail. O servidor é quem diz se a pessoa existe.
     pub async fn add_friend(&self, email: &str) -> Result<Friendship, HttpError> {
         self.post("/api/friends", &serde_json::json!({ "email": email }))
             .await
+    }
+
+    pub async fn add_friend_by_id(&self, user: i64) -> Result<Friendship, HttpError> {
+        self.post(&format!("/api/friends/{user}"), &serde_json::json!({})).await
     }
 
     /// Responde a um pedido. Aceitar é uma ação nomeada (`accept`); recusar é apagar, porque
@@ -434,6 +464,18 @@ impl Api {
         Ok(())
     }
 
+    pub async fn block_friend(&self, friendship: i64) -> Result<(), HttpError> {
+        let _: Value = self
+            .send(
+                self.http
+                    .patch(self.url(&format!("/api/friends/{friendship}")))
+                    .json(&serde_json::json!({ "action": "block" })),
+                "/api/friends",
+            )
+            .await?;
+        Ok(())
+    }
+
     /// As conversas abertas, a última frase de cada uma e quantas faltam ler.
     pub async fn conversations(&self) -> Result<Vec<Conversation>, HttpError> {
         self.get("/api/dm").await
@@ -451,6 +493,16 @@ impl Api {
         .await
     }
 
+    pub async fn edit_direct_message(&self, message: i64, body: &str) -> Result<DirectMessage, HttpError> {
+        let path = format!("/api/dm/{message}");
+        self.send(self.http.patch(self.url(&path)).json(&serde_json::json!({ "body": body })), &path).await
+    }
+
+    pub async fn delete_direct_message(&self, message: i64) -> Result<(), HttpError> {
+        let path = format!("/api/dm/{message}");
+        self.send::<Value>(self.http.delete(self.url(&path)), &path).await.map(|_| ())
+    }
+
     /// Marca a conversa como lida. Sem isto o contador de não lidas nunca zera.
     pub async fn read_conversation(&self, user: i64) -> Result<(), HttpError> {
         let _: Value = self
@@ -460,8 +512,24 @@ impl Api {
         Ok(())
     }
 
+    /// As 50 mais recentes. Sem `before` o Laravel marca o canal como lido: é o canal aberto.
     pub async fn messages(&self, channel: &str) -> Result<Vec<Message>, HttpError> {
         self.get(&format!("/api/channels/{channel}/messages")).await
+    }
+
+    /// As 50 anteriores a `before`, ao rolar para cima. Paginar para trás não marca nada lido.
+    pub async fn older_messages(&self, channel: &str, before: i64) -> Result<Vec<Message>, HttpError> {
+        self.get(&format!("/api/channels/{channel}/messages?before={before}")).await
+    }
+
+    /// Marca o canal como lido até a mais recente: é o que se chama quando a mensagem cai com
+    /// o canal já aberto, porque aí não houve `GET` para marcar.
+    pub async fn read_channel(&self, channel: &str) -> Result<(), HttpError> {
+        let _: Value = self
+            .post(&format!("/api/channels/{channel}/messages/read"), &serde_json::json!({}))
+            .await?;
+
+        Ok(())
     }
 
     pub async fn send_message(&self, channel: &str, body: &str) -> Result<Message, HttpError> {

@@ -170,16 +170,12 @@ Em **Serviços de Rede → Firewall**. O campo de portas aceita intervalo
 |---|---|---|
 | TCP | 22 | ssh |
 | TCP | 80, 443 | nginx: site, API, `/sfu`, `/app`, `/apt/`, `s3.unkvoid.com` |
-| TCP **e** UDP | 40000-40006 | o WebRTC do app Tauri de antes — uma porta por worker, e são 7 workers nesta máquina |
 | UDP | 41000-42000 | RTP puro: o app nativo, transmitindo e assistindo |
 | TCP | 25 | receber e-mail |
 | TCP | 465, 587 | enviar e-mail autenticado |
 | TCP | 993 | IMAP, para ler a caixa |
 
-**40000-40006 e não 40000-40003**: com `SFU_WORKERS=7` o WebRtcServer ocupa uma
-porta por worker a partir de `SFU_MEDIA_PORT` (40000), ou seja 40000 a 40006. TCP
-na mesma faixa é o caminho reserva de quem está numa rede que bloqueia UDP. O
-`ecosystem.config.cjs` versionado traz `SFU_WORKERS: '3'`, o da VPS de 4 núcleos de hoje: nesta
+O `ecosystem.config.cjs` versionado traz `SFU_WORKERS: '3'`, o da VPS de 4 núcleos de hoje: nesta
 máquina de 8, suba para 7 (veja a seção do SFU).
 
 **41000-42000 e não 41000-41447**: a conta do [UDP.md](UDP.md) é
@@ -228,7 +224,7 @@ sudo timedatectl set-timezone America/Sao_Paulo
 ```
 
 O usuário de trabalho é `ubuntu` porque é o dono de `/var/www` em todo script do
-repositório (`deploy-web.sh`, `install.sh`, `apt-publish.sh`):
+repositório (`deploy-web.sh`, `install.sh`, `native/release/apt-publish.sh`):
 
 ```bash
 sudo adduser --disabled-password --gecos '' ubuntu
@@ -398,8 +394,9 @@ sudo apt install -y build-essential curl wget file pkg-config git python3 rsync 
 
 **Não instale `libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`,
 `libxdo-dev`, `cmake` nem o Rust.** Eram da época em que o `.deb` compilava no
-host; hoje o `.deb` do app nativo compila fora daqui, num Debian 12 em contêiner
-(`native/apps/linux/build-deb.sh`), e a VPS só recebe o arquivo e roda o `apt-publish.sh`
+host; hoje o `.deb` do app único compila fora daqui, num Debian 12 em contêiner
+(`native/apps/unkvoid/build-deb.sh`), e a VPS só recebe o arquivo e roda o
+`native/release/apt-publish.sh`
 (precisa do `mc` e da chave GPG). O `swaks` é para os testes de e-mail da seção 11.
 
 ```bash
@@ -677,6 +674,7 @@ velha.
 | `SFU_SECRET` | idêntico ao do site: um assina o token de entrada, o outro confere. Mínimo de 32 caracteres |
 | `SFU_ANNOUNCED_ADDRESS` | **o IP novo.** É o endereço que o servidor anuncia para a mídia; errar isto é o clássico "entra na sala e não vê nada" |
 | `SFU_APP_VERSION` | a versão mínima do app que o SFU aceita |
+| `SFU_MEDIA_HOST` | **não defina na VPS.** Sem ele a mídia escuta em `0.0.0.0`; com `127.0.0.1` (só para o Windows de desenvolvimento) ninguém de fora conecta na voz |
 
 ### `/var/www/projects/unkvoid-web/shared/.env` — o site
 
@@ -700,8 +698,8 @@ E os valores de produção que não são segredo mas são por máquina:
 
 **Nos secrets do GitHub não muda nada.** O deploy roda no runner que mora na
 própria VPS, então não há chave de ssh nem IP em segredo nenhum. Os secrets que existem
-(`TAURI_SIGNING_PRIVATE_KEY`, sua senha, e `RELEASE_SECRET`) são do `release.yml` do Tauri de
-antes, que não se usa mais.
+(`UNKVOID_UPDATE_SECRET_KEY` e `RELEASE_SECRET`) são do `release.yml` pausado e ficam fora da
+VPS: a privada minisign nunca é necessária para publicar no APT.
 
 ---
 

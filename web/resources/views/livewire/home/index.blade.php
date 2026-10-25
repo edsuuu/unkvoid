@@ -8,7 +8,7 @@
     {{-- Herói --}}
     <section id="topo" class="lp-section" style="padding-top:clamp(110px,17vh,190px);padding-bottom:clamp(56px,9vh,110px);display:flex;flex-direction:column;align-items:center;text-align:center">
         <h1 data-reveal style="font-size:clamp(34px,6.4vw,76px);line-height:1.05;letter-spacing:-0.035em;font-weight:600;margin:0;max-width:17ch;text-wrap:balance">Compartilhe sua tela em qualidade cheia com quem você quiser.</h1>
-        <p data-reveal style="font-size:clamp(17px,2.2vw,21px);line-height:1.5;color:var(--lp-ink-2);margin:26px 0 0;max-width:42ch;text-wrap:pretty">Sem conta e sem link de reunião. Um código de 12 caracteres, e quem colar ele vê a sua tela.</p>
+        <p data-reveal style="font-size:clamp(17px,2.2vw,21px);line-height:1.5;color:var(--lp-ink-2);margin:26px 0 0;max-width:42ch;text-wrap:pretty">Crie seu servidor, organize os canais e compartilhe a tela em voz com o seu grupo.</p>
 
         <div data-reveal style="display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:12px;margin-top:clamp(28px,4.5vh,42px)">
             <a :href="primaryHref" class="lp-btn-primary" style="font-size:16px;padding:16px 28px;box-shadow:0 16px 46px -16px rgba(140,80,240,0.85)">
@@ -39,12 +39,12 @@
     <section id="app" class="lp-section">
         <div class="lp-section-head" style="max-width:640px;margin-bottom:clamp(24px,4vh,36px)">
             <p class="lp-eyebrow">O app</p>
-            <h2 data-reveal class="lp-h2">Três telas. Nada além disso.</h2>
+            <h2 data-reveal class="lp-h2">Seu servidor, sua voz e sua transmissão.</h2>
         </div>
 
         <div style="display:flex;justify-content:center;gap:6px;flex-wrap:wrap;margin-bottom:22px">
-            <button type="button" class="lp-tab" :class="{ 'is-active': screen === 'entrada' }" @click="select('entrada')">Entrada</button>
-            <button type="button" class="lp-tab" :class="{ 'is-active': screen === 'sala' }" @click="select('sala')">Sala</button>
+            <button type="button" class="lp-tab" :class="{ 'is-active': screen === 'entrada' }" @click="select('entrada')">Servidores</button>
+            <button type="button" class="lp-tab" :class="{ 'is-active': screen === 'sala' }" @click="select('sala')">Voz</button>
             <button type="button" class="lp-tab" :class="{ 'is-active': screen === 'share' }" @click="select('share')">Compartilhar</button>
         </div>
 
@@ -54,8 +54,8 @@
                     <div class="lp-dots"><i></i><i></i><i></i></div>
                     <span style="font-size:12.5px;font-weight:600;letter-spacing:0.06em;margin-left:6px">UNKVOID</span>
                     <div x-show="screen !== 'entrada'" style="position:absolute;left:50%;transform:translateX(-50%);display:flex;gap:4px;background:rgba(255,255,255,0.03);border-radius:10px;padding:3px">
-                        <span style="font-size:11.5px;color:var(--lp-muted-2);border-radius:8px;padding:5px 11px">Home</span>
-                        <span style="font-size:11.5px;font-weight:600;color:#0d0616;background:linear-gradient(180deg,#aeb0ff,#8a7cf5);border-radius:8px;padding:5px 11px">Sala ativa</span>
+                        <span style="font-size:11.5px;color:var(--lp-muted-2);border-radius:8px;padding:5px 11px"># geral</span>
+                        <span style="font-size:11.5px;font-weight:600;color:#0d0616;background:linear-gradient(180deg,#aeb0ff,#8a7cf5);border-radius:8px;padding:5px 11px">Geral</span>
                     </div>
                     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
                         <span style="width:26px;height:26px;border-radius:50%;background:linear-gradient(180deg,#8a7cf5,#5a3fd6);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#0d0616">E</span>
@@ -66,14 +66,14 @@
                 <div class="lp-frame-pane" data-pane>
                     <div x-show="screen === 'entrada'" class="lp-mock" style="width:min(420px,100%)">
                         <p style="text-align:center;font-size:17px;font-weight:600;letter-spacing:-0.01em;margin:0 0 6px">Unkvoid</p>
-                        <p style="text-align:center;font-size:13.5px;color:var(--lp-muted);margin:0 0 22px">Compartilhe sua tela com quem você quiser.</p>
-                        <p class="lp-mock-label">SEU NOME</p>
-                        <div class="lp-mock-input is-focus">Seu nome</div>
-                        <div class="lp-mock-primary" style="margin-top:12px;box-shadow:0 14px 34px -16px rgba(140,80,240,0.9)">Criar uma sala</div>
+                        <p style="text-align:center;font-size:13.5px;color:var(--lp-muted);margin:0 0 22px">Tudo do seu grupo em um só lugar.</p>
+                        <p class="lp-mock-label">SERVIDOR</p>
+                        <div class="lp-mock-input is-focus">Casa</div>
+                        <div class="lp-mock-primary" style="margin-top:12px;box-shadow:0 14px 34px -16px rgba(140,80,240,0.9)">Criar servidor</div>
                         <div class="lp-mock-or"><i></i><span>OU</span><i></i></div>
                         <div style="display:flex;gap:8px">
-                            <div class="lp-mock-input" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Código da sala</div>
-                            <div style="flex:none;border:1px solid rgba(255,255,255,0.12);border-radius:12px;padding:12px 16px;font-size:13.5px;font-weight:500">Entrar</div>
+                            <div class="lp-mock-input" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Convite do servidor</div>
+                            <div style="flex:none;border:1px solid rgba(255,255,255,0.12);border-radius:12px;padding:12px 16px;font-size:13.5px;font-weight:500">Aceitar</div>
                         </div>
                     </div>
 
@@ -81,8 +81,8 @@
                         <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:10px 12px">
                             <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
                                 <span style="display:inline-flex;align-items:center;gap:8px;background:rgba(0,0,0,0.35);border-radius:11px;padding:6px 10px">
-                                    <span class="lp-mono" style="font-size:10px;letter-spacing:0.12em;color:var(--lp-muted-2)">SALA</span>
-                                    <span class="lp-code-chip">k3m9xq2vt7bd</span>
+                                    <span class="lp-mono" style="font-size:10px;letter-spacing:0.12em;color:var(--lp-muted-2)">CANAL DE VOZ</span>
+                                    <span style="font-size:12px;font-weight:600">Geral</span>
                                     <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border:1px solid rgba(255,255,255,0.12);border-radius:7px;position:relative">
                                         <span style="width:8px;height:9px;border:1px solid #a89fc0;border-radius:2px;position:absolute;left:5px;top:4px"></span>
                                         <span style="width:8px;height:9px;border:1px solid #a89fc0;border-radius:2px;position:absolute;left:8px;top:7px;background:rgba(16,13,26,0.9)"></span>
@@ -106,17 +106,17 @@
                                 </span>
                             </div>
                             <h5 style="font-size:clamp(16px,2.2vw,20px);font-weight:600;letter-spacing:-0.02em;margin:0">Ninguém está compartilhando ainda.</h5>
-                            <p style="font-size:13.5px;color:var(--lp-muted);margin:10px 0 20px">Mande o código <span class="lp-code-chip" style="border-radius:6px;padding:2px 7px">k3m9xq2vt7bd</span> para quem você quer aqui.</p>
+                            <p style="font-size:13.5px;color:var(--lp-muted);margin:10px 0 20px">Entre no canal de voz para conversar e compartilhar com o seu grupo.</p>
                             <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:8px">
                                 <span style="font-size:13px;font-weight:600;color:#fff;background:linear-gradient(180deg,#8a7cf5,#5a3fd6);border-radius:12px;padding:11px 18px">Iniciar compartilhamento</span>
-                                <span style="font-size:13px;color:#e6e1f2;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:11px 18px">Copiar o código</span>
+                                <span style="font-size:13px;color:#e6e1f2;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:11px 18px">Abrir chat</span>
                             </div>
                         </div>
                     </div>
 
                     <div x-show="screen === 'share'" x-cloak class="lp-mock" style="width:min(560px,100%);border-color:rgba(255,255,255,0.1);padding:clamp(18px,2.6vw,28px)">
                         <h4 style="font-size:19px;font-weight:600;letter-spacing:-0.02em;margin:0">Compartilhar tela</h4>
-                        <p style="font-size:13.5px;color:var(--lp-muted);margin:6px 0 18px">Escolha o que a sala vai ver.</p>
+                        <p style="font-size:13.5px;color:var(--lp-muted);margin:6px 0 18px">Escolha o que o canal de voz vai ver.</p>
                         <div style="display:flex;gap:6px;margin-bottom:16px">
                             <span style="font-size:13px;font-weight:500;color:var(--lp-ink);background:rgba(138,124,245,0.18);border:1px solid rgba(138,124,245,0.35);border-radius:999px;padding:7px 14px">Telas</span>
                             <span style="font-size:13px;color:var(--lp-muted-2);border:1px solid rgba(255,255,255,0.08);border-radius:999px;padding:7px 14px">Aplicativos</span>
@@ -306,23 +306,19 @@
                 <span class="lp-mine" x-show="os === 'Windows'" x-cloak>Seu sistema</span>
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
                     <div class="lp-dl-icon"><x-os.windows /></div>
-                    <span class="lp-ext">.exe / .msi</span>
+                    <span class="lp-ext">Store / .exe</span>
                 </div>
                 <div>
                     <h3 style="font-size:19px;font-weight:600;letter-spacing:-0.02em;margin:0">Windows</h3>
-                    <p style="font-size:13px;color:var(--lp-muted);margin:6px 0 0">Instalador ou pacote MSI.</p>
+                    <p style="font-size:13px;color:var(--lp-muted);margin:6px 0 0">Pela Microsoft Store ou pelo instalador .exe. Em jogos com anti-cheat, os atalhos só funcionam pelo .exe.</p>
                 </div>
                 <div style="margin-top:auto;display:flex;flex-direction:column;gap:8px">
-                    @if (is_null($links['WindowsExe']))
-                        <span class="lp-dl-btn is-off">.exe em breve</span>
-                    @else
-                        <a href="{{ $links['WindowsExe'] }}" class="lp-dl-btn">Baixar .exe</a>
-                    @endif
+                    <a href="{{ $links['WindowsStore'] }}" class="lp-dl-btn">Baixar na Microsoft Store</a>
 
-                    @if (is_null($links['WindowsMsi']))
-                        <span class="lp-dl-sub" style="color:var(--lp-dim);border-style:dashed">.msi em breve</span>
+                    @if (is_null($links['WindowsExe']))
+                        <span class="lp-dl-sub" style="color:var(--lp-dim);border-style:dashed">.exe em breve</span>
                     @else
-                        <a href="{{ $links['WindowsMsi'] }}" @class(['lp-dl-btn' => is_null($links['WindowsExe']), 'lp-dl-sub' => ! is_null($links['WindowsExe'])])>Baixar .msi</a>
+                        <a href="{{ $links['WindowsExe'] }}" class="lp-dl-sub">Baixar .exe</a>
                     @endif
                 </div>
             </div>

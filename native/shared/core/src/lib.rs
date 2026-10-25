@@ -1,18 +1,18 @@
-//! A lógica do app, compartilhada pelas três interfaces nativas.
+//! A lógica do app, compartilhada pelas interfaces nativas que vierem.
 //!
-//! O que está aqui decide; as pastas de sistema (`apps/macos`, `apps/windows`,
-//! `apps/linux`) só desenham e mandam eventos. Regra que aparecer lá terá de ser escrita
-//! três vezes — e é assim que um app vira três apps com os mesmos defeitos em lugares
-//! diferentes.
+//! O que está aqui decide; a pasta do app só desenha e manda eventos. Regra que aparecer nela
+//! terá de ser reescrita por cada interface futura — e é assim que um app acumula os mesmos
+//! defeitos em lugares diferentes.
 
+pub mod activity;
 pub mod api;
 pub mod app;
 pub mod chimes;
+pub mod e2ee_group;
+pub mod e2ee_call;
 pub mod client;
 pub mod failure;
-pub mod ffi;
 pub mod google;
-pub mod keymap;
 pub mod logbook;
 pub mod members;
 pub mod models;
@@ -28,6 +28,7 @@ pub mod session;
 pub mod sharing;
 pub mod speaking;
 pub mod update;
+pub mod voice;
 pub mod watching;
 
 pub use api::{Api, HttpError};
@@ -37,3 +38,4 @@ pub use failure::Failure;
 pub use models::Screen;
 pub use protocol::{Event, ServerError};
 pub use session::{Identity, Roster, Session};
+pub use voice::VoiceFilterConfig;
