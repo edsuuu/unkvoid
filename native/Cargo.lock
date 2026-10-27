@@ -829,7 +829,7 @@ dependencies = [
 
 [[package]]
 name = "capture"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "apple-cf",
@@ -998,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "clips"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "capture",
@@ -1083,7 +1083,7 @@ checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "core-app"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3625,7 +3625,7 @@ dependencies = [
 
 [[package]]
 name = "media"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "apple-cf",
@@ -6280,7 +6280,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -6996,7 +6996,7 @@ dependencies = [
 
 [[package]]
 name = "unkvoid"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "arboard",

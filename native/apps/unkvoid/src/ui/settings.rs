@@ -409,14 +409,25 @@ fn clips_settings(app: &mut Unkvoid, ui: &mut Ui) {
         settings.save_hotkey.label(),
     );
     ui.add_space(24.0);
-    hotkey_row(
-        app,
+    if voice_settings::switch_row(
         ui,
-        Slot::Overlay,
-        "Atalho para abrir o painel",
-        "Mostra o replay por cima do jogo. Num jogo em tela cheia exclusiva, liga o replay ou salva o clipe.",
-        settings.overlay_hotkey.label(),
-    );
+        "Painel por cima do jogo",
+        "O atalho abre os botões do replay, da galeria e das configurações por cima do jogo.",
+        settings.overlay_enabled,
+    ) {
+        settings.overlay_enabled = !settings.overlay_enabled;
+    }
+
+    ui.add_space(24.0);
+    let (heading, about) = if settings.overlay_enabled {
+        (
+            "Atalho para abrir o painel",
+            "Mostra o replay por cima do jogo. Num jogo em tela cheia exclusiva, liga o replay ou salva o clipe.",
+        )
+    } else {
+        ("Atalho do replay", "Com o painel desligado, liga o replay ou salva o clipe direto.")
+    };
+    hotkey_row(app, ui, Slot::Overlay, heading, about, settings.overlay_hotkey.label());
 
     if let Some(message) = app.clips_runtime.hotkey_error() {
         ui.add_space(6.0);
