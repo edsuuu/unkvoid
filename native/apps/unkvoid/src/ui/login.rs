@@ -75,7 +75,7 @@ pub fn show(app: &mut Unkvoid, ui: &mut Ui) {
 /// de novo por ele e a senha. O e-mail fica para as configurações, se a pessoa quiser.
 fn start(app: &mut Unkvoid, ui: &mut Ui) {
     ui.vertical_centered(|ui| {
-        ui.label(egui::RichText::new("Entrar com o nome").font(theme::bold(20.0)));
+        ui.label(egui::RichText::new("Entrar com o nome").font(theme::bold(24.0)));
         ui.add_space(6.0);
         ui.label(
             egui::RichText::new("Sua conta nasce agora, sem e-mail. Depois você entra com o apelido e a senha.")

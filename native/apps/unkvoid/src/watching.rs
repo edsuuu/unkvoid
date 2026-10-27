@@ -63,8 +63,9 @@ impl Picture {
 /// O quadro mais novo de cada tela que a janela ainda não desenhou.
 type Fresh = Arc<Mutex<HashMap<String, Picture>>>;
 
-/// Quantos quadros cada tela decodificou desde a última pergunta, e a altura do último.
-type Drawn = Arc<Mutex<HashMap<String, (u32, u32)>>>;
+/// Quantos quadros cada tela decodificou desde a última pergunta, a altura do último e os bytes
+/// de vídeo que chegaram dela.
+type Drawn = Arc<Mutex<HashMap<String, (u32, u32, u64)>>>;
 
 /// O aviso de quadro novo, dividido entre as threads das telas.
 type OnFrame = Arc<Mutex<Box<dyn Fn() + Send>>>;
@@ -112,9 +113,9 @@ impl Watch {
         Self { fresh, drawn, speaker, stop, thread }
     }
 
-    /// Quadros decodificados de cada tela desde a última pergunta, e a altura do último.
-    /// Perguntado de segundo em segundo, é o fps.
-    pub fn drawn(&self) -> HashMap<String, (u32, u32)> {
+    /// Quadros decodificados de cada tela desde a última pergunta, a altura do último e os bytes
+    /// que chegaram. Perguntado de segundo em segundo, é o fps e o Mb/s.
+    pub fn drawn(&self) -> HashMap<String, (u32, u32, u64)> {
         std::mem::take(&mut *lock(&self.drawn))
     }
 
@@ -153,6 +154,10 @@ fn route(
         match queue.recv_timeout(PATIENCE) {
             Ok(item) => match item.kind {
                 MediaKind::Video { keyframe, .. } => {
+                    // Os bytes contam aqui, na chegada, e não na thread da tela: o Mb/s do cartão é
+                    // o que a rede entregou, inclusive o que a tela largou por não acompanhar.
+                    lock(drawn).entry(item.producer_id.clone()).or_default().2 += item.data.len() as u64;
+
                     let screen = match screens.entry(item.producer_id.clone()) {
                         Entry::Occupied(entry) => entry.into_mut(),
                         Entry::Vacant(entry) => match Screen::start(entry.key(), (fresh, drawn, delays), stop, (on_frame, ask_keyframe)) {
@@ -390,7 +395,7 @@ fn decode_screen(producer: &str, queue: &Receiver<Media>, (fresh, drawn, delays)
         let mut drawn = lock(drawn);
         let counted = drawn.entry(producer.to_owned()).or_default();
 
-        *counted = (counted.0 + 1, height);
+        *counted = (counted.0 + 1, height, counted.2);
         drop(drawn);
         (lock(on_frame))();
     }
@@ -562,7 +567,7 @@ mod tests {
 
         // O que a thread da tela pôs na tela, contado por ela: a espera de 16 ms acima vira 31 num
         // processo sem janela no Windows 11, e a pergunta da janela sozinha mediria o relógio.
-        let shown: u32 = watch.drawn().values().map(|(count, _)| count).sum();
+        let shown: u32 = watch.drawn().values().map(|(count, _, _)| count).sum();
 
         runtime.block_on(room.leave());
         println!("{frames} imagens prontas em 10 s, {shown} postas na tela pela thread, de {}x{}", size.0, size.1);

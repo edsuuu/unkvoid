@@ -670,6 +670,26 @@ impl Calls {
             .unwrap_or_default()
     }
 
+    /// Os números de cada tela assistida desde a última pergunta (quadros, altura, bytes), com os
+    /// contadores de pacotes da sala — esses são acumulados, a diferença fica com quem pergunta.
+    #[allow(clippy::type_complexity)]
+    pub fn stream_numbers(&self) -> Vec<(String, (u32, u32, u64), Option<media::Counters>)> {
+        let call = lock(&self.call);
+        let Some(Call { room, watch: Some(watch), .. }) = call.as_ref() else {
+            return Vec::new();
+        };
+
+        watch
+            .drawn()
+            .into_iter()
+            .map(|(producer, numbers)| {
+                let counters = room.counters(&producer);
+
+                (producer, numbers, counters)
+            })
+            .collect()
+    }
+
     /// Começa a transmitir, ou troca o que está no ar. Mesma escolha de áudio: troca a tela, a
     /// resolução e os quadros sem derrubar a transmissão; outra escolha de áudio recomeça.
     pub fn share(&self, config: capture::CaptureConfig) {

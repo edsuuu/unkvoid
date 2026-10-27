@@ -1116,6 +1116,14 @@ fn home_column(app: &mut Unkvoid, ui: &mut Ui) {
                 app.actions.push(Action::OpenFriends(FriendsTab::All));
             }
 
+            // A sala por código em que a pessoa continua: o caminho de volta fica à vista, e não
+            // só no # do trilho.
+            if let Some(seat) = app.call.seat.clone().filter(|seat| seat.guest.is_some())
+                && home_row(ui, icons::HASH, &format!("Sala {}", seat.channel), false, 0)
+            {
+                app.actions.push(Action::BackToRoom);
+            }
+
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.add_space(16.0);
@@ -1401,6 +1409,18 @@ fn voice_panel(app: &mut Unkvoid, ui: &mut Ui) {
         theme::SECONDARY,
     );
 
+    // O nome do canal leva de volta à chamada, como no Discord.
+    let subtitle = Rect::from_min_max(pos2(badge.right() + 8.0, row.center().y + 2.0), pos2(row.right() - 92.0, row.bottom()));
+
+    if ui
+        .interact(subtitle, ui.id().with("voice-channel"), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(if code_room { "Voltar para a sala" } else { "Voltar para o canal" })
+        .clicked()
+    {
+        app.actions.push(Action::BackToCall);
+    }
+
     // Painéis com coisa para mexer dentro fecham só com clique fora ou Esc: o `menu` do egui
     // fecha a cada clique, e o busca, o som, o volume ou o teste sumiam no primeiro toque.
     egui::Popup::menu(&details)
@@ -1445,7 +1465,9 @@ fn voice_panel(app: &mut Unkvoid, ui: &mut Ui) {
         .show(|ui| {
             app.noise_test_seen = true;
             ui.set_width(320.0);
-            ui.horizontal(|ui| {
+            // Linhas de altura fixa, a do controle: no `horizontal` o texto entra primeiro numa
+            // linha baixa e fica no topo quando a chave ou o botão a esticam depois.
+            ui.allocate_ui_with_layout(vec2(ui.available_width(), 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new("Supressão de ruído").font(theme::bold(15.0)));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if widgets::switch(ui, filtering).clicked() {
@@ -1464,32 +1486,22 @@ fn voice_panel(app: &mut Unkvoid, ui: &mut Ui) {
                 .color(theme::MUTED),
             );
             ui.add_space(12.0);
-            ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(vec2(ui.available_width(), 38.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new("Teste do microfone").font(theme::bold(13.0)));
-                if widgets::secondary_button(
-                    ui,
-                    if app.noise_test_active {
-                        "Parar"
-                    } else {
-                        "Testar"
-                    },
-                ) {
-                    app.actions.push(Action::ToggleNoiseTest);
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::secondary_button(ui, if app.noise_test_active { "Parar" } else { "Testar" }) {
+                        app.actions.push(Action::ToggleNoiseTest);
+                    }
+                });
             });
             if app.noise_test_active {
                 super::settings::meter(ui, app.call_level, None);
             }
             ui.add_space(10.0);
             ui.label(
-                egui::RichText::new("Fornecido por")
+                egui::RichText::new("Fornecido por RNNoise")
                     .font(theme::regular(12.0))
                     .color(theme::DIM),
-            );
-            ui.label(
-                egui::RichText::new("RNNoise")
-                    .font(theme::regular(14.0))
-                    .color(theme::TEXT),
             );
         });
 

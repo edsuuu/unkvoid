@@ -319,14 +319,19 @@ impl Voice {
     }
 }
 
-/// A linha de números de uma tela, como o React a escreve: `1080p · 60 fps · 0,4%`. A
-/// perda é a do último segundo — a acumulada esconderia a rede que apertou agora.
-pub fn stats_line(frames: u32, height: u32, received: u64, lost: u64) -> (String, bool) {
+/// A linha de números de uma tela, a do React com a taxa: `1080p · 60 fps · 4,2 Mb/s`, e a
+/// perda no fim só quando houve (`· 0,4%`). A perda é a do último segundo — a acumulada
+/// esconderia a rede que apertou agora.
+pub fn stats_line(fps: u32, height: u32, megabits: f64, received: u64, lost: u64) -> (String, bool) {
     let total = received + lost;
     #[allow(clippy::cast_precision_loss)]
     let loss = if total == 0 { 0.0 } else { lost as f64 * 100.0 / total as f64 };
     let resolution = if height == 0 { "—".to_owned() } else { format!("{height}p") };
-    let said = format!("{resolution} · {frames} fps · {}", format!("{loss:.1}%").replace('.', ","));
+    let mut said = format!("{resolution} · {fps} fps · {megabits:.1} Mb/s").replace('.', ",");
+
+    if lost > 0 {
+        said += &format!(" · {loss:.1}%").replace('.', ",");
+    }
 
     (said, loss >= 2.0)
 }
@@ -359,9 +364,10 @@ mod tests {
 
     #[test]
     fn the_stats_line_reads_like_the_react_one() {
-        assert_eq!(stats_line(60, 1_080, 900, 0), ("1080p · 60 fps · 0,0%".to_owned(), false));
-        assert_eq!(stats_line(58, 720, 97, 3), ("720p · 58 fps · 3,0%".to_owned(), true));
-        assert_eq!(stats_line(0, 0, 0, 0), ("— · 0 fps · 0,0%".to_owned(), false));
+        assert_eq!(stats_line(60, 1_080, 4.2, 900, 0), ("1080p · 60 fps · 4,2 Mb/s".to_owned(), false));
+        assert_eq!(stats_line(58, 720, 2.5, 97, 3), ("720p · 58 fps · 2,5 Mb/s · 3,0%".to_owned(), true));
+        assert_eq!(stats_line(0, 0, 0.0, 0, 0), ("— · 0 fps · 0,0 Mb/s".to_owned(), false));
+        assert_eq!(stats_line(60, 1_080, 4.2, 996, 4), ("1080p · 60 fps · 4,2 Mb/s · 0,4%".to_owned(), false));
     }
 
     #[test]

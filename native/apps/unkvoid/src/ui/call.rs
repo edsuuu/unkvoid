@@ -1,6 +1,7 @@
 //! O palco da chamada: cartões de quem está na voz e controles que aparecem sob o ponteiro.
-//! Quem liga a câmera aparece em vídeo no próprio cartão; cada transmissão tem o cartão dela,
-//! e a que ninguém abriu ainda mostra o "Assistir transmissão". Clicar num vídeo o põe no foco.
+//! Quem liga a câmera aparece em vídeo no próprio cartão; quem transmite vira o cartão da tela
+//! dele, e a que ninguém abriu ainda mostra o "Assistir transmissão". Clicar num vídeo o põe no
+//! foco.
 
 use super::widgets::TipAbove;
 use egui::{Align2, Color32, CornerRadius, Frame, Rect, Sense, Stroke, Ui, UiBuilder, Vec2, pos2, vec2};
@@ -23,6 +24,8 @@ enum Card {
     Stream {
         producer: String,
         name: String,
+        /// Quem transmite, com o mudo já resolvido: o cartão da tela é o cartão da pessoa.
+        person: Option<VoicePerson>,
         watched: bool,
         mine: bool,
     },
@@ -671,12 +674,7 @@ fn card(app: &mut Unkvoid, ui: &mut Ui, rect: Rect, card: &Card) {
                 app.actions.push(Action::FocusTile(camera.clone()));
             }
         }
-        Card::Stream {
-            producer,
-            name,
-            watched,
-            mine,
-        } => stream(app, ui, rect, producer, name, *watched, *mine),
+        Card::Stream { .. } => stream(app, ui, rect, card),
     }
 }
 
@@ -727,7 +725,9 @@ pub fn full_stream(app: &mut Unkvoid, ui: &mut Ui) -> bool {
         .show(ui, |ui| {
             let rect = ui.max_rect();
 
-            stream(app, ui, rect, &producer, &name, true, mine);
+            let card = Card::Stream { producer: producer.clone(), name, person: None, watched: true, mine };
+
+            stream(app, ui, rect, &card);
         });
 
     if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
@@ -740,7 +740,11 @@ pub fn full_stream(app: &mut Unkvoid, ui: &mut Ui) -> bool {
 /// O cartão de uma transmissão: a tela de quem transmite, o nome com o "AO VIVO", e o
 /// "Assistir transmissão" quando ainda não foi aberta. A própria só mostra a imagem quando a
 /// pessoa pede: ver a própria tela custa decodificar o que já se está codificando, e o jogo paga.
-fn stream(app: &mut Unkvoid, ui: &mut Ui, rect: Rect, producer: &str, name: &str, watched: bool, mine: bool) {
+fn stream(app: &mut Unkvoid, ui: &mut Ui, rect: Rect, card: &Card) {
+    let Card::Stream { producer, name, person, watched, mine } = card else {
+        return;
+    };
+    let (producer, watched, mine) = (producer.as_str(), *watched, *mine);
     let response = ui
         .interact(rect, ui.id().with(("stream", producer, mine)), Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -783,9 +787,29 @@ fn stream(app: &mut Unkvoid, ui: &mut Ui, rect: Rect, producer: &str, name: &str
         }
     }
 
-    let tag_text = ui
-        .painter()
-        .layout_no_wrap(name.to_owned(), theme::bold(14.0), Color32::WHITE);
+    // Os números da tela no canto de cima, livre: os botões ficam à direita e o nome embaixo.
+    if watched && app.pictures.contains_key(producer) && let Some((line, danger)) = app.stream_stats.get(producer) {
+        let color = if *danger { theme::DANGER } else { Color32::WHITE };
+        let label = painter.layout_no_wrap(line.clone(), theme::bold(13.0), color);
+        let pill = Rect::from_min_size(pos2(rect.left() + 8.0, rect.top() + 8.0), vec2(label.size().x + 16.0, 28.0));
+
+        painter.rect_filled(pill, CornerRadius::same(6), Color32::from_black_alpha(153));
+        painter.galley(pos2(pill.left() + 8.0, pill.center().y - label.size().y / 2.0), label, color);
+    }
+
+    // O cartão da tela é o da pessoa: a borda verde de quem fala e o mudo ao lado do nome.
+    if person.as_ref().is_some_and(|person| app.call.speaking.contains(&person.user_id)) {
+        ui.painter().rect_stroke(rect, theme::RADIUS, Stroke::new(2.0, theme::SUCCESS), egui::StrokeKind::Inside);
+    }
+
+    let tag_text = match person.as_ref().filter(|person| person.muted || person.deafened) {
+        Some(person) => ui.painter().layout_no_wrap(
+            format!("{}  {name}", if person.deafened { icons::HEADPHONES } else { icons::MICROPHONE_SLASH }),
+            theme::filled(14.0),
+            Color32::WHITE,
+        ),
+        None => ui.painter().layout_no_wrap(name.to_owned(), theme::bold(14.0), Color32::WHITE),
+    };
     let tag = Rect::from_min_size(
         pos2(rect.left() + 8.0, rect.bottom() - 36.0),
         vec2(tag_text.size().x + 16.0, 28.0),
@@ -1037,23 +1061,45 @@ fn tile(app: &Unkvoid, ui: &Ui, rect: Rect, person: &VoicePerson, camera: Option
 fn cards_of(app: &Unkvoid, people: Vec<VoicePerson>) -> Vec<Card> {
     let owner = |peer: &str| app.call.accounts.get(peer).copied();
     let me = app.call.me.or(app.my_id());
+    let code_room = in_code_room(app);
+    // Quem transmite é desenhado no cartão da tela: o mudo e a fala dele vão junto. O meu mudo
+    // é o da chamada, que muda antes da presença do servidor; na sala por código ninguém tem
+    // microfone.
+    let person_of = |user: Option<i64>| {
+        let mut person = people.iter().find(|person| Some(person.user_id) == user)?.clone();
+
+        if code_room {
+            (person.muted, person.deafened) = (false, false);
+        } else if user == me {
+            (person.muted, person.deafened) = (app.call.muted, app.call.deafened);
+        }
+
+        Some(person)
+    };
+    let stream = |producer: &str, label: &str, user: Option<i64>, watched: bool, mine: bool| {
+        let person = person_of(user);
+
+        Card::Stream {
+            producer: producer.to_owned(),
+            name: person.as_ref().map_or_else(|| label.to_owned(), |person| person.name.clone()),
+            person,
+            watched,
+            mine,
+        }
+    };
     // A própria transmissão ganha o cartão dela, com o "Assistir à minha tela". Antes de abrir,
     // ela ainda não está nos vídeos assistidos e não tem producer aqui.
-    let own = app.call.mine.sharing.then(|| Card::Stream {
-        producer: app
+    let own = app.call.mine.sharing.then(|| {
+        let producer = app
             .call
             .tiles
             .iter()
             .find(|placed| placed.tile.mine && !placed.tile.camera)
             .map(|placed| placed.tile.producer_id.clone())
-            .unwrap_or_default(),
-        name: people
-            .iter()
-            .find(|person| Some(person.user_id) == me)
-            .map(|person| person.name.clone())
-            .unwrap_or_default(),
-        watched: app.call.mine.self_view,
-        mine: true,
+            .unwrap_or_default();
+        let name = app.me.as_ref().map(|me| me.name.clone()).unwrap_or_default();
+
+        stream(&producer, &name, me, app.call.mine.self_view, true)
     });
     let mut cards: Vec<Card> = own
         .into_iter()
@@ -1063,44 +1109,31 @@ fn cards_of(app: &Unkvoid, people: Vec<VoicePerson>) -> Vec<Card> {
                 .iter()
                 .map(|placed| &placed.tile)
                 .filter(|tile| !tile.camera && !tile.mine)
-                .map(|tile| Card::Stream {
-                    producer: tile.producer_id.clone(),
-                    name: tile.label.clone(),
-                    watched: true,
-                    mine: false,
-                }),
+                .map(|tile| stream(&tile.producer_id, &tile.label, owner(&tile.peer_id), true, false)),
         )
         .chain(
             app.call
                 .pending
                 .iter()
                 .filter(|tile| !tile.camera)
-                .map(|tile| Card::Stream {
-                    producer: tile.producer_id.clone(),
-                    name: tile.label.clone(),
-                    watched: false,
-                    mine: false,
-                }),
+                .map(|tile| stream(&tile.producer_id, &tile.label, owner(&tile.peer_id), false, false)),
         )
         .collect();
 
-    // A sala por código é só a tela: quem transmite já está no cartão da tela dele, e o cartão
-    // com a foto ao lado repetiria a pessoa.
-    let sharing: Vec<i64> = if in_code_room(app) {
-        app.call
-            .tiles
-            .iter()
-            .map(|placed| &placed.tile)
-            .chain(&app.call.pending)
-            .filter(|tile| !tile.camera)
-            .filter_map(|tile| if tile.mine { me } else { owner(&tile.peer_id) })
-            .chain(me.filter(|_| app.call.mine.sharing))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    // Quem transmite já está no cartão da tela dele: o cartão com a foto ao lado repetiria a
+    // pessoa. Com a câmera ligada o cartão dela fica, porque aí mostra outra coisa.
+    let sharing: Vec<i64> = app
+        .call
+        .tiles
+        .iter()
+        .map(|placed| &placed.tile)
+        .chain(&app.call.pending)
+        .filter(|tile| !tile.camera)
+        .filter_map(|tile| if tile.mine { me } else { owner(&tile.peer_id) })
+        .chain(me.filter(|_| app.call.mine.sharing))
+        .collect();
 
-    cards.extend(people.into_iter().filter(|person| !sharing.contains(&person.user_id)).map(|person| {
+    cards.extend(people.iter().filter_map(|person| {
         let camera = app
             .call
             .tiles
@@ -1108,8 +1141,9 @@ fn cards_of(app: &Unkvoid, people: Vec<VoicePerson>) -> Vec<Card> {
             .map(|placed| &placed.tile)
             .find(|tile| tile.camera && owner(&tile.peer_id) == Some(person.user_id))
             .map(|tile| tile.producer_id.clone());
+        let own_camera = Some(person.user_id) == me && app.call.mine.camera;
 
-        Card::Person { person, camera }
+        (camera.is_some() || own_camera || !sharing.contains(&person.user_id)).then(|| Card::Person { person: person.clone(), camera })
     }));
 
     cards

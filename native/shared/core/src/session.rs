@@ -51,7 +51,8 @@ impl Roster {
     pub fn reset(&mut self, joined: &JoinResponse) {
         self.peers = vec![Peer {
             peer_id: joined.peer_id.clone(),
-            user_id: None,
+            // A conta que o SFU amarrou: sem ela o palco não reconhecia o próprio cartão.
+            user_id: (!joined.user_id.is_empty()).then(|| joined.user_id.clone()),
             name: joined.name.clone(),
             producers: Vec::new(),
             reconnecting: false,

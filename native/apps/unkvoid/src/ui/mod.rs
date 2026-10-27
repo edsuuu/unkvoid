@@ -18,7 +18,7 @@ mod voice_settings;
 mod sidebar;
 pub mod theme;
 pub(super) mod voice_debug;
-mod widgets;
+pub(crate) mod widgets;
 
 use egui::{Align2, Color32, CornerRadius, Frame, Rect, Sense, Ui, pos2, vec2};
 use egui_phosphor::regular as phosphor;

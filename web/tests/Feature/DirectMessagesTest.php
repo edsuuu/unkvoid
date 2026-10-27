@@ -201,6 +201,19 @@ it('pede amizade a uma pessoa pelo id autenticado sem expor o e-mail', function 
         ->assertJsonPath('data.addressee.id', $target->id);
 });
 
+it('pede amizade pelo apelido a quem entrou so com o nome', function (): void {
+    $viewer = User::factory()->create();
+    $target = User::createFromName('Bia Lima', 'senha-forte-123');
+
+    $this->actingAs($viewer, 'sanctum')->postJson('/api/friends', ['email' => ' BiaLima '])
+        ->assertCreated()
+        ->assertJsonPath('data.addressee.id', $target->id);
+
+    $this->actingAs($viewer, 'sanctum')->postJson('/api/friends', ['email' => 'ninguem'])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['email' => 'Ninguém com esse e-mail ou apelido.']);
+});
+
 it('quem foi bloqueado nao desfaz o proprio bloqueio', function (): void {
     $alice = User::factory()->create();
     $bob = User::factory()->create();

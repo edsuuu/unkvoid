@@ -29,7 +29,7 @@ final class FriendController
      */
     public function store(StoreFriendRequest $request, #[CurrentUser] User $user): FriendResource
     {
-        return new FriendResource(Friendship::requestByEmail($user, $request->string('email')->toString()));
+        return new FriendResource(Friendship::requestByLogin($user, $request->string('email')->toString()));
     }
 
     public function storeUser(User $target, #[CurrentUser] User $user): FriendResource

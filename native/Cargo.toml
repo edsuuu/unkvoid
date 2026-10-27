@@ -3,7 +3,7 @@ resolver = "3"
 members = ["shared/capture", "shared/media", "shared/storage", "shared/core", "shared/clips", "apps/unkvoid"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 

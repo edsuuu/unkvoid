@@ -182,7 +182,8 @@ pub fn show(app: &mut Unkvoid, ui: &mut Ui) {
                                 super::icons::paint_glyph(ui, rect, icons::HASH, tint, 22.0);
                             },
                         ) {
-                            app.actions.push(Action::Show(Modal::CodeRoom));
+                            // Dentro de uma, o # é o caminho de volta para ela.
+                            app.actions.push(if in_code_room { Action::BackToRoom } else { Action::Show(Modal::CodeRoom) });
                         }
                     });
                 });

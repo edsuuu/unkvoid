@@ -14,7 +14,8 @@ final class StoreFriendRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'email' => ['required', 'string', 'email', 'max:255'],
+            // O campo se chama `email` desde o app antigo, mas aceita o apelido também.
+            'email' => ['required', 'string', 'max:255'],
         ];
     }
 }
