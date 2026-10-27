@@ -1378,7 +1378,7 @@ impl Unkvoid {
 
     /// Só no beta: `UNKVOID_BETA_ABRIR` abre direto uma tela, para fotografar e comparar com o
     /// Discord sem clique (a tela do Windows bloqueada não deixa clicar). `servidor:<nome>`,
-    /// `voz`, `transmitir`, `camera`, separados por vírgula.
+    /// `voz`, `clips`, `transmitir`, `camera`, separados por vírgula.
     fn open_from_environment(&mut self) {
         let Ok(wanted) = std::env::var("UNKVOID_BETA_ABRIR") else {
             return;
@@ -1406,6 +1406,7 @@ impl Unkvoid {
                 _ if step == "voz" => self.actions.push(Action::Show(Modal::Settings(
                     SettingsPage::Voice(VoiceSection::Voice),
                 ))),
+                _ if step == "clips" => self.actions.push(Action::Show(Modal::Settings(SettingsPage::Clips))),
                 _ if step == "transmitir" => self
                     .actions
                     .push(Action::Show(Modal::GoLive(GoLiveTab::Screens))),

@@ -49,6 +49,8 @@ pub struct ClipsSettings {
     pub noise_suppression: bool,
     pub save_hotkey: Hotkey,
     pub overlay_hotkey: Hotkey,
+    /// Desligado, o atalho do painel liga o replay ou salva direto, como em tela cheia exclusiva.
+    pub overlay_enabled: bool,
     pub save_chime: bool,
     pub start_with_windows: bool,
     /// A pessoa já ligou o replay alguma vez. Aí os atalhos ficam registrados mesmo com ele
@@ -74,6 +76,7 @@ impl Default for ClipsSettings {
             noise_suppression: true,
             save_hotkey: Hotkey::SAVE_DEFAULT,
             overlay_hotkey: Hotkey::OVERLAY_DEFAULT,
+            overlay_enabled: true,
             save_chime: true,
             start_with_windows: true,
             clips_user: false,
@@ -668,11 +671,11 @@ impl ClipsRuntime {
 
     /// O Alt+Z: abre o painel, ou fecha o aberto. Em tela cheia exclusiva qualquer janela por
     /// cima tira o jogo da tela cheia e o minimiza: o atalho faz direto o que o botão do replay
-    /// faria, com o som no lugar do painel.
+    /// faria, com o som no lugar do painel. Com o painel desligado nas preferências, também.
     fn toggle_overlay(&mut self, notices: &mut Vec<String>) {
         if let Some(overlay) = self.overlay.take() {
             overlay.close(true);
-        } else if crate::shell::exclusive_fullscreen() {
+        } else if !self.settings.overlay_enabled || crate::shell::exclusive_fullscreen() {
             if self.settings.enabled {
                 self.save(crate::shell::foreground_window(), notices);
             } else {
@@ -961,6 +964,8 @@ mod tests {
         assert_eq!((slint.folder, slint.monitor), (PathBuf::from(r"D:\Clipes"), Some(2)));
         assert!(egui.enabled);
         assert_eq!((egui.folder, egui.replay_minutes), (PathBuf::from(r"E:\Clipes"), 20));
+        // Quem atualiza continua com o painel: a opção de desligá-lo veio depois.
+        assert!(slint.overlay_enabled && egui.overlay_enabled);
     }
 
     #[test]
