@@ -221,11 +221,13 @@ fn voice(app: &mut Unkvoid, ui: &mut Ui, saved: &serde_json::Value) {
         .unwrap_or(false);
 
     ui.horizontal(|ui| {
-        let button = egui::Button::new(
+        let button = egui::Button::new((
+            egui::Atom::grow(),
             egui::RichText::new(if testing { "Parar teste" } else { "Teste do microfone" })
                 .font(theme::bold(16.0))
                 .color(Color32::WHITE),
-        )
+            egui::Atom::grow(),
+        ))
         .fill(theme::ACCENT)
         .corner_radius(theme::RADIUS)
         .min_size(vec2(164.0, 40.0));
@@ -646,11 +648,13 @@ fn preview(app: &mut Unkvoid, ui: &mut Ui, has_camera: bool) {
         },
         vec2(136.0, 40.0),
     );
-    let button = egui::Button::new(
+    let button = egui::Button::new((
+        egui::Atom::grow(),
         egui::RichText::new(if app.video_test { "Parar vídeo" } else { "Testar vídeo" })
             .font(theme::bold(16.0))
             .color(Color32::WHITE),
-    )
+        egui::Atom::grow(),
+    ))
     .fill(if app.video_test {
         theme::BUTTON
     } else if has_camera {
@@ -789,11 +793,13 @@ fn advanced(app: &mut Unkvoid, ui: &mut Ui) {
         "Volta ao padrão os aparelhos, os volumes, o perfil de entrada, a câmera e os sons.",
         110.0,
         |ui| {
-            let button = egui::Button::new(
+            let button = egui::Button::new((
+                egui::Atom::grow(),
                 egui::RichText::new("Redefinir")
                     .font(theme::bold(16.0))
                     .color(theme::DANGER),
-            )
+                egui::Atom::grow(),
+            ))
             .fill(theme::BUTTON)
             .corner_radius(theme::RADIUS)
             .min_size(vec2(100.0, 40.0));

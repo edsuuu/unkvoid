@@ -259,7 +259,7 @@ fn confirm(app: &mut Unkvoid, ui: &mut Ui) {
             }
         }
         Confirm::DeleteRole { server, role, name } => {
-            title(ui, &format!("Excluir o cargo {name}"), "");
+            title(ui, &format!("Excluir o cargo \"{name}\""), "");
             ui.label(
                 egui::RichText::new("Quem tem o cargo perde o que ele dava. Isso não tem volta.")
                     .color(theme::MUTED),
@@ -416,7 +416,9 @@ fn add_server(app: &mut Unkvoid, ui: &mut Ui, step: &mut AddServerStep) {
             ui.add_space(24.0);
             ui.separator();
             ui.add_space(14.0);
-            ui.horizontal(|ui| {
+            // A linha já nasce da altura do botão: no `horizontal` o texto centrava numa linha
+            // baixa e ficava acima do meio do botão.
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 38.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new("Já tem um convite?").color(theme::MUTED));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if widgets::secondary_button(ui, "Entrar em um servidor") {
@@ -474,7 +476,7 @@ fn add_server(app: &mut Unkvoid, ui: &mut Ui, step: &mut AddServerStep) {
             ui.add_space(22.0);
             let ready = !name.trim().is_empty();
             let mut go_back = false;
-            ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 40.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 if ui
                     .add(
                         egui::Label::new(egui::RichText::new("Voltar").color(theme::ACCENT_TEXT))
@@ -515,7 +517,7 @@ fn add_server(app: &mut Unkvoid, ui: &mut Ui, step: &mut AddServerStep) {
             let ready = !invite.trim().is_empty();
             ui.add_space(22.0);
             let mut go_back = false;
-            ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 40.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 if ui
                     .add(
                         egui::Label::new(egui::RichText::new("Voltar").color(theme::ACCENT_TEXT))
@@ -751,13 +753,15 @@ fn invite(app: &mut Unkvoid, ui: &mut Ui, server: i64) {
         ui.label(egui::RichText::new("Os convites deste servidor estão pausados.").color(theme::WARNING));
     } else if let Some(invite) = app.server_invite.clone() {
         let link = invite.url;
+        // Uma caixa de campo com o botão dentro, como no Discord. Na cor do trilho ela sumia no
+        // fundo do modal, e a linha baixa deixava o link acima do meio do botão.
         Frame::new()
-            .fill(theme::RAIL)
+            .fill(theme::FIELD)
+            .stroke(egui::Stroke::new(1.0, theme::FIELD_BORDER))
             .corner_radius(theme::RADIUS)
-            .inner_margin(egui::Margin::symmetric(10, 6))
+            .inner_margin(egui::Margin { left: 10, right: 4, top: 4, bottom: 4 })
             .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 40.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add(
                         egui::Label::new(egui::RichText::new(&link).font(theme::regular(13.0)))
                             .truncate(),
@@ -769,6 +773,7 @@ fn invite(app: &mut Unkvoid, ui: &mut Ui, server: i64) {
                     });
                 });
             });
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
             let expiry = if app.invite_max_age == 0 { "nunca" } else { match app.invite_max_age { 1800 => "30 minutos", 3600 => "1 hora", 21600 => "6 horas", 43200 => "12 horas", 86400 => "1 dia", _ => "7 dias" } };
             ui.label(egui::RichText::new(format!("Seu link de convite expira em {expiry}. ")).font(theme::regular(12.0)).color(theme::DIM));

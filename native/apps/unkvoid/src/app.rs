@@ -140,6 +140,9 @@ pub struct ServerSettings {
     pub role: Option<RoleDraft>,
     /// O filtro da página de membros.
     pub search: String,
+    /// "Criar cargo": o maior id de cargo no clique. O primeiro acima dele abre no editor
+    /// quando a árvore voltar com ele, como no Discord.
+    pub new_role_after: Option<i64>,
 }
 
 impl ServerSettings {
@@ -150,6 +153,7 @@ impl ServerSettings {
             name: tree.name.clone(),
             role: None,
             search: String::new(),
+            new_role_after: None,
         }
     }
 }
@@ -442,6 +446,8 @@ pub enum Action {
     ShowEntry,
     /// Da entrada de volta para a sala por código em que a pessoa continua.
     BackToRoom,
+    /// De qualquer tela de volta à chamada: a sala por código ou o canal de voz do servidor.
+    BackToCall,
     LeaveVoice,
     ToggleVoiceChat,
     SetUserStatus(UserStatus, Option<i64>),
@@ -614,6 +620,12 @@ pub struct Unkvoid {
     camera_serial: u64,
     /// O último quadro de cada vídeo assistido, pelo producer.
     pub pictures: HashMap<String, egui::TextureHandle>,
+    /// A linha de números de cada tela assistida (`1080p · 60 fps · 4,2 Mb/s`), e se a perda
+    /// pede o vermelho.
+    pub stream_stats: HashMap<String, (String, bool)>,
+    /// Os contadores de pacotes da amostra anterior: a perda da linha é a do último segundo.
+    stream_counters: HashMap<String, media::Counters>,
+    stream_sampled_at: Instant,
     /// As janelas e telas do seletor da transmissão, e a miniatura de cada uma.
     pub share_sources: Option<Vec<ShareSource>>,
     pub share_previews: HashMap<String, egui::TextureHandle>,
@@ -728,6 +740,9 @@ impl Unkvoid {
             camera_picture: None,
             camera_serial: 0,
             pictures: HashMap::new(),
+            stream_stats: HashMap::new(),
+            stream_counters: HashMap::new(),
+            stream_sampled_at: Instant::now(),
             share_sources: None,
             share_previews: HashMap::new(),
             share_selected: None,
@@ -788,6 +803,12 @@ impl Unkvoid {
             } else {
                 self.notify(notice, false);
             }
+        }
+
+        // A Galeria do painel do Alt+Z: a janela volta da bandeja já nos Clips.
+        #[cfg(target_os = "windows")]
+        if self.clips_runtime.take_open_gallery() {
+            self.clips_open = true;
         }
 
         while let Ok(event) = self.inbox.try_recv() {
@@ -884,6 +905,34 @@ impl Unkvoid {
 
         self.pictures
             .retain(|producer, _| alive.contains(producer.as_str()));
+
+        // De segundo em segundo, os números das telas. Divididos pelo tempo que passou de fato: a
+        // janela só redesenha quando há evento, e a amostra pode cair depois do segundo.
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(self.stream_sampled_at).as_secs_f64();
+
+        if elapsed >= 1.0 {
+            let mut stats = HashMap::new();
+            let mut counters = HashMap::new();
+
+            #[allow(clippy::cast_precision_loss)]
+            for (producer, (frames, height, bytes), current) in self.backend.calls().stream_numbers() {
+                let fps = (f64::from(frames) / elapsed).round() as u32;
+                let megabits = bytes as f64 * 8.0 / elapsed / 1_000_000.0;
+                let previous = self.stream_counters.get(&producer).copied().unwrap_or_default();
+                let current = current.unwrap_or_default();
+                let received = current.received.saturating_sub(previous.received);
+                let lost = current.lost.saturating_sub(previous.lost);
+                let line = crate::stage::stats_line(fps, height, megabits, received, lost);
+
+                stats.insert(producer.clone(), line);
+                counters.insert(producer, current);
+            }
+
+            self.stream_stats = stats;
+            self.stream_counters = counters;
+            self.stream_sampled_at = now;
+        }
     }
 
     /// A câmera escolhida em Voz e vídeo, ou a primeira.
@@ -1710,9 +1759,10 @@ impl Unkvoid {
             Action::AddFriend => {
                 let email = std::mem::take(&mut self.friend_email).trim().to_owned();
 
+                // O "enviado" vem do núcleo depois da resposta: "ninguém com esse apelido" não
+                // pode chegar depois de um "enviado".
                 if !email.is_empty() {
                     self.backend.add_friend(email);
-                    self.notify("Pedido de amizade enviado.", false);
                 }
             }
             Action::AddFriendById(user) => self.backend.add_friend_by_id(user),
@@ -1879,6 +1929,7 @@ impl Unkvoid {
                     self.modal = None;
                 }
             }
+            Action::BackToCall => self.back_to_call(),
             Action::LeaveVoice => self.backend.calls().leave(),
             Action::ToggleVoiceChat => self.voice_chat_open = !self.voice_chat_open,
             Action::SetUserStatus(status, minutes) => {
@@ -2028,6 +2079,26 @@ impl Unkvoid {
         self.confirm = None;
         self.login = Login::default();
         self.show_entry();
+    }
+
+    /// O nome do canal no "Voz conectada" leva de volta à chamada, como no Discord. O servidor
+    /// abre com a árvore guardada, e o canal de voz aberto é o que mostra o palco.
+    fn back_to_call(&mut self) {
+        let Some(seat) = self.call.seat.clone() else {
+            return;
+        };
+
+        if seat.guest.is_some() {
+            self.phase = Phase::Room;
+            self.modal = None;
+            return;
+        }
+
+        self.open_server(seat.server);
+
+        if let Some(channel) = self.tree.as_ref().and_then(|tree| tree.channels.iter().find(|channel| channel.id == seat.channel)).cloned() {
+            self.open_channel(channel);
+        }
     }
 
     /// A entrada: o login e, do lado, a sala por código já com o nome e as últimas salas.

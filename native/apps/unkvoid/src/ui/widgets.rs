@@ -127,7 +127,7 @@ pub fn menu_frame() -> egui::Frame {
 
 /// A largura de um item de menu: a do menu, entre 200 e 260 px como no Discord. Sem o teto, o
 /// popup do egui deixa o item ocupar a largura máxima dele, e o menu saía com 600 px.
-fn menu_width(ui: &Ui) -> f32 {
+pub fn menu_width(ui: &Ui) -> f32 {
     ui.available_width().clamp(200.0, 260.0)
 }
 
@@ -358,13 +358,16 @@ pub fn text_field(ui: &mut Ui, value: &mut String, hint: &str, password: bool) -
         .inner
 }
 
-/// O botão cheio da cor do Unkvoid.
+/// O botão cheio da cor do Unkvoid. O texto vai no meio entre dois espaços que crescem: o botão
+/// do egui alinha o conteúdo pelo layout, e no layout de cima para baixo ele ficava na esquerda.
 pub fn primary_button(ui: &mut Ui, label: &str, enabled: bool, width: f32) -> bool {
-    let button = egui::Button::new(
+    let button = egui::Button::new((
+        egui::Atom::grow(),
         egui::RichText::new(label)
             .font(theme::bold(14.0))
             .color(Color32::WHITE),
-    )
+        egui::Atom::grow(),
+    ))
     .fill(if enabled {
         theme::ACCENT
     } else {
@@ -595,7 +598,8 @@ pub fn danger_button(ui: &mut Ui, label: &str, enabled: bool) -> bool {
         theme::DANGER.gamma_multiply(0.5)
     })
     .corner_radius(theme::RADIUS)
-    .min_size(vec2(0.0, 38.0));
+    // A altura do `primary_button`: lado a lado nas perguntas, o mais baixo ficava torto.
+    .min_size(vec2(0.0, 40.0));
 
     ui.add_enabled(enabled, button).clicked()
 }
@@ -648,7 +652,8 @@ pub fn secondary_button(ui: &mut Ui, label: &str) -> bool {
     let button = egui::Button::new(egui::RichText::new(label).font(theme::bold(14.0)))
         .fill(theme::SELECTED)
         .corner_radius(theme::RADIUS)
-        .min_size(vec2(0.0, 38.0));
+        // A altura do `primary_button`, ao lado dele no "Cancelar" das perguntas.
+        .min_size(vec2(0.0, 40.0));
 
     ui.add(button).clicked()
 }
@@ -656,7 +661,7 @@ pub fn secondary_button(ui: &mut Ui, label: &str) -> bool {
 /// O botão do Google, da largura do cartão.
 pub fn secondary_button_wide(ui: &mut Ui, label: &str) -> bool {
     let text = format!("{}  {label}", egui_phosphor::regular::GOOGLE_LOGO);
-    let button = egui::Button::new(egui::RichText::new(text).font(theme::bold(14.0)))
+    let button = egui::Button::new((egui::Atom::grow(), egui::RichText::new(text).font(theme::bold(14.0)), egui::Atom::grow()))
         .fill(theme::ELEVATED)
         .stroke(Stroke::new(1.0, theme::DIVIDER))
         .corner_radius(theme::RADIUS)

@@ -142,7 +142,9 @@ fn sources(app: &mut Unkvoid, ui: &mut Ui, tab: GoLiveTab) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let gap = 16.0;
-            let card_width = ((ui.available_width() - gap) / 2.0).min(447.0);
+            // 4 px de cada lado para o aro da escolhida, e o vão só entre as duas: a linha passava 20 px
+            // da largura e alargava o modal além do rodapé.
+            let card_width = ((ui.available_width() - 8.0 - gap) / 2.0).min(447.0);
 
             ui.add_space(6.0);
 
@@ -150,7 +152,11 @@ fn sources(app: &mut Unkvoid, ui: &mut Ui, tab: GoLiveTab) {
                 ui.horizontal_top(|ui| {
                     ui.add_space(4.0);
 
-                    for source in pair {
+                    for (index, source) in pair.iter().enumerate() {
+                        if index > 0 {
+                            ui.add_space(gap);
+                        }
+
                         let selected = app.share_selected.as_deref() == Some(source.key.as_str());
                         let response = card(app, ui, source, card_width, selected);
 
@@ -160,8 +166,6 @@ fn sources(app: &mut Unkvoid, ui: &mut Ui, tab: GoLiveTab) {
                         } else if response.clicked() {
                             app.share_selected = Some(source.key.clone());
                         }
-
-                        ui.add_space(gap);
                     }
                 });
                 ui.add_space(24.0);
@@ -476,7 +480,8 @@ fn separator(ui: &mut Ui) {
 /// Um item de menu de escolha única: o nome, a explicação embaixo e o círculo à direita.
 fn menu_radio(ui: &mut Ui, name: &str, subtext: &str, checked: bool) -> bool {
     let height = if subtext.is_empty() { 34.0 } else { 48.0 };
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
+    // No máximo a largura do menu "Opções": nos submenus a largura toda levava o popup a 600 px.
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width().min(264.0), height), Sense::click());
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
     if response.hovered() {

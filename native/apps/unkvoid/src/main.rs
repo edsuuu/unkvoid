@@ -23,6 +23,8 @@ mod devices;
 #[cfg(target_os = "windows")]
 mod logbook;
 #[cfg(target_os = "windows")]
+mod overlay;
+#[cfg(target_os = "windows")]
 #[allow(dead_code)]
 mod shell;
 #[cfg(test)]

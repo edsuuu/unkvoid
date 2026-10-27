@@ -1145,6 +1145,8 @@ impl Backend {
                 return courier.complain(&failure);
             }
 
+            courier.send(Event::Notice("Pedido de amizade enviado.".to_owned()));
+
             if let Ok(friends) = api.friends().await {
                 courier.send(Event::Friends(friends));
             }

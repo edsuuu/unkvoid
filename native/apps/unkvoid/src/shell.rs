@@ -891,12 +891,22 @@ pub fn bring_to_front(window: HWND) {
 /// O monitor principal, em pixels físicos. O principal é sempre o que contém o ponto (0, 0).
 pub fn primary_monitor_rect() -> (i32, i32, i32, i32) {
     use windows::Win32::Foundation::POINT;
-    use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
-    };
+    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
+
+    monitor_rect(unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) })
+}
+
+/// O monitor da janela, em pixels físicos: o principal, se ela não estiver em nenhum.
+pub fn window_monitor_rect(window: HWND) -> (i32, i32, i32, i32) {
+    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromWindow};
+
+    monitor_rect(unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY) })
+}
+
+fn monitor_rect(monitor: windows::Win32::Graphics::Gdi::HMONITOR) -> (i32, i32, i32, i32) {
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO};
 
     unsafe {
-        let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()

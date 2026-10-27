@@ -659,11 +659,13 @@ pub(super) fn profile_card(
             if mine {
                 ui.add_space(8.0);
 
-                let button = egui::Button::new(
+                let button = egui::Button::new((
+                    egui::Atom::grow(),
                     RichText::new(format!("{}  Editar perfil", icons::PENCIL_SIMPLE))
                         .font(theme::bold(14.0))
                         .color(Color32::WHITE),
-                )
+                    egui::Atom::grow(),
+                ))
                 .fill(theme::ACCENT)
                 .corner_radius(theme::RADIUS)
                 .min_size(vec2(ui.available_width(), 40.0));

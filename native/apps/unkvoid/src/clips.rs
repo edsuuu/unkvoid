@@ -1,6 +1,7 @@
 //! Os Clips: o replay instantâneo do Windows. A tela fica sempre gravando num buffer em disco, e
 //! só vira arquivo quando a pessoa aperta o atalho. O motor mora em `shared/clips`; aqui ficam as
-//! preferências, os atalhos, o vigia que religa a captura e o aviso por cima do jogo.
+//! preferências, os atalhos, o vigia que religa a captura, o aviso por cima do jogo e o que o
+//! painel do Alt+Z (`overlay.rs`) pede.
 //!
 //! Tudo isto roda com a janela escondida na bandeja, que é o normal durante o jogo: o `poll` é
 //! chamado pelo `logic` do eframe, que continua batendo sem a janela na tela.
@@ -284,6 +285,13 @@ pub struct ClipsRuntime {
     thumbnail_pending: HashSet<PathBuf>,
     pub screens: Vec<Screen>,
     pub microphones: Vec<Microphone>,
+    /// O painel do Alt+Z aberto por cima do jogo.
+    overlay: Option<crate::overlay::OverlayState>,
+    /// A Galeria do painel pediu a página dos Clips: a janela a abre no mesmo quadro.
+    open_gallery: bool,
+    /// O seletor de pasta na tela, por cima do painel: o clique no escuro atrás dele não fecha o
+    /// painel por baixo do diálogo.
+    folder_picker_open: bool,
 }
 
 impl ClipsRuntime {
@@ -309,6 +317,9 @@ impl ClipsRuntime {
             thumbnail_pending: HashSet::new(),
             screens: Vec::new(),
             microphones: Vec::new(),
+            overlay: None,
+            open_gallery: false,
+            folder_picker_open: false,
         };
 
         runtime.configure();
@@ -426,7 +437,9 @@ impl ClipsRuntime {
         self.saving.load(Ordering::Relaxed)
     }
 
-    pub fn request_folder(&self) {
+    pub fn request_folder(&mut self) {
+        self.folder_picker_open = true;
+
         let sender = self.sender.clone();
         let start = self.settings.folder.clone();
         let owner = crate::shell::foreground_window().0 as usize;
@@ -438,6 +451,10 @@ impl ClipsRuntime {
             let _ = sender.send(RuntimeEvent::FolderSelected(selected));
             context.request_repaint();
         });
+    }
+
+    pub fn take_open_gallery(&mut self) -> bool {
+        std::mem::take(&mut self.open_gallery)
     }
 
     /// Os monitores e os microfones, lidos quando a página dos Clips abre: o principal é o
@@ -588,20 +605,13 @@ impl ClipsRuntime {
 
         while let Ok(event) = self.events.try_recv() {
             match event {
-                RuntimeEvent::Save => self.save(&mut notices),
-                // ponytail: o painel do Alt+Z ainda não voltou no app novo; o atalho faz o que o
-                // painel fazia em tela cheia exclusiva: liga o replay desligado e salva o ligado.
-                // A saída é o painel numa viewport do egui por cima do jogo.
-                RuntimeEvent::Overlay if self.settings.enabled => self.save(&mut notices),
-                RuntimeEvent::Overlay => {
-                    let settings = ClipsSettings { enabled: true, ..self.settings.clone() };
-
-                    self.update(settings);
-                    crate::toast::show(
-                        "Replay ligado",
-                        &format!("Aperte {} para salvar os últimos minutos.", self.settings.save_hotkey.label()),
-                    );
-                }
+                // Com o painel aberto a janela da frente é ele: o atalho de salvar o fecha e salva
+                // o jogo que estava na frente antes.
+                RuntimeEvent::Save => match self.overlay.take() {
+                    Some(overlay) => self.save(overlay.close(true), &mut notices),
+                    None => self.save(crate::shell::foreground_window(), &mut notices),
+                },
+                RuntimeEvent::Overlay => self.toggle_overlay(&mut notices),
                 RuntimeEvent::Captured(slot, hotkey) => self.captured(slot, hotkey, &mut notices),
                 RuntimeEvent::CaptureCancelled => self.capturing = None,
                 RuntimeEvent::Taken(hotkey) => {
@@ -626,12 +636,13 @@ impl ClipsRuntime {
                     self.last_saved = Some(path);
                     notices.push("Clipe salvo".to_owned());
                 }
-                RuntimeEvent::FolderSelected(Some(path)) => {
-                    let settings = ClipsSettings { folder: path, ..self.settings.clone() };
+                RuntimeEvent::FolderSelected(selected) => {
+                    self.folder_picker_open = false;
 
-                    self.update(settings);
+                    if let Some(path) = selected {
+                        self.update(ClipsSettings { folder: path, ..self.settings.clone() });
+                    }
                 }
-                RuntimeEvent::FolderSelected(None) => {}
                 RuntimeEvent::Thumbnail(path, image) => {
                     self.thumbnail_pending.remove(&path);
                     if let Some((width, height, pixels)) = image {
@@ -650,7 +661,84 @@ impl ClipsRuntime {
             }
         }
 
+        self.show_overlay(&mut notices);
+
         notices
+    }
+
+    /// O Alt+Z: abre o painel, ou fecha o aberto. Em tela cheia exclusiva qualquer janela por
+    /// cima tira o jogo da tela cheia e o minimiza: o atalho faz direto o que o botão do replay
+    /// faria, com o som no lugar do painel.
+    fn toggle_overlay(&mut self, notices: &mut Vec<String>) {
+        if let Some(overlay) = self.overlay.take() {
+            overlay.close(true);
+        } else if crate::shell::exclusive_fullscreen() {
+            if self.settings.enabled {
+                self.save(crate::shell::foreground_window(), notices);
+            } else {
+                self.update(ClipsSettings { enabled: true, ..self.settings.clone() });
+                crate::shell::play_sound(true);
+            }
+        } else {
+            let overlay = crate::overlay::OverlayState::new(crate::shell::foreground_window());
+            let (x, y, width, height) = overlay.monitor;
+
+            crate::overlay::backdrop_show(x, y, width, height, &self.context);
+            self.overlay = Some(overlay);
+        }
+    }
+
+    /// O painel aberto, a cada quadro: no quadro em que ele não é desenhado, o egui fecha a janela.
+    fn show_overlay(&mut self, notices: &mut Vec<String>) {
+        use crate::overlay::Action;
+
+        // Perguntado sempre, mesmo sem painel: um clique que sobrasse fecharia o próximo.
+        let clicked = crate::overlay::take_backdrop_click();
+        let Some(mut overlay) = self.overlay.take() else { return };
+
+        if clicked && !self.folder_picker_open {
+            overlay.close(true);
+
+            return;
+        }
+
+        let context = self.context.clone();
+
+        match crate::overlay::draw(&context, &mut overlay, &self.settings, self.saving()) {
+            Action::None => {}
+            Action::Close => {
+                overlay.close(true);
+
+                return;
+            }
+            Action::Replay if self.settings.enabled => {
+                self.save(overlay.close(true), notices);
+
+                return;
+            }
+            // Desligado, o botão liga e o painel fica aberto, mostrando que agora grava.
+            Action::Replay => self.update(ClipsSettings { enabled: true, ..self.settings.clone() }),
+            // A janela costuma estar escondida na bandeja. O foco não volta para o jogo: vai para
+            // a janela que abre.
+            Action::Gallery => {
+                overlay.close(false);
+                self.open_gallery = true;
+
+                for command in [
+                    egui::ViewportCommand::Visible(true),
+                    egui::ViewportCommand::Minimized(false),
+                    egui::ViewportCommand::Focus,
+                ] {
+                    context.send_viewport_cmd_to(egui::ViewportId::ROOT, command);
+                }
+
+                return;
+            }
+            Action::Settings(settings) => self.update(settings),
+            Action::PickFolder => self.request_folder(),
+        }
+
+        self.overlay = Some(overlay);
     }
 
     fn captured(&mut self, slot: Slot, hotkey: Hotkey, notices: &mut Vec<String>) {
@@ -680,9 +768,10 @@ impl ClipsRuntime {
         notices.push(format!("Atalho alterado para {}.", hotkey.label()));
     }
 
-    /// Salva o replay da janela da frente: o aviso aparece na hora, por cima do jogo, e o MP4 é
-    /// montado numa thread à parte, com o gravador livre para seguir gravando.
-    fn save(&mut self, notices: &mut Vec<String>) {
+    /// Salva o replay do jogo em `window` (a pasta e o nome do clipe saem dele): o aviso aparece na
+    /// hora, por cima do jogo, e o MP4 é montado numa thread à parte, com o gravador livre para
+    /// seguir gravando.
+    fn save(&mut self, window: windows::Win32::Foundation::HWND, notices: &mut Vec<String>) {
         if self.saving.load(Ordering::Relaxed) {
             return;
         }
@@ -713,7 +802,6 @@ impl ClipsRuntime {
             }
         };
 
-        let window = crate::shell::foreground_window();
         let game = gallery::target(
             &crate::shell::process_name(window),
             &crate::shell::window_title(window),

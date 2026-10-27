@@ -103,18 +103,19 @@ final class Friendship extends Model implements Auditable
     }
 
     /**
-     * Pede amizade pelo e-mail. Quem não existe e quem existe recebem a mesma resposta de
-     * "não achei", para a busca não virar um jeito de descobrir quem tem conta aqui.
+     * Pede amizade pelo e-mail ou pelo apelido, como no login (`User::loginColumn`): quem
+     * entrou com o nome só tem o e-mail de mentira, e o apelido é o jeito de achá-lo.
      *
      * @throws Throwable
      * @throws ValidationException
      */
-    public static function requestByEmail(User $actor, string $email): self
+    public static function requestByLogin(User $actor, string $login): self
     {
-        $target = User::query()->where('email', mb_strtolower(mb_trim($email)))->first();
+        $login = mb_strtolower(mb_trim($login));
+        $target = User::query()->where(User::loginColumn($login), $login)->first();
 
         if (is_null($target)) {
-            throw ValidationException::withMessages(['email' => 'Ninguém com esse e-mail.']);
+            throw ValidationException::withMessages(['email' => 'Ninguém com esse e-mail ou apelido.']);
         }
 
         return self::request($actor, $target)->load(['requester', 'addressee']);

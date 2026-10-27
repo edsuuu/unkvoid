@@ -215,7 +215,7 @@ fn compact_button_with_width(
     let fill = if danger { theme::DANGER } else { theme::ACCENT };
     ui.add_enabled(
         enabled,
-        egui::Button::new(RichText::new(label).font(theme::regular(14.0)))
+        egui::Button::new((egui::Atom::grow(), RichText::new(label).font(theme::regular(14.0)), egui::Atom::grow()))
             .fill(fill)
             .corner_radius(CornerRadius::same(6))
             .min_size(vec2(width.max(0.0), 36.0)),
@@ -226,7 +226,7 @@ fn compact_button_with_width(
 
 fn compact_menu_item(ui: &mut Ui, label: &str, danger: bool) -> bool {
     let (rect, response) = ui.allocate_exact_size(
-        vec2(ui.available_width().max(0.0), 34.0),
+        vec2(widgets::menu_width(ui), 34.0),
         Sense::click(),
     );
     if response.hovered() {
@@ -245,8 +245,9 @@ fn compact_menu_item(ui: &mut Ui, label: &str, danger: bool) -> bool {
 }
 
 fn compact_icon_menu_item(ui: &mut Ui, icon: &str, label: &str) -> bool {
+    // Na largura dos menus: com a largura toda o popup ia a 600 px.
     let (rect, response) = ui.allocate_exact_size(
-        vec2(ui.available_width().max(0.0), 34.0),
+        vec2(widgets::menu_width(ui), 34.0),
         Sense::click(),
     );
     if response.hovered() {
@@ -275,6 +276,13 @@ pub fn show(app: &mut Unkvoid, ui: &mut Ui, mut state: ServerSettings) {
 
         return;
     };
+    if let Some(after) = state.new_role_after
+        && let Some(role) = tree.roles.iter().find(|role| role.id > after)
+    {
+        state.page = ServerPage::Roles;
+        state.role = Some(draft_of(role, RoleTab::Display));
+        state.new_role_after = None;
+    }
     let shown = state.clone();
 
     settings::window(
@@ -314,13 +322,22 @@ fn navigation(app: &mut Unkvoid, ui: &mut Ui, tree: &ServerTree, state: &ServerS
             app.actions.push(Action::Show(Modal::ServerSettings(next)));
         }
         ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            server_nav_header(ui, "CARGOS");
-            if hand_icon_button(ui, icons::PLUS, "Criar cargo", theme::MUTED).clicked() {
-                app.actions.push(Action::request("createRole", json!({ "server": tree.id }), json!({ "name": "novo cargo", "permissions": 0 }), Refresh::Tree(tree.id)));
-            }
+        // O título na margem dos outros e o "+" na ponta, na mesma linha: com o cabeçalho
+        // comum dentro do `horizontal`, os espaços dele viravam recuo e o "+" ficava abaixo.
+        ui.allocate_ui_with_layout(vec2(ui.available_width(), 28.0), Layout::left_to_right(Align::Center), |ui| {
+            ui.label(RichText::new("CARGOS").font(theme::bold(12.0)).color(theme::MUTED));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if hand_icon_button(ui, icons::PLUS, "Criar cargo", theme::MUTED).clicked() {
+                    create_role(app, tree, state);
+                }
+            });
         });
-        for role in tree.roles.iter().filter(|role| !role.is_everyone) {
+        // Na ordem da lista da página (a de `role_rows`): pela árvore crua o cargo novo vinha
+        // embaixo aqui e em cima lá.
+        for row in tree.role_rows() {
+            let Some(role) = tree.roles.iter().find(|role| role.id == row.id && !role.is_everyone) else {
+                continue;
+            };
             let selected = state.role.as_ref().is_some_and(|draft| draft.id == role.id);
             if server_nav_item(ui, &role.name, selected, false) && !selected {
                 let mut next = state.clone();
@@ -414,15 +431,16 @@ fn overview(app: &mut Unkvoid, ui: &mut Ui, tree: &ServerTree, state: &mut Serve
     settings::heading(ui, "Perfil do servidor");
     ui.add_space(24.0);
     let available_width = ui.available_width().max(0.0);
-    let preview_width = 300.0_f32.min((available_width * 0.38).max(0.0));
-    let form_width = (available_width - preview_width - 24.0).clamp(0.0, 560.0);
+    // A prévia só entra com folga: na janela estreita ela empurrava o formulário, e o modal
+    // inteiro passava das bordas da janela.
+    let preview_width = if available_width >= 640.0 { 300.0_f32.min(available_width * 0.38) } else { 0.0 };
+    let form_width = if preview_width > 0.0 { available_width - preview_width - 24.0 } else { available_width }.clamp(0.0, 560.0);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.allocate_ui_with_layout(
             vec2(form_width, 320.0),
             Layout::top_down(Align::Min),
             |ui| {
-                ui.set_max_width(560.0);
                 ui.label(RichText::new("Ícone").font(theme::bold(16.0)));
                 ui.add_space(4.0);
                 ui.label(
@@ -491,12 +509,14 @@ fn overview(app: &mut Unkvoid, ui: &mut Ui, tree: &ServerTree, state: &mut Serve
                 }
             },
         );
-        ui.add_space(24.0);
-        ui.allocate_ui_with_layout(
-            vec2(preview_width, 320.0),
-            Layout::top_down(Align::Min),
-            |ui| server_preview(ui, tree),
-        );
+        if preview_width > 0.0 {
+            ui.add_space(24.0);
+            ui.allocate_ui_with_layout(
+                vec2(preview_width, 320.0),
+                Layout::top_down(Align::Min),
+                |ui| server_preview(ui, tree),
+            );
+        }
     });
 
     let name = state.name.trim().to_owned();
@@ -579,12 +599,7 @@ fn roles(app: &mut Unkvoid, ui: &mut Ui, tree: &ServerTree, state: &mut ServerSe
             },
         );
         if compact_button_with_width(ui, "Criar cargo", true, false, button_width) {
-            app.actions.push(Action::request(
-                "createRole",
-                json!({ "server": tree.id }),
-                json!({ "name": "novo cargo", "permissions": 0 }),
-                Refresh::Tree(tree.id),
-            ));
+            create_role(app, tree, state);
         }
     });
     ui.add_space(12.0);
@@ -772,6 +787,21 @@ fn move_role(server: i64, role: i64, position: i64) -> Action {
     )
 }
 
+/// Cria o cargo e marca o maior id de agora: o cargo que vier acima dele abre no editor.
+fn create_role(app: &mut Unkvoid, tree: &ServerTree, state: &ServerSettings) {
+    app.actions.push(Action::request(
+        "createRole",
+        json!({ "server": tree.id }),
+        json!({ "name": "novo cargo", "permissions": 0 }),
+        Refresh::Tree(tree.id),
+    ));
+    let after = tree.roles.iter().map(|role| role.id).max().unwrap_or(0);
+    app.actions.push(Action::Show(Modal::ServerSettings(ServerSettings {
+        new_role_after: Some(after),
+        ..state.clone()
+    })));
+}
+
 fn draft_of(role: &Role, tab: RoleTab) -> RoleDraft {
     RoleDraft {
         id: role.id,
@@ -801,13 +831,7 @@ fn role_editor(app: &mut Unkvoid, ui: &mut Ui, tree: &ServerTree, state: &mut Se
         return;
     };
 
-    if link(ui, &format!("{}  VOLTAR", icons::ARROW_LEFT), theme::MUTED) {
-        state.role = None;
-
-        return;
-    }
-
-    ui.add_space(10.0);
+    // O "← VOLTAR" fica só no menu da esquerda, como no Discord: aqui ele saía repetido.
     ui.horizontal(|ui| {
         settings::heading(
             ui,
@@ -882,6 +906,7 @@ fn role_editor(app: &mut Unkvoid, ui: &mut Ui, tree: &ServerTree, state: &mut Se
             ui.add_space(16.0);
             ui.add_enabled_ui(editable, |ui| {
                 if voice_settings::switch_row(ui, "Exibir membros do cargo separadamente dos membros conectados", "", draft.hoist) { draft.hoist = !draft.hoist; }
+                ui.add_space(12.0);
                 if voice_settings::switch_row(ui, "Permitir que qualquer um @mencione este cargo", "", draft.mentionable) { draft.mentionable = !draft.mentionable; }
             });
         }
@@ -952,14 +977,13 @@ fn role_editor(app: &mut Unkvoid, ui: &mut Ui, tree: &ServerTree, state: &mut Se
     }
 }
 
-/// O "padrão" (sem cor) e as vinte cores, a escolhida com o anel branco.
+/// O "padrão" (sem cor), a cor livre e as vinte cores em duas linhas de dez, como no Discord. A
+/// escolhida leva o visto.
 fn color_palette(ui: &mut Ui, chosen: &mut Option<String>) {
+    let custom_chosen = chosen.as_deref().is_some_and(|hex| !ROLE_COLORS.contains(&hex));
     let mut custom = chosen.as_deref().and_then(theme::color_of).unwrap_or(Color32::from_rgb(88, 101, 242));
-    if ui.color_edit_button_srgba(&mut custom).changed() {
-        let [red, green, blue, _] = custom.to_srgba_unmultiplied();
-        *chosen = Some(format!("#{red:02x}{green:02x}{blue:02x}"));
-    }
-    ui.horizontal_wrapped(|ui| {
+
+    ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
 
         let (rect, response) = ui.allocate_exact_size(vec2(64.0, 52.0), Sense::click());
@@ -975,24 +999,52 @@ fn color_palette(ui: &mut Ui, chosen: &mut Option<String>) {
             *chosen = None;
         }
 
-        for hex in ROLE_COLORS {
-            let (rect, response) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
-            let selected = chosen.as_deref() == Some(hex);
+        // A cor livre no mesmo tamanho do padrão, ao lado dele: solta acima da paleta ela
+        // parecia uma faixa perdida.
+        let picker = ui
+            .scope(|ui| {
+                ui.spacing_mut().interact_size = vec2(64.0, 52.0);
+                // Opaca: cor de cargo não tem transparência, e o seletor some com o alfa e a mistura.
+                egui::widgets::color_picker::color_edit_button_srgba(ui, &mut custom, egui::widgets::color_picker::Alpha::Opaque)
+            })
+            .inner;
+        let icon = if custom_chosen { icons::CHECK } else { icons::EYEDROPPER };
 
-            ui.painter().rect_filled(
-                rect,
-                CornerRadius::same(4),
-                theme::color_of(hex).unwrap_or(theme::MUTED),
-            );
+        crate::ui::icons::text(ui.painter(), picker.rect.center(), Align2::CENTER_CENTER, icon, theme::icon(20.0), Color32::WHITE);
 
-            if selected {
-                crate::ui::icons::text(ui.painter(), rect.center(), Align2::CENTER_CENTER, icons::CHECK, theme::icon(16.0), Color32::WHITE);
-            }
-
-            if response.on_hover_text(hex).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                *chosen = Some(hex.to_owned());
-            }
+        if picker.on_hover_text("Cor personalizada").on_hover_cursor(egui::CursorIcon::PointingHand).changed() {
+            let [red, green, blue, _] = custom.to_srgba_unmultiplied();
+            *chosen = Some(format!("#{red:02x}{green:02x}{blue:02x}"));
         }
+
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
+
+            for line in ROLE_COLORS.chunks(10) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+
+                    for hex in line {
+                        let (rect, response) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+                        let selected = chosen.as_deref() == Some(*hex);
+
+                        ui.painter().rect_filled(
+                            rect,
+                            CornerRadius::same(4),
+                            theme::color_of(hex).unwrap_or(theme::MUTED),
+                        );
+
+                        if selected {
+                            crate::ui::icons::text(ui.painter(), rect.center(), Align2::CENTER_CENTER, icons::CHECK, theme::icon(16.0), Color32::WHITE);
+                        }
+
+                        if response.on_hover_text(*hex).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            *chosen = Some((*hex).to_owned());
+                        }
+                    }
+                });
+            }
+        });
     });
 }
 
@@ -1041,8 +1093,11 @@ fn role_members(app: &mut Unkvoid, ui: &mut Ui, tree: &ServerTree, role: &Role) 
     }
 
     for member in with {
-        ui.horizontal(|ui| {
+        // Na altura do avatar e com vão: a janela das configurações zera o espaço entre itens.
+        ui.allocate_ui_with_layout(vec2(ui.available_width(), 36.0), Layout::left_to_right(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
             widgets::avatar(ui, display_name(member), member.avatar_url.as_deref(), 32.0);
+            ui.add_space(4.0);
             ui.label(RichText::new(display_name(member)).font(theme::bold(15.0)));
             ui.label(
                 RichText::new(&member.name)
@@ -1099,7 +1154,8 @@ fn members(app: &mut Unkvoid, ui: &mut Ui, tree: &ServerTree, state: &mut Server
 
     shown.sort_by_key(|member| display_name(member).to_lowercase());
 
-    ui.horizontal(|ui| {
+    // A linha já nasce da altura do campo: no `horizontal` o texto ficava acima do meio dele.
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), 36.0), Layout::left_to_right(Align::Center), |ui| {
         let member_label = if tree.members.len() == 1 { "membro" } else { "membros" };
         ui.label(RichText::new(format!("{} {member_label}", tree.members.len())).font(theme::bold(15.0)));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1116,9 +1172,16 @@ fn members(app: &mut Unkvoid, ui: &mut Ui, tree: &ServerTree, state: &mut Server
             .inner_margin(egui::Margin::symmetric(12, 6))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
+                // Na altura do avatar, com o nome no meio dele e um vão: a janela das configurações
+                // zera o espaço entre itens, e o nome colava no avatar, rente ao topo.
+                ui.allocate_ui_with_layout(vec2(ui.available_width(), 40.0), Layout::left_to_right(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
                     widgets::avatar(ui, display_name(member), member.avatar_url.as_deref(), 40.0);
-                    ui.vertical(|ui| {
+                    // Um `vertical` começa sempre no alto da linha; com a altura do texto (o nome, e
+                    // as pílulas quando há) medida no quadro anterior, a linha o centra.
+                    let text_id = ui.id().with(("member-text", member.user_id));
+                    let text_height = ui.data(|data| data.get_temp::<f32>(text_id)).unwrap_or(22.0);
+                    let text = ui.allocate_ui_with_layout(vec2((ui.available_width() - 48.0).max(0.0), text_height), Layout::top_down(Align::Min), |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
                             ui.label(RichText::new(display_name(member)).font(theme::bold(16.0)));
@@ -1136,6 +1199,7 @@ fn members(app: &mut Unkvoid, ui: &mut Ui, tree: &ServerTree, state: &mut Server
                         });
                         role_chips(app, ui, tree, member);
                     });
+                    ui.data_mut(|data| data.insert_temp(text_id, text.response.rect.height()));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let more = hand_icon_button(
                             ui,
@@ -1173,6 +1237,17 @@ pub(super) fn role_chips(
         .collect();
 
     owned.sort_by_key(|role| std::cmp::Reverse(role.position));
+
+    let missing: Vec<&Role> = tree
+        .roles
+        .iter()
+        .filter(|role| !role.is_everyone && assignable(role) && !member.role_ids.contains(&role.id))
+        .collect();
+
+    // Sem pílula nem "+", nada: a linha vazia ainda ocupava altura e tirava o nome do meio.
+    if owned.is_empty() && !(manage && !missing.is_empty()) {
+        return;
+    }
 
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
@@ -1222,14 +1297,6 @@ pub(super) fn role_chips(
                 });
         }
 
-        let missing: Vec<&Role> = tree
-            .roles
-            .iter()
-            .filter(|role| {
-                !role.is_everyone && assignable(role) && !member.role_ids.contains(&role.id)
-            })
-            .collect();
-
         if manage && !missing.is_empty() {
             let add = ui.add(
                 egui::Button::new(crate::ui::icons::atom(icons::PLUS, theme::icon(12.0), theme::TEXT))
@@ -1267,7 +1334,7 @@ fn invites(app: &mut Unkvoid, ui: &mut Ui, tree: &ServerTree) {
             .color(theme::DESCRIPTION),
     );
     ui.add_space(22.0);
-    ui.horizontal(|ui| {
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), 36.0), Layout::left_to_right(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         ui.label(RichText::new("Links de convite ativos").font(theme::regular(13.0)).color(theme::DESCRIPTION));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1394,7 +1461,8 @@ fn bans(app: &mut Unkvoid, ui: &mut Ui, tree: &ServerTree) {
             .inner_margin(egui::Margin::symmetric(12, 10))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(vec2(ui.available_width(), 40.0), Layout::left_to_right(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
                     widgets::avatar(ui, &ban.name, None, 36.0);
                     ui.vertical(|ui| {
                         ui.label(RichText::new(&ban.name).font(theme::bold(15.0)));
@@ -1452,7 +1520,10 @@ fn audit(app: &mut Unkvoid, ui: &mut Ui) {
             .inner_margin(egui::Margin::symmetric(12, 10))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
+                // Na altura das duas linhas do texto: no `horizontal` o ícone e o avatar ficavam
+                // presos no alto, e o texto colado no avatar.
+                ui.allocate_ui_with_layout(vec2(ui.available_width(), 40.0), Layout::left_to_right(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
                     crate::ui::icons::label(ui, icon, theme::icon(20.0), color);
                     widgets::avatar(
                         ui,

@@ -70,13 +70,13 @@ fn friends(app: &mut Unkvoid, ui: &mut Ui, tab: FriendsTab) {
                     }
                 }
 
-                if pending > 0 {
-                    let selected = tab == FriendsTab::Pending;
-                    let button = egui::Button::new(egui::RichText::new(pending_label(pending)).font(theme::bold(14.0)).color(if selected { theme::TEXT } else { theme::MUTED }))
-                        .fill(if selected { theme::SELECTED } else { egui::Color32::TRANSPARENT })
-                        .corner_radius(CornerRadius::same(4));
-                    if ui.add(button).clicked() { app.actions.push(Action::OpenFriends(FriendsTab::Pending)); }
-                }
+                // Sempre à vista, como no Discord: quem pediu também acompanha o pedido enviado, e a
+                // aba não some debaixo de quem acabou de aceitar o último.
+                let selected = tab == FriendsTab::Pending;
+                let button = egui::Button::new(egui::RichText::new(pending_label(pending)).font(theme::bold(14.0)).color(if selected { theme::TEXT } else { theme::MUTED }))
+                    .fill(if selected { theme::SELECTED } else { egui::Color32::TRANSPARENT })
+                    .corner_radius(CornerRadius::same(4));
+                if ui.add(button).clicked() { app.actions.push(Action::OpenFriends(FriendsTab::Pending)); }
 
                 let add = egui::Button::new(
                     egui::RichText::new("Adicionar amigo")
@@ -114,10 +114,14 @@ fn friends(app: &mut Unkvoid, ui: &mut Ui, tab: FriendsTab) {
                 return add_friend(app, ui);
             }
 
+            // Na mesma margem do título e das linhas. Com `set_max_width` o campo ignorava o
+            // espaço da esquerda e colava na borda da coluna.
             ui.horizontal(|ui| {
-                ui.add_space(18.0);
-                ui.set_max_width((ui.available_width() - 36.0).max(0.0));
-                widgets::text_field(ui, &mut app.friends_search, "Buscar", false);
+                ui.add_space(30.0);
+                let width = (ui.available_width() - 30.0).max(0.0);
+                ui.allocate_ui(egui::vec2(width, 40.0), |ui| {
+                    widgets::text_field(ui, &mut app.friends_search, "Buscar", false);
+                });
             });
             ui.add_space(12.0);
 
@@ -168,7 +172,7 @@ fn friends(app: &mut Unkvoid, ui: &mut Ui, tab: FriendsTab) {
                     } else if tab == FriendsTab::Online {
                         "Nenhum amigo disponível agora."
                     } else {
-                        "Nenhum amigo ainda. Adicione alguém pelo e-mail."
+                        "Nenhum amigo ainda. Adicione alguém pelo apelido."
                     },
                 );
 
@@ -212,7 +216,7 @@ pub(super) fn friend_person(friendship: &core_app::models::Friendship, own_user_
 }
 
 fn pending_label(count: i64) -> String {
-    format!("Pendente ({count})")
+    if count > 0 { format!("Pendente ({count})") } else { "Pendente".to_owned() }
 }
 
 fn friend_row(
@@ -443,7 +447,7 @@ fn add_friend(app: &mut Unkvoid, ui: &mut Ui) {
         ui.vertical(|ui| {
             ui.label(egui::RichText::new("ADICIONAR AMIGO").font(theme::bold(16.0)));
             ui.label(
-                egui::RichText::new("Você pode adicionar amigos pelo e-mail da conta deles.")
+                egui::RichText::new("Você pode adicionar amigos pelo apelido ou pelo e-mail da conta deles.")
                     .color(theme::MUTED),
             );
             ui.add_space(14.0);
@@ -454,7 +458,7 @@ fn add_friend(app: &mut Unkvoid, ui: &mut Ui) {
                 let width = (ui.available_width() - 140.0 - ui.spacing().item_spacing.x).max(160.0);
                 let field = ui
                     .allocate_ui(egui::vec2(width, 40.0), |ui| {
-                        widgets::text_field(ui, &mut app.friend_email, "E-mail da pessoa", false)
+                        widgets::text_field(ui, &mut app.friend_email, "Apelido ou e-mail", false)
                     })
                     .inner;
                 let sent =
@@ -515,14 +519,16 @@ fn direct(app: &mut Unkvoid, ui: &mut Ui, person: &Person) {
             });
         });
 
+    // As mesmas margens da caixa do canal: trocar de canal para DM não pula a caixa de lugar, e
+    // ela fecha na linha do painel da conta.
     egui::Panel::bottom("direct-composer")
         .resizable(false)
         .show_separator_line(false)
         .frame(Frame::new().fill(theme::MAIN).inner_margin(egui::Margin {
-            left: 16,
-            right: 16,
+            left: 8,
+            right: 8,
             top: 0,
-            bottom: 20,
+            bottom: 8,
         }))
         .show(ui, |ui| {
             let mut text = std::mem::take(&mut app.direct_composer);

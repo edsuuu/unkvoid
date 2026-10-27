@@ -150,7 +150,9 @@ fn overview(
     channel: &Channel,
     state: &mut ChannelSettings,
 ) {
-    ui.set_max_width(640.0);
+    // Nunca além da coluna: `set_max_width` também alarga, e na janela estreita a página
+    // passava da borda do modal.
+    ui.set_max_width(640.0_f32.min(ui.available_width()));
     let editable = tree.can(MANAGE_CHANNELS)
         && core_app::permissions::has(channel.permissions, MANAGE_CHANNELS);
     settings::heading(
@@ -299,7 +301,7 @@ fn permissions(
     channel: &Channel,
     state: &mut ChannelSettings,
 ) {
-    ui.set_max_width(760.0);
+    ui.set_max_width(760.0_f32.min(ui.available_width()));
     settings::heading(ui, "Permissões");
     ui.add_space(8.0);
     ui.label(
@@ -342,6 +344,8 @@ fn permissions(
             let choice = permission_choice(draft, *flag);
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
+                    // O texto quebra antes dos três botões em vez de passar por baixo deles.
+                    ui.set_max_width((ui.available_width() - 140.0).max(0.0));
                     ui.label(RichText::new(*name).font(theme::bold(14.0)));
                     ui.label(
                         RichText::new(*explanation)
@@ -668,8 +672,9 @@ fn target_member_button(ui: &mut Ui, member: &Member, selected: bool) -> bool {
 }
 
 fn channel_menu_item(ui: &mut Ui, label: &str, danger: bool) -> bool {
+    // Na largura dos menus: com a largura toda o popup ia a 600 px e abria por cima do título.
     let (rect, response) = ui.allocate_exact_size(
-        vec2(ui.available_width().max(0.0), 34.0),
+        vec2(widgets::menu_width(ui), 34.0),
         Sense::click(),
     );
     if response.hovered() {

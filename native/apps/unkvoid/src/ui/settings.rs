@@ -223,7 +223,6 @@ fn navigation(app: &mut Unkvoid, ui: &mut Ui, page: SettingsPage) {
 /// (`ui/clips.rs`), aberta pelo botão de filme da barra de cima.
 #[cfg(target_os = "windows")]
 fn clips_page(app: &mut Unkvoid, ui: &mut Ui) {
-    heading(ui, "Clips");
     clips_settings(app, ui);
 }
 
@@ -414,8 +413,8 @@ fn clips_settings(app: &mut Unkvoid, ui: &mut Ui) {
         app,
         ui,
         Slot::Overlay,
-        "Atalho para ligar o replay",
-        "Com o replay desligado, liga; ligado, salva o clipe.",
+        "Atalho para abrir o painel",
+        "Mostra o replay por cima do jogo. Num jogo em tela cheia exclusiva, liga o replay ou salva o clipe.",
         settings.overlay_hotkey.label(),
     );
 
@@ -475,7 +474,6 @@ fn clips_settings(app: &mut Unkvoid, ui: &mut Ui) {
 
 #[cfg(not(target_os = "windows"))]
 fn clips_page(_app: &mut Unkvoid, ui: &mut Ui) {
-    heading(ui, "Clips");
     ui.label("O replay instantâneo está disponível no Windows.");
 }
 
@@ -802,13 +800,16 @@ fn content(
                 app.actions.push(Action::CloseModal);
             }
 
-            egui::ScrollArea::vertical()
-                .id_salt(id)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_max_width((width - 60.0).min(740.0));
-                    ui.vertical(|ui| page(app, ui));
-                });
+            // A rolagem para antes da coluna do X: a barra passava por baixo do botão redondo.
+            ui.allocate_ui(vec2(width - 52.0, ui.available_height()), |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt(id)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_max_width((width - 60.0).min(740.0));
+                        ui.vertical(|ui| page(app, ui));
+                    });
+            });
         });
 }
 
@@ -823,28 +824,35 @@ pub(super) fn unsaved(ui: &mut Ui) -> Option<bool> {
         .inner_margin(egui::Margin::symmetric(14, 10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("Cuidado — você tem alterações que não foram salvas!")
-                        .font(theme::bold(14.0)),
+            // Os botões primeiro e o aviso no que sobra, cortado: na janela estreita ele passava
+            // por cima do "Redefinir" e do botão, e a janela zera o vão entre os dois.
+            ui.allocate_ui_with_layout(vec2(ui.available_width(), 40.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                if widgets::primary_button(ui, "Salvar alterações", true, 150.0) {
+                    choice = Some(true);
+                }
+
+                let reset = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new("Redefinir")
+                            .font(theme::bold(14.0))
+                            .color(theme::TEXT),
+                    )
+                    .sense(Sense::click()),
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::primary_button(ui, "Salvar alterações", true, 150.0) {
-                        choice = Some(true);
-                    }
 
-                    let reset = ui.add(
+                if reset.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    choice = Some(false);
+                }
+
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
                         egui::Label::new(
-                            egui::RichText::new("Redefinir")
-                                .font(theme::bold(14.0))
-                                .color(theme::TEXT),
+                            egui::RichText::new("Cuidado — você tem alterações que não foram salvas!")
+                                .font(theme::bold(14.0)),
                         )
-                        .sense(Sense::click()),
+                        .truncate(),
                     );
-
-                    if reset.clicked() {
-                        choice = Some(false);
-                    }
                 });
             });
         });
@@ -862,7 +870,7 @@ fn account(app: &mut Unkvoid, ui: &mut Ui) {
         return;
     };
 
-    heading(ui, "Conta");
+    // Sem o título grande: a barra de cima já tem o nome da página, como na de Voz e vídeo.
     ui.label(egui::RichText::new("Informações da conta").font(theme::bold(18.0)));
     ui.add_space(8.0);
     Frame::new()
