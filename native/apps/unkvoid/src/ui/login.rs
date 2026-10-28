@@ -278,7 +278,10 @@ fn card(app: &mut Unkvoid, ui: &mut Ui) {
     });
     ui.add_space(20.0);
 
-    if widgets::secondary_button_wide(ui, "Entrar com o Google") {
+    // Como o cartão antigo: no cadastro o botão já diz que cria a conta.
+    let google = if register { "Criar conta com o Google" } else { "Entrar com o Google" };
+
+    if widgets::secondary_button_wide(ui, google) {
         app.actions.push(Action::GoogleSignIn);
     }
 
@@ -306,7 +309,9 @@ fn card(app: &mut Unkvoid, ui: &mut Ui) {
     widgets::field_label(ui, "Senha", app.login.password_error.as_deref());
     ui.add_space(6.0);
 
-    let password = widgets::text_field(ui, &mut app.login.password, "", true);
+    // O mínimo do servidor (RegisterRequest) dito antes de errar, e não depois.
+    let hint = if register { "pelo menos 8 caracteres" } else { "" };
+    let password = widgets::text_field(ui, &mut app.login.password, hint, true);
 
     if password.changed() {
         app.login.password_error = None;
@@ -334,7 +339,7 @@ fn card(app: &mut Unkvoid, ui: &mut Ui) {
         !app.login.busy && !app.login.email.trim().is_empty() && !app.login.password.is_empty();
     let label = match (app.login.busy, register) {
         (true, _) => "Um instante…",
-        (false, true) => "Continuar",
+        (false, true) => "Criar conta",
         (false, false) => "Entrar",
     };
 
