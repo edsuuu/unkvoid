@@ -335,8 +335,12 @@ fn card(app: &mut Unkvoid, ui: &mut Ui) {
 
     ui.add_space(20.0);
 
-    let ready =
-        !app.login.busy && !app.login.email.trim().is_empty() && !app.login.password.is_empty();
+    // No cadastro o botão só acende com os 8 caracteres que o servidor pede.
+    let long_enough = !register || app.login.password.chars().count() >= 8;
+    let ready = !app.login.busy
+        && !app.login.email.trim().is_empty()
+        && !app.login.password.is_empty()
+        && long_enough;
     let label = match (app.login.busy, register) {
         (true, _) => "Um instante…",
         (false, true) => "Criar conta",
