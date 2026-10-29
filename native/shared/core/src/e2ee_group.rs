@@ -348,12 +348,14 @@ impl E2eeGroup {
         let MlsMessageBodyIn::Welcome(welcome_message) = message.extract() else {
             return Err(E2eeGroupError::UnexpectedSignalKind);
         };
-        let processed = ProcessedWelcome::new_from_welcome(
-            &self.provider,
-            &MlsGroupJoinConfig::default(),
-            welcome_message,
-        )
-        .map_err(mls_error)?;
+        // Who joined by Welcome commits too once the creator leaves: without the extension its
+        // Welcomes went out with no ratchet tree and the next peer could not join.
+        let config = MlsGroupJoinConfig::builder()
+            .use_ratchet_tree_extension(true)
+            .build();
+        let processed =
+            ProcessedWelcome::new_from_welcome(&self.provider, &config, welcome_message)
+                .map_err(mls_error)?;
         let staged = processed
             .into_staged_welcome(&self.provider, None)
             .map_err(mls_error)?;
