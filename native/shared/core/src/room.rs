@@ -30,6 +30,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::e2ee_call::{CallCipherState, E2eeCall};
 use crate::e2ee_group::{CommitDisposition, E2eeGroupError, SignalKind};
+use crate::failure::Failure;
 use crate::models::ProducerInfo;
 use crate::protocol::{Event, action, local};
 use crate::session::{Identity, Session};
@@ -1685,9 +1686,12 @@ impl Room {
         loop {
             match lock(&self.e2ee).state() {
                 CallCipherState::Encrypted => return Ok(()),
+                // O motivo vai junto do erro: sem ele a tela dizia "confira sua internet" para
+                // uma cifra que não fechou, com a internet boa (28/10).
                 CallCipherState::Failed(reason) => {
                     tracing::error!(reason = ?reason, "call encryption failed while media open was pending");
-                    return Err(anyhow!("call encryption failed: {reason:?}"));
+                    return Err(anyhow::Error::new(reason)
+                        .context(format!("call encryption failed: {reason:?}")));
                 }
                 CallCipherState::Establishing => {}
             }
@@ -1697,9 +1701,8 @@ impl Room {
                     "call encryption did not establish before pending media open expired"
                 );
                 self.fail_e2ee();
-                return Err(anyhow!(
-                    "call encryption failed: timed out after 15 seconds"
-                ));
+                return Err(anyhow::Error::new(Failure::E2ee)
+                    .context("call encryption failed: timed out after 15 seconds"));
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
