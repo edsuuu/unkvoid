@@ -348,9 +348,9 @@ impl E2eeGroup {
         let MlsMessageBodyIn::Welcome(welcome_message) = message.extract() else {
             return Err(E2eeGroupError::UnexpectedSignalKind);
         };
-        // Who joined by Welcome commits too once the creator leaves: without the extension its
-        // Welcomes went out with no ratchet tree and the next peer could not join.
         let config = MlsGroupJoinConfig::builder()
+            // Who joined by Welcome commits too once the creator leaves: without the extension
+            // its Welcomes went out with no ratchet tree and the next peer could not join.
             .use_ratchet_tree_extension(true)
             .build();
         let processed =

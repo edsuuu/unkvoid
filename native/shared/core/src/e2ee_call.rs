@@ -242,8 +242,7 @@ impl E2eeCall {
                 .map(|(peer_id, _)| peer_id.as_str())
         };
 
-        // Devices with no named leaf, per account: (in the room, of those not reconnecting).
-        let mut devices: HashMap<&str, (usize, usize)> = HashMap::new();
+        let mut unnamed_devices: HashMap<&str, (usize, usize)> = HashMap::new();
 
         for peer in peers
             .iter()
@@ -253,16 +252,16 @@ impl E2eeCall {
             let Some(account) = peer.user_id.as_deref() else {
                 return Ok(members.into_iter().map(|member| (member, Presence::Here)).collect());
             };
-            let count = devices.entry(account).or_default();
+            let (in_room, here) = unnamed_devices.entry(account).or_default();
 
-            count.0 += 1;
-            count.1 += usize::from(!peer.reconnecting);
+            *in_room += 1;
+            *here += usize::from(!peer.reconnecting);
         }
 
-        let mut unnamed: HashMap<&str, usize> = HashMap::new();
+        let mut unnamed_leaves: HashMap<&str, usize> = HashMap::new();
 
         for member in members.iter().filter(|member| peer_of(member).is_none()) {
-            *unnamed.entry(member.account_id.as_str()).or_default() += 1;
+            *unnamed_leaves.entry(member.account_id.as_str()).or_default() += 1;
         }
 
         Ok(members
@@ -275,14 +274,14 @@ impl E2eeCall {
                         Some(_) => Presence::Here,
                     },
                     None => {
-                        let (in_room, here) = devices
+                        let (in_room, here) = unnamed_devices
                             .get(member.account_id.as_str())
                             .copied()
                             .unwrap_or_default();
 
                         if in_room == 0 {
                             Presence::Gone
-                        } else if here >= unnamed[member.account_id.as_str()] {
+                        } else if here >= unnamed_leaves[member.account_id.as_str()] {
                             Presence::Here
                         } else {
                             // ponytail: more unnamed leaves than devices of the account, and no
