@@ -805,6 +805,9 @@ async fn who_opened_the_call_leaves_and_comes_back_into_the_encryption() {
     .expect("Bob entrou no grupo que Alice criou");
 
     alice.leave().await;
+    // Sem esperar a saída, os 2 do fim podiam ser Bob e o fantasma ainda no grupo.
+    wait_for(Duration::from_secs(15), || (members(&bob_events) == Some(1)).then_some(()))
+        .expect("Bob tirou do grupo a folha de quem saiu");
     let (back, _back_media, back_events) = enter_as(&code, "e2ee-alice", "user:8201").await;
     wait_for(Duration::from_secs(15), || {
         (encrypted(&back_events) && members(&bob_events) == Some(2)).then_some(())
