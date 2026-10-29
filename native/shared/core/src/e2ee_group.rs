@@ -348,12 +348,14 @@ impl E2eeGroup {
         let MlsMessageBodyIn::Welcome(welcome_message) = message.extract() else {
             return Err(E2eeGroupError::UnexpectedSignalKind);
         };
-        let processed = ProcessedWelcome::new_from_welcome(
-            &self.provider,
-            &MlsGroupJoinConfig::default(),
-            welcome_message,
-        )
-        .map_err(mls_error)?;
+        let config = MlsGroupJoinConfig::builder()
+            // Who joined by Welcome commits too once the creator leaves: without the extension
+            // its Welcomes went out with no ratchet tree and the next peer could not join.
+            .use_ratchet_tree_extension(true)
+            .build();
+        let processed =
+            ProcessedWelcome::new_from_welcome(&self.provider, &config, welcome_message)
+                .map_err(mls_error)?;
         let staged = processed
             .into_staged_welcome(&self.provider, None)
             .map_err(mls_error)?;
@@ -419,9 +421,13 @@ impl E2eeGroup {
         )
     }
 
-    /// Stages removal of one MLS session leaf. This is the path used for a `peerLeft`: accounts
-    /// can have more than one active device, and losing one peer must not remove the others.
-    pub fn remove_member_id(&mut self, member_id: &MemberId) -> Result<E2eeSignal, E2eeGroupError> {
+    /// Stages removal of the given MLS session leaves in one Commit. This is the path used for a
+    /// `peerLeft`: accounts can have more than one active device, and losing one peer must not
+    /// remove the others.
+    pub fn remove_member_ids(
+        &mut self,
+        member_ids: &[MemberId],
+    ) -> Result<E2eeSignal, E2eeGroupError> {
         let (group_id, epoch, commit) = {
             let provider = &self.provider;
             let signer = &self.signer;
@@ -433,7 +439,7 @@ impl E2eeGroup {
 
             let members = group
                 .members()
-                .filter(|member| member.signature_key == member_id.0)
+                .filter(|member| member_ids.iter().any(|id| id.0 == member.signature_key))
                 .map(|member| member.index)
                 .collect::<Vec<_>>();
 

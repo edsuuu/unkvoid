@@ -779,6 +779,45 @@ async fn two_then_three_clients_exchange_only_encrypted_opus() {
     alice.leave().await;
 }
 
+/// Quem abriu a chamada sai e volta: os outros só conheciam a folha MLS dele pela conta, e o
+/// fantasma seguia como quem decide — ninguém mais entrava na cifra até a sala esvaziar (28/10).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+#[ignore = "precisa do SFU local; configure UNKVOID_SFU, SFU_SECRET e SFU_MEDIA_HOST=127.0.0.1"]
+async fn who_opened_the_call_leaves_and_comes_back_into_the_encryption() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("core_app=debug")
+        .try_init();
+    let code = code("e2ee-fantasma");
+    let encrypted = |events: &Heard| {
+        events.any(|v| v["event"] == "room.encryption" && v["data"]["state"] == "encrypted")
+    };
+    let members = |events: &Heard| {
+        events
+            .latest("room.encryption")
+            .and_then(|value| value["data"]["members"].as_array().map(Vec::len))
+    };
+
+    let (alice, _alice_media, alice_events) = enter_as(&code, "e2ee-alice", "user:8201").await;
+    let (bob, _bob_media, bob_events) = enter_as(&code, "e2ee-bob", "user:8202").await;
+    wait_for(Duration::from_secs(15), || {
+        (encrypted(&alice_events) && members(&bob_events) == Some(2)).then_some(())
+    })
+    .expect("Bob entrou no grupo que Alice criou");
+
+    alice.leave().await;
+    // Sem esperar a saída, os 2 do fim podiam ser Bob e o fantasma ainda no grupo.
+    wait_for(Duration::from_secs(15), || (members(&bob_events) == Some(1)).then_some(()))
+        .expect("Bob tirou do grupo a folha de quem saiu");
+    let (back, _back_media, back_events) = enter_as(&code, "e2ee-alice", "user:8201").await;
+    wait_for(Duration::from_secs(15), || {
+        (encrypted(&back_events) && members(&bob_events) == Some(2)).then_some(())
+    })
+    .expect("Alice voltou para a cifra e o fantasma dela saiu do grupo de Bob");
+
+    back.leave().await;
+    bob.leave().await;
+}
+
 /// Só o Linux captura a câmera pelo núcleo; no Windows ela ainda não existe, e no macOS vem da
 /// interface (`open_camera`).
 #[cfg(target_os = "linux")]

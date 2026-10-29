@@ -30,6 +30,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::e2ee_call::{CallCipherState, E2eeCall};
 use crate::e2ee_group::{CommitDisposition, E2eeGroupError, SignalKind};
+use crate::failure::Failure;
 use crate::models::ProducerInfo;
 use crate::protocol::{Event, action, local};
 use crate::session::{Identity, Session};
@@ -505,17 +506,23 @@ impl Room {
                     .as_str()
                     .unwrap_or_default()
                     .to_owned();
-                let commit = {
-                    let mut e2ee = lock(&self.e2ee);
-                    let needed = e2ee.receive_key_package(&peer_id, &signal)?;
-                    if needed && e2ee.is_designated_committer()? {
-                        Some(e2ee.stage_add(&signal)?)
-                    } else {
-                        None
+                let needed = lock(&self.e2ee).receive_key_package(&peer_id, &signal)?;
+                if needed {
+                    // Quem caiu sem ninguém saber qual folha era a dele sai antes: senão ele
+                    // seguia como quem decide, e ninguém mais entrava na chamada (28/10).
+                    self.remove_e2ee_ghosts().await?;
+                    let peers = self.session.peers();
+                    let commit = {
+                        let mut e2ee = lock(&self.e2ee);
+                        if e2ee.is_committer(&peers)? {
+                            Some(e2ee.stage_add(&signal)?)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(commit) = commit {
+                        self.submit_e2ee_commit(commit, Some(peer_id)).await?;
                     }
-                };
-                if let Some(commit) = commit {
-                    self.submit_e2ee_commit(commit, Some(peer_id)).await?;
                 }
             }
             "e2eeCommit" => {
@@ -582,18 +589,22 @@ impl Room {
                     self.republish().await;
                 }
             }
-            "peerLeft" | "peerKicked" => {
-                let peer_id = event.data["peerId"].as_str().unwrap_or_default();
-                if lock(&self.e2ee).is_designated_after_peer_leaves(peer_id)? {
-                    let commit = { lock(&self.e2ee).stage_remove_peer(peer_id)? };
-                    if let Some(commit) = commit {
-                        self.submit_e2ee_commit(commit, None).await?;
-                    }
-                }
-            }
+            // A lista da sessão já tirou quem saiu (`session.apply` vem antes).
+            "peerLeft" | "peerKicked" => self.remove_e2ee_ghosts().await?,
             _ => {}
         }
         self.announce_encryption();
+        Ok(())
+    }
+
+    /// Tira do grupo MLS toda folha cujo aparelho não está mais na sala, quando é esta pessoa
+    /// quem decide.
+    async fn remove_e2ee_ghosts(&self) -> Result<()> {
+        let peers = self.session.peers();
+        let commit = { lock(&self.e2ee).stage_remove_ghosts(&peers)? };
+        if let Some(commit) = commit {
+            self.submit_e2ee_commit(commit, None).await?;
+        }
         Ok(())
     }
 
@@ -1675,9 +1686,12 @@ impl Room {
         loop {
             match lock(&self.e2ee).state() {
                 CallCipherState::Encrypted => return Ok(()),
+                // O motivo vai junto do erro: sem ele a tela dizia "confira sua internet" para
+                // uma cifra que não fechou, com a internet boa (28/10).
                 CallCipherState::Failed(reason) => {
                     tracing::error!(reason = ?reason, "call encryption failed while media open was pending");
-                    return Err(anyhow!("call encryption failed: {reason:?}"));
+                    return Err(anyhow::Error::new(reason)
+                        .context(format!("call encryption failed: {reason:?}")));
                 }
                 CallCipherState::Establishing => {}
             }
@@ -1687,9 +1701,8 @@ impl Room {
                     "call encryption did not establish before pending media open expired"
                 );
                 self.fail_e2ee();
-                return Err(anyhow!(
-                    "call encryption failed: timed out after 15 seconds"
-                ));
+                return Err(anyhow::Error::new(Failure::E2ee)
+                    .context("call encryption failed: timed out after 15 seconds"));
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
