@@ -505,17 +505,23 @@ impl Room {
                     .as_str()
                     .unwrap_or_default()
                     .to_owned();
-                let commit = {
-                    let mut e2ee = lock(&self.e2ee);
-                    let needed = e2ee.receive_key_package(&peer_id, &signal)?;
-                    if needed && e2ee.is_designated_committer()? {
-                        Some(e2ee.stage_add(&signal)?)
-                    } else {
-                        None
+                let needed = lock(&self.e2ee).receive_key_package(&peer_id, &signal)?;
+                if needed {
+                    // Quem caiu sem ninguém saber qual folha era a dele sai antes: senão ele
+                    // seguia como quem decide, e ninguém mais entrava na chamada (28/10).
+                    self.remove_e2ee_ghosts().await?;
+                    let peers = self.session.peers();
+                    let commit = {
+                        let mut e2ee = lock(&self.e2ee);
+                        if e2ee.is_committer(&peers)? {
+                            Some(e2ee.stage_add(&signal)?)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(commit) = commit {
+                        self.submit_e2ee_commit(commit, Some(peer_id)).await?;
                     }
-                };
-                if let Some(commit) = commit {
-                    self.submit_e2ee_commit(commit, Some(peer_id)).await?;
                 }
             }
             "e2eeCommit" => {
@@ -582,18 +588,22 @@ impl Room {
                     self.republish().await;
                 }
             }
-            "peerLeft" | "peerKicked" => {
-                let peer_id = event.data["peerId"].as_str().unwrap_or_default();
-                if lock(&self.e2ee).is_designated_after_peer_leaves(peer_id)? {
-                    let commit = { lock(&self.e2ee).stage_remove_peer(peer_id)? };
-                    if let Some(commit) = commit {
-                        self.submit_e2ee_commit(commit, None).await?;
-                    }
-                }
-            }
+            // A lista da sessão já tirou quem saiu (`session.apply` vem antes).
+            "peerLeft" | "peerKicked" => self.remove_e2ee_ghosts().await?,
             _ => {}
         }
         self.announce_encryption();
+        Ok(())
+    }
+
+    /// Tira do grupo MLS toda folha cujo aparelho não está mais na sala, quando é esta pessoa
+    /// quem decide.
+    async fn remove_e2ee_ghosts(&self) -> Result<()> {
+        let peers = self.session.peers();
+        let commit = { lock(&self.e2ee).stage_remove_ghosts(&peers)? };
+        if let Some(commit) = commit {
+            self.submit_e2ee_commit(commit, None).await?;
+        }
         Ok(())
     }
 

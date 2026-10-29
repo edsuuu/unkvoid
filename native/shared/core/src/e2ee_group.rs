@@ -421,9 +421,13 @@ impl E2eeGroup {
         )
     }
 
-    /// Stages removal of one MLS session leaf. This is the path used for a `peerLeft`: accounts
-    /// can have more than one active device, and losing one peer must not remove the others.
-    pub fn remove_member_id(&mut self, member_id: &MemberId) -> Result<E2eeSignal, E2eeGroupError> {
+    /// Stages removal of the given MLS session leaves in one Commit. This is the path used for a
+    /// `peerLeft`: accounts can have more than one active device, and losing one peer must not
+    /// remove the others.
+    pub fn remove_member_ids(
+        &mut self,
+        member_ids: &[MemberId],
+    ) -> Result<E2eeSignal, E2eeGroupError> {
         let (group_id, epoch, commit) = {
             let provider = &self.provider;
             let signer = &self.signer;
@@ -435,7 +439,7 @@ impl E2eeGroup {
 
             let members = group
                 .members()
-                .filter(|member| member.signature_key == member_id.0)
+                .filter(|member| member_ids.iter().any(|id| id.0 == member.signature_key))
                 .map(|member| member.index)
                 .collect::<Vec<_>>();
 
