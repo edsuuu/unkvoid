@@ -310,6 +310,12 @@ impl E2eeCall {
         self.peer_members
             .insert(sender_peer_id.to_owned(), member_id.clone());
 
+        // A peer still waiting for its own Welcome has no tree: the request is for the members,
+        // and handling it here failed the encryption of whoever was joining at the same time.
+        if self.awaiting_welcome {
+            return Ok(false);
+        }
+
         Ok(!self
             .group
             .members()?
@@ -548,6 +554,19 @@ mod tests {
 
         assert!(friend.is_committer(&roster).unwrap());
         assert!(friend.stage_remove_ghosts(&roster).unwrap().is_none());
+    }
+
+    #[test]
+    fn who_waits_for_its_welcome_leaves_other_join_requests_to_the_members() {
+        let (mut waiting, _) =
+            E2eeCall::start("user:b", "voice:1", "session-a", "peer-b".into(), false).unwrap();
+        let (_, other) =
+            E2eeCall::start("user:c", "voice:1", "session-a", "peer-c".into(), false).unwrap();
+        let roster = [peer("peer-b", "user:b"), peer("peer-c", "user:c")];
+
+        assert!(!waiting.receive_key_package("peer-c", &other.unwrap()).unwrap());
+        assert!(waiting.stage_remove_ghosts(&roster).unwrap().is_none());
+        assert_eq!(waiting.state(), CallCipherState::Establishing);
     }
 
     #[test]
