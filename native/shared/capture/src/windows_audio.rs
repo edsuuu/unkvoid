@@ -567,8 +567,13 @@ unsafe fn rescan(
 ///
 /// Fica de fora quem é silenciado, quem descende de um silenciado (o WebView toca num
 /// filho nosso; o app de chamada, num filho dele) e quem tem um silenciado abaixo de si:
-/// incluir a árvore do Explorer traria o app de chamada junto. Quem descende de outro escolhido
-/// também fica, porque a árvore do ancestral já o traz e gravar de novo dobraria o som.
+/// incluir a árvore do Explorer traria o app de chamada junto.
+///
+/// A "árvore" do laço do Windows é o processo e os filhos diretos, sem os netos: medido no
+/// Windows 11, o som de um neto não chega pelo laço do avô. O jogo que a Steam abre por um
+/// launcher é neto dela e saía mudo. Fica de fora só quem tem o pai gravado, porque o laço do
+/// pai já o traz e gravar de novo dobraria o som. Subindo por uma fila de permitidos, o pai
+/// grava, o filho não, o neto grava de novo: grava quem está numa posição ímpar da fila.
 fn chosen(candidates: &[u32], muted: &[u32], parent: impl Fn(u32) -> Option<u32>) -> Vec<u32> {
     let parent = &parent;
     let lineage = |pid: u32| {
@@ -588,7 +593,7 @@ fn chosen(candidates: &[u32], muted: &[u32], parent: impl Fn(u32) -> Option<u32>
     let mut wanted: Vec<u32> = allowed
         .iter()
         .copied()
-        .filter(|&pid| !lineage(pid).skip(1).any(|ancestor| allowed.contains(&ancestor)))
+        .filter(|&pid| lineage(pid).take_while(|ancestor| allowed.contains(ancestor)).count() % 2 == 1)
         .collect();
 
     wanted.sort_unstable();
@@ -871,6 +876,18 @@ mod testes {
         // O Explorer traria o app de chamada na árvore, 21 e 32 descendem de silenciados, e o 51
         // já vem na árvore da Steam.
         assert_eq!(wanted, vec![40, 50, 61]);
+    }
+
+    #[test]
+    fn a_game_the_launcher_opened_is_recorded_beside_steam() {
+        // Steam 70 abre o launcher 71, que abre o jogo 72: o laço da Steam não traz neto.
+        let links = [(71, 70), (72, 71)];
+        let parent = |pid| links.iter().find(|(child, _)| *child == pid).map(|(_, parent)| *parent);
+
+        assert_eq!(chosen(&[70, 72], &[], parent), vec![70, 72]);
+
+        // Com o launcher tocando também, ele vem no laço da Steam e o jogo continua no dele.
+        assert_eq!(chosen(&[70, 71, 72], &[], parent), vec![70, 72]);
     }
 
     #[test]
